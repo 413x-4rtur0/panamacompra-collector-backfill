@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$HOME/Apps/panamacompra-collector" || exit 1
+
+mkdir -p data/logs data/queue
+
+DETAIL_LIMIT="${1:-999999}"
+REQUEST_FLAG="data/queue/run_all_requested.flag"
+REQUEST_LOG="data/logs/run_all_requests.log"
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') | RUN-ALL REQUESTED detail_limit=$DETAIL_LIMIT" | tee -a "$REQUEST_LOG"
+
+touch "$REQUEST_FLAG"
+
+if pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1; then
+  echo "Worker already active. Request flag left for active worker."
+else
+  nohup ./pc_run_all_worker.sh "$DETAIL_LIMIT" >/dev/null 2>&1 &
+  echo "Worker started."
+fi
+
+if [ -x "./pc_open_monitor.sh" ]; then
+  ./pc_open_monitor.sh >/dev/null 2>&1 || true
+fi
+
+echo "Run-all request submitted."

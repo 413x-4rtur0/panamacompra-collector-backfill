@@ -1,0 +1,602 @@
+#!/usr/bin/env python3
+import csv
+import json
+import os
+import re
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+from playwright.sync_api import sync_playwright
+
+BASE_DIR = Path.home() / "Apps" / "panamacompra-collector"
+DATA_DIR = BASE_DIR / "data"
+RECORDS_DIR = BASE_DIR / "records"
+LOG_DIR = DATA_DIR / "logs"
+DB_PATH = DATA_DIR / "oportunidades.db"
+CSV_PATH = DATA_DIR / "oportunidades.csv"
+
+URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
+
+# Safe limit per group.
+# 12 pages x 50 rows x 2 groups = up to 1200 rows.
+# Override example:
+# PC_MAX_PAGES_PER_GROUP=20 ./panamacompra_collector.py
+MAX_PAGES_PER_GROUP = int(os.environ.get("PC_MAX_PAGES_PER_GROUP", "12"))
+
+GROUPS = [
+    {"name": "Programadas", "radio_id": "btnradio2"},
+    {"name": "Abiertas", "radio_id": "btnradio1"},
+]
+
+EXPECTED_CSV_HEADER = [
+    "numero", "grupo", "estado", "descripcion", "entidad", "dependencia",
+    "fecha", "modalidad", "link", "first_seen", "last_seen",
+    "detail_saved", "record_folder"
+]
+
+def now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+def clean(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+def safe_name(text):
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip())
+    return text[:120] or "unknown"
+
+def browser_executable():
+    for candidate in ["/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium-browser"]:
+        if Path(candidate).exists():
+            return candidate
+    raise RuntimeError("No Chromium/Chrome executable found.")
+
+def archive_complete(folder):
+    return (
+        folder.exists()
+        and (folder / "row.json").exists()
+        and (folder / "detail.html").exists()
+        and (folder / "detail.txt").exists()
+    )
+
+def write_text_once(path, text):
+    if path.exists():
+        return False
+    path.write_text(text, encoding="utf-8", errors="ignore")
+    return True
+
+def write_json_once(path, data):
+    if path.exists():
+        return False
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+def ensure_csv():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not CSV_PATH.exists():
+        with CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(EXPECTED_CSV_HEADER)
+        return
+
+    try:
+        with CSV_PATH.open("r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+        current_header = next(csv.reader([first_line])) if first_line else []
+    except Exception:
+        current_header = []
+
+    if current_header != EXPECTED_CSV_HEADER:
+        backup = CSV_PATH.with_name(f"oportunidades_legacy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        CSV_PATH.rename(backup)
+        with CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(EXPECTED_CSV_HEADER)
+
+def add_column_if_missing(conn, table, column, definition):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+def init_storage():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    RECORDS_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS oportunidades (
+        numero TEXT PRIMARY KEY,
+        grupo TEXT,
+        estado TEXT,
+        descripcion TEXT,
+        entidad TEXT,
+        dependencia TEXT,
+        fecha TEXT,
+        modalidad TEXT,
+        link TEXT,
+        first_seen TEXT,
+        last_seen TEXT,
+        detail_saved INTEGER DEFAULT 0,
+        record_folder TEXT
+    )
+    """)
+    conn.commit()
+
+    # Migration for older DB created before grupo existed.
+    add_column_if_missing(conn, "oportunidades", "grupo", "TEXT")
+
+    ensure_csv()
+    return conn
+
+def get_db_row(conn, numero):
+    return conn.execute("SELECT * FROM oportunidades WHERE numero = ?", (numero,)).fetchone()
+
+def insert_db_if_missing(conn, row, folder, detail_saved):
+    existing = get_db_row(conn, row["numero"])
+    if existing:
+        return False
+
+    conn.execute("""
+    INSERT INTO oportunidades (
+        numero, grupo, estado, descripcion, entidad, dependencia, fecha,
+        modalidad, link, first_seen, last_seen, detail_saved, record_folder
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        row["numero"], row["grupo"], row["estado"], row["descripcion"],
+        row["entidad"], row["dependencia"], row["fecha"], row["modalidad"],
+        row["link"], row["first_seen"], row["last_seen"],
+        detail_saved, str(folder)
+    ))
+
+    with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([
+            row["numero"], row["grupo"], row["estado"], row["descripcion"],
+            row["entidad"], row["dependencia"], row["fecha"], row["modalidad"],
+            row["link"], row["first_seen"], row["last_seen"],
+            detail_saved, str(folder)
+        ])
+
+    conn.commit()
+    return True
+
+def mark_detail_saved(conn, numero, saved):
+    conn.execute(
+        "UPDATE oportunidades SET detail_saved = ?, last_seen = ? WHERE numero = ?",
+        (1 if saved else 0, now_iso(), numero)
+    )
+    conn.commit()
+
+def close_popup(page):
+    page.evaluate("""
+    (() => {
+      try {
+        const noMostrar = document.querySelector('#checkDefaultSQ');
+        if (noMostrar && !noMostrar.checked) noMostrar.click();
+
+        const closeBtn = document.querySelector('ngb-modal-window .btn-close');
+        if (closeBtn) closeBtn.click();
+
+        document.querySelectorAll('ngb-modal-window, ngb-modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.overflow = '';
+      } catch (e) {}
+    })();
+    """)
+
+def prepare_base_page(page):
+    page.goto(URL, wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_timeout(12000)
+    close_popup(page)
+    page.wait_for_timeout(2000)
+    page.wait_for_selector("tabla-busqueda-avanzada-v3", timeout=60000)
+
+def wait_for_table(page):
+    page.wait_for_selector("tabla-busqueda-avanzada-v3 table", timeout=60000)
+    page.wait_for_timeout(2000)
+
+def page_signature(page):
+    return page.evaluate("""
+    (() => {
+      const active = document.querySelector('ngb-pagination li.page-item.active a.page-link')?.innerText?.trim() || '';
+      const first = document.querySelector('tabla-busqueda-avanzada-v3 tbody tr td a[href*="solicitud-de-cotizacion"]')?.innerText?.trim() || '';
+      const footer = document.querySelector('tabla-busqueda-avanzada-v3 .card')?.innerText?.trim() || '';
+      const checked =
+        document.querySelector('#btnradio2')?.checked ? 'Programadas' :
+        document.querySelector('#btnradio1')?.checked ? 'Abiertas' :
+        'Unknown';
+      return checked + '|' + active + '|' + first + '|' + footer;
+    })();
+    """)
+
+def click_status(page, radio_id, group_name):
+    before = page_signature(page)
+
+    page.evaluate("""
+    ({radioId}) => {
+      const label = document.querySelector(`label[for="${radioId}"]`);
+      const input = document.querySelector(`#${radioId}`);
+
+      if (label) {
+        label.click();
+      } else if (input) {
+        input.click();
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+    """, {"radioId": radio_id})
+
+    # Wait until table/status refreshes.
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        after = page_signature(page)
+        if after != before or group_name in after:
+            page.wait_for_timeout(4000)
+            break
+
+    close_popup(page)
+    wait_for_table(page)
+
+def set_rows_to_50(page):
+    page.evaluate("""
+    (() => {
+      const select = document.querySelector('tabla-busqueda-avanzada-v3 select.form-select');
+      if (!select) return false;
+
+      const option50 = Array.from(select.options).find(o => o.textContent.trim() === '50');
+      if (!option50) return false;
+
+      if (select.value !== option50.value) {
+        select.value = option50.value;
+        select.selectedIndex = option50.index;
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return true;
+    })();
+    """)
+
+    page.wait_for_timeout(9000)
+    wait_for_table(page)
+
+def go_first_page(page):
+    can_go_first = page.evaluate("""
+    (() => {
+      const first = document.querySelector('ngb-pagination a[aria-label="First"]');
+      if (!first) return false;
+      const li = first.closest('li');
+      if (li && li.classList.contains('disabled')) return false;
+      if (first.getAttribute('aria-disabled') === 'true') return false;
+      first.click();
+      return true;
+    })();
+    """)
+
+    if can_go_first:
+        page.wait_for_timeout(5000)
+        wait_for_table(page)
+
+def extract_rows(page, group_name, page_number):
+    return page.evaluate("""
+    ({groupName, pageNumber}) => {
+      function clean(text) {
+        return (text || '').replace(/\\s+/g, ' ').trim();
+      }
+
+      const rows = Array.from(document.querySelectorAll('tabla-busqueda-avanzada-v3 tbody tr'));
+
+      return rows.map(row => {
+        const cells = Array.from(row.querySelectorAll('th, td')).map(td => clean(td.innerText));
+        const link = row.querySelector('a[href*="solicitud-de-cotizacion"]')?.href || '';
+
+        return {
+          grupo: groupName,
+          source_page: pageNumber,
+          visual_row: cells[0] || '',
+          numero: cells[1] || '',
+          estado: cells[2] || '',
+          descripcion: cells[3] || '',
+          entidad: cells[4] || '',
+          dependencia: cells[5] || '',
+          fecha: cells[6] || '',
+          modalidad: cells[7] || '',
+          link: link
+        };
+      }).filter(r => r.numero && r.link);
+    }
+    """, {"groupName": group_name, "pageNumber": page_number})
+
+def click_next(page):
+    next_available = page.evaluate("""
+    (() => {
+      const next = document.querySelector('ngb-pagination a[aria-label="Next"]');
+      if (!next) return false;
+
+      const li = next.closest('li');
+      if (li && li.classList.contains('disabled')) return false;
+      if (next.getAttribute('aria-disabled') === 'true') return false;
+
+      return true;
+    })();
+    """)
+
+    if not next_available:
+        return False, "Next disabled or not found"
+
+    before = page_signature(page)
+
+    page.evaluate("""
+    (() => {
+      const next = document.querySelector('ngb-pagination a[aria-label="Next"]');
+      if (next) next.click();
+    })();
+    """)
+
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        after = page_signature(page)
+        if after != before:
+            page.wait_for_timeout(2500)
+            return True, "Clicked next"
+
+    return False, "Next clicked but page did not change"
+
+def save_detail_if_missing(browser, row, folder):
+    html_path = folder / "detail.html"
+    txt_path = folder / "detail.txt"
+    meta_path = folder / "metadata.json"
+
+    if html_path.exists() and txt_path.exists():
+        return "skipped_existing_detail"
+
+    detail = browser.new_page(viewport={"width": 1280, "height": 720})
+    try:
+        detail.goto(row["link"], wait_until="domcontentloaded", timeout=90000)
+        detail.wait_for_timeout(10000)
+        close_popup(detail)
+
+        html = detail.content()
+        text = detail.locator("body").inner_text(timeout=20000)
+
+        write_text_once(html_path, html)
+        write_text_once(txt_path, text)
+        write_json_once(meta_path, {
+            "numero": row["numero"],
+            "grupo": row["grupo"],
+            "link": row["link"],
+            "saved_at": now_iso(),
+            "source": "PanamaCompra"
+        })
+
+        if html_path.exists() and txt_path.exists():
+            return "saved_detail"
+
+        return "failed_detail"
+    except Exception as e:
+        write_text_once(folder / "error.txt", str(e))
+        return "failed_detail"
+    finally:
+        detail.close()
+
+def count_db_duplicates(conn):
+    return conn.execute("""
+    SELECT numero, COUNT(*) AS qty
+    FROM oportunidades
+    GROUP BY numero
+    HAVING qty > 1
+    """).fetchall()
+
+def main():
+    conn = init_storage()
+
+    extracted_total = 0
+    seen_unique = set()
+    duplicate_in_crawl = []
+    page_counts = []
+
+    new_db_records = 0
+    skipped_existing_complete = 0
+    incomplete_existing_fixed = 0
+    row_json_written = 0
+    row_json_skipped = 0
+    detail_saved = 0
+    detail_skipped = 0
+    detail_failed = 0
+
+    groups_visited = []
+    stop_reasons = []
+    run_started = now_iso()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            executable_path=browser_executable(),
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--window-size=1280,720"
+            ]
+        )
+
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        prepare_base_page(page)
+
+        for group in GROUPS:
+            group_name = group["name"]
+            radio_id = group["radio_id"]
+            groups_visited.append(group_name)
+
+            click_status(page, radio_id, group_name)
+            set_rows_to_50(page)
+            go_first_page(page)
+
+            for page_number in range(1, MAX_PAGES_PER_GROUP + 1):
+                wait_for_table(page)
+                rows = extract_rows(page, group_name, page_number)
+
+                extracted_total += len(rows)
+                page_counts.append((group_name, page_number, len(rows)))
+
+                for r in rows:
+                    numero = r["numero"]
+
+                    if numero in seen_unique:
+                        duplicate_in_crawl.append({
+                            "numero": numero,
+                            "grupo": group_name,
+                            "source_page": r.get("source_page"),
+                            "visual_row": r.get("visual_row")
+                        })
+                        continue
+
+                    seen_unique.add(numero)
+
+                    folder = RECORDS_DIR / safe_name(numero)
+
+                    # Main optimization:
+                    # if records/NUMERO is already complete, do not touch files
+                    # and do not revisit the detail URL.
+                    if archive_complete(folder):
+                        skipped_existing_complete += 1
+
+                        row_for_db = {
+                            "numero": numero,
+                            "grupo": group_name,
+                            "estado": r["estado"],
+                            "descripcion": r["descripcion"],
+                            "entidad": r["entidad"],
+                            "dependencia": r["dependencia"],
+                            "fecha": r["fecha"],
+                            "modalidad": r["modalidad"],
+                            "link": r["link"],
+                            "first_seen": now_iso(),
+                            "last_seen": now_iso(),
+                            "detail_saved": 1
+                        }
+                        if insert_db_if_missing(conn, row_for_db, folder, detail_saved=1):
+                            new_db_records += 1
+
+                        continue
+
+                    folder.mkdir(parents=True, exist_ok=True)
+
+                    row = {
+                        "numero": numero,
+                        "grupo": group_name,
+                        "estado": r["estado"],
+                        "descripcion": r["descripcion"],
+                        "entidad": r["entidad"],
+                        "dependencia": r["dependencia"],
+                        "fecha": r["fecha"],
+                        "modalidad": r["modalidad"],
+                        "link": r["link"],
+                        "first_seen": now_iso(),
+                        "last_seen": now_iso(),
+                        "detail_saved": 0
+                    }
+
+                    db_inserted = insert_db_if_missing(conn, row, folder, detail_saved=0)
+                    if db_inserted:
+                        new_db_records += 1
+                    else:
+                        incomplete_existing_fixed += 1
+
+                    wrote_row = write_json_once(folder / "row.json", {
+                        **row,
+                        "source_page_first_seen_or_last_seen": r.get("source_page"),
+                        "visual_row_first_seen_or_last_seen": r.get("visual_row")
+                    })
+
+                    if wrote_row:
+                        row_json_written += 1
+                    else:
+                        row_json_skipped += 1
+
+                    detail_result = save_detail_if_missing(browser, row, folder)
+
+                    if detail_result == "saved_detail":
+                        detail_saved += 1
+                        mark_detail_saved(conn, numero, True)
+                    elif detail_result == "skipped_existing_detail":
+                        detail_skipped += 1
+                        mark_detail_saved(conn, numero, True)
+                    else:
+                        detail_failed += 1
+                        mark_detail_saved(conn, numero, False)
+
+                moved, reason = click_next(page)
+                if not moved:
+                    stop_reasons.append(f"{group_name}: {reason}")
+                    break
+            else:
+                stop_reasons.append(f"{group_name}: MAX_PAGES_PER_GROUP reached")
+
+        browser.close()
+
+    db_dupes = count_db_duplicates(conn)
+    total_db = conn.execute("SELECT COUNT(*) AS c FROM oportunidades").fetchone()["c"]
+    missing_detail = conn.execute("SELECT COUNT(*) AS c FROM oportunidades WHERE detail_saved != 1").fetchone()["c"]
+
+    summary_lines = [
+        f"Run started: {run_started}",
+        f"Run finished: {now_iso()}",
+        f"URL: {URL}",
+        f"MAX_PAGES_PER_GROUP: {MAX_PAGES_PER_GROUP}",
+        f"Groups visited: {', '.join(groups_visited)}",
+        f"Stop reasons: {' | '.join(stop_reasons)}",
+        "",
+        f"Rows extracted total from site: {extracted_total}",
+        f"Unique NUMERO values in this run: {len(seen_unique)}",
+        f"Duplicate NUMERO values inside this crawl: {len(duplicate_in_crawl)}",
+        "",
+        f"Skipped existing complete archives: {skipped_existing_complete}",
+        f"Incomplete existing archives checked/fixed: {incomplete_existing_fixed}",
+        f"New DB records inserted: {new_db_records}",
+        "",
+        f"row.json written: {row_json_written}",
+        f"row.json skipped because already exists: {row_json_skipped}",
+        f"Detail saved this run: {detail_saved}",
+        f"Detail skipped because already exists: {detail_skipped}",
+        f"Detail failed this run: {detail_failed}",
+        "",
+        f"DB total unique NUMERO records: {total_db}",
+        f"DB records missing detail_saved=1: {missing_detail}",
+        f"DB duplicate NUMERO records: {len(db_dupes)}",
+        "",
+        f"Database: {DB_PATH}",
+        f"CSV: {CSV_PATH}",
+        f"Records folder: {RECORDS_DIR}",
+        "",
+        "Page counts:",
+    ]
+
+    for group_name, page_num, qty in page_counts:
+        summary_lines.append(f"  {group_name} page {page_num}: {qty} rows")
+
+    if duplicate_in_crawl:
+        summary_lines.append("")
+        summary_lines.append("Duplicate NUMERO values inside current crawl:")
+        for d in duplicate_in_crawl[:100]:
+            summary_lines.append(
+                f"  {d['numero']} | group={d['grupo']} | page={d['source_page']} | visual_row={d['visual_row']}"
+            )
+
+    if db_dupes:
+        summary_lines.append("")
+        summary_lines.append("WARNING: Duplicate NUMERO values inside database:")
+        for d in db_dupes:
+            summary_lines.append(f"  {d['numero']} | qty={d['qty']}")
+
+    summary = "\n".join(summary_lines) + "\n"
+
+    log_path = LOG_DIR / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_path.write_text(summary, encoding="utf-8")
+
+    print(summary)
+
+if __name__ == "__main__":
+    main()

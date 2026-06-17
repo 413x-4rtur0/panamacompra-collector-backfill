@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$HOME/Apps/panamacompra-collector" || exit 1
+
+mkdir -p data/logs data/queue
+
+echo "Stopping PanamaCompra run-all process..."
+
+rm -f data/queue/run_all_requested.flag
+
+pkill -TERM -f "[p]ython -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython -u ./pc_detail_downloader.py" 2>/dev/null || true
+pkill -TERM -f "[t]imeout .*pc_index_collector.py" 2>/dev/null || true
+pkill -TERM -f "[t]imeout .*pc_detail_downloader.py" 2>/dev/null || true
+
+sleep 5
+
+pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+
+sleep 2
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Manual stop requested." >> data/logs/run_all_worker.log
+
+echo "Remaining related processes:"
+pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader" || true

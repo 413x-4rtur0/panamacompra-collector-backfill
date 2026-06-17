@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local runtime data
+data/
+records/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Secrets / tokens
+.webhook_token
+*.token
+*.secret
+.env
+
+# Downloaded/raw archive files
+*.html
+*.txt
+
+# Backups
+*.bak*
+deprecated_queue_scripts/
