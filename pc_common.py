@@ -16,6 +16,25 @@ CSV_PATH = DATA_DIR / "panamacompra_index.csv"
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
+
+
+def env_int(name, default, minimum=None):
+    """Read an integer environment variable with a safe fallback.
+
+    Long-running shell workflows should not crash on a mistyped optional
+    setting. Invalid values fall back to the documented default; values below
+    ``minimum`` are clamped when a minimum is supplied.
+    """
+    raw = os.environ.get(name)
+    try:
+        value = int(raw) if raw not in (None, "") else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+    if minimum is not None and value < minimum:
+        return minimum
+    return value
+
 INDEX_HEADER = [
     "numero", "grupo", "tipo_url", "estado", "descripcion", "short_description",
     "entidad", "dependencia", "fecha", "modalidad", "link", "first_seen",
@@ -61,12 +80,41 @@ def ensure_dirs():
     RECORDS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def ensure_db_schema(conn):
+    """Apply lightweight migrations for databases created by older versions."""
+    existing_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()
+    }
+
+    migrations = {
+        "detail_attempts": "ALTER TABLE opportunities ADD COLUMN detail_attempts INTEGER DEFAULT 0",
+        "detail_saved_at": "ALTER TABLE opportunities ADD COLUMN detail_saved_at TEXT",
+        "detail_json_path": "ALTER TABLE opportunities ADD COLUMN detail_json_path TEXT",
+        "finish_date_guess": "ALTER TABLE opportunities ADD COLUMN finish_date_guess TEXT",
+    }
+
+    for column, statement in migrations.items():
+        if column not in existing_columns:
+            conn.execute(statement)
+
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_detail_queue
+    ON opportunities(detail_status, detail_attempts, first_seen)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_last_seen
+    ON opportunities(last_seen)
+    """)
+
 def init_db():
     ensure_dirs()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS opportunities (
@@ -93,6 +141,8 @@ def init_db():
         finish_date_guess TEXT
     )
     """)
+
+    ensure_db_schema(conn)
 
     conn.commit()
 
