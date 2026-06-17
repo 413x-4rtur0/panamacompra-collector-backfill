@@ -110,6 +110,26 @@ The scripts resolve their own location, so the project can live in **any directo
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`
 - Optional: `sqlite3` CLI for manual inspection
 
+
+### Updating an existing local copy
+
+On the workstation, update the existing checkout safely with:
+
+```bash
+cd ~/Apps/panamacompra-collector
+./update_local_copy.sh
+```
+
+The update script stops active collector workers, refuses to continue if local
+uncommitted changes would be overwritten, fast-forwards the current branch, refreshes
+the Python virtual environment dependencies, fixes executable bits, and runs the
+system review. To request a small smoke run after the update, use:
+
+```bash
+cd ~/Apps/panamacompra-collector
+PC_UPDATE_TEST_DETAIL_LIMIT=5 ./update_local_copy.sh
+```
+
 ### Setup
 
 ```bash
@@ -181,6 +201,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
+| `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
 ---
 
