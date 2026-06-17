@@ -84,8 +84,12 @@ progress_bar() {
   local empty=$((width - filled))
 
   printf "["
-  printf "%0.s#" $(seq 1 "$filled" 2>/dev/null)
-  printf "%0.s-" $(seq 1 "$empty" 2>/dev/null)
+  if [ "$filled" -gt 0 ]; then
+    printf "%0.s#" $(seq 1 "$filled")
+  fi
+  if [ "$empty" -gt 0 ]; then
+    printf "%0.s-" $(seq 1 "$empty")
+  fi
   printf "] %3d%%" "$percent"
 }
 
@@ -105,19 +109,18 @@ load_progress() {
   fi
 
   # If real process is running, keep progress visually alive.
+  # Estimated animation eases toward a ceiling without wrapping backward.
   if index_running && [ "$PHASE" = "INDEX" ]; then
-    # Estimated animation between 10 and 45 while index runs.
     e="$(elapsed_seconds "$STARTED_AT")"
-    animated=$((10 + (e % 36)))
+    animated=$((10 + 38 * e / (e + 90)))
     if [ "$animated" -gt "$PERCENT" ]; then
       PERCENT="$animated"
     fi
   fi
 
   if detail_running && [ "$PHASE" = "DETAIL" ]; then
-    # Estimated animation between 55 and 95 while detail runs.
     e="$(elapsed_seconds "$STARTED_AT")"
-    animated=$((55 + (e % 41)))
+    animated=$((55 + 38 * e / (e + 120)))
     if [ "$animated" -gt "$PERCENT" ]; then
       PERCENT="$animated"
     fi
@@ -135,6 +138,7 @@ restore_cursor() {
 
 show_screen() {
   tput cup 0 0 2>/dev/null || clear
+  tput ed 2>/dev/null || true
 
   load_progress
 
