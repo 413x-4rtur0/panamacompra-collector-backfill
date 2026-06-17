@@ -2,7 +2,7 @@
 from playwright.sync_api import sync_playwright
 from pc_common import *
 
-MAX_PAGES_PER_GROUP = int(os.environ.get("PC_MAX_PAGES_PER_GROUP", "20"))
+MAX_PAGES_PER_GROUP = env_int("PC_MAX_PAGES_PER_GROUP", "20", minimum=1)
 
 GROUPS = [
     {"name": "Programadas", "radio_id": "btnradio2"},
