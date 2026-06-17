@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-cd "$HOME/Apps/panamacompra-collector" || exit 1
+BASE_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+cd "$BASE_DIR" || exit 1
 
 mkdir -p data/logs
 
 OPEN_LOG="data/logs/monitor_open.log"
-CMD="cd '$HOME/Apps/panamacompra-collector' && ./pc_monitor_window.sh"
+CMD="cd '$BASE_DIR' && ./pc_monitor_window.sh"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" >> "$OPEN_LOG"

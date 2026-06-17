@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path.home() / "Apps" / "panamacompra-collector"
+BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 RECORDS_DIR = BASE_DIR / "records"
 LOG_DIR = DATA_DIR / "logs"
@@ -137,6 +137,9 @@ def find_existing_opportunity(conn, numero):
     return conn.execute("SELECT * FROM opportunities WHERE numero = ?", (numero,)).fetchone()
 
 def append_index_csv(row):
+    # Append-only "first seen" log: written once when a NUMERO is first inserted
+    # and never updated afterwards. It does NOT reflect later changes to
+    # last_seen or detail_status. Use the SQLite DB for current state.
     with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
             row.get("numero"),
