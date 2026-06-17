@@ -6,8 +6,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 from pc_common import *
 
-DETAIL_LIMIT = int(os.environ.get("PC_DETAIL_LIMIT", "10"))
-MAX_DETAIL_ATTEMPTS = int(os.environ.get("PC_MAX_DETAIL_ATTEMPTS", "5"))
+DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
+MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
 
 def close_popup(page):
     page.evaluate("""
