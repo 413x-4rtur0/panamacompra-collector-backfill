@@ -9,7 +9,8 @@ MONITOR_LOCK="/tmp/panamacompra_monitor_window.lock"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 IDLE_CLOSE_SECONDS="${PC_MONITOR_IDLE_CLOSE_SECONDS:-8}"
 STABLE_DONE_CYCLES="${PC_MONITOR_STABLE_DONE_CYCLES:-3}"
-REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-2}"
+REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-5}"
+ANIMATE_PROGRESS="${PC_MONITOR_ANIMATE_PROGRESS:-0}"
 
 run_all_worker_running() {
   pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1
@@ -108,21 +109,24 @@ load_progress() {
     source "$PROGRESS_FILE"
   fi
 
-  # If real process is running, keep progress visually alive.
-  # Estimated animation eases toward a ceiling without wrapping backward.
-  if index_running && [ "$PHASE" = "INDEX" ]; then
-    e="$(elapsed_seconds "$STARTED_AT")"
-    animated=$((10 + 38 * e / (e + 90)))
-    if [ "$animated" -gt "$PERCENT" ]; then
-      PERCENT="$animated"
+  # Keep the display readable by default: use the worker-written percentage
+  # instead of changing the progress bar on every refresh (the main cause of
+  # flicker). Opt into estimated easing with PC_MONITOR_ANIMATE_PROGRESS=1.
+  if [ "$ANIMATE_PROGRESS" = "1" ]; then
+    if index_running && [ "$PHASE" = "INDEX" ]; then
+      e="$(elapsed_seconds "$STARTED_AT")"
+      animated=$((10 + 38 * e / (e + 90)))
+      if [ "$animated" -gt "$PERCENT" ]; then
+        PERCENT="$animated"
+      fi
     fi
-  fi
 
-  if detail_running && [ "$PHASE" = "DETAIL" ]; then
-    e="$(elapsed_seconds "$STARTED_AT")"
-    animated=$((55 + 38 * e / (e + 120)))
-    if [ "$animated" -gt "$PERCENT" ]; then
-      PERCENT="$animated"
+    if detail_running && [ "$PHASE" = "DETAIL" ]; then
+      e="$(elapsed_seconds "$STARTED_AT")"
+      animated=$((55 + 38 * e / (e + 120)))
+      if [ "$animated" -gt "$PERCENT" ]; then
+        PERCENT="$animated"
+      fi
     fi
   fi
 }
@@ -151,6 +155,11 @@ show_screen() {
   echo "Phase:       $PHASE"
   echo "Status:      $STATUS"
   echo "Progress:    $(progress_bar "$PERCENT")"
+  if [ "$ANIMATE_PROGRESS" = "1" ]; then
+    echo "Progress mode: estimated animation"
+  else
+    echo "Progress mode: worker updates only"
+  fi
   echo "Elapsed:     $elapsed"
   echo "Detail limit:$DETAIL_LIMIT"
   echo "Updated:     $UPDATED_AT"
