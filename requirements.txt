@@ -1,0 +1,5 @@
+# Python dependencies for the PanamaCompra collector.
+# Install inside a virtual environment:
+#   python -m pip install -r requirements.txt
+#   python -m playwright install chromium   # optional; system Chromium is used if present
+playwright>=1.40

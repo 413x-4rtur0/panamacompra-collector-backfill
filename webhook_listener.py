@@ -1,13 +1,39 @@
 #!/usr/bin/env python3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import subprocess
 import datetime
+import hmac
+import os
+import subprocess
+import sys
 
-BASE = Path.home() / "Apps" / "panamacompra-collector"
-TOKEN = (BASE / ".webhook_token").read_text().strip()
+BASE = Path(__file__).resolve().parent
 RUNNER = str(BASE / "run_collector.sh")
 LOG = BASE / "data" / "logs" / "webhook_listener.log"
+
+# Bind address is configurable. The default 0.0.0.0 is required when
+# changedetection.io runs in Docker and reaches the host via
+# host.docker.internal. Set PC_WEBHOOK_HOST=127.0.0.1 to restrict to localhost.
+HOST = os.environ.get("PC_WEBHOOK_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PC_WEBHOOK_PORT", "8765"))
+
+
+def load_token():
+    token_path = BASE / ".webhook_token"
+    try:
+        token = token_path.read_text().strip()
+    except FileNotFoundError:
+        sys.exit(
+            f"ERROR: webhook token file not found: {token_path}\n"
+            f"Create it with: printf 'YOUR_SECRET_TOKEN' > {token_path}"
+        )
+    if not token:
+        sys.exit(f"ERROR: webhook token file is empty: {token_path}")
+    return token
+
+
+# Populated in __main__ before the server starts.
+TOKEN = ""
 
 class Handler(BaseHTTPRequestHandler):
     def log_line(self, message):
@@ -27,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_trigger(self):
         expected_path = f"/panamacompra/{TOKEN}"
 
-        if self.path.split("?")[0] != expected_path:
+        if not hmac.compare_digest(self.path.split("?")[0], expected_path):
             self.send_response(403)
             self.end_headers()
             self.wfile.write(b"Forbidden\n")
@@ -50,6 +76,7 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("0.0.0.0", 8765), Handler)
-    print("PanamaCompra webhook listener running on port 8765")
+    TOKEN = load_token()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"PanamaCompra webhook listener running on {HOST}:{PORT}")
     server.serve_forever()

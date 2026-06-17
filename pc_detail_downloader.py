@@ -7,6 +7,7 @@ from playwright.sync_api import sync_playwright
 from pc_common import *
 
 DETAIL_LIMIT = int(os.environ.get("PC_DETAIL_LIMIT", "10"))
+MAX_DETAIL_ATTEMPTS = int(os.environ.get("PC_MAX_DETAIL_ATTEMPTS", "5"))
 
 def close_popup(page):
     page.evaluate("""
@@ -83,19 +84,25 @@ def extract_label_values_from_text(text):
         for label in labels:
             if line.lower() == label.lower() and i + 1 < len(lines):
                 result[label] = lines[i + 1]
+                break
             elif line.lower().startswith(label.lower() + ":"):
                 result[label] = clean(line.split(":", 1)[1])
+                break
 
     return result
 
-def detail_pending_rows(conn, limit):
+def detail_pending_rows(conn, limit, max_attempts):
+    # Skip rows that have already failed too many times, so a permanently broken
+    # URL is not retried forever and cannot starve newer rows. Rows with fewer
+    # attempts are processed first.
     return conn.execute("""
     SELECT *
     FROM opportunities
     WHERE detail_status != 'saved'
-    ORDER BY first_seen ASC
+      AND detail_attempts < ?
+    ORDER BY detail_attempts ASC, first_seen ASC
     LIMIT ?
-    """, (limit,)).fetchall()
+    """, (max_attempts, limit)).fetchall()
 
 def save_table_jsons(record_folder, numero, tables):
     tables_dir = record_folder / "tables"
@@ -182,7 +189,7 @@ def process_detail(browser, conn, row):
 
 def main():
     conn = init_db()
-    rows = detail_pending_rows(conn, DETAIL_LIMIT)
+    rows = detail_pending_rows(conn, DETAIL_LIMIT, MAX_DETAIL_ATTEMPTS)
 
     run_started = now_iso()
     saved = 0
@@ -229,6 +236,7 @@ def main():
         f"DETAIL RUN started: {run_started}\n"
         f"DETAIL RUN finished: {now_iso()}\n"
         f"DETAIL_LIMIT: {DETAIL_LIMIT}\n"
+        f"MAX_DETAIL_ATTEMPTS: {MAX_DETAIL_ATTEMPTS}\n"
         f"Rows selected: {len(rows)}\n"
         f"Saved: {saved}\n"
         f"Skipped complete: {skipped}\n"

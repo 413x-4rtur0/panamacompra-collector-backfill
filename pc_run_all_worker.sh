@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-cd "$HOME/Apps/panamacompra-collector" || exit 1
+cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 if [ -f ".venv/bin/activate" ]; then
   # shellcheck disable=SC1091

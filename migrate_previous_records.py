@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path.home() / "Apps" / "panamacompra-collector"
+BASE_DIR = Path(__file__).resolve().parent
 RECORDS_DIR = BASE_DIR / "records"
 DATA_DIR = BASE_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"

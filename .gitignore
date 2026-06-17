@@ -26,7 +26,9 @@ logs/
 # Downloaded/raw archive files
 *.html
 *.txt
+!requirements.txt
 
 # Backups
 *.bak*
+*.old_combined*
 deprecated_queue_scripts/
