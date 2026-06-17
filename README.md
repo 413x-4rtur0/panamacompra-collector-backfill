@@ -123,12 +123,45 @@ cd ~/Apps/panamacompra-collector
 The update script stops active collector workers, refuses to continue if local
 uncommitted changes would be overwritten, fast-forwards the current branch, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
-system review. To request a small smoke run after the update, use:
+system review. It intentionally uses `git pull --ff-only`, so it will not create a
+merge commit or leave a half-resolved conflict during unattended updates. To request
+a small smoke run after the update, use:
 
 ```bash
 cd ~/Apps/panamacompra-collector
 PC_UPDATE_TEST_DETAIL_LIMIT=5 ./update_local_copy.sh
 ```
+
+#### Recovering from a blocked merge or PR checkout
+
+If Git reports `Merging is not possible because you have unmerged files`, finish or
+abandon the in-progress merge before trying another branch. The safest recovery path
+on the workstation is:
+
+```bash
+cd ~/Apps/panamacompra-collector
+git status --short --branch
+git merge --abort
+git fetch --all --prune
+git checkout main
+git pull --ff-only origin main
+```
+
+Then switch to the branch you want to test and update it from the refreshed `main`:
+
+```bash
+gh pr checkout 3
+git merge main
+# If conflicts are reported, edit the listed files, then:
+git status --short
+git add <resolved-files>
+git commit
+```
+
+A message such as `not something we can merge` usually means the branch name is not
+available locally. Fetch it first, or merge the remote-tracking name directly, for
+example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed by
+`git merge origin/codex/review-project-for-enhancements-e8vmmy`.
 
 ### Setup
 
