@@ -8,6 +8,11 @@ mkdir -p data/logs
 
 OPEN_LOG="data/logs/monitor_open.log"
 FALLBACK_LOG="data/logs/run_all_follow.log"
+WEB_LOG="data/logs/monitor_server.log"
+MONITOR_MODE="${PC_MONITOR_MODE:-web}"
+MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
+MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
+MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
 CMD="cd $(printf '%q' "$BASE_DIR") && ./pc_monitor_window.sh"
 
 log() {
@@ -37,6 +42,42 @@ prepare_gui_environment() {
   fi
 }
 
+monitor_server_running() {
+  python3 -c "from urllib.request import urlopen; urlopen('http://${MONITOR_HOST}:${MONITOR_PORT}/health', timeout=1).read()" >/dev/null 2>&1
+}
+
+start_web_monitor() {
+  if monitor_server_running; then
+    log "Web monitor already running at $MONITOR_URL."
+  else
+    PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup python3 ./pc_monitor_server.py >> "$WEB_LOG" 2>&1 &
+    log "Started web monitor at $MONITOR_URL with log $WEB_LOG."
+    sleep 1
+  fi
+}
+
+open_url_if_possible() {
+  if [ -z "${DISPLAY:-}" ]; then
+    log "DISPLAY is empty; web monitor is available at $MONITOR_URL but browser was not opened."
+    return 1
+  fi
+
+  if command -v xdg-open >/dev/null 2>&1; then
+    nohup xdg-open "$MONITOR_URL" >/dev/null 2>&1 &
+    log "Opened web monitor with xdg-open: $MONITOR_URL."
+    return 0
+  fi
+
+  if command -v sensible-browser >/dev/null 2>&1; then
+    nohup sensible-browser "$MONITOR_URL" >/dev/null 2>&1 &
+    log "Opened web monitor with sensible-browser: $MONITOR_URL."
+    return 0
+  fi
+
+  log "No supported browser opener found. Web monitor is available at $MONITOR_URL."
+  return 1
+}
+
 start_log_follower_fallback() {
   if pgrep -f "[t]ail -f data/logs/run_all_worker.log data/logs/run_all_current.log" >/dev/null 2>&1; then
     log "Fallback log follower already running. Not starting another one."
@@ -49,6 +90,13 @@ start_log_follower_fallback() {
 }
 
 prepare_gui_environment
+
+if [ "$MONITOR_MODE" = "web" ]; then
+  start_web_monitor
+  open_url_if_possible || true
+  echo "PanamaCompra web monitor: $MONITOR_URL"
+  exit 0
+fi
 
 if pgrep -f "[p]c_monitor_window.sh" >/dev/null 2>&1; then
   log "Monitor already running. Not opening another window."
