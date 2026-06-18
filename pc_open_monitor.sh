@@ -7,7 +7,7 @@ cd "$BASE_DIR" || exit 1
 mkdir -p data/logs
 
 OPEN_LOG="data/logs/monitor_open.log"
-CMD="cd '$BASE_DIR' && ./pc_monitor_window.sh"
+CMD="cd '$BASE_DIR' && mkdir -p data/logs && echo \"Monitor session started: $(date '+%Y-%m-%d %H:%M:%S')\" >> data/logs/monitor_session.log && PC_MONITOR_IDLE_CLOSE_SECONDS=3 ./pc_monitor_window.sh; code=\\$?; echo; echo \"============================================================\"; echo \" PanamaCompra monitor finished.\"; echo \" Exit code: \\$code\"; echo \" Log files:\"; echo \"   data/logs/run_all_worker.log\"; echo \"   data/logs/run_all_current.log\"; echo \"   data/logs/monitor_open.log\"; echo \"   data/logs/monitor_session.log\"; echo \"============================================================\"; echo; echo \"Press ENTER to close this window...\"; read -r _; exit \\$code"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" >> "$OPEN_LOG"
