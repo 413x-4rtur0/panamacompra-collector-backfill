@@ -36,6 +36,7 @@ required_scripts=(
   "pc_detail_downloader.py"
   "pc_common.py"
   "pc_monitor_window.sh"
+  "pc_monitor_tk.py"
   "pc_monitor_server.py"
   "pc_open_monitor.sh"
   "pc_run_all_status.sh"
@@ -84,6 +85,7 @@ python_files=(
   "pc_common.py"
   "pc_index_collector.py"
   "pc_detail_downloader.py"
+  "pc_monitor_tk.py"
   "pc_monitor_server.py"
   "webhook_listener.py"
   "migrate_previous_records.py"
@@ -113,7 +115,7 @@ done
 echo ""
 echo "6) Current related processes"
 echo "----------------------------"
-pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|pc_monitor_window|timeout .*pc_" || echo "No related active process."
+pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|pc_monitor_window|pc_monitor_tk|pc_monitor_server|timeout .*pc_" || echo "No related active process."
 
 echo ""
 echo "7) Current run-all status"
@@ -130,7 +132,8 @@ echo "-----------------------"
 cat <<'TXT'
 Manual small test:   ./pc_request_run_all.sh 5
 Run all pending:     ./pc_request_run_all.sh
-Open web monitor:    ./pc_open_monitor.sh
+Open native monitor: ./pc_open_monitor.sh
+Open web monitor:    PC_MONITOR_MODE=web ./pc_open_monitor.sh
 Watch in terminal:   PC_MONITOR_MODE=terminal ./pc_open_monitor.sh
 Follow logs:         ./pc_follow_run_all.sh
 Check status:        ./pc_run_all_status.sh
