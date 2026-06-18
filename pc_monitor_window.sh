@@ -10,7 +10,38 @@ PROGRESS_FILE="data/logs/run_all_progress.env"
 IDLE_CLOSE_SECONDS="${PC_MONITOR_IDLE_CLOSE_SECONDS:-8}"
 STABLE_DONE_CYCLES="${PC_MONITOR_STABLE_DONE_CYCLES:-3}"
 REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-5}"
-ANIMATE_PROGRESS="${PC_MONITOR_ANIMATE_PROGRESS:-0}"
+FORCE_REDRAW_SECONDS="${PC_MONITOR_FORCE_REDRAW_SECONDS:-30}"
+
+normalize_positive_int() {
+  local value="$1"
+  local fallback="$2"
+
+  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -gt 0 ]; then
+    echo "$value"
+  else
+    echo "$fallback"
+  fi
+}
+
+file_state() {
+  local path="$1"
+
+  if [ -f "$path" ]; then
+    stat -c '%Y:%s' "$path" 2>/dev/null || echo "present"
+  else
+    echo "missing"
+  fi
+}
+
+render_signature() {
+  printf 'worker=%s\n' "$(run_all_worker_running && echo running || echo stopped)"
+  printf 'index=%s\n' "$(index_running && echo running || echo stopped)"
+  printf 'detail=%s\n' "$(detail_running && echo running || echo stopped)"
+  printf 'request=%s\n' "$(request_pending && echo pending || echo none)"
+  printf 'progress=%s\n' "$(file_state "$PROGRESS_FILE")"
+  printf 'worker_log=%s\n' "$(file_state data/logs/run_all_worker.log)"
+  printf 'current_log=%s\n' "$(file_state data/logs/run_all_current.log)"
+}
 
 run_all_worker_running() {
   pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1
@@ -109,24 +140,21 @@ load_progress() {
     source "$PROGRESS_FILE"
   fi
 
-  # Keep the display readable by default: use the worker-written percentage
-  # instead of changing the progress bar on every refresh (the main cause of
-  # flicker). Opt into estimated easing with PC_MONITOR_ANIMATE_PROGRESS=1.
-  if [ "$ANIMATE_PROGRESS" = "1" ]; then
-    if index_running && [ "$PHASE" = "INDEX" ]; then
-      e="$(elapsed_seconds "$STARTED_AT")"
-      animated=$((10 + 38 * e / (e + 90)))
-      if [ "$animated" -gt "$PERCENT" ]; then
-        PERCENT="$animated"
-      fi
+  # If real process is running, keep progress visually alive.
+  # Estimated animation eases toward a ceiling without wrapping backward.
+  if index_running && [ "$PHASE" = "INDEX" ]; then
+    e="$(elapsed_seconds "$STARTED_AT")"
+    animated=$((10 + 38 * e / (e + 90)))
+    if [ "$animated" -gt "$PERCENT" ]; then
+      PERCENT="$animated"
     fi
+  fi
 
-    if detail_running && [ "$PHASE" = "DETAIL" ]; then
-      e="$(elapsed_seconds "$STARTED_AT")"
-      animated=$((55 + 38 * e / (e + 120)))
-      if [ "$animated" -gt "$PERCENT" ]; then
-        PERCENT="$animated"
-      fi
+  if detail_running && [ "$PHASE" = "DETAIL" ]; then
+    e="$(elapsed_seconds "$STARTED_AT")"
+    animated=$((55 + 38 * e / (e + 120)))
+    if [ "$animated" -gt "$PERCENT" ]; then
+      PERCENT="$animated"
     fi
   fi
 }
@@ -155,11 +183,6 @@ show_screen() {
   echo "Phase:       $PHASE"
   echo "Status:      $STATUS"
   echo "Progress:    $(progress_bar "$PERCENT")"
-  if [ "$ANIMATE_PROGRESS" = "1" ]; then
-    echo "Progress mode: estimated animation"
-  else
-    echo "Progress mode: worker updates only"
-  fi
   echo "Elapsed:     $elapsed"
   echo "Detail limit:$DETAIL_LIMIT"
   echo "Updated:     $UPDATED_AT"
@@ -223,10 +246,24 @@ trap restore_cursor EXIT INT TERM
 
 clear_once
 
+IDLE_CLOSE_SECONDS="$(normalize_positive_int "$IDLE_CLOSE_SECONDS" "8")"
+STABLE_DONE_CYCLES="$(normalize_positive_int "$STABLE_DONE_CYCLES" "3")"
+REFRESH_SECONDS="$(normalize_positive_int "$REFRESH_SECONDS" "5")"
+FORCE_REDRAW_SECONDS="$(normalize_positive_int "$FORCE_REDRAW_SECONDS" "30")"
+
 done_cycles=0
+last_signature=""
+last_redraw_epoch=0
 
 while true; do
-  show_screen
+  current_signature="$(render_signature)"
+  now_epoch="$(date +%s)"
+
+  if [ "$current_signature" != "$last_signature" ] || [ $((now_epoch - last_redraw_epoch)) -ge "$FORCE_REDRAW_SECONDS" ]; then
+    show_screen
+    last_signature="$current_signature"
+    last_redraw_epoch="$now_epoch"
+  fi
 
   if system_is_done; then
     done_cycles=$((done_cycles + 1))

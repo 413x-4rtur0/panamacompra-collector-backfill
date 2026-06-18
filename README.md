@@ -110,6 +110,59 @@ The scripts resolve their own location, so the project can live in **any directo
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`
 - Optional: `sqlite3` CLI for manual inspection
 
+
+### Updating an existing local copy
+
+On the workstation, update the existing checkout safely with:
+
+```bash
+cd ~/Apps/panamacompra-collector
+./update_local_copy.sh
+```
+
+The update script stops active collector workers, refuses to continue if local
+uncommitted changes would be overwritten, fast-forwards the current branch, refreshes
+the Python virtual environment dependencies, fixes executable bits, and runs the
+system review. It intentionally uses `git pull --ff-only`, so it will not create a
+merge commit or leave a half-resolved conflict during unattended updates. To request
+a small smoke run after the update, use:
+
+```bash
+cd ~/Apps/panamacompra-collector
+PC_UPDATE_TEST_DETAIL_LIMIT=5 ./update_local_copy.sh
+```
+
+#### Recovering from a blocked merge or PR checkout
+
+If Git reports `Merging is not possible because you have unmerged files`, finish or
+abandon the in-progress merge before trying another branch. The safest recovery path
+on the workstation is:
+
+```bash
+cd ~/Apps/panamacompra-collector
+git status --short --branch
+git merge --abort
+git fetch --all --prune
+git checkout main
+git pull --ff-only origin main
+```
+
+Then switch to the branch you want to test and update it from the refreshed `main`:
+
+```bash
+gh pr checkout 3
+git merge main
+# If conflicts are reported, edit the listed files, then:
+git status --short
+git add <resolved-files>
+git commit
+```
+
+A message such as `not something we can merge` usually means the branch name is not
+available locally. Fetch it first, or merge the remote-tracking name directly, for
+example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed by
+`git merge origin/codex/review-project-for-enhancements-e8vmmy`.
+
 ### Setup
 
 ```bash
@@ -181,6 +234,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
+| `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
 ---
 
@@ -196,7 +250,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
-| `PC_MONITOR_REFRESH_SECONDS` | `2` | monitor | Screen refresh interval. |
+| `PC_MONITOR_REFRESH_SECONDS` | `5` | monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
+| `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
 
