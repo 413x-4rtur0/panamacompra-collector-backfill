@@ -26,6 +26,39 @@ def close_popup(page):
     })();
     """)
 
+def extract_links(page):
+    return page.evaluate("""
+    (() => {
+      function clean(text) {
+        return (text || '').replace(/\\s+/g, ' ').trim();
+      }
+
+      function absoluteUrl(href) {
+        if (!href) return '';
+        try {
+          return new URL(href, window.location.href).href;
+        } catch (e) {
+          return href;
+        }
+      }
+
+      const seen = new Set();
+      return Array.from(document.querySelectorAll('a[href]')).map((a, idx) => {
+        const href = absoluteUrl(a.getAttribute('href'));
+        const text = clean(a.innerText || a.textContent || a.getAttribute('title') || '');
+        const kind = href.includes('/solicitud-de-cotizacion/') ? 'solicitud-de-cotizacion' :
+          href.includes('/pliego-de-cargos/') ? 'pliego-de-cargos' :
+          href.toLowerCase().match(/\\.(pdf|docx?|xlsx?|zip)(?:[?#]|$)/) ? 'document' :
+          'link';
+        return { link_index: idx + 1, text, href, kind };
+      }).filter(item => {
+        if (!item.href || seen.has(item.href)) return false;
+        seen.add(item.href);
+        return true;
+      });
+    })();
+    """)
+
 def extract_tables(page):
     return page.evaluate("""
     (() => {
@@ -140,6 +173,7 @@ def process_detail(browser, conn, row):
         html = page.content()
         text = page.locator("body").inner_text(timeout=25000)
         tables = extract_tables(page)
+        links = extract_links(page)
         label_values = extract_label_values_from_text(text)
         finish_date_guess = guess_finish_date_from_text(text)
 
@@ -164,6 +198,8 @@ def process_detail(browser, conn, row):
             "label_values_detected": label_values,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
+            "links_count": len(links),
+            "links_detected": links,
             "files": {
                 "index_json": row["index_json_path"],
                 "detail_json": str(detail_json_path),

@@ -120,24 +120,54 @@ def extract_rows(page, group_name, page_number):
         return (text || '').replace(/\\s+/g, ' ').trim();
       }
 
+      function absoluteUrl(href) {
+        if (!href) return '';
+        try {
+          return new URL(href, window.location.href).href;
+        } catch (e) {
+          return href;
+        }
+      }
+
+      function firstNumeroFrom(text) {
+        const match = clean(text).match(/20\\d{2}-\\d+-\\d+-\\d+-\\d+-[A-Z]+-\\d+/);
+        return match ? match[0] : '';
+      }
+
+      function findDetailLink(row) {
+        const selector = 'a[href*="solicitud-de-cotizacion"], a[href*="pliego-de-cargos"]';
+        const direct = row.querySelector(selector)?.getAttribute('href');
+        if (direct) return absoluteUrl(direct);
+
+        const anyHref = row.querySelector('a[href]')?.getAttribute('href');
+        if (anyHref && (anyHref.includes('solicitud-de-cotizacion') || anyHref.includes('pliego-de-cargos'))) {
+          return absoluteUrl(anyHref);
+        }
+
+        const html = row.innerHTML || '';
+        const match = html.match(/(?:https?:\\/\\/[^'"\\s<>]+)?\\/Inicio\\/#\\/(?:solicitud-de-cotizacion|pliego-de-cargos)\\/[^'"\\s<>]+/);
+        return match ? absoluteUrl(match[0]) : '';
+      }
+
       const rows = Array.from(document.querySelectorAll('tabla-busqueda-avanzada-v3 tbody tr'));
 
       return rows.map(row => {
         const cells = Array.from(row.querySelectorAll('th, td')).map(td => clean(td.innerText));
-        const link = row.querySelector('a[href*="solicitud-de-cotizacion"], a[href*="pliego-de-cargos"]')?.href || '';
+        const link = findDetailLink(row);
+        const numero = firstNumeroFrom(cells[1] || '') || firstNumeroFrom(row.innerText);
 
         return {
           grupo: groupName,
           source_page: pageNumber,
           visual_row: cells[0] || '',
-          numero: cells[1] || '',
+          numero,
           estado: cells[2] || '',
           descripcion: cells[3] || '',
           entidad: cells[4] || '',
           dependencia: cells[5] || '',
           fecha: cells[6] || '',
           modalidad: cells[7] || '',
-          link: link
+          link
         };
       }).filter(r => r.numero && r.link);
     }
