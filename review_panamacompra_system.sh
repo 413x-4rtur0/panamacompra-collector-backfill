@@ -36,6 +36,7 @@ required_scripts=(
   "pc_detail_downloader.py"
   "pc_common.py"
   "pc_monitor_window.sh"
+  "pc_monitor_server.py"
   "pc_open_monitor.sh"
   "pc_run_all_status.sh"
   "pc_stop_run_all.sh"
@@ -83,6 +84,7 @@ python_files=(
   "pc_common.py"
   "pc_index_collector.py"
   "pc_detail_downloader.py"
+  "pc_monitor_server.py"
   "webhook_listener.py"
   "migrate_previous_records.py"
 )
@@ -128,7 +130,9 @@ echo "-----------------------"
 cat <<'TXT'
 Manual small test:   ./pc_request_run_all.sh 5
 Run all pending:     ./pc_request_run_all.sh
-Watch in terminal:   ./pc_follow_run_all.sh
+Open web monitor:    ./pc_open_monitor.sh
+Watch in terminal:   PC_MONITOR_MODE=terminal ./pc_open_monitor.sh
+Follow logs:         ./pc_follow_run_all.sh
 Check status:        ./pc_run_all_status.sh
 Stop if stuck:       ./pc_stop_run_all.sh
 TXT
