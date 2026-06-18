@@ -26,6 +26,39 @@ def close_popup(page):
     })();
     """)
 
+def extract_links(page):
+    return page.evaluate("""
+    (() => {
+      function clean(text) {
+        return (text || '').replace(/\\s+/g, ' ').trim();
+      }
+
+      function absoluteUrl(href) {
+        if (!href) return '';
+        try {
+          return new URL(href, window.location.href).href;
+        } catch (e) {
+          return href;
+        }
+      }
+
+      const seen = new Set();
+      return Array.from(document.querySelectorAll('a[href]')).map((a, idx) => {
+        const href = absoluteUrl(a.getAttribute('href'));
+        const text = clean(a.innerText || a.textContent || a.getAttribute('title') || '');
+        const kind = href.includes('/solicitud-de-cotizacion/') ? 'solicitud-de-cotizacion' :
+          href.includes('/pliego-de-cargos/') ? 'pliego-de-cargos' :
+          href.toLowerCase().match(/\\.(pdf|docx?|xlsx?|zip)(?:[?#]|$)/) ? 'document' :
+          'link';
+        return { link_index: idx + 1, text, href, kind };
+      }).filter(item => {
+        if (!item.href || seen.has(item.href)) return false;
+        seen.add(item.href);
+        return true;
+      });
+    })();
+    """)
+
 def extract_tables(page):
     return page.evaluate("""
     (() => {
@@ -140,6 +173,7 @@ def process_detail(browser, conn, row):
         html = page.content()
         text = page.locator("body").inner_text(timeout=25000)
         tables = extract_tables(page)
+        links = extract_links(page)
         label_values = extract_label_values_from_text(text)
         finish_date_guess = guess_finish_date_from_text(text)
 
@@ -164,6 +198,8 @@ def process_detail(browser, conn, row):
             "label_values_detected": label_values,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
+            "links_count": len(links),
+            "links_detected": links,
             "files": {
                 "index_json": row["index_json_path"],
                 "detail_json": str(detail_json_path),
@@ -197,6 +233,18 @@ def main():
     failed = 0
 
     if not rows:
+        write_run_progress(
+            "DETAIL",
+            "DONE",
+            100,
+            "Step 2/2 complete. No pending detail rows.",
+            step_current=2,
+            step_total=2,
+            item_current=0,
+            item_total=0,
+            records_pending=0,
+        )
+
         summary = (
             f"DETAIL RUN started: {run_started}\n"
             f"DETAIL RUN finished: {now_iso()}\n"
@@ -219,7 +267,23 @@ def main():
             ]
         )
 
-        for row in rows:
+        total_rows = len(rows)
+        for index, row in enumerate(rows, start=1):
+            percent = 55 + int(40 * (index - 1) / max(total_rows, 1))
+            write_run_progress(
+                "DETAIL",
+                "RUNNING",
+                percent,
+                f"Step 2/2: downloading detail {index}/{total_rows}: {row['numero']}",
+                step_current=2,
+                step_total=2,
+                item_current=index,
+                item_total=total_rows,
+                records_saved=saved + skipped,
+                records_failed=failed,
+                extra=f"current_numero={row['numero']}",
+            )
+
             result = process_detail(browser, conn, row)
             if result == "saved":
                 saved += 1
@@ -228,9 +292,37 @@ def main():
             else:
                 failed += 1
 
+            write_run_progress(
+                "DETAIL",
+                "RUNNING",
+                55 + int(40 * index / max(total_rows, 1)),
+                f"Step 2/2: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
+                step_current=2,
+                step_total=2,
+                item_current=index,
+                item_total=total_rows,
+                records_saved=saved + skipped,
+                records_failed=failed,
+                extra=f"last_numero={row['numero']}; result={result}",
+            )
+
         browser.close()
 
     pending = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]
+
+    write_run_progress(
+        "DETAIL",
+        "DONE",
+        98,
+        f"Step 2/2 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
+        step_current=2,
+        step_total=2,
+        item_current=len(rows),
+        item_total=len(rows),
+        records_saved=saved + skipped,
+        records_failed=failed,
+        records_pending=pending,
+    )
 
     summary = (
         f"DETAIL RUN started: {run_started}\n"
