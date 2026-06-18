@@ -247,7 +247,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
-| `pc_monitor_server.py` | Low-power local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and auto-closes after completion. |
+| `pc_monitor_server.py` | Local browser-based progress monitor at `http://127.0.0.1:8766/`; uses only the Python standard library. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the web monitor by default. Set `PC_MONITOR_MODE=terminal` to try the old graphical-terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
@@ -274,9 +274,6 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_MODE` | `web` | monitor opener | `web` starts the browser-based monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
-| `PC_MONITOR_WEB_REFRESH_SECONDS` | `10` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
-| `PC_MONITOR_WEB_IDLE_REFRESH_SECONDS` | `30` | web monitor | Slower JSON polling interval after the system is idle/done. |
-| `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
 | `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
@@ -398,12 +395,9 @@ does not start a browser session directly.
 
 The default monitor is now the browser-based local server (`pc_monitor_server.py`).
 Run `./pc_open_monitor.sh` and open `http://127.0.0.1:8766/` if a browser is not
-opened automatically. The page loads once and then polls only the lightweight JSON
-snapshot every 10 seconds while work is active, instead of fully reloading Firefox
-every 2 seconds. It shows the real progress bar, current step/item, diagnostics
-counters, process status, and recent log tails. A machine-readable snapshot is also
-available at `http://127.0.0.1:8766/api/status`. When the run is done, polling slows
-and the page attempts to auto-close after the configured delay.
+opened automatically. The page auto-refreshes and shows the real progress bar,
+current step/item, diagnostics counters, process status, and recent log tails. A
+machine-readable snapshot is also available at `http://127.0.0.1:8766/api/status`.
 
 The terminal UI (`pc_monitor_window.sh`) is still available for manual use with
 `PC_MONITOR_MODE=terminal ./pc_open_monitor.sh`, but the web monitor is preferred

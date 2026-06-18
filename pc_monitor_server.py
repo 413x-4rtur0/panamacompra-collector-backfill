@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Low-power local web monitor for PanamaCompra run-all progress.
+"""Small local web monitor for PanamaCompra run-all progress.
 
-The page is loaded once and then polls a small JSON endpoint. That avoids full
-browser reloads every few seconds while preserving the same dashboard UI.
+This avoids relying on desktop terminal emulators. It serves a self-refreshing
+page from localhost using only Python's standard library.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import shlex
@@ -22,9 +23,6 @@ CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
-REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "10")))
-IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_WEB_IDLE_REFRESH_SECONDS", "30")))
-AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_WEB_AUTO_CLOSE_SECONDS", "20")))
 
 DEFAULT_PROGRESS = {
     "PHASE": "IDLE",
@@ -80,7 +78,7 @@ def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
-def process_snapshot() -> dict[str, bool]:
+def process_snapshot() -> dict[str, object]:
     return {
         "worker": running("[p]c_run_all_worker.sh"),
         "index": running("[p]ython -u ./pc_index_collector.py"),
@@ -96,135 +94,9 @@ def percent_value(progress: dict[str, str]) -> int:
         return 0
 
 
-def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
-    if any(processes.values()):
-        return False
-    return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
-
-
-def status_payload() -> dict[str, object]:
-    progress = parse_progress_file()
-    processes = process_snapshot()
-    done = is_done(processes, progress)
-    return {
-        "progress": progress,
-        "percent": percent_value(progress),
-        "processes": processes,
-        "done": done,
-        "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
-        "auto_close_seconds": AUTO_CLOSE_SECONDS,
-        "worker_log": tail(WORKER_LOG, 20),
-        "current_log": tail(CURRENT_LOG, 35),
-        "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-HTML = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>PanamaCompra Monitor</title>
-<style>
-body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; background: #0f172a; color: #e5e7eb; }}
-a {{ color: #93c5fd; }}
-.card {{ background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 18px; margin: 0 0 16px; box-shadow: 0 8px 24px #0004; }}
-h1 {{ margin-top: 0; }}
-.bar {{ height: 30px; background: #334155; border-radius: 999px; overflow: hidden; border: 1px solid #64748b; }}
-.fill {{ height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #38bdf8); display: flex; align-items: center; justify-content: center; color: #020617; font-weight: 700; transition: width .4s ease; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ text-align: left; border-bottom: 1px solid #334155; padding: 7px 10px; vertical-align: top; }}
-th {{ width: 220px; color: #93c5fd; }}
-pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 12px; max-height: 360px; overflow: auto; }}
-.pill {{ display: inline-block; margin: 4px 8px 4px 0; padding: 6px 10px; border-radius: 999px; font-weight: 700; }}
-.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #374151; color: #d1d5db; }}
-.message {{ font-size: 1.15rem; color: #fef3c7; }}
-.small {{ color: #94a3b8; }}
-.done {{ color: #bbf7d0; font-weight: 700; }}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>PanamaCompra Progress Monitor</h1>
-  <p class="small"><span id="server-time">Loading...</span> · Low-power polling every <span id="refresh-label">{REFRESH_SECONDS}</span>s while running · JSON: <a href="/api/status">/api/status</a></p>
-  <div class="bar"><div class="fill" id="fill">0%</div></div>
-  <p class="message" id="message">Loading...</p>
-  <p id="done-note" class="done" hidden></p>
-  <div id="processes"></div>
-</div>
-<div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
-<div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
-<script>
-let doneSince = null;
-let timer = null;
-const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Step', 'STEP'], ['Item', 'ITEM'],
-  ['Detail limit', 'DETAIL_LIMIT'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
-  ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
-  ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
-  ['Pending details', 'RECORDS_PENDING'], ['Extra', 'EXTRA']
-];
-function esc(value) {{
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
-}}
-function render(data) {{
-  const p = data.progress || {{}};
-  const percent = data.percent || 0;
-  document.getElementById('server-time').textContent = 'Server time: ' + (data.server_time || '-');
-  document.getElementById('refresh-label').textContent = data.refresh_seconds || {REFRESH_SECONDS};
-  const fill = document.getElementById('fill');
-  fill.style.width = percent + '%';
-  fill.textContent = percent + '%';
-  document.getElementById('message').textContent = p.MESSAGE || '';
-  const rows = labels.map(([label, key]) => {{
-    let value = p[key] ?? '-';
-    if (key === 'STEP') value = `${{p.STEP_CURRENT ?? '-'}} / ${{p.STEP_TOTAL ?? '-'}}`;
-    if (key === 'ITEM') value = `${{p.ITEM_CURRENT ?? '-'}} / ${{p.ITEM_TOTAL ?? '-'}}`;
-    return `<tr><th>${{esc(label)}}</th><td>${{esc(value)}}</td></tr>`;
-  }}).join('');
-  document.getElementById('diagnostics').innerHTML = rows;
-  document.getElementById('processes').innerHTML = Object.entries(data.processes || {{}}).map(([name, value]) =>
-    `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
-  ).join('');
-  document.getElementById('worker-log').textContent = data.worker_log || '';
-  document.getElementById('current-log').textContent = data.current_log || '';
-  const note = document.getElementById('done-note');
-  if (data.done) {{
-    if (!doneSince) doneSince = Date.now();
-    const wait = Number(data.auto_close_seconds || 0);
-    const remaining = Math.max(0, wait - Math.floor((Date.now() - doneSince) / 1000));
-    note.hidden = false;
-    note.textContent = wait > 0 ? `Run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished.';
-    if (wait > 0 && remaining <= 0) {{
-      window.close();
-      document.body.innerHTML = '<div class="card"><h1>PanamaCompra monitor finished</h1><p>The run is done. You can close this tab.</p></div>';
-      return;
-    }}
-  }} else {{
-    doneSince = null;
-    note.hidden = true;
-  }}
-}}
-async function poll() {{
-  try {{
-    const response = await fetch('/api/status', {{cache: 'no-store'}});
-    const data = await response.json();
-    render(data);
-    timer = setTimeout(poll, Math.max(3, Number(data.refresh_seconds || {REFRESH_SECONDS})) * 1000);
-  }} catch (err) {{
-    document.getElementById('message').textContent = 'Monitor connection error: ' + err;
-    timer = setTimeout(poll, {IDLE_REFRESH_SECONDS} * 1000);
-  }}
-}}
-window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
-poll();
-</script>
-</body>
-</html>"""
-
-
 class MonitorHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
+        # Keep the monitor quiet when it is run by webhook/background scripts.
         return
 
     def send_text(self, status: int, body: str, content_type: str) -> None:
@@ -242,12 +114,81 @@ class MonitorHandler(BaseHTTPRequestHandler):
             self.send_text(200, "ok\n", "text/plain; charset=utf-8")
             return
         if path == "/api/status":
-            self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            payload = {
+                "progress": parse_progress_file(),
+                "processes": process_snapshot(),
+                "worker_log": tail(WORKER_LOG, 20),
+                "current_log": tail(CURRENT_LOG, 35),
+                "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
-        if path in ("/", "/index.html"):
-            self.send_text(200, HTML, "text/html; charset=utf-8")
+        if path not in ("/", "/index.html"):
+            self.send_text(404, "not found\n", "text/plain; charset=utf-8")
             return
-        self.send_text(404, "not found\n", "text/plain; charset=utf-8")
+
+        progress = parse_progress_file()
+        processes = process_snapshot()
+        percent = percent_value(progress)
+        rows = "".join(
+            f"<tr><th>{html.escape(label)}</th><td>{html.escape(str(value))}</td></tr>"
+            for label, value in [
+                ("Phase", progress["PHASE"]),
+                ("Status", progress["STATUS"]),
+                ("Step", f"{progress['STEP_CURRENT']} / {progress['STEP_TOTAL']}"),
+                ("Item", f"{progress['ITEM_CURRENT']} / {progress['ITEM_TOTAL']}"),
+                ("Detail limit", progress["DETAIL_LIMIT"]),
+                ("Started", progress["STARTED_AT"]),
+                ("Updated", progress["UPDATED_AT"]),
+                ("Found rows", progress["RECORDS_FOUND"]),
+                ("New records", progress["RECORDS_NEW"]),
+                ("Existing records", progress["RECORDS_EXISTING"]),
+                ("Details saved/skipped", progress["RECORDS_SAVED"]),
+                ("Detail failures", progress["RECORDS_FAILED"]),
+                ("Pending details", progress["RECORDS_PENDING"]),
+                ("Extra", progress["EXTRA"]),
+            ]
+        )
+        proc_cards = "".join(
+            f"<span class='pill {'on' if value else 'off'}'>{html.escape(name)}: {'RUNNING' if value else 'off'}</span>"
+            for name, value in processes.items()
+        )
+        body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="2">
+<title>PanamaCompra Monitor</title>
+<style>
+body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; background: #0f172a; color: #e5e7eb; }}
+.card {{ background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 18px; margin: 0 0 16px; box-shadow: 0 8px 24px #0004; }}
+h1 {{ margin-top: 0; }}
+.bar {{ height: 30px; background: #334155; border-radius: 999px; overflow: hidden; border: 1px solid #64748b; }}
+.fill {{ height: 100%; width: {percent}%; background: linear-gradient(90deg, #22c55e, #38bdf8); display: flex; align-items: center; justify-content: center; color: #020617; font-weight: 700; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ text-align: left; border-bottom: 1px solid #334155; padding: 7px 10px; vertical-align: top; }}
+th {{ width: 220px; color: #93c5fd; }}
+pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 12px; max-height: 360px; overflow: auto; }}
+.pill {{ display: inline-block; margin: 4px 8px 4px 0; padding: 6px 10px; border-radius: 999px; font-weight: 700; }}
+.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #374151; color: #d1d5db; }}
+.message {{ font-size: 1.15rem; color: #fef3c7; }}
+.small {{ color: #94a3b8; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>PanamaCompra Progress Monitor</h1>
+  <p class="small">Server time: {html.escape(time.strftime('%Y-%m-%d %H:%M:%S'))} · Auto-refreshes every 2 seconds · JSON: <a href="/api/status">/api/status</a></p>
+  <div class="bar"><div class="fill">{percent}%</div></div>
+  <p class="message">{html.escape(progress['MESSAGE'])}</p>
+  <div>{proc_cards}</div>
+</div>
+<div class="card"><h2>Diagnostics</h2><table>{rows}</table></div>
+<div class="card"><h2>Recent worker log</h2><pre>{html.escape(tail(WORKER_LOG, 20))}</pre></div>
+<div class="card"><h2>Current action log</h2><pre>{html.escape(tail(CURRENT_LOG, 35))}</pre></div>
+</body>
+</html>"""
+        self.send_text(200, body, "text/html; charset=utf-8")
 
 
 def main() -> None:
