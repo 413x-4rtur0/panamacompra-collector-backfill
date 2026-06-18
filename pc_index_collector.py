@@ -219,6 +219,25 @@ def main():
                 extracted_total += len(rows)
                 page_counts.append((group_name, page_number, len(rows)))
 
+                group_index = GROUPS.index(group)
+                overall_page = group_index * MAX_PAGES_PER_GROUP + page_number
+                total_pages_budget = len(GROUPS) * MAX_PAGES_PER_GROUP
+                percent = 10 + int(40 * overall_page / total_pages_budget)
+                write_run_progress(
+                    "INDEX",
+                    "RUNNING",
+                    percent,
+                    f"Step 1/2: {group_name} page {page_number} collected {len(rows)} rows.",
+                    step_current=1,
+                    step_total=2,
+                    item_current=overall_page,
+                    item_total=total_pages_budget,
+                    records_found=extracted_total,
+                    records_new=new_records,
+                    records_existing=existing_records,
+                    extra=f"group={group_name}; page={page_number}; rows={len(rows)}",
+                )
+
                 for r in rows:
                     numero = r["numero"]
 
@@ -282,6 +301,21 @@ def main():
                     else:
                         json_skipped += 1
 
+                write_run_progress(
+                    "INDEX",
+                    "RUNNING",
+                    percent,
+                    f"Step 1/2: {group_name} page {page_number} processed. New={new_records}, existing={existing_records}.",
+                    step_current=1,
+                    step_total=2,
+                    item_current=overall_page,
+                    item_total=total_pages_budget,
+                    records_found=extracted_total,
+                    records_new=new_records,
+                    records_existing=existing_records,
+                    extra=f"json_written={json_written}; json_skipped={json_skipped}; duplicates={len(duplicate_in_crawl)}",
+                )
+
                 moved, reason = click_next(page)
                 if not moved:
                     stop_reasons.append(f"{group_name}: {reason}")
@@ -324,6 +358,22 @@ def main():
             summary_lines.append(f"  {d['numero']} | {d['grupo']} page={d['page']} row={d['visual_row']}")
 
     summary = "\n".join(summary_lines) + "\n"
+
+    write_run_progress(
+        "INDEX",
+        "DONE",
+        50,
+        f"Step 1/2 complete. Unique={len(seen)}, new={new_records}, existing={existing_records}, pending details={pending_details}.",
+        step_current=1,
+        step_total=2,
+        item_current=len(page_counts),
+        item_total=len(GROUPS) * MAX_PAGES_PER_GROUP,
+        records_found=extracted_total,
+        records_new=new_records,
+        records_existing=existing_records,
+        records_pending=pending_details,
+        extra=f"db_total={db_total}; duplicates={len(duplicate_in_crawl)}",
+    )
 
     log_path = LOG_DIR / f"index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     log_path.write_text(summary, encoding="utf-8")

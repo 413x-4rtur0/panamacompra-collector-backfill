@@ -205,9 +205,9 @@ python -m pip install -r requirements.txt
 All commands assume you are in the project directory.
 
 ```bash
-# Run a small full sequence (index + 5 detail pages) and open the monitor
+# Run a small full sequence (index + 5 detail pages) and open the web monitor
 ./pc_request_run_all.sh 5
-./pc_open_monitor.sh
+./pc_open_monitor.sh   # prints http://127.0.0.1:8766/ if no browser can be opened
 
 # Run the full sequence (index + all pending detail pages)
 ./pc_request_run_all.sh
@@ -247,8 +247,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
-| `pc_monitor_window.sh` | Live terminal progress monitor; auto-closes when idle. |
-| `pc_open_monitor.sh` | Opens the monitor in a graphical terminal; if no GUI terminal is available, starts a background log-follow fallback. |
+| `pc_monitor_server.py` | Low-power local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and auto-closes after completion. |
+| `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
+| `pc_open_monitor.sh` | Opens/starts the web monitor by default. Set `PC_MONITOR_MODE=terminal` to try the old graphical-terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
@@ -270,7 +271,13 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
-| `PC_MONITOR_REFRESH_SECONDS` | `5` | monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
+| `PC_MONITOR_MODE` | `web` | monitor opener | `web` starts the browser-based monitor; `terminal` tries the old graphical-terminal monitor. |
+| `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
+| `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
+| `PC_MONITOR_WEB_REFRESH_SECONDS` | `10` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
+| `PC_MONITOR_WEB_IDLE_REFRESH_SECONDS` | `30` | web monitor | Slower JSON polling interval after the system is idle/done. |
+| `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
+| `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
@@ -389,19 +396,20 @@ does not start a browser session directly.
 
 ## Monitoring and logs
 
-The progress monitor (`pc_monitor_window.sh`) shows phase, status, a progress bar,
-elapsed time, the detail limit, the current action, live process status, and recent
-log tails. The progress percentage is estimated while a browser step runs; the real
-completion state is determined by process status and worker exit. The monitor closes
-automatically once the worker, index collector, and detail downloader are all idle and
-no request flag remains.
+The default monitor is now the browser-based local server (`pc_monitor_server.py`).
+Run `./pc_open_monitor.sh` and open `http://127.0.0.1:8766/` if a browser is not
+opened automatically. The page loads once and then polls only the lightweight JSON
+snapshot every 10 seconds while work is active, instead of fully reloading Firefox
+every 2 seconds. It shows the real progress bar, current step/item, diagnostics
+counters, process status, and recent log tails. A machine-readable snapshot is also
+available at `http://127.0.0.1:8766/api/status`. When the run is done, polling slows
+and the page attempts to auto-close after the configured delay.
 
-When a run is triggered from changedetection.io, the listener may run without the
-desktop environment variables needed to open a GUI terminal. `pc_open_monitor.sh`
-now tries to recover the common local desktop values (`DISPLAY=:0`, the user DBus
-bus, and `$HOME/.Xauthority`). If a GUI terminal still cannot be opened, it starts
-a background log follower at `data/logs/run_all_follow.log`; you can always open a
-terminal manually and run `./pc_follow_run_all.sh` or `./pc_run_all_status.sh`.
+The terminal UI (`pc_monitor_window.sh`) is still available for manual use with
+`PC_MONITOR_MODE=terminal ./pc_open_monitor.sh`, but the web monitor is preferred
+because webhook/cron/background services often cannot create reliable terminal
+windows. If neither browser nor terminal can be opened, use `./pc_run_all_status.sh`
+or `./pc_follow_run_all.sh` from any terminal.
 
 Key logs under `data/logs/`:
 
@@ -413,8 +421,9 @@ Key logs under `data/logs/`:
 | `run_all_requests.log` | Run-all requests. |
 | `collector_triggered.log` | Webhook → collector triggers. |
 | `webhook_listener.log` | Webhook listener activity. |
-| `monitor_open.log` | Attempts to open the GUI monitor and fallback decisions. |
-| `run_all_follow.log` | Background log-follow fallback when no GUI terminal can be opened. |
+| `monitor_open.log` | Attempts to start/open the web monitor, terminal monitor, or fallback. |
+| `monitor_server.log` | Background web monitor server output. |
+| `run_all_follow.log` | Background log-follow fallback when no GUI monitor can be opened. |
 
 ```bash
 tail -120 data/logs/run_all_current.log
@@ -445,13 +454,11 @@ sqlite3 data/panamacompra_archive.db \
 ```
 
 
-**Webhook triggers the collector but no monitor window opens** — the webhook
-listener may not have GUI desktop environment variables, especially when launched by
-changedetection.io, cron, or a background service. Check the monitor opener log and
-use the text fallback if needed:
+**Webhook triggers the collector but no monitor window opens** — terminal windows can fail when launched by changedetection.io, cron, or a background service. Use the web monitor URL first, then check the monitor opener log and text fallback if needed:
 
 ```bash
 tail -80 data/logs/monitor_open.log
+python3 pc_monitor_server.py  # then open http://127.0.0.1:8766/
 ./pc_run_all_status.sh
 ./pc_follow_run_all.sh
 ```

@@ -33,6 +33,23 @@ else
 fi
 
 echo ""
+echo "Progress snapshot:"
+if [ -f data/logs/run_all_progress.env ]; then
+  # shellcheck disable=SC1091
+  source data/logs/run_all_progress.env
+  echo "Phase: ${PHASE:-unknown}"
+  echo "Status: ${STATUS:-unknown}"
+  echo "Percent: ${PERCENT:-0}%"
+  echo "Step: ${STEP_CURRENT:--}/${STEP_TOTAL:--}"
+  echo "Item: ${ITEM_CURRENT:--}/${ITEM_TOTAL:--}"
+  echo "Message: ${MESSAGE:-}"
+  echo "Diagnostics: found=${RECORDS_FOUND:--} new=${RECORDS_NEW:--} existing=${RECORDS_EXISTING:--} saved=${RECORDS_SAVED:--} failed=${RECORDS_FAILED:--} pending=${RECORDS_PENDING:--}"
+  echo "Updated: ${UPDATED_AT:-}"
+else
+  echo "No progress file yet."
+fi
+
+echo ""
 echo "Related processes:"
 pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|timeout .*pc_" || true
 
