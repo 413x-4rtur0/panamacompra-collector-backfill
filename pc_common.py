@@ -17,6 +17,69 @@ CSV_PATH = DATA_DIR / "panamacompra_index.csv"
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
 
+PROGRESS_PATH = LOG_DIR / "run_all_progress.env"
+
+def shell_quote(value):
+    """Return a single-quoted shell value for monitor progress env files."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+def write_run_progress(
+    phase,
+    status,
+    percent,
+    message,
+    *,
+    started_at=None,
+    detail_limit=None,
+    step_current=None,
+    step_total=None,
+    item_current=None,
+    item_total=None,
+    records_found=None,
+    records_new=None,
+    records_existing=None,
+    records_saved=None,
+    records_failed=None,
+    records_pending=None,
+    extra=None,
+):
+    """Atomically publish run-all progress for the terminal monitor.
+
+    The shell monitor reads this simple env file. Collectors call this while
+    they run so the monitor can show measured progress, current step, counters,
+    and diagnostics instead of only a coarse phase estimate.
+    """
+    ensure_dirs()
+    started_at = started_at or os.environ.get("PC_RUN_STARTED_AT", "")
+    detail_limit = detail_limit if detail_limit is not None else os.environ.get("PC_DETAIL_LIMIT", "-")
+
+    fields = {
+        "PHASE": phase,
+        "STATUS": status,
+        "PERCENT": max(0, min(100, int(percent))),
+        "MESSAGE": message,
+        "DETAIL_LIMIT": detail_limit,
+        "STARTED_AT": started_at,
+        "UPDATED_AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "WORKER_PID": os.environ.get("PC_WORKER_PID", "-"),
+        "STEP_CURRENT": step_current if step_current is not None else "-",
+        "STEP_TOTAL": step_total if step_total is not None else "-",
+        "ITEM_CURRENT": item_current if item_current is not None else "-",
+        "ITEM_TOTAL": item_total if item_total is not None else "-",
+        "RECORDS_FOUND": records_found if records_found is not None else "-",
+        "RECORDS_NEW": records_new if records_new is not None else "-",
+        "RECORDS_EXISTING": records_existing if records_existing is not None else "-",
+        "RECORDS_SAVED": records_saved if records_saved is not None else "-",
+        "RECORDS_FAILED": records_failed if records_failed is not None else "-",
+        "RECORDS_PENDING": records_pending if records_pending is not None else "-",
+        "EXTRA": extra if extra is not None else "-",
+    }
+
+    tmp = PROGRESS_PATH.with_suffix(PROGRESS_PATH.suffix + ".tmp")
+    tmp.write_text("".join(f"{key}={shell_quote(value)}\n" for key, value in fields.items()), encoding="utf-8")
+    tmp.replace(PROGRESS_PATH)
+
+
 
 def env_int(name, default, minimum=None):
     """Read an integer environment variable with a safe fallback.

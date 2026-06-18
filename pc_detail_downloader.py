@@ -197,6 +197,18 @@ def main():
     failed = 0
 
     if not rows:
+        write_run_progress(
+            "DETAIL",
+            "DONE",
+            100,
+            "Step 2/2 complete. No pending detail rows.",
+            step_current=2,
+            step_total=2,
+            item_current=0,
+            item_total=0,
+            records_pending=0,
+        )
+
         summary = (
             f"DETAIL RUN started: {run_started}\n"
             f"DETAIL RUN finished: {now_iso()}\n"
@@ -219,7 +231,23 @@ def main():
             ]
         )
 
-        for row in rows:
+        total_rows = len(rows)
+        for index, row in enumerate(rows, start=1):
+            percent = 55 + int(40 * (index - 1) / max(total_rows, 1))
+            write_run_progress(
+                "DETAIL",
+                "RUNNING",
+                percent,
+                f"Step 2/2: downloading detail {index}/{total_rows}: {row['numero']}",
+                step_current=2,
+                step_total=2,
+                item_current=index,
+                item_total=total_rows,
+                records_saved=saved + skipped,
+                records_failed=failed,
+                extra=f"current_numero={row['numero']}",
+            )
+
             result = process_detail(browser, conn, row)
             if result == "saved":
                 saved += 1
@@ -228,9 +256,37 @@ def main():
             else:
                 failed += 1
 
+            write_run_progress(
+                "DETAIL",
+                "RUNNING",
+                55 + int(40 * index / max(total_rows, 1)),
+                f"Step 2/2: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
+                step_current=2,
+                step_total=2,
+                item_current=index,
+                item_total=total_rows,
+                records_saved=saved + skipped,
+                records_failed=failed,
+                extra=f"last_numero={row['numero']}; result={result}",
+            )
+
         browser.close()
 
     pending = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]
+
+    write_run_progress(
+        "DETAIL",
+        "DONE",
+        98,
+        f"Step 2/2 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
+        step_current=2,
+        step_total=2,
+        item_current=len(rows),
+        item_total=len(rows),
+        records_saved=saved + skipped,
+        records_failed=failed,
+        records_pending=pending,
+    )
 
     summary = (
         f"DETAIL RUN started: {run_started}\n"
