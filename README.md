@@ -147,7 +147,8 @@ git checkout main
 git pull --ff-only origin main
 ```
 
-Then switch to the branch you want to test and update it from the refreshed `main`:
+Then switch to the branch you want to test and update it from the refreshed `main`.
+Run the merge only if the checkout command succeeds:
 
 ```bash
 gh pr checkout 3
@@ -157,6 +158,25 @@ git status --short
 git add <resolved-files>
 git commit
 ```
+
+If `gh pr checkout 3` says the branch has diverged or cannot fast-forward, the PR
+branch was likely force-pushed after your local checkout was created. If you do not
+need to preserve local commits on that PR branch, reset the local branch to the
+remote PR branch and try again:
+
+```bash
+git merge --abort 2>/dev/null || true
+git checkout main
+git branch -D codex/fix-progress-bar-bugs-in-monitor-hein5x
+git fetch origin codex/fix-progress-bar-bugs-in-monitor-hein5x
+git checkout -B codex/fix-progress-bar-bugs-in-monitor-hein5x \
+  origin/codex/fix-progress-bar-bugs-in-monitor-hein5x
+git merge main
+```
+
+After any failed checkout or merge, stop and re-run `git status --short --branch`
+before continuing. Do not run the next merge command if the checkout command failed,
+because it may merge into whichever branch is currently checked out.
 
 A message such as `not something we can merge` usually means the branch name is not
 available locally. Fetch it first, or merge the remote-tracking name directly, for
@@ -228,7 +248,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
 | `pc_monitor_window.sh` | Live terminal progress monitor; auto-closes when idle. |
-| `pc_open_monitor.sh` | Opens the monitor in a graphical terminal (degrades gracefully with no display). |
+| `pc_open_monitor.sh` | Opens the monitor in a graphical terminal; if no GUI terminal is available, starts a background log-follow fallback. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
@@ -376,6 +396,13 @@ completion state is determined by process status and worker exit. The monitor cl
 automatically once the worker, index collector, and detail downloader are all idle and
 no request flag remains.
 
+When a run is triggered from changedetection.io, the listener may run without the
+desktop environment variables needed to open a GUI terminal. `pc_open_monitor.sh`
+now tries to recover the common local desktop values (`DISPLAY=:0`, the user DBus
+bus, and `$HOME/.Xauthority`). If a GUI terminal still cannot be opened, it starts
+a background log follower at `data/logs/run_all_follow.log`; you can always open a
+terminal manually and run `./pc_follow_run_all.sh` or `./pc_run_all_status.sh`.
+
 Key logs under `data/logs/`:
 
 | Log | Contents |
@@ -386,6 +413,8 @@ Key logs under `data/logs/`:
 | `run_all_requests.log` | Run-all requests. |
 | `collector_triggered.log` | Webhook → collector triggers. |
 | `webhook_listener.log` | Webhook listener activity. |
+| `monitor_open.log` | Attempts to open the GUI monitor and fallback decisions. |
+| `run_all_follow.log` | Background log-follow fallback when no GUI terminal can be opened. |
 
 ```bash
 tail -120 data/logs/run_all_current.log
@@ -413,6 +442,18 @@ tail -120 data/logs/run_all_current.log
 ```bash
 sqlite3 data/panamacompra_archive.db \
   "SELECT COUNT(*) FROM opportunities WHERE detail_status != 'saved';"
+```
+
+
+**Webhook triggers the collector but no monitor window opens** — the webhook
+listener may not have GUI desktop environment variables, especially when launched by
+changedetection.io, cron, or a background service. Check the monitor opener log and
+use the text fallback if needed:
+
+```bash
+tail -80 data/logs/monitor_open.log
+./pc_run_all_status.sh
+./pc_follow_run_all.sh
 ```
 
 **Webhook does not trigger the collector** — check the logs and confirm `.webhook_token`
