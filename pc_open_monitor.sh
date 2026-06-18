@@ -9,8 +9,7 @@ mkdir -p data/logs
 OPEN_LOG="data/logs/monitor_open.log"
 FALLBACK_LOG="data/logs/run_all_follow.log"
 WEB_LOG="data/logs/monitor_server.log"
-TK_LOG="data/logs/monitor_tk.log"
-MONITOR_MODE="${PC_MONITOR_MODE:-tk}"
+MONITOR_MODE="${PC_MONITOR_MODE:-web}"
 MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
 MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
@@ -41,23 +40,6 @@ prepare_gui_environment() {
     export XAUTHORITY="$HOME/.Xauthority"
     log "XAUTHORITY was empty; using $HOME/.Xauthority."
   fi
-}
-
-start_tk_monitor() {
-  if pgrep -f "[p]ython3 ./pc_monitor_tk.py" >/dev/null 2>&1 || pgrep -f "[p]ython ./pc_monitor_tk.py" >/dev/null 2>&1; then
-    log "Native Tk monitor already running. Not starting another one."
-    echo "PanamaCompra native monitor is already running."
-    return 0
-  fi
-
-  if [ -z "${DISPLAY:-}" ]; then
-    log "DISPLAY is empty; cannot open native Tk monitor."
-    return 1
-  fi
-
-  nohup python3 ./pc_monitor_tk.py >> "$TK_LOG" 2>&1 &
-  log "Started native Tk monitor with log $TK_LOG."
-  echo "PanamaCompra native monitor started."
 }
 
 monitor_server_running() {
@@ -108,15 +90,6 @@ start_log_follower_fallback() {
 }
 
 prepare_gui_environment
-
-if [ "$MONITOR_MODE" = "tk" ]; then
-  if start_tk_monitor; then
-    exit 0
-  fi
-  log "Native Tk monitor could not be opened; starting text log follower fallback."
-  start_log_follower_fallback
-  exit 0
-fi
 
 if [ "$MONITOR_MODE" = "web" ]; then
   start_web_monitor

@@ -205,9 +205,9 @@ python -m pip install -r requirements.txt
 All commands assume you are in the project directory.
 
 ```bash
-# Run a small full sequence (index + 5 detail pages) and open the native monitor
+# Run a small full sequence (index + 5 detail pages) and open the web monitor
 ./pc_request_run_all.sh 5
-./pc_open_monitor.sh   # native Tk window; no Firefox/web browser
+./pc_open_monitor.sh   # prints http://127.0.0.1:8766/ if no browser can be opened
 
 # Run the full sequence (index + all pending detail pages)
 ./pc_request_run_all.sh
@@ -247,10 +247,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
-| `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window; no Firefox/browser or web server required. |
-| `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and auto-closes after completion. |
+| `pc_monitor_server.py` | Local browser-based progress monitor at `http://127.0.0.1:8766/`; uses only the Python standard library. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
-| `pc_open_monitor.sh` | Opens/starts the native Tk monitor by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
+| `pc_open_monitor.sh` | Opens/starts the web monitor by default. Set `PC_MONITOR_MODE=terminal` to try the old graphical-terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
@@ -272,16 +271,9 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
-| `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
-| `PC_MONITOR_TK_REFRESH_SECONDS` | `5` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
-| `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
-| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to wait after completion before closing the native monitor window. Use `0` to disable. |
-| `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size. |
+| `PC_MONITOR_MODE` | `web` | monitor opener | `web` starts the browser-based monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
-| `PC_MONITOR_WEB_REFRESH_SECONDS` | `10` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
-| `PC_MONITOR_WEB_IDLE_REFRESH_SECONDS` | `30` | web monitor | Slower JSON polling interval after the system is idle/done. |
-| `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
 | `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
@@ -401,17 +393,17 @@ does not start a browser session directly.
 
 ## Monitoring and logs
 
-The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` to open a lightweight desktop window without starting Firefox,
-a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, and recent log tails. When the run is done, the
-window slows its refresh and auto-closes after the configured delay.
+The default monitor is now the browser-based local server (`pc_monitor_server.py`).
+Run `./pc_open_monitor.sh` and open `http://127.0.0.1:8766/` if a browser is not
+opened automatically. The page auto-refreshes and shows the real progress bar,
+current step/item, diagnostics counters, process status, and recent log tails. A
+machine-readable snapshot is also available at `http://127.0.0.1:8766/api/status`.
 
-The browser monitor remains available for hosts where Tk is not installed or where a
-remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./pc_open_monitor.sh`,
-then open `http://127.0.0.1:8766/`. The terminal UI is still available with
-`PC_MONITOR_MODE=terminal ./pc_open_monitor.sh`. If no GUI can be opened, use
-`./pc_run_all_status.sh` or `./pc_follow_run_all.sh` from any terminal.
+The terminal UI (`pc_monitor_window.sh`) is still available for manual use with
+`PC_MONITOR_MODE=terminal ./pc_open_monitor.sh`, but the web monitor is preferred
+because webhook/cron/background services often cannot create reliable terminal
+windows. If neither browser nor terminal can be opened, use `./pc_run_all_status.sh`
+or `./pc_follow_run_all.sh` from any terminal.
 
 Key logs under `data/logs/`:
 
@@ -424,7 +416,6 @@ Key logs under `data/logs/`:
 | `collector_triggered.log` | Webhook → collector triggers. |
 | `webhook_listener.log` | Webhook listener activity. |
 | `monitor_open.log` | Attempts to start/open the web monitor, terminal monitor, or fallback. |
-| `monitor_tk.log` | Background native Tk monitor output/errors. |
 | `monitor_server.log` | Background web monitor server output. |
 | `run_all_follow.log` | Background log-follow fallback when no GUI monitor can be opened. |
 
@@ -461,8 +452,7 @@ sqlite3 data/panamacompra_archive.db \
 
 ```bash
 tail -80 data/logs/monitor_open.log
-python3 pc_monitor_tk.py --snapshot
-PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
+python3 pc_monitor_server.py  # then open http://127.0.0.1:8766/
 ./pc_run_all_status.sh
 ./pc_follow_run_all.sh
 ```
