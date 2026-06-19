@@ -1,3 +1,6 @@
+# Local secrets
+.webhook_token
+
 # Python virtual environments
 .venv/
 .venv.broken.*/
@@ -7,28 +10,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Local runtime data and logs
-data/logs/
-data/queue/
+# Runtime collector data and downloaded archive
+# The application recreates these directories/files as needed.
+data/
+records/
 
 # Local OS/editor files
 .DS_Store
 *.swp
-
-# Local secrets
-.webhook_token
-
-# Local Python environments
-.venv/
-.venv.*/
-.venv.broken.*/
-
-# Python generated cache
-__pycache__/
-*.py[cod]
-
-# Local runtime data
-data/*.db
-data/*.csv
-records/
-deprecated_queue_scripts/

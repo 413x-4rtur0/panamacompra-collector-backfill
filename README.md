@@ -211,7 +211,9 @@ _posixsubprocess`, install `python3-venv` / `python3-full` and rerun
 
 Operational shell wrappers use the repository `.venv` when it exists and fall
 back to `python3` when it does not. The status/stop/monitor scripts recognize
-collector processes launched by either `python` or `python3`.
+collector processes launched by either `python` or `python3`. The local updater
+verifies that Playwright Firefox can launch and installs it automatically unless
+`PC_UPDATE_SKIP_BROWSER_INSTALL=1` is set.
 
 ---
 
