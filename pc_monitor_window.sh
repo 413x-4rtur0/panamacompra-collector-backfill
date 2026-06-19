@@ -48,11 +48,11 @@ run_all_worker_running() {
 }
 
 index_running() {
-  pgrep -f "[p]ython -u ./pc_index_collector.py" >/dev/null 2>&1
+  pgrep -f "[p]ython3? -u ./pc_index_collector.py" >/dev/null 2>&1
 }
 
 detail_running() {
-  pgrep -f "[p]ython -u ./pc_detail_downloader.py" >/dev/null 2>&1
+  pgrep -f "[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1
 }
 
 request_pending() {

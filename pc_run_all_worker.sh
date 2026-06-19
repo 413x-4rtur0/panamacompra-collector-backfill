@@ -3,9 +3,11 @@ set -uo pipefail
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 if [ -f ".venv/bin/activate" ]; then
   # shellcheck disable=SC1091
   source .venv/bin/activate
+  PYTHON_BIN="python"
 fi
 
 mkdir -p data/logs data/queue
@@ -105,10 +107,10 @@ while true; do
     echo ""
     echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: timeout 1h python -u ./pc_index_collector.py"
+    echo "Command: timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
   } >> "$CURRENT_LOG"
 
-  timeout 1h python -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
+  timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
   INDEX_EXIT=$?
 
   {
@@ -137,10 +139,10 @@ while true; do
     echo ""
     echo "-------------------- STEP 2: DETAIL DOWNLOADER ------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h python -u ./pc_detail_downloader.py"
+    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u ./pc_detail_downloader.py"
   } >> "$CURRENT_LOG"
 
-  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h python -u ./pc_detail_downloader.py >> "$CURRENT_LOG" 2>&1
+  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u ./pc_detail_downloader.py >> "$CURRENT_LOG" 2>&1
   DETAIL_EXIT=$?
 
   {

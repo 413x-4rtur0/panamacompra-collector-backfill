@@ -43,8 +43,8 @@ if [ -x ./pc_stop_run_all.sh ]; then
 else
   rm -f data/queue/run_all_requested.flag
   pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
-  pkill -TERM -f "[p]ython -u ./pc_index_collector.py" 2>/dev/null || true
-  pkill -TERM -f "[p]ython -u ./pc_detail_downloader.py" 2>/dev/null || true
+  pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+  pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 fi
 
 echo ""
@@ -67,9 +67,37 @@ chmod +x ./*.sh ./*.py
 
 echo ""
 echo "5) Ensure Python virtual environment and dependencies"
-if [ ! -d .venv ]; then
-  python3 -m venv .venv
+venv_is_healthy() {
+  [ -x .venv/bin/python ] || return 1
+  .venv/bin/python -c "import ensurepip; import subprocess" >/dev/null 2>&1
+}
+
+create_venv() {
+  if ! python3 -m venv .venv; then
+    echo "ERROR: Could not create .venv with python3 -m venv." >&2
+    echo "Install the system Python venv/full packages, then retry:" >&2
+    echo "  sudo apt update && sudo apt install -y python3-venv python3-full" >&2
+    exit 1
+  fi
+}
+
+if [ -d .venv ] && ! venv_is_healthy; then
+  BROKEN_VENV=".venv.broken.$(date +%Y%m%d_%H%M%S)"
+  echo "Existing .venv is broken or incomplete (for example missing _posixsubprocess)."
+  echo "Moving it to $BROKEN_VENV and recreating a clean virtual environment."
+  mv .venv "$BROKEN_VENV"
 fi
+
+if [ ! -d .venv ]; then
+  create_venv
+fi
+
+if ! venv_is_healthy; then
+  echo "ERROR: .venv was created but Python still cannot import required stdlib modules." >&2
+  echo "Install/reinstall python3-venv and python3-full, remove .venv, then retry." >&2
+  exit 1
+fi
+
 # shellcheck disable=SC1091
 source .venv/bin/activate
 python -m pip install --upgrade pip
