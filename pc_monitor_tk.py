@@ -33,6 +33,7 @@ DEFAULT_PROGRESS = {
     "STARTED_AT": "",
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
+    "MODE": "LIVE",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -43,6 +44,7 @@ DEFAULT_PROGRESS = {
     "RECORDS_SAVED": "-",
     "RECORDS_FAILED": "-",
     "RECORDS_PENDING": "-",
+    "RECORDS_TEST": "-",
     "EXTRA": "-",
 }
 
@@ -172,11 +174,11 @@ def run_tk() -> int:
         diag.columnconfigure(col, weight=1)
 
     fields = [
-        ("Phase", "PHASE"), ("Status", "STATUS"), ("Step", "STEP"), ("Item", "ITEM"),
+        ("Phase", "PHASE"), ("Status", "STATUS"), ("Mode", "MODE"), ("Step", "STEP"), ("Item", "ITEM"),
         ("Detail limit", "DETAIL_LIMIT"), ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"), ("Existing", "RECORDS_EXISTING"),
         ("Saved/skipped", "RECORDS_SAVED"), ("Failures", "RECORDS_FAILED"),
-        ("Pending", "RECORDS_PENDING"), ("Extra", "EXTRA"),
+        ("Pending", "RECORDS_PENDING"), ("Test", "RECORDS_TEST"), ("Extra", "EXTRA"),
     ]
     diag_vars: dict[str, tk.StringVar] = {}
     for idx, (label, key) in enumerate(fields):

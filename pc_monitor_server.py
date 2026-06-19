@@ -35,6 +35,7 @@ DEFAULT_PROGRESS = {
     "STARTED_AT": "",
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
+    "MODE": "LIVE",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -45,6 +46,7 @@ DEFAULT_PROGRESS = {
     "RECORDS_SAVED": "-",
     "RECORDS_FAILED": "-",
     "RECORDS_PENDING": "-",
+    "RECORDS_TEST": "-",
     "EXTRA": "-",
 }
 
@@ -158,11 +160,11 @@ pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; bo
 let doneSince = null;
 let timer = null;
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Step', 'STEP'], ['Item', 'ITEM'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Step', 'STEP'], ['Item', 'ITEM'],
   ['Detail limit', 'DETAIL_LIMIT'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
-  ['Pending details', 'RECORDS_PENDING'], ['Extra', 'EXTRA']
+  ['Pending details', 'RECORDS_PENDING'], ['Test records', 'RECORDS_TEST'], ['Extra', 'EXTRA']
 ];
 function esc(value) {{
   return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));

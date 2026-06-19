@@ -65,10 +65,12 @@ pc_run_all_worker.sh        single locked worker
         │
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
         ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
-        └─ STEP 3  pc_build_calendar.py     merges every event into one .ics
+        ├─ STEP 3  pc_build_calendar.py     merges every event into one .ics
+        └─ STEP 4  pc_test_zone.py          only when no new records: re-runs the last 5 in a sandbox
         │
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
+records_test/…                                isolated testing sandbox (shown as MODE=TEST in the monitor)
 data/calendar/panamacompra.ics                combined calendar for one Thunderbird subscription
 ```
 
@@ -278,6 +280,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
 | `pc_build_calendar.py` | Merge every record's calendar event into one `data/calendar/panamacompra.ics` for a single Thunderbird subscription. Runs automatically as STEP 3 after each detail step; can also be run manually. |
+| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/`, throwaway DB, separate `.ics`), leaving the real archive untouched, to verify current code when there is nothing new. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST`. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -297,6 +300,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
+| `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -538,6 +542,34 @@ import Playwright, the error message prints the current interpreter, the checked
 > including renamed `[finish]-[numero]-[desc]` folders, before creating a new
 > plain `NUMERO` folder. This prevents duplicate archives when the original
 > `NUMERO/` leaf was already renamed after detail download.
+
+### Testing zone
+
+When a run finds **no new opportunities**, the pipeline normally does nothing, so a
+code change cannot be observed. The testing zone fills that gap: it re-runs the most
+recent **N records (default 5)** through the full pipeline in an **isolated sandbox**,
+leaving the real archive and DB untouched, so you can see how the current code renders
+them.
+
+- Writes only to `records_test/`, a throwaway in-memory DB, and a separate
+  `data/calendar/panamacompra_test.ics` — diff these against the real outputs.
+- The run is published to the monitor as **`MODE=TEST`** (the monitor's *Mode* field
+  shows `LIVE` vs `TEST`), with a *Test records* count, so it is clearly distinct from
+  new (live) records.
+- The run-all worker runs it automatically as **STEP 4**, but only when that run had
+  no new records to process. Set `PC_TEST_ZONE_LIMIT=0` to disable, or a different
+  number to change how many records are re-run.
+
+Run it manually any time:
+
+```bash
+./pc_test_zone.py                 # list the last 5, then ask
+./pc_test_zone.py --limit 5 --apply
+```
+
+Each run starts from a clean sandbox (the previous `records_test/` is cleared), and
+the full pipeline runs — live re-download, section-table split, views, and the
+combined test calendar — so browser extraction and parsing changes are both exercised.
 
 ### Database
 

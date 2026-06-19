@@ -46,6 +46,7 @@ write_progress() {
     echo "STARTED_AT='$(quote_value "$started_at")'"
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
     echo "WORKER_PID='$$'"
+    echo "MODE='LIVE'"
     echo "STEP_CURRENT='-'"
     echo "STEP_TOTAL='-'"
     echo "ITEM_CURRENT='-'"
@@ -56,6 +57,7 @@ write_progress() {
     echo "RECORDS_SAVED='-'"
     echo "RECORDS_FAILED='-'"
     echo "RECORDS_PENDING='-'"
+    echo "RECORDS_TEST='-'"
     echo "EXTRA='-'"
   } > "$tmp"
 
@@ -133,6 +135,15 @@ while true; do
     continue
   fi
 
+  # Records still needing detail right after the index step. Used to decide
+  # whether this run is "idle" (no new records) and should run the test zone.
+  PENDING_BEFORE="$("$PYTHON_BIN" - <<'PY'
+from pc_common import init_db
+print(init_db().execute("SELECT COUNT(*) FROM opportunities WHERE detail_status != 'saved'").fetchone()[0])
+PY
+)"
+  [ -n "$PENDING_BEFORE" ] || PENDING_BEFORE="-1"
+
   write_progress "DETAIL" "RUNNING" "55" "Step 2/2: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
 
   {
@@ -189,6 +200,31 @@ while true; do
   else
     write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+  fi
+
+  # STEP 4: when this run had no new records to process, exercise the current
+  # code on the last N records in an isolated sandbox (records_test/) so a
+  # "nothing new" run still verifies code changes. The script publishes its own
+  # MODE=TEST progress. Disable with PC_TEST_ZONE_LIMIT=0.
+  TEST_LIMIT="${PC_TEST_ZONE_LIMIT:-5}"
+  if printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
+    log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
+    {
+      echo ""
+      echo "----------------- STEP 4: TEST ZONE (idle, last $TEST_LIMIT) ----"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Command: ${PYTHON_BIN} -u ./pc_test_zone.py --limit $TEST_LIMIT --apply"
+    } >> "$CURRENT_LOG"
+    "$PYTHON_BIN" -u ./pc_test_zone.py --limit "$TEST_LIMIT" --apply >> "$CURRENT_LOG" 2>&1
+    TEST_EXIT=$?
+    {
+      echo "Test zone exit code: $TEST_EXIT"
+      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+    } >> "$CURRENT_LOG"
+    if [ "$TEST_EXIT" -ne 0 ]; then
+      write_progress "TEST" "FAILED" "100" "Test zone failed with exit=$TEST_EXIT (real archive untouched)." "$STARTED"
+      log "ITERATION $ITERATION test zone failed with exit=$TEST_EXIT."
+    fi
   fi
 
   if [ -f "$REQUEST_FLAG" ]; then
