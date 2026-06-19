@@ -162,23 +162,27 @@ def _parse_ddmmyyyy(text):
     day, month, year = m.group(1), m.group(2), m.group(3)
     return f"{year}-{int(month):02d}-{int(day):02d}"
 
-def _parse_end_time_24h(text):
-    """Return the LAST clock time in ``text`` as 24h HH:MM, or '' if none.
+def _parse_times_24h(text):
+    """Return every clock time in ``text`` as 24h 'HH:MM', in order.
 
     Handles 12h AM/PM ('12:00 PM' -> '12:00', '03:00 PM' -> '15:00',
     '12:00 AM' -> '00:00') and leaves bare 24h values as-is.
     """
-    matches = re.findall(r"(\d{1,2}):(\d{2})\s*([AaPp]\.?\s*[Mm]\.?)?", str(text or ""))
-    if not matches:
-        return ""
-    hh, mm, ap = matches[-1]
-    hh, mm = int(hh), int(mm)
-    ap = ap.lower().replace(".", "").replace(" ", "")
-    if ap == "pm" and hh != 12:
-        hh += 12
-    elif ap == "am" and hh == 12:
-        hh = 0
-    return f"{hh % 24:02d}:{mm % 60:02d}"
+    out = []
+    for hh, mm, ap in re.findall(r"(\d{1,2}):(\d{2})\s*([AaPp]\.?\s*[Mm]\.?)?", str(text or "")):
+        hh, mm = int(hh), int(mm)
+        ap = ap.lower().replace(".", "").replace(" ", "")
+        if ap == "pm" and hh != 12:
+            hh += 12
+        elif ap == "am" and hh == 12:
+            hh = 0
+        out.append(f"{hh % 24:02d}:{mm % 60:02d}")
+    return out
+
+def _parse_end_time_24h(text):
+    """Return the LAST clock time in ``text`` as 24h HH:MM, or '' if none."""
+    times = _parse_times_24h(text)
+    return times[-1] if times else ""
 
 def find_kv(key_values, *needles):
     """First value whose accent-insensitive lowercased key contains all needles."""
@@ -251,6 +255,242 @@ def key_values_from_rows(rows):
             out[key] = clean(value)
     return out
 
+# --------------------------------------------------------------------------
+# Detail views: parse the saved detail text into a structured summary, a
+# numbered item list, and a calendar event (an ICS VEVENT expressed as JSON),
+# so each record's detail.json carries the same facts the old SUMMARY.csv /
+# items.csv / .ics artifacts did, but in one JSON document.
+# --------------------------------------------------------------------------
+
+VIEWS_SCHEMA_VERSION = 1
+CALENDAR_TZ = os.environ.get("PC_CALENDAR_TZ", "America/Panama")
+# Default attendees for the calendar event (overridable, comma-separated).
+_DEFAULT_ATTENDEES = "alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com"
+
+# Header that introduces the items block in the detail text.
+_ITEMS_HEADER_RE = re.compile(r"cantidad.*unidad\s*de\s*medida.*descripcion", re.IGNORECASE)
+# An item text line: "<qty> <unit> <description>", e.g. "2 Unidad BATERIA 200 Ah".
+_ITEM_LINE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s+(\S+)\s+(.+)$")
+
+def _norm_label(text):
+    """Accent-stripped, lowercased, ':'-trimmed label used to match fields."""
+    return clean(strip_accents(str(text or ""))).lower().rstrip(":").strip()
+
+def parse_detail_fields(text):
+    """Parse 'Label: value' lines from the detail text into an ordered dict.
+
+    Splits on the first ':' only (so URLs, clock times and multi-word labels
+    survive) and stops at the items header so the items grid is not mined for
+    fields.
+    """
+    fields = {}
+    for raw in str(text or "").splitlines():
+        line = clean(raw)
+        if not line:
+            continue
+        if _ITEMS_HEADER_RE.search(strip_accents(line)):
+            break
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key, value = clean(key), clean(value)
+        if key and key not in fields:
+            fields[key] = value
+    return fields
+
+def _items_header_index(header):
+    """Map an items-grid header row to {field: column_index}."""
+    idx = {}
+    for i, raw in enumerate(header):
+        h = _norm_label(raw)
+        if h == "r" and "r" not in idx:
+            idx["r"] = i
+        elif "codigo" in h:
+            idx["codigo"] = i
+        elif "clasificac" in h:
+            idx["clasificacion"] = i
+        elif "cantidad" in h:
+            idx["cantidad"] = i
+        elif "unidad" in h:
+            idx["unidad"] = i
+        elif "descripcion" in h:
+            idx["descripcion"] = i
+        elif "ses" in h:
+            idx["ses"] = i
+    return idx
+
+def _items_from_tables(tables):
+    """Numbered items from an items grid among ``tables`` (carrying código /
+    clasificación / SES columns), or [] if no such grid is present."""
+    for table in tables or []:
+        rows = table.get("raw_rows") or []
+        if len(rows) < 2:
+            continue
+        idx = _items_header_index(rows[0])
+        if "descripcion" not in idx or "cantidad" not in idx:
+            continue
+        width = len(rows[0])
+        items = []
+        for row in rows[1:]:
+            if len(row) != width:
+                continue
+            def cell(name):
+                j = idx.get(name)
+                return clean(row[j]) if j is not None and j < len(row) else ""
+            descripcion = cell("descripcion")
+            if not descripcion:
+                continue
+            items.append({
+                "r": cell("r") or str(len(items) + 1),
+                "codigo": cell("codigo"),
+                "clasificacion": cell("clasificacion"),
+                "cantidad": cell("cantidad"),
+                "unidad_de_medida": cell("unidad"),
+                "descripcion": descripcion,
+                "ses": cell("ses"),
+            })
+        if items:
+            return items
+    return []
+
+def _items_from_text(text):
+    """Numbered items from the 'Cantidad / Unidad de Medida / Descripción' text
+    block (quantity, unit and description only; no códigos)."""
+    lines = str(text or "").splitlines()
+    start = None
+    for i, raw in enumerate(lines):
+        if _ITEMS_HEADER_RE.search(strip_accents(clean(raw))):
+            start = i + 1
+            break
+    if start is None:
+        return []
+    items = []
+    for raw in lines[start:]:
+        line = clean(raw)
+        if not line:
+            continue
+        m = _ITEM_LINE_RE.match(line)
+        if not m:
+            break
+        items.append({
+            "r": str(len(items) + 1),
+            "codigo": "",
+            "clasificacion": "",
+            "cantidad": m.group(1),
+            "unidad_de_medida": m.group(2),
+            "descripcion": clean(m.group(3)),
+            "ses": "",
+        })
+    return items
+
+def parse_detail_items(text, tables=None):
+    """Numbered items for a record: prefer the items grid (códigos / clasificación
+    from ``tables``), else fall back to the detail-text block."""
+    return _items_from_tables(tables) or _items_from_text(text)
+
+def build_summary(fields, numero=""):
+    """Curated key facts for detail.json (mirrors the old SUMMARY.csv)."""
+    return {
+        "numero": find_kv(fields, "numero") or numero,
+        "descripcion": find_kv(fields, "descripcion"),
+        "objeto_de_la_contratacion": find_kv(fields, "objeto"),
+        "entidad": find_kv(fields, "entidad"),
+        "dependencia": find_kv(fields, "dependencia"),
+        "unidad_de_compra": find_kv(fields, "unidad", "compra"),
+        "direccion": find_kv(fields, "direccion"),
+        "provincia_de_entrega": find_kv(fields, "provincia", "entrega"),
+        "contacto": {
+            "nombre": find_kv(fields, "nombre"),
+            "cargo": find_kv(fields, "cargo"),
+            "telefono": find_kv(fields, "telefono"),
+            "correo_electronico": find_kv(fields, "correo"),
+        },
+        "forma_de_entrega": find_kv(fields, "forma", "entrega"),
+        "dias_de_entrega": find_kv(fields, "dias", "entrega"),
+        "forma_de_pago": find_kv(fields, "forma", "pago"),
+        "dia_y_hora_de_entrega": find_kv(fields, "dia", "hora", "entrega"),
+        "precio_estimado": find_kv(fields, "precio"),
+        "enlace_publico": find_kv(fields, "enlace", "publico"),
+        "enlace_interno": find_kv(fields, "enlace", "interno"),
+    }
+
+def _calendar_attendees():
+    raw = os.environ.get("PC_CALENDAR_ATTENDEES", _DEFAULT_ATTENDEES)
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+def _calendar_description(fields, items):
+    lines = []
+    desc = find_kv(fields, "descripcion")
+    if desc:
+        lines.append(desc)
+    cargo = find_kv(fields, "cargo")
+    contacto = " ".join(p for p in [
+        find_kv(fields, "nombre"),
+        f"({cargo})" if cargo else "",
+        find_kv(fields, "correo"),
+        find_kv(fields, "telefono"),
+    ] if p)
+    pairs = [
+        ("Entidad", find_kv(fields, "entidad")),
+        ("Unidad de compra", find_kv(fields, "unidad", "compra")),
+        ("Contacto", contacto),
+        ("Dia y Hora de Entrega", find_kv(fields, "dia", "hora", "entrega")),
+        ("Precio Estimado", find_kv(fields, "precio")),
+    ]
+    extra = [f"{k}: {v}" for k, v in pairs if v]
+    if extra:
+        lines.append("")
+        lines.extend(extra)
+    if items:
+        lines.append("")
+        lines.append("Items:")
+        for it in items:
+            lines.append(f"- {it['cantidad']} {it['unidad_de_medida']} {it['descripcion']}".rstrip())
+    return "\n".join(lines)
+
+def build_calendar(fields, items, numero="", dtstamp=None):
+    """An ICS VEVENT for the record, expressed as JSON.
+
+    DTSTART/DTEND come from the 'Dia y Hora de Entrega' window (first/last clock
+    time on the delivery date), matching the old .ics export.
+    """
+    numero = find_kv(fields, "numero") or numero
+    descripcion = find_kv(fields, "descripcion")
+    entrega = find_kv(fields, "dia", "hora", "entrega")
+    date = _parse_ddmmyyyy(entrega)
+    times = _parse_times_24h(entrega)
+    dtstart = f"{date}T{times[0]}:00" if date and times else ""
+    dtend = f"{date}T{times[-1]}:00" if date and times else ""
+    summary = " / ".join(p for p in [descripcion, f"({numero})" if numero else ""] if p)
+    return {
+        "uid": f"{numero}@panamacompra" if numero else "",
+        "summary": summary,
+        "timezone": CALENDAR_TZ,
+        "dtstart": dtstart,
+        "dtend": dtend,
+        "dtstamp": dtstamp or now_iso(),
+        "location": find_kv(fields, "provincia", "entrega") or "Panamá, PA",
+        "organizer": {
+            "name": find_kv(fields, "nombre"),
+            "role": find_kv(fields, "cargo"),
+            "email": find_kv(fields, "correo"),
+        },
+        "attendees": _calendar_attendees(),
+        "url_publico": find_kv(fields, "enlace", "publico"),
+        "url_interno": find_kv(fields, "enlace", "interno"),
+        "precio_estimado": find_kv(fields, "precio"),
+        "description": _calendar_description(fields, items),
+    }
+
+def build_detail_views(text, tables=None, numero="", dtstamp=None):
+    """Return (summary, items, calendar, fields) parsed from a record's detail
+    text (and optional saved tables for item códigos)."""
+    fields = parse_detail_fields(text)
+    items = parse_detail_items(text, tables)
+    summary = build_summary(fields, numero)
+    calendar = build_calendar(fields, items, numero, dtstamp=dtstamp)
+    return summary, items, calendar, fields
+
 def rename_record_folder(conn, numero, current_folder, new_leaf):
     """Rename a record folder's leaf and update the DB path columns.
 
@@ -298,10 +538,14 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
 
 def detect_url_type(link):
     link = link or ""
+    low = link.lower()
     if "/solicitud-de-cotizacion/" in link:
         return "solicitud-de-cotizacion"
     if "/pliego-de-cargos/" in link:
         return "pliego-de-cargos"
+    # Previous-version (v2) public preview URL, e.g. .../v2/#!/vistaPreviaCP?NumLc=...
+    if "vistapreviacp" in low or "numlc=" in low:
+        return "vista-previa"
     return "unknown"
 
 def browser_executable():

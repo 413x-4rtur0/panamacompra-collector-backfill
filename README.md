@@ -256,6 +256,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-{numero}-{desc}` from already-saved data. Dry-run by default; `--apply` to act. |
+| `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -272,6 +273,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
 | `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `{description}` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-{numero}-{desc}` after a successful detail save. Set `0` to keep `<numero>`. |
+| `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
+| `PC_CALENDAR_ATTENDEES` | `alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
@@ -361,6 +364,45 @@ target. Inner files keep their `NUMERO.*` names.
   navigation, in-page `#/` router links, `mailto:`/`javascript:`, and asset noise.
   Already-saved archives are re-cleaned automatically from their stored HTML on the next
   run (no re-download).
+
+### Detail summary, items, and calendar
+
+Each `detail.json` also carries three structured views, parsed from the saved detail
+text (and the on-page items grid). They hold the same facts the old `SUMMARY.csv` /
+`items.csv` / `.ics` artifacts did, but in one JSON document:
+
+- **`summary`** — curated key facts: `numero`, `descripcion`, `objeto_de_la_contratacion`,
+  `entidad`, `dependencia`, `unidad_de_compra`, `direccion`, `provincia_de_entrega`,
+  `contacto` (`nombre`/`cargo`/`telefono`/`correo_electronico`), `forma_de_entrega`,
+  `dias_de_entrega`, `forma_de_pago`, `dia_y_hora_de_entrega`, `precio_estimado`,
+  `enlace_publico`, `enlace_interno`.
+- **`items`** (+ **`items_count`**) — the **numbered** item list: each entry has `r`,
+  `codigo`, `clasificacion`, `cantidad`, `unidad_de_medida`, `descripcion`, `ses`.
+  Códigos and clasificación come from the on-page items grid when present; otherwise
+  quantity/unit/description are read from the detail text (códigos left blank).
+- **`calendar`** — an ICS `VEVENT` expressed as JSON: `uid`, `summary`, `dtstart`/`dtend`
+  (the *Día y Hora de Entrega* window in 24-hour, on the delivery date), `timezone`,
+  `location`, `organizer` (the record's contact), `attendees`, `url_publico`,
+  `url_interno`, `precio_estimado`, and a human-readable `description`.
+- **`fields_detected`** — the raw `Label: value` pairs parsed from the detail text.
+
+New records get these automatically. Existing archives are backfilled from their saved
+HTML on the next detail run (the detail schema version was bumped). To backfill without a
+browser or network, run:
+
+```bash
+./pc_build_detail_views.py            # dry-run: preview every record
+./pc_build_detail_views.py --apply    # write the views into detail.json
+```
+
+Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
+`PC_CALENDAR_ATTENDEES`.
+
+> **Portal versions.** The collector reads the current
+> `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
+> *programada* states). Links to the previous-version preview
+> (`…/Inicio/v2/#!/vistaPreviaCP?NumLc=…`) are recognized (classified `vista-previa`)
+> and kept.
 
 ### Database
 

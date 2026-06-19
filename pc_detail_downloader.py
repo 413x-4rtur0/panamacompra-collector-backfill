@@ -11,7 +11,8 @@ MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
 
 # Bump when the link/table cleaning rules change so existing archives are
 # refreshed from their saved HTML on the next run instead of keeping old noise.
-LINKS_SCHEMA_VERSION = 2
+# v3 also adds the summary / numbered items / calendar views to detail.json.
+LINKS_SCHEMA_VERSION = 3
 
 # Only keep genuinely useful links. The in-page extractors over-collect (every
 # anchor, [onclick], and regex-matched URL in the HTML), which produced a lot of
@@ -326,6 +327,10 @@ def detail_archive_has_link_metadata(detail_json_path):
     if data.get("links_schema_version") != LINKS_SCHEMA_VERSION:
         return False
 
+    # The structured views are part of the current schema.
+    if "summary" not in data or "calendar" not in data:
+        return False
+
     table_paths = list((detail_json_path.parent / "tables").glob("*.json"))
     if not table_paths:
         return True
@@ -368,6 +373,10 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
             "saved_at": now_iso(),
         }
 
+    summary, items, calendar, fields_detected = build_detail_views(
+        text, tables, row["numero"], dtstamp=detail_data.get("saved_at")
+    )
+
     detail_data.update({
         "links_count": len(links),
         "links_detected": links,
@@ -377,6 +386,12 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         "finish_stamp": finish_stamp,
         "desc_slug": slug,
         "proposed_folder_name": proposed_folder_name,
+        "summary": summary,
+        "items_count": len(items),
+        "items": items,
+        "calendar": calendar,
+        "fields_detected": fields_detected,
+        "views_schema_version": VIEWS_SCHEMA_VERSION,
     })
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return proposed_folder_name
@@ -415,6 +430,10 @@ def process_detail(browser, conn, row):
         label_values = extract_label_values_from_text(text)
         finish_date_guess = guess_finish_date_from_text(text)
         finish_stamp, slug, proposed_folder_name = naming_fields(tables, text, row)
+        saved_at = now_iso()
+        summary, items, calendar, fields_detected = build_detail_views(
+            text, tables, numero, dtstamp=saved_at
+        )
 
         write_text_once(html_path, html)
         write_text_once(txt_path, text)
@@ -426,7 +445,7 @@ def process_detail(browser, conn, row):
             "tipo_url": row["tipo_url"],
             "link": row["link"],
             "source": "PanamaCompra",
-            "saved_at": now_iso(),
+            "saved_at": saved_at,
             "finish_date_guess": finish_date_guess,
             "short_description": row["short_description"],
             "descripcion_index": row["descripcion"],
@@ -435,6 +454,12 @@ def process_detail(browser, conn, row):
             "fecha_index": row["fecha"],
             "modalidad_index": row["modalidad"],
             "label_values_detected": label_values,
+            "summary": summary,
+            "items_count": len(items),
+            "items": items,
+            "calendar": calendar,
+            "fields_detected": fields_detected,
+            "views_schema_version": VIEWS_SCHEMA_VERSION,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
             "links_count": len(links),
