@@ -10,9 +10,9 @@
 #   - playwright: browser automation for index/detail downloads and day refreshes
 #
 # System packages are not installable by pip. On Debian/Ubuntu/Linux Mint install:
-#   sudo apt install -y python3-venv python3-full chromium python3-tk
+#   sudo apt install -y python3-venv python3-full python3-tk
 # If pip fails with ModuleNotFoundError: _posixsubprocess, recreate .venv with a
 # complete system Python after installing python3-venv/python3-full.
-# Playwright browser download is optional because system Chromium is used when present:
-#   python -m playwright install chromium
+# Install Playwright's Firefox browser once for the active virtualenv:
+#   python -m playwright install firefox
 playwright>=1.40
