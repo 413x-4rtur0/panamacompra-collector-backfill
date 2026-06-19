@@ -19,7 +19,7 @@ CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
-DETAIL_LIMIT="${1:-999999}"
+DETAIL_LIMIT="${1:-99}"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
@@ -149,19 +149,40 @@ while true; do
     echo ""
     echo "Detail exit code: $DETAIL_EXIT"
     echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+  } >> "$CURRENT_LOG"
+
+  # STEP 3: rebuild the combined Thunderbird calendar from every record's event.
+  write_progress "CALENDAR" "RUNNING" "96" "Step 3/3: building combined Thunderbird calendar (.ics)..." "$STARTED"
+  {
+    echo ""
+    echo "-------------------- STEP 3: COMBINED CALENDAR -----------------"
+    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
+  } >> "$CURRENT_LOG"
+
+  "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
+  CALENDAR_EXIT=$?
+
+  {
+    echo "Calendar exit code: $CALENDAR_EXIT"
+    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION FINISHED: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "INDEX_EXIT=$INDEX_EXIT"
     echo "DETAIL_EXIT=$DETAIL_EXIT"
+    echo "CALENDAR_EXIT=$CALENDAR_EXIT"
     echo "============================================================"
   } >> "$CURRENT_LOG"
 
   cat "$CURRENT_LOG" >> "$HISTORY_LOG"
 
-  if [ "$DETAIL_EXIT" -eq 0 ]; then
-    write_progress "DONE" "DONE" "100" "Index and detail process completed successfully." "$STARTED"
+  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
+    write_progress "DONE" "DONE" "100" "Index, detail and combined calendar completed successfully." "$STARTED"
     log "ITERATION $ITERATION finished successfully."
+  elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "98" "Detail finished but combined calendar build failed with exit=$CALENDAR_EXIT." "$STARTED"
+    log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
   elif [ "$DETAIL_EXIT" -eq 124 ]; then
     write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"
     log "ITERATION $ITERATION detail step timed out."

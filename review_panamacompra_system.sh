@@ -94,6 +94,7 @@ python_files=(
   "pc_rename_record_folders.py"
   "pc_build_detail_views.py"
   "pc_update_day_folder.py"
+  "pc_build_calendar.py"
 )
 
 for f in "${python_files[@]}"; do

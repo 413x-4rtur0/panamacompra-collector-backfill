@@ -5,9 +5,9 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 mkdir -p data/logs
 
-# By default this means "process all pending details".
-# For safer testing, change 999999 to 5 or 10.
-DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-999999}"
+# Default detail cap per webhook-triggered run. Raise PC_WEBHOOK_DETAIL_LIMIT
+# for a bigger batch, or lower it (e.g. 5 or 10) for safer testing.
+DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-99}"
 
 echo "===== changedetection webhook received at $(date '+%Y-%m-%d %H:%M:%S') =====" >> data/logs/collector_triggered.log
 echo "Requesting full sequence: index + detail, detail_limit=$DETAIL_LIMIT" >> data/logs/collector_triggered.log
