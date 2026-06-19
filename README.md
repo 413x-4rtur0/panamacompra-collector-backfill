@@ -497,6 +497,14 @@ summary/items/calendar views and re-naming the folder if the finish date, `NUMER
 or description changed. Without `--date` it prompts (defaulting to today)
 and shows the day folders present in the database.
 
+With `--apply`, Playwright is required. If the script was launched with a Python
+environment that does not have Playwright, it first checks this checkout's
+`.venv/bin/python`; when that interpreter has Playwright, the updater
+automatically re-runs itself with the project virtualenv. If neither Python can
+import Playwright, the error message prints the current interpreter, the checked
+`.venv` path, and repair commands (`./update_local_copy.sh` or `source
+.venv/bin/activate && python -m pip install -r requirements.txt`).
+
 > Re-fetching uses each record's stored `link`. If the listing URLs may have changed,
 > run an index scan first so links and `last_seen` are refreshed. The index scan
 > also checks for an existing `NUMERO.json` anywhere under `records/YY-MM-DD/`,

@@ -23,8 +23,11 @@ listing so records with only ``<NUMERO>.json`` can be fetched. Tip: run an
 index scan first if links may have changed.
 """
 import argparse
+import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -148,20 +151,80 @@ def resolve_target_date(args, conn):
     return today
 
 
+def python_has_playwright():
+    """Return True when the active Python can import Playwright's sync API."""
+    return (
+        importlib.util.find_spec("playwright") is not None
+        and importlib.util.find_spec("playwright.sync_api") is not None
+    )
+
+
+def project_venv_python():
+    """Return this checkout's venv Python path when it exists."""
+    candidate = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+    return candidate if candidate.exists() else None
+
+
+def python_executable_is_current(executable):
+    try:
+        return Path(sys.executable).resolve() == Path(executable).resolve()
+    except OSError:
+        return False
+
+
+def python_can_import_playwright(executable):
+    probe = (
+        "import importlib.util, sys; "
+        "sys.exit(0 if importlib.util.find_spec('playwright.sync_api') else 1)"
+    )
+    return subprocess.run(
+        [str(executable), "-c", probe],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def ensure_playwright_available():
+    """Use project .venv automatically when it has Playwright, else explain fix."""
+    if python_has_playwright():
+        return
+
+    venv_python = project_venv_python()
+    if venv_python and not python_executable_is_current(venv_python):
+        if python_can_import_playwright(venv_python):
+            print(f"Re-running with project virtualenv Python: {venv_python}", flush=True)
+            os.execv(str(venv_python), [str(venv_python), *sys.argv])
+
+    detail = [
+        "Playwright is required only when --apply actually downloads details.",
+        f"Current Python does not have Playwright: {sys.executable}",
+    ]
+    if venv_python:
+        detail.append(f"Project virtualenv checked: {venv_python}")
+        detail.append(
+            "If that virtualenv is broken or incomplete, run ./update_local_copy.sh "
+            "so it can move .venv aside and recreate it."
+        )
+    else:
+        detail.append("No project .venv was found in this checkout.")
+    detail.extend([
+        "Fix options:",
+        "  ./update_local_copy.sh",
+        "  source .venv/bin/activate && python -m pip install -r requirements.txt",
+        "If pip reports ModuleNotFoundError: _posixsubprocess, install python3-venv "
+        "and python3-full, then rerun ./update_local_copy.sh.",
+    ])
+    raise SystemExit("\n".join(detail))
+
+
 def redownload(conn, rows):
     """Force re-fetch and overwrite the saved detail for each row."""
-    # Imported lazily: Playwright is only needed for the actual download, so the
-    # rest of this tool stays usable (and testable) without a browser installed.
-    try:
-        from playwright.sync_api import sync_playwright
-    except ModuleNotFoundError as exc:
-        raise SystemExit(
-            "Playwright is required only when --apply actually downloads details. "
-            "Install it in the Python environment running this script, for example: "
-            "python3 -m pip install -r requirements.txt. If your .venv reports "
-            "ModuleNotFoundError: _posixsubprocess, recreate the virtualenv with a "
-            "complete system Python (python3 -m venv .venv)."
-        ) from exc
+    # Playwright is only needed for the actual download. Keep dry-run/listing
+    # usable without it, but make --apply self-correct to the project .venv when
+    # possible and print actionable setup guidance otherwise.
+    ensure_playwright_available()
+    from playwright.sync_api import sync_playwright
 
     from pc_detail_downloader import process_detail
 
