@@ -52,7 +52,8 @@ def rebuild_one(detail_json_path):
 
     numero = data.get("numero") or base
     summary, items, calendar, fields = build_detail_views(
-        text, load_tables(detail_json_path), numero, dtstamp=data.get("saved_at")
+        text, load_tables(detail_json_path), numero,
+        dtstamp=data.get("saved_at"), link=data.get("link"),
     )
 
     data.update({

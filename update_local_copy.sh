@@ -116,7 +116,15 @@ echo "7) Run repository health checks"
 ./review_panamacompra_system.sh
 
 echo ""
-echo "8) Optional smoke run request"
+echo "8) Refresh already-downloaded records (optional, manual)"
+echo "   A normal collector run only processes NEW records; it never re-pulls"
+echo "   previously downloaded ones. To bring existing records up to the current"
+echo "   parsing/ICS after an update, run one of these manually:"
+echo "     ./pc_build_detail_views.py --apply                  # rebuild views + .ics from saved files (no browser)"
+echo "     ./pc_update_day_folder.py --date <YY-MM-DD> --apply # re-download one day from the portal"
+
+echo ""
+echo "9) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   ./pc_request_run_all.sh "$DETAIL_LIMIT"
