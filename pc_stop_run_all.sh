@@ -9,8 +9,8 @@ echo "Stopping PanamaCompra run-all process..."
 
 rm -f data/queue/run_all_requested.flag
 
-pkill -TERM -f "[p]ython -u ./pc_index_collector.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython -u ./pc_detail_downloader.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 pkill -TERM -f "[t]imeout .*pc_index_collector.py" 2>/dev/null || true
 pkill -TERM -f "[t]imeout .*pc_detail_downloader.py" 2>/dev/null || true
 

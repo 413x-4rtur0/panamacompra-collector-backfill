@@ -14,13 +14,13 @@ else
   echo "Worker: not running"
 fi
 
-if pgrep -f "[p]ython -u ./pc_index_collector.py" >/dev/null 2>&1; then
+if pgrep -f "[p]ython3? -u ./pc_index_collector.py" >/dev/null 2>&1; then
   echo "Index collector: RUNNING"
 else
   echo "Index collector: not running"
 fi
 
-if pgrep -f "[p]ython -u ./pc_detail_downloader.py" >/dev/null 2>&1; then
+if pgrep -f "[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1; then
   echo "Detail downloader: RUNNING"
 else
   echo "Detail downloader: not running"
