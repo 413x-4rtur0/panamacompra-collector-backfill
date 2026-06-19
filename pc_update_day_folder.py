@@ -152,7 +152,16 @@ def redownload(conn, rows):
     """Force re-fetch and overwrite the saved detail for each row."""
     # Imported lazily: Playwright is only needed for the actual download, so the
     # rest of this tool stays usable (and testable) without a browser installed.
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Playwright is required only when --apply actually downloads details. "
+            "Install it in the Python environment running this script, for example: "
+            "python3 -m pip install -r requirements.txt. If your .venv reports "
+            "ModuleNotFoundError: _posixsubprocess, recreate the virtualenv with a "
+            "complete system Python (python3 -m venv .venv)."
+        ) from exc
 
     from pc_detail_downloader import process_detail
 

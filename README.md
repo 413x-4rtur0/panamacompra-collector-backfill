@@ -188,15 +188,25 @@ example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed
 ```bash
 cd ~/Apps/panamacompra-collector
 
-# Browser (system Chromium)
-sudo apt update && sudo apt install -y chromium
+# System packages: browser + complete Python venv support + optional Tk monitor
+sudo apt update && sudo apt install -y chromium python3-venv python3-full python3-tk
 
 # Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+
+# Optional: only needed if you do not want to use the system Chromium package
+python -m playwright install chromium
 ```
+
+`requirements.txt` intentionally lists only pip-installable Python modules. The
+collector's non-stdlib runtime module is `playwright`; `tkinter` and the Python
+stdlib extension `_posixsubprocess` come from the operating-system Python
+packages above. If an existing `.venv` fails with `ModuleNotFoundError:
+_posixsubprocess`, remove and recreate `.venv` after installing `python3-venv` /
+`python3-full`.
 
 ---
 
@@ -445,7 +455,14 @@ browser or network, run:
 Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 `PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
 `.calendar.ics` file is a portable review/import copy generated during detail
-downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`.
+downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`. The
+ICS export follows the legacy review format as closely as possible: configured
+attendees are emitted as top-level `ATTENDEE:MAILTO:...` lines, `DTSTART` /
+`DTEND` use `TZID=<timezone>;VALUE=DATE-TIME`, `DTSTAMP` is emitted with a
+trailing `Z`, organizer lines include quoted `CN` and `ROLE` parameters when
+available, and the description includes the public/internal links, price,
+record number, request description, entity/dependency/contact/delivery/payment
+fields, and item rows.
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and

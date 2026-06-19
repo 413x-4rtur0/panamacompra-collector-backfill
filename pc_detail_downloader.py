@@ -285,22 +285,46 @@ def extract_label_values_from_text(text):
 
     return result
 
+def row_archive_is_current(row):
+    record_folder = Path(row["record_folder"])
+    numero = row["numero"]
+    n = safe_name(numero)
+    detail_json_path = record_folder / f"{n}.detail.json"
+    return archive_complete(record_folder, numero) and detail_archive_has_link_metadata(detail_json_path)
+
+
 def detail_pending_rows(conn, limit, max_attempts):
+    if limit <= 0:
+        return []
+
     # Skip rows that have already failed too many times, so a permanently broken
     # URL is not retried forever and cannot starve newer rows. Rows with fewer
-    # attempts are processed first.
-    return conn.execute("""
+    # attempts are processed first. Also include rows marked saved in SQLite but
+    # missing the current archive files/views on disk, which can happen after
+    # migrating older records or when an earlier run only wrote the index JSON.
+    candidates = conn.execute("""
     SELECT *
     FROM opportunities
-    WHERE detail_status != 'saved'
-      AND detail_attempts < ?
-    ORDER BY detail_attempts ASC, first_seen ASC
-    LIMIT ?
-    """, (max_attempts, limit)).fetchall()
+    WHERE detail_attempts < ?
+    ORDER BY
+      CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END,
+      detail_attempts ASC,
+      first_seen ASC
+    """, (max_attempts,)).fetchall()
+    pending = []
+    for row in candidates:
+        if row["detail_status"] != "saved" or not row_archive_is_current(row):
+            pending.append(row)
+            if len(pending) >= limit:
+                break
+    return pending
 
 def save_table_jsons(record_folder, numero, tables, overwrite=False):
     tables_dir = record_folder / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        for old_path in tables_dir.glob(f"{safe_name(numero)}.table_*.json"):
+            old_path.unlink()
 
     written = 0
     for table in tables:
