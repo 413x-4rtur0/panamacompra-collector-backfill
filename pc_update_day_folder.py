@@ -231,13 +231,11 @@ def redownload(conn, rows):
     saved = failed = 0
     total = len(rows)
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            executable_path=browser_executable(),
+        browser = p.firefox.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-gpu",
                 "--window-size=1280,720",
             ],
         )

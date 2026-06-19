@@ -738,10 +738,10 @@ def detect_url_type(link):
     return "unknown"
 
 def browser_executable():
-    for candidate in ["/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium-browser"]:
-        if Path(candidate).exists():
-            return candidate
-    raise RuntimeError("No Chromium/Chrome executable found.")
+    """Return the path to Firefox executable for Playwright."""
+    # Playwright's bundled Firefox is used by default when launching firefox
+    # No need to specify executable_path for Playwright-managed browsers
+    return None
 
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
