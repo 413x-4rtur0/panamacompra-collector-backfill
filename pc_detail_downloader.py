@@ -42,20 +42,50 @@ def extract_links(page):
         }
       }
 
-      const seen = new Set();
-      return Array.from(document.querySelectorAll('a[href]')).map((a, idx) => {
-        const href = absoluteUrl(a.getAttribute('href'));
-        const text = clean(a.innerText || a.textContent || a.getAttribute('title') || '');
-        const kind = href.includes('/solicitud-de-cotizacion/') ? 'solicitud-de-cotizacion' :
-          href.includes('/pliego-de-cargos/') ? 'pliego-de-cargos' :
-          href.toLowerCase().match(/\\.(pdf|docx?|xlsx?|zip)(?:[?#]|$)/) ? 'document' :
-          'link';
-        return { link_index: idx + 1, text, href, kind };
-      }).filter(item => {
-        if (!item.href || seen.has(item.href)) return false;
-        seen.add(item.href);
-        return true;
-      });
+      function classify(href) {
+        const lower = (href || '').toLowerCase();
+        if (href.includes('/solicitud-de-cotizacion/')) return 'solicitud-de-cotizacion';
+        if (href.includes('/pliego-de-cargos/')) return 'pliego-de-cargos';
+        if (lower.match(/\\.(pdf|docx?|xlsx?|zip|rar|7z|csv|txt)(?:[?#]|$)/)) return 'document';
+        return 'link';
+      }
+
+      function pushLink(links, seen, href, text, context) {
+        href = absoluteUrl(href);
+        if (!href || seen.has(href)) return;
+        seen.add(href);
+        links.push({
+          link_index: links.length + 1,
+          text: clean(text),
+          href,
+          kind: classify(href),
+          context: clean(context),
+        });
+      }
+
+      function collectLinks(root, context) {
+        const links = [];
+        const seen = new Set();
+
+        root.querySelectorAll('a[href], [href], [data-href], [data-url]').forEach(el => {
+          const href = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-url') || '';
+          pushLink(links, seen, href, el.innerText || el.textContent || el.getAttribute('title') || '', context);
+        });
+
+        root.querySelectorAll('[onclick]').forEach(el => {
+          const onclick = el.getAttribute('onclick') || '';
+          const matches = onclick.match(/(?:https?:\\/\\/[^'"\\s<>]+|\\/Inicio\\/#\\/[^'"\\s<>]+|#\\/[^'"\\s<>]+)/g) || [];
+          matches.forEach(href => pushLink(links, seen, href, el.innerText || el.textContent || '', context));
+        });
+
+        const html = root.innerHTML || '';
+        const embedded = html.match(/(?:https?:\\/\\/[^'"\\s<>]+|\\/Inicio\\/#\\/[^'"\\s<>]+|#\\/[^'"\\s<>]+|[^'"\\s<>]+\\.(?:pdf|docx?|xlsx?|zip|rar|7z|csv|txt)(?:[?#][^'"\\s<>]*)?)/gi) || [];
+        embedded.forEach(href => pushLink(links, seen, href, '', context));
+
+        return links;
+      }
+
+      return collectLinks(document, 'page');
     })();
     """)
 
@@ -66,24 +96,88 @@ def extract_tables(page):
         return (text || '').replace(/\\s+/g, ' ').trim();
       }
 
-      return Array.from(document.querySelectorAll('table')).map((table, idx) => {
-        const rows = Array.from(table.querySelectorAll('tr')).map(tr =>
-          Array.from(tr.querySelectorAll('th, td')).map(td => clean(td.innerText))
-        ).filter(r => r.some(Boolean));
+      function absoluteUrl(href) {
+        if (!href) return '';
+        try {
+          return new URL(href, window.location.href).href;
+        } catch (e) {
+          return href;
+        }
+      }
 
+      function classify(href) {
+        const lower = (href || '').toLowerCase();
+        if (href.includes('/solicitud-de-cotizacion/')) return 'solicitud-de-cotizacion';
+        if (href.includes('/pliego-de-cargos/')) return 'pliego-de-cargos';
+        if (lower.match(/\\.(pdf|docx?|xlsx?|zip|rar|7z|csv|txt)(?:[?#]|$)/)) return 'document';
+        return 'link';
+      }
+
+      function pushLink(links, seen, href, text) {
+        href = absoluteUrl(href);
+        if (!href || seen.has(href)) return;
+        seen.add(href);
+        links.push({ text: clean(text), href, kind: classify(href) });
+      }
+
+      function cellLinks(cell) {
+        const links = [];
+        const seen = new Set();
+        cell.querySelectorAll('a[href], [href], [data-href], [data-url]').forEach(el => {
+          const href = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-url') || '';
+          pushLink(links, seen, href, el.innerText || el.textContent || el.getAttribute('title') || '');
+        });
+        cell.querySelectorAll('[onclick]').forEach(el => {
+          const onclick = el.getAttribute('onclick') || '';
+          const matches = onclick.match(/(?:https?:\\/\\/[^'"\\s<>]+|\\/Inicio\\/#\\/[^'"\\s<>]+|#\\/[^'"\\s<>]+)/g) || [];
+          matches.forEach(href => pushLink(links, seen, href, el.innerText || el.textContent || ''));
+        });
+        const html = cell.innerHTML || '';
+        const embedded = html.match(/(?:https?:\\/\\/[^'"\\s<>]+|\\/Inicio\\/#\\/[^'"\\s<>]+|#\\/[^'"\\s<>]+|[^'"\\s<>]+\\.(?:pdf|docx?|xlsx?|zip|rar|7z|csv|txt)(?:[?#][^'"\\s<>]*)?)/gi) || [];
+        embedded.forEach(href => pushLink(links, seen, href, ''));
+        return links;
+      }
+
+      return Array.from(document.querySelectorAll('table')).map((table, idx) => {
+        const structuredRows = Array.from(table.querySelectorAll('tr')).map(tr =>
+          Array.from(tr.querySelectorAll('th, td')).map(td => ({
+            text: clean(td.innerText),
+            links: cellLinks(td),
+          }))
+        ).filter(r => r.some(cell => cell.text || cell.links.length));
+
+        const rows = structuredRows.map(row => row.map(cell => cell.text));
         let headers = [];
         let dataRows = rows;
+        let dataRowsWithLinks = structuredRows;
 
         if (rows.length > 0) {
           headers = rows[0];
           dataRows = rows.slice(1);
+          dataRowsWithLinks = structuredRows.slice(1);
         }
+
+        const links = [];
+        const seen = new Set();
+        structuredRows.forEach((row, rowIndex) => {
+          row.forEach((cell, cellIndex) => {
+            cell.links.forEach(link => {
+              if (seen.has(link.href)) return;
+              seen.add(link.href);
+              links.push({ ...link, row_index: rowIndex + 1, cell_index: cellIndex + 1 });
+            });
+          });
+        });
 
         return {
           table_index: idx + 1,
           headers,
           rows: dataRows,
-          raw_rows: rows
+          raw_rows: rows,
+          rows_with_links: dataRowsWithLinks,
+          raw_rows_with_links: structuredRows,
+          links_count: links.length,
+          links,
         };
       });
     })();
@@ -137,17 +231,74 @@ def detail_pending_rows(conn, limit, max_attempts):
     LIMIT ?
     """, (max_attempts, limit)).fetchall()
 
-def save_table_jsons(record_folder, numero, tables):
+def save_table_jsons(record_folder, numero, tables, overwrite=False):
     tables_dir = record_folder / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     written = 0
     for table in tables:
         path = tables_dir / f"{safe_name(numero)}.table_{table['table_index']:03d}.json"
-        if write_json_once(path, table):
+        if overwrite:
+            path.write_text(json.dumps(table, ensure_ascii=False, indent=2), encoding="utf-8")
+            written += 1
+        elif write_json_once(path, table):
             written += 1
 
     return written
+
+def detail_archive_has_link_metadata(detail_json_path):
+    try:
+        data = json.loads(detail_json_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+
+    if "links_detected" not in data or "links_count" not in data:
+        return False
+
+    table_paths = list((detail_json_path.parent / "tables").glob("*.json"))
+    if not table_paths:
+        return True
+
+    for table_path in table_paths:
+        try:
+            table = json.loads(table_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return False
+        if "rows_with_links" not in table or "links" not in table:
+            return False
+
+    return True
+
+def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path):
+    page = browser.new_page(viewport={"width": 1280, "height": 720})
+    try:
+        page.set_content(html_path.read_text(encoding="utf-8", errors="ignore"), wait_until="domcontentloaded")
+        tables = extract_tables(page)
+        links = extract_links(page)
+    finally:
+        page.close()
+
+    save_table_jsons(Path(row["record_folder"]), row["numero"], tables, overwrite=True)
+
+    try:
+        detail_data = json.loads(detail_json_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        detail_data = {
+            "numero": row["numero"],
+            "grupo": row["grupo"],
+            "tipo_url": row["tipo_url"],
+            "link": row["link"],
+            "source": "PanamaCompra",
+            "saved_at": now_iso(),
+        }
+
+    detail_data.update({
+        "links_count": len(links),
+        "links_detected": links,
+        "tables_count": len(tables),
+        "tables_refreshed_for_links_at": now_iso(),
+    })
+    detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def process_detail(browser, conn, row):
     numero = row["numero"]
@@ -160,6 +311,11 @@ def process_detail(browser, conn, row):
     detail_json_path = record_folder / f"{n}.detail.json"
 
     if html_path.exists() and txt_path.exists() and detail_json_path.exists():
+        if not detail_archive_has_link_metadata(detail_json_path):
+            refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path)
+            update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
+            return "refreshed_links"
+
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
         return "skipped_complete"
 
@@ -287,7 +443,7 @@ def main():
             result = process_detail(browser, conn, row)
             if result == "saved":
                 saved += 1
-            elif result == "skipped_complete":
+            elif result in ("skipped_complete", "refreshed_links"):
                 skipped += 1
             else:
                 failed += 1
