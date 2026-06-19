@@ -177,9 +177,12 @@ while true; do
 
   cat "$CURRENT_LOG" >> "$HISTORY_LOG"
 
-  if [ "$DETAIL_EXIT" -eq 0 ]; then
-    write_progress "DONE" "DONE" "100" "Index and detail process completed successfully." "$STARTED"
+  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
+    write_progress "DONE" "DONE" "100" "Index, detail and combined calendar completed successfully." "$STARTED"
     log "ITERATION $ITERATION finished successfully."
+  elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "98" "Detail finished but combined calendar build failed with exit=$CALENDAR_EXIT." "$STARTED"
+    log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
   elif [ "$DETAIL_EXIT" -eq 124 ]; then
     write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"
     log "ITERATION $ITERATION detail step timed out."
