@@ -205,8 +205,13 @@ python -m playwright install chromium
 collector's non-stdlib runtime module is `playwright`; `tkinter` and the Python
 stdlib extension `_posixsubprocess` come from the operating-system Python
 packages above. If an existing `.venv` fails with `ModuleNotFoundError:
-_posixsubprocess`, remove and recreate `.venv` after installing `python3-venv` /
-`python3-full`.
+_posixsubprocess`, install `python3-venv` / `python3-full` and rerun
+`./update_local_copy.sh`; the updater detects an incomplete `.venv`, moves it to
+`.venv.broken.YYYYMMDD_HHMMSS`, and recreates a clean one.
+
+Operational shell wrappers use the repository `.venv` when it exists and fall
+back to `python3` when it does not. The status/stop/monitor scripts recognize
+collector processes launched by either `python` or `python3`.
 
 ---
 
@@ -565,7 +570,8 @@ changedetection notifies the local listener. Create the token first:
 
 ```bash
 printf 'YOUR_SECRET_TOKEN' > .webhook_token
-python3 webhook_listener.py
+source .venv/bin/activate
+python webhook_listener.py
 ```
 
 The listener accepts requests at `/panamacompra/<TOKEN>`:
@@ -642,7 +648,8 @@ sqlite3 data/panamacompra_archive.db \
 
 ```bash
 tail -80 data/logs/monitor_open.log
-python3 pc_monitor_tk.py --snapshot
+source .venv/bin/activate
+python pc_monitor_tk.py --snapshot
 PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 ./pc_run_all_status.sh
 ./pc_follow_run_all.sh
@@ -681,7 +688,9 @@ git status --short   # records/, data/, .venv/, .webhook_token must not appear
 ./review_panamacompra_system.sh
 
 # Verify everything compiles / parses
-python -m py_compile pc_common.py pc_index_collector.py pc_detail_downloader.py \
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+[ -f .venv/bin/activate ] && source .venv/bin/activate && PYTHON_BIN=python
+"$PYTHON_BIN" -m py_compile pc_common.py pc_index_collector.py pc_detail_downloader.py \
   webhook_listener.py migrate_previous_records.py
 for f in *.sh; do bash -n "$f"; done
 ```
