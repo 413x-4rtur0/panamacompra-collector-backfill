@@ -10,10 +10,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Runtime collector data and downloaded archive
-# The application recreates these directories/files as needed.
+# Runtime collector data, downloaded archive, and local migration backups
+# The application recreates active runtime directories/files as needed.
 data/
 records/
+deprecated_queue_scripts/
 
 # Local OS/editor files
 .DS_Store
