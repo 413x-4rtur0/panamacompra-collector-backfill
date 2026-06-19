@@ -14,6 +14,7 @@ __pycache__/
 # The application recreates active runtime directories/files as needed.
 data/
 records/
+records_test/
 deprecated_queue_scripts/
 
 # Local OS/editor files

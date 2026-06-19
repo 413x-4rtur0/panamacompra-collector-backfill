@@ -143,6 +143,9 @@ echo "     ./pc_build_detail_views.py --apply                  # rebuild views/.
 echo "     ./pc_update_day_folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
 echo "   Then rebuild the combined Thunderbird calendar:"
 echo "     ./pc_build_calendar.py"
+echo "   To verify the current code when there are no new opportunities, run the"
+echo "   testing zone (isolated sandbox in records_test/, real archive untouched):"
+echo "     ./pc_test_zone.py --limit 5 --apply"
 
 echo ""
 echo "9) Optional smoke run request"

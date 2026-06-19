@@ -17,6 +17,10 @@ CSV_PATH = DATA_DIR / "panamacompra_index.csv"
 # Combined ICS calendar (every event) for a single Thunderbird subscription.
 CALENDAR_DIR = DATA_DIR / "calendar"
 COMBINED_CALENDAR_PATH = CALENDAR_DIR / "panamacompra.ics"
+# Testing zone: an isolated sandbox so the last N records can be re-run with the
+# current code without touching the real archive (records/) or DB.
+RECORDS_TEST_DIR = BASE_DIR / "records_test"
+TEST_CALENDAR_PATH = CALENDAR_DIR / "panamacompra_test.ics"
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
@@ -45,6 +49,8 @@ def write_run_progress(
     records_saved=None,
     records_failed=None,
     records_pending=None,
+    records_test=None,
+    mode=None,
     extra=None,
 ):
     """Atomically publish run-all progress for the terminal monitor.
@@ -66,6 +72,7 @@ def write_run_progress(
         "STARTED_AT": started_at,
         "UPDATED_AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "WORKER_PID": os.environ.get("PC_WORKER_PID", "-"),
+        "MODE": mode or os.environ.get("PC_RUN_MODE", "LIVE"),
         "STEP_CURRENT": step_current if step_current is not None else "-",
         "STEP_TOTAL": step_total if step_total is not None else "-",
         "ITEM_CURRENT": item_current if item_current is not None else "-",
@@ -76,6 +83,7 @@ def write_run_progress(
         "RECORDS_SAVED": records_saved if records_saved is not None else "-",
         "RECORDS_FAILED": records_failed if records_failed is not None else "-",
         "RECORDS_PENDING": records_pending if records_pending is not None else "-",
+        "RECORDS_TEST": records_test if records_test is not None else "-",
         "EXTRA": extra if extra is not None else "-",
     }
 
@@ -891,10 +899,10 @@ def ensure_db_schema(conn):
     ON opportunities(last_seen)
     """)
 
-def init_db():
+def init_db(db_path=None):
     ensure_dirs()
 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(db_path or DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=30000;")
@@ -929,7 +937,9 @@ def init_db():
 
     conn.commit()
 
-    if not CSV_PATH.exists():
+    # Only the main archive DB maintains the first-seen CSV; sandbox/in-memory
+    # DBs (e.g. the testing zone) must not touch it.
+    if (db_path or DB_PATH) == DB_PATH and not CSV_PATH.exists():
         with CSV_PATH.open("w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(INDEX_HEADER)
 
