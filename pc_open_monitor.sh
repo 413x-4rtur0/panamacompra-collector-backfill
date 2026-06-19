@@ -6,6 +6,13 @@ cd "$BASE_DIR" || exit 1
 
 mkdir -p data/logs
 
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [ -f ".venv/bin/activate" ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  PYTHON_BIN="python"
+fi
+
 OPEN_LOG="data/logs/monitor_open.log"
 FALLBACK_LOG="data/logs/run_all_follow.log"
 WEB_LOG="data/logs/monitor_server.log"
@@ -59,7 +66,7 @@ start_tk_monitor() {
     return 1
   fi
 
-  nohup python3 ./pc_monitor_tk.py >> "$TK_LOG" 2>&1 &
+  nohup "$PYTHON_BIN" ./pc_monitor_tk.py >> "$TK_LOG" 2>&1 &
   local tk_pid=$!
   sleep 1
 
@@ -74,14 +81,14 @@ start_tk_monitor() {
 }
 
 monitor_server_running() {
-  python3 -c "from urllib.request import urlopen; urlopen('http://${MONITOR_HOST}:${MONITOR_PORT}/health', timeout=1).read()" >/dev/null 2>&1
+  "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('http://${MONITOR_HOST}:${MONITOR_PORT}/health', timeout=1).read()" >/dev/null 2>&1
 }
 
 start_web_monitor() {
   if monitor_server_running; then
     log "Web monitor already running at $MONITOR_URL."
   else
-    PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup python3 ./pc_monitor_server.py >> "$WEB_LOG" 2>&1 &
+    PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup "$PYTHON_BIN" ./pc_monitor_server.py >> "$WEB_LOG" 2>&1 &
     log "Started web monitor at $MONITOR_URL with log $WEB_LOG."
     sleep 1
   fi

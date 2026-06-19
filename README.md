@@ -188,15 +188,30 @@ example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed
 ```bash
 cd ~/Apps/panamacompra-collector
 
-# Browser (system Chromium)
-sudo apt update && sudo apt install -y chromium
+# System packages: browser + complete Python venv support + optional Tk monitor
+sudo apt update && sudo apt install -y chromium python3-venv python3-full python3-tk
 
 # Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+
+# Optional: only needed if you do not want to use the system Chromium package
+python -m playwright install chromium
 ```
+
+`requirements.txt` intentionally lists only pip-installable Python modules. The
+collector's non-stdlib runtime module is `playwright`; `tkinter` and the Python
+stdlib extension `_posixsubprocess` come from the operating-system Python
+packages above. If an existing `.venv` fails with `ModuleNotFoundError:
+_posixsubprocess`, install `python3-venv` / `python3-full` and rerun
+`./update_local_copy.sh`; the updater detects an incomplete `.venv`, moves it to
+`.venv.broken.YYYYMMDD_HHMMSS`, and recreates a clean one.
+
+Operational shell wrappers use the repository `.venv` when it exists and fall
+back to `python3` when it does not. The status/stop/monitor scripts recognize
+collector processes launched by either `python` or `python3`.
 
 ---
 
@@ -272,7 +287,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
-| `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `[description]` token in the record-folder name. |
+| `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `[description]` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
@@ -333,7 +348,7 @@ key facts once detail data is available:
 
 ```text
 records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
-              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
+              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
 ```
 
 - **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
@@ -342,7 +357,7 @@ records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
   if no date can be found.
 - **`<numero>`** = the PanamaCompra `NUMERO`, unchanged.
 - **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
-  removed**, non-alphanumerics turned into `-`, truncated to `PC_DESC_SLUG_MAX` chars.
+  removed**, each run of non-alphanumerics collapsed to one `-`, truncated to `PC_DESC_SLUG_MAX` chars.
 
 New records are renamed automatically by the detail downloader after each successful
 save (disable with `PC_RENAME_AFTER_DETAIL=0`). To rename folders that already exist on
@@ -445,7 +460,14 @@ browser or network, run:
 Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 `PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
 `.calendar.ics` file is a portable review/import copy generated during detail
-downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`.
+downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`. The
+ICS export follows the legacy review format as closely as possible: configured
+attendees are emitted as top-level `ATTENDEE:MAILTO:...` lines, `DTSTART` /
+`DTEND` use `TZID=<timezone>;VALUE=DATE-TIME`, `DTSTAMP` is emitted with a
+trailing `Z`, organizer lines include quoted `CN` and `ROLE` parameters when
+available, and the description includes the public/internal links, price,
+record number, request description, entity/dependency/contact/delivery/payment
+fields, and item rows.
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
@@ -474,6 +496,14 @@ text, detail JSON, calendar `.ics`, and table JSONs, re-deriving the
 summary/items/calendar views and re-naming the folder if the finish date, `NUMERO`,
 or description changed. Without `--date` it prompts (defaulting to today)
 and shows the day folders present in the database.
+
+With `--apply`, Playwright is required. If the script was launched with a Python
+environment that does not have Playwright, it first checks this checkout's
+`.venv/bin/python`; when that interpreter has Playwright, the updater
+automatically re-runs itself with the project virtualenv. If neither Python can
+import Playwright, the error message prints the current interpreter, the checked
+`.venv` path, and repair commands (`./update_local_copy.sh` or `source
+.venv/bin/activate && python -m pip install -r requirements.txt`).
 
 > Re-fetching uses each record's stored `link`. If the listing URLs may have changed,
 > run an index scan first so links and `last_seen` are refreshed. The index scan
@@ -548,7 +578,8 @@ changedetection notifies the local listener. Create the token first:
 
 ```bash
 printf 'YOUR_SECRET_TOKEN' > .webhook_token
-python3 webhook_listener.py
+source .venv/bin/activate
+python webhook_listener.py
 ```
 
 The listener accepts requests at `/panamacompra/<TOKEN>`:
@@ -625,7 +656,8 @@ sqlite3 data/panamacompra_archive.db \
 
 ```bash
 tail -80 data/logs/monitor_open.log
-python3 pc_monitor_tk.py --snapshot
+source .venv/bin/activate
+python pc_monitor_tk.py --snapshot
 PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 ./pc_run_all_status.sh
 ./pc_follow_run_all.sh
@@ -664,7 +696,9 @@ git status --short   # records/, data/, .venv/, .webhook_token must not appear
 ./review_panamacompra_system.sh
 
 # Verify everything compiles / parses
-python -m py_compile pc_common.py pc_index_collector.py pc_detail_downloader.py \
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+[ -f .venv/bin/activate ] && source .venv/bin/activate && PYTHON_BIN=python
+"$PYTHON_BIN" -m py_compile pc_common.py pc_index_collector.py pc_detail_downloader.py \
   webhook_listener.py migrate_previous_records.py
 for f in *.sh; do bash -n "$f"; done
 ```

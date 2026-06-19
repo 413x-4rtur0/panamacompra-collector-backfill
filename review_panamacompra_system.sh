@@ -76,9 +76,11 @@ done
 echo ""
 echo "4) Python compile check"
 echo "-----------------------"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 if [ -f ".venv/bin/activate" ]; then
   # shellcheck disable=SC1091
   source .venv/bin/activate
+  PYTHON_BIN="python"
 fi
 
 python_files=(
@@ -96,7 +98,7 @@ python_files=(
 
 for f in "${python_files[@]}"; do
   if [ -f "$f" ]; then
-    if python -m py_compile "$f" 2>/dev/null; then
+    if "$PYTHON_BIN" -m py_compile "$f" 2>/dev/null; then
       echo "COMPILE OK: $f"
     else
       echo "COMPILE FAIL: $f"
