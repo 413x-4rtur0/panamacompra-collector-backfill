@@ -91,6 +91,7 @@ python_files=(
   "migrate_previous_records.py"
   "pc_rename_record_folders.py"
   "pc_build_detail_views.py"
+  "pc_update_day_folder.py"
 )
 
 for f in "${python_files[@]}"; do

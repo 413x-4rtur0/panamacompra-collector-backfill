@@ -257,6 +257,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-{numero}-{desc}` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
+| `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/JSON/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -403,6 +404,30 @@ Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 > *programada* states). Links to the previous-version preview
 > (`…/Inicio/v2/#!/vistaPreviaCP?NumLc=…`) are recognized (classified `vista-previa`)
 > and kept.
+
+### Re-downloading a day folder
+
+`pc_build_detail_views.py` and the automatic schema-version refresh only re-parse
+**saved** HTML — they never go back to the portal. To actually re-fetch records from
+the live site (for example, a day's records first captured under an earlier portal
+version that you now want pulled as the current one), use:
+
+```bash
+./pc_update_day_folder.py                  # prompt for the day (default: today), then confirm
+./pc_update_day_folder.py --date 26-06-18  # a specific day folder (YY-MM-DD or YYYY-MM-DD)
+./pc_update_day_folder.py --date yesterday --apply
+./pc_update_day_folder.py --apply          # today's folder, no confirmation
+```
+
+It selects every record whose `date_folder` matches (the day it was first seen),
+lists them, and — after a confirmation, or immediately with `--apply` — force
+re-downloads each one, **overwriting** its saved HTML, text, detail JSON and table
+JSONs, re-deriving the summary/items/calendar views and re-naming the folder if the
+finish date or description changed. Without `--date` it prompts (defaulting to today)
+and shows the day folders present in the database.
+
+> Re-fetching uses each record's stored `link`. If the listing URLs may have changed,
+> run an index scan first so links and `last_seen` are refreshed.
 
 ### Database
 
