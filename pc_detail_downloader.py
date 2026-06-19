@@ -63,6 +63,18 @@ def naming_fields(tables, text, row):
     slug = desc_slug(desc_source)
     return finish_stamp, slug, build_record_folder_leaf(finish_stamp, row["numero"], slug)
 
+# Rename the record folder to [finish]-{numero}-{desc} after a successful
+# detail save. On by default; set PC_RENAME_AFTER_DETAIL=0 to keep <numero>.
+RENAME_AFTER_DETAIL = os.environ.get("PC_RENAME_AFTER_DETAIL", "1") != "0"
+
+def maybe_rename_folder(conn, row, proposed_folder_name):
+    if not RENAME_AFTER_DETAIL or not proposed_folder_name:
+        return
+    # Nothing useful to encode (no finish date and no description): leave as-is.
+    if proposed_folder_name == build_record_folder_leaf("", row["numero"], ""):
+        return
+    rename_record_folder(conn, row["numero"], row["record_folder"], proposed_folder_name)
+
 def close_popup(page):
     page.evaluate("""
     (() => {
@@ -367,6 +379,7 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         "proposed_folder_name": proposed_folder_name,
     })
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return proposed_folder_name
 
 def process_detail(browser, conn, row):
     numero = row["numero"]
@@ -380,8 +393,9 @@ def process_detail(browser, conn, row):
 
     if html_path.exists() and txt_path.exists() and detail_json_path.exists():
         if not detail_archive_has_link_metadata(detail_json_path):
-            refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path)
+            proposed = refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path)
             update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
+            maybe_rename_folder(conn, row, proposed)
             return "refreshed_links"
 
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
@@ -440,6 +454,7 @@ def process_detail(browser, conn, row):
 
         write_json_once(detail_json_path, detail_data)
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
+        maybe_rename_folder(conn, row, proposed_folder_name)
 
         return "saved"
 

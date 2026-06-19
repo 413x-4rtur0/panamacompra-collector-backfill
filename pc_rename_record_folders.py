@@ -27,7 +27,6 @@ from pc_common import (
     find_kv,
     init_db,
     key_values_from_rows,
-    now_iso,
     rename_record_folder,
     safe_name,
 )
@@ -77,26 +76,6 @@ def description_for(agg_kv, text, db_desc):
         if m:
             desc = m.group(1).strip()
     return desc or db_desc or ""
-
-
-def fix_detail_json_files(new_path, numero, old_folder):
-    """Repoint the moved detail JSON's file paths and note the rename."""
-    n = safe_name(numero)
-    detail_json = new_path / f"{n}.detail.json"
-    try:
-        data = json.loads(detail_json.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-    data["files"] = {
-        "index_json": str(new_path / f"{n}.json"),
-        "detail_json": str(detail_json),
-        "detail_html": str(new_path / f"{n}.detail.html"),
-        "detail_txt": str(new_path / f"{n}.detail.txt"),
-        "tables_folder": str(new_path / "tables"),
-    }
-    data["folder_renamed_from"] = old_folder
-    data["folder_renamed_at"] = now_iso()
-    detail_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def iter_record_folders(records_dir):
@@ -163,9 +142,8 @@ def main():
 
         print(f"RENAME     {folder.name}\n        -> {new_leaf}")
         if args.apply:
-            status, new_path = rename_record_folder(conn, numero, folder, new_leaf)
+            status, _ = rename_record_folder(conn, numero, folder, new_leaf)
             if status == "renamed":
-                fix_detail_json_files(new_path, numero, str(folder))
                 counts["renamed"] += 1
             elif status == "conflict":
                 counts["conflict"] += 1

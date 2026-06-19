@@ -132,7 +132,7 @@ def short_description(text, max_len=80):
 #   [2022-10-11_12:00]-{2022-0-12-214-12-CL-008498}-{FRS-126--CMPRS-D-CJ-PLSTC}
 # --------------------------------------------------------------------------
 
-DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "25", minimum=1)
+DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "40", minimum=1)
 _VOWELS = set("AEIOU")
 
 def strip_accents(text):
@@ -269,12 +269,31 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
 
     current.rename(target)
     n = safe_name(numero)
+    index_json = target / f"{n}.json"
+    detail_json = target / f"{n}.detail.json"
     conn.execute(
         "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
         "detail_json_path = ? WHERE numero = ?",
-        (str(target), str(target / f"{n}.json"), str(target / f"{n}.detail.json"), numero),
+        (str(target), str(index_json), str(detail_json), numero),
     )
     conn.commit()
+
+    # Repoint the moved detail JSON's file paths so they match the new folder.
+    try:
+        data = json.loads(detail_json.read_text(encoding="utf-8"))
+        data["files"] = {
+            "index_json": str(index_json),
+            "detail_json": str(detail_json),
+            "detail_html": str(target / f"{n}.detail.html"),
+            "detail_txt": str(target / f"{n}.detail.txt"),
+            "tables_folder": str(target / "tables"),
+        }
+        data["folder_renamed_from"] = str(current)
+        data["folder_renamed_at"] = now_iso()
+        detail_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
     return "renamed", target
 
 def detect_url_type(link):

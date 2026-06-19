@@ -270,7 +270,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
-| `PC_DESC_SLUG_MAX` | `25` | folder naming | Max length of the `{description}` token in the record-folder name. |
+| `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `{description}` token in the record-folder name. |
+| `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-{numero}-{desc}` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
@@ -338,7 +339,9 @@ records/YY-MM-DD/[<finish>]-{<numero>}-{<desc>}/
 - **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
   removed**, non-alphanumerics turned into `-`, truncated to `PC_DESC_SLUG_MAX` chars.
 
-Run it over the existing archive (reads only saved files, no network):
+New records are renamed automatically by the detail downloader after each successful
+save (disable with `PC_RENAME_AFTER_DETAIL=0`). To rename folders that already exist on
+disk, run the tool below (reads only saved files, no network):
 
 ```bash
 ./pc_rename_record_folders.py            # dry-run: preview every planned rename
