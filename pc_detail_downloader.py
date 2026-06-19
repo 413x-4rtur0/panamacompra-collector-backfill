@@ -396,7 +396,14 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return proposed_folder_name
 
-def process_detail(browser, conn, row):
+def process_detail(browser, conn, row, force=False):
+    """Fetch and archive one record's detail page.
+
+    With ``force=True`` the live page is re-fetched and the saved HTML / text /
+    detail JSON / table JSONs are overwritten in place (used by the manual
+    day-folder updater to re-pull records as the current portal version);
+    otherwise an already-complete record is skipped or just re-cleaned.
+    """
     numero = row["numero"]
     record_folder = Path(row["record_folder"])
     record_folder.mkdir(parents=True, exist_ok=True)
@@ -406,7 +413,7 @@ def process_detail(browser, conn, row):
     txt_path = record_folder / f"{n}.detail.txt"
     detail_json_path = record_folder / f"{n}.detail.json"
 
-    if html_path.exists() and txt_path.exists() and detail_json_path.exists():
+    if not force and html_path.exists() and txt_path.exists() and detail_json_path.exists():
         if not detail_archive_has_link_metadata(detail_json_path):
             proposed = refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path)
             update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
@@ -435,9 +442,13 @@ def process_detail(browser, conn, row):
             text, tables, numero, dtstamp=saved_at
         )
 
-        write_text_once(html_path, html)
-        write_text_once(txt_path, text)
-        tables_written = save_table_jsons(record_folder, numero, tables)
+        if force:
+            html_path.write_text(html, encoding="utf-8", errors="ignore")
+            txt_path.write_text(text, encoding="utf-8", errors="ignore")
+        else:
+            write_text_once(html_path, html)
+            write_text_once(txt_path, text)
+        tables_written = save_table_jsons(record_folder, numero, tables, overwrite=force)
 
         detail_data = {
             "numero": numero,
@@ -477,7 +488,10 @@ def process_detail(browser, conn, row):
             }
         }
 
-        write_json_once(detail_json_path, detail_data)
+        if force:
+            detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            write_json_once(detail_json_path, detail_data)
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
         maybe_rename_folder(conn, row, proposed_folder_name)
 
