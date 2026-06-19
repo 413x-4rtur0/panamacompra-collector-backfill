@@ -120,24 +120,54 @@ def extract_rows(page, group_name, page_number):
         return (text || '').replace(/\\s+/g, ' ').trim();
       }
 
+      function absoluteUrl(href) {
+        if (!href) return '';
+        try {
+          return new URL(href, window.location.href).href;
+        } catch (e) {
+          return href;
+        }
+      }
+
+      function firstNumeroFrom(text) {
+        const match = clean(text).match(/20\\d{2}-\\d+-\\d+-\\d+-\\d+-[A-Z]+-\\d+/);
+        return match ? match[0] : '';
+      }
+
+      function findDetailLink(row) {
+        const selector = 'a[href*="solicitud-de-cotizacion"], a[href*="pliego-de-cargos"]';
+        const direct = row.querySelector(selector)?.getAttribute('href');
+        if (direct) return absoluteUrl(direct);
+
+        const anyHref = row.querySelector('a[href]')?.getAttribute('href');
+        if (anyHref && (anyHref.includes('solicitud-de-cotizacion') || anyHref.includes('pliego-de-cargos'))) {
+          return absoluteUrl(anyHref);
+        }
+
+        const html = row.innerHTML || '';
+        const match = html.match(/(?:https?:\\/\\/[^'"\\s<>]+)?\\/Inicio\\/#\\/(?:solicitud-de-cotizacion|pliego-de-cargos)\\/[^'"\\s<>]+/);
+        return match ? absoluteUrl(match[0]) : '';
+      }
+
       const rows = Array.from(document.querySelectorAll('tabla-busqueda-avanzada-v3 tbody tr'));
 
       return rows.map(row => {
         const cells = Array.from(row.querySelectorAll('th, td')).map(td => clean(td.innerText));
-        const link = row.querySelector('a[href*="solicitud-de-cotizacion"], a[href*="pliego-de-cargos"]')?.href || '';
+        const link = findDetailLink(row);
+        const numero = firstNumeroFrom(cells[1] || '') || firstNumeroFrom(row.innerText);
 
         return {
           grupo: groupName,
           source_page: pageNumber,
           visual_row: cells[0] || '',
-          numero: cells[1] || '',
+          numero,
           estado: cells[2] || '',
           descripcion: cells[3] || '',
           entidad: cells[4] || '',
           dependencia: cells[5] || '',
           fecha: cells[6] || '',
           modalidad: cells[7] || '',
-          link: link
+          link
         };
       }).filter(r => r.numero && r.link);
     }
@@ -219,6 +249,25 @@ def main():
                 extracted_total += len(rows)
                 page_counts.append((group_name, page_number, len(rows)))
 
+                group_index = GROUPS.index(group)
+                overall_page = group_index * MAX_PAGES_PER_GROUP + page_number
+                total_pages_budget = len(GROUPS) * MAX_PAGES_PER_GROUP
+                percent = 10 + int(40 * overall_page / total_pages_budget)
+                write_run_progress(
+                    "INDEX",
+                    "RUNNING",
+                    percent,
+                    f"Step 1/2: {group_name} page {page_number} collected {len(rows)} rows.",
+                    step_current=1,
+                    step_total=2,
+                    item_current=overall_page,
+                    item_total=total_pages_budget,
+                    records_found=extracted_total,
+                    records_new=new_records,
+                    records_existing=existing_records,
+                    extra=f"group={group_name}; page={page_number}; rows={len(rows)}",
+                )
+
                 for r in rows:
                     numero = r["numero"]
 
@@ -282,6 +331,21 @@ def main():
                     else:
                         json_skipped += 1
 
+                write_run_progress(
+                    "INDEX",
+                    "RUNNING",
+                    percent,
+                    f"Step 1/2: {group_name} page {page_number} processed. New={new_records}, existing={existing_records}.",
+                    step_current=1,
+                    step_total=2,
+                    item_current=overall_page,
+                    item_total=total_pages_budget,
+                    records_found=extracted_total,
+                    records_new=new_records,
+                    records_existing=existing_records,
+                    extra=f"json_written={json_written}; json_skipped={json_skipped}; duplicates={len(duplicate_in_crawl)}",
+                )
+
                 moved, reason = click_next(page)
                 if not moved:
                     stop_reasons.append(f"{group_name}: {reason}")
@@ -324,6 +388,22 @@ def main():
             summary_lines.append(f"  {d['numero']} | {d['grupo']} page={d['page']} row={d['visual_row']}")
 
     summary = "\n".join(summary_lines) + "\n"
+
+    write_run_progress(
+        "INDEX",
+        "DONE",
+        50,
+        f"Step 1/2 complete. Unique={len(seen)}, new={new_records}, existing={existing_records}, pending details={pending_details}.",
+        step_current=1,
+        step_total=2,
+        item_current=len(page_counts),
+        item_total=len(GROUPS) * MAX_PAGES_PER_GROUP,
+        records_found=extracted_total,
+        records_new=new_records,
+        records_existing=existing_records,
+        records_pending=pending_details,
+        extra=f"db_total={db_total}; duplicates={len(duplicate_in_crawl)}",
+    )
 
     log_path = LOG_DIR / f"index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     log_path.write_text(summary, encoding="utf-8")
