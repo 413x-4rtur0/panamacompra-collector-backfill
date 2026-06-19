@@ -286,11 +286,12 @@ def extract_label_values_from_text(text):
     return result
 
 def row_archive_is_current(row):
-    record_folder = Path(row["record_folder"])
-    numero = row["numero"]
-    n = safe_name(numero)
-    detail_json_path = record_folder / f"{n}.detail.json"
-    return archive_complete(record_folder, numero) and detail_archive_has_link_metadata(detail_json_path)
+    # A saved record counts as "current" once its archive files exist. Refreshing
+    # already-saved ("previous") records to newer parsing/schema is intentionally
+    # manual-only (pc_build_detail_views.py / pc_update_day_folder.py), so a normal
+    # run never re-pulls previous records just because a schema version changed —
+    # it only completes saved rows whose files are actually missing on disk.
+    return archive_complete(Path(row["record_folder"]), row["numero"])
 
 
 def detail_pending_rows(conn, limit, max_attempts):
@@ -398,7 +399,8 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         }
 
     summary, items, calendar, fields_detected = build_detail_views(
-        text, tables, row["numero"], dtstamp=detail_data.get("saved_at")
+        text, tables, row["numero"], dtstamp=detail_data.get("saved_at"),
+        link=detail_data.get("link") or row["link"],
     )
 
     detail_data.update({
@@ -464,7 +466,7 @@ def process_detail(browser, conn, row, force=False):
         finish_stamp, slug, proposed_folder_name = naming_fields(tables, text, row)
         saved_at = now_iso()
         summary, items, calendar, fields_detected = build_detail_views(
-            text, tables, numero, dtstamp=saved_at
+            text, tables, numero, dtstamp=saved_at, link=row["link"]
         )
 
         if force:
