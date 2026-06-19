@@ -276,10 +276,40 @@ def _ics_escape(value):
     )
 
 def _ics_datetime(value):
-    """Convert YYYY-MM-DDTHH:MM:SS-ish values to ICS local date-time form."""
+    """Convert YYYY-MM-DDTHH:MM:SS-ish values to ICS DATE-TIME form."""
     if not value:
         return ""
-    return re.sub(r"[^0-9]", "", str(value))[:14]
+    digits = re.sub(r"[^0-9]", "", str(value))[:14]
+    if len(digits) >= 8:
+        return f"{digits[:8]}T{digits[8:14]}" if len(digits) > 8 else digits
+    return digits
+
+
+def _ics_utc_datetime(value):
+    stamp = _ics_datetime(value)
+    return f"{stamp}Z" if stamp else ""
+
+
+def _ics_param(value):
+    """Escape and quote an iCalendar parameter value."""
+    escaped = str(value or "").replace('"', r'\"')
+    return f'"{escaped}"'
+
+
+def _ics_fold_line(line, limit=75):
+    """Fold one iCalendar content line at a conservative character limit."""
+    line = str(line)
+    if len(line) <= limit:
+        return [line]
+    out = []
+    first = True
+    while line:
+        width = limit if first else limit - 1
+        out.append(("" if first else " ") + line[:width])
+        line = line[width:]
+        first = False
+    return out
+
 
 def calendar_to_ics(calendar):
     """Return a VCALENDAR/VEVENT string from a detail.json calendar object."""
@@ -291,27 +321,33 @@ def calendar_to_ics(calendar):
         "PRODID:-//panamacompra-collector//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        "BEGIN:VEVENT",
     ]
+    for attendee in calendar.get("attendees") or []:
+        lines.append(f"ATTENDEE:MAILTO:{attendee}")
+    lines.append("BEGIN:VEVENT")
     fields = [
         ("UID", calendar.get("uid")),
-        ("DTSTAMP", _ics_datetime(calendar.get("dtstamp"))),
-        (f"DTSTART;TZID={tz}", _ics_datetime(calendar.get("dtstart"))),
-        (f"DTEND;TZID={tz}", _ics_datetime(calendar.get("dtend"))),
         ("SUMMARY", _ics_escape(calendar.get("summary"))),
-        ("LOCATION", _ics_escape(calendar.get("location"))),
+        (f"DTSTART;TZID={tz};VALUE=DATE-TIME", _ics_datetime(calendar.get("dtstart"))),
+        (f"DTEND;TZID={tz};VALUE=DATE-TIME", _ics_datetime(calendar.get("dtend"))),
+        ("DTSTAMP;VALUE=DATE-TIME", _ics_utc_datetime(calendar.get("dtstamp"))),
         ("DESCRIPTION", _ics_escape(calendar.get("description"))),
+        ("LOCATION", _ics_escape(calendar.get("location"))),
         ("URL", calendar.get("url_publico") or calendar.get("url_interno")),
     ]
     organizer = calendar.get("organizer") or {}
     if organizer.get("email"):
-        name = _ics_escape(organizer.get("name"))
-        fields.append((f"ORGANIZER;CN={name}", f"mailto:{organizer.get('email')}"))
-    for attendee in calendar.get("attendees") or []:
-        fields.append(("ATTENDEE", f"mailto:{attendee}"))
+        params = []
+        if organizer.get("name"):
+            params.append(f"CN={_ics_param(organizer.get('name'))}")
+        if organizer.get("role"):
+            params.append(f"ROLE={_ics_param(organizer.get('role'))}")
+        param_text = ";" + ";".join(params) if params else ""
+        fields.append((f"ORGANIZER{param_text}", f"MAILTO:{organizer.get('email')}"))
     for key, value in fields:
         if value:
-            lines.append(f"{key}:{value}")
+            for folded in _ics_fold_line(f"{key}:{value}"):
+                lines.append(folded)
     lines.extend(["END:VEVENT", "END:VCALENDAR", ""])
     return "\r\n".join(lines)
 
@@ -537,34 +573,67 @@ def _calendar_attendees():
     raw = os.environ.get("PC_CALENDAR_ATTENDEES", _DEFAULT_ATTENDEES)
     return [a.strip() for a in raw.split(",") if a.strip()]
 
+def _append_calendar_pairs(lines, pairs):
+    added = False
+    for label, value in pairs:
+        if value:
+            lines.append(f"{label}: {value}")
+            added = True
+    return added
+
+
 def _calendar_description(fields, items):
+    """Build a review-friendly ICS description similar to the legacy exports."""
     lines = []
-    desc = find_kv(fields, "descripcion")
-    if desc:
-        lines.append(desc)
-    cargo = find_kv(fields, "cargo")
-    contacto = " ".join(p for p in [
-        find_kv(fields, "nombre"),
-        f"({cargo})" if cargo else "",
-        find_kv(fields, "correo"),
-        find_kv(fields, "telefono"),
-    ] if p)
-    pairs = [
-        ("Entidad", find_kv(fields, "entidad")),
-        ("Unidad de compra", find_kv(fields, "unidad", "compra")),
-        ("Contacto", contacto),
-        ("Dia y Hora de Entrega", find_kv(fields, "dia", "hora", "entrega")),
-        ("Precio Estimado", find_kv(fields, "precio")),
+    sections = [
+        [
+            ("Enlace Público", find_kv(fields, "enlace", "publico")),
+            ("Enlace Interno", find_kv(fields, "enlace", "interno")),
+            ("Precio Estimado", find_kv(fields, "precio")),
+        ],
+        [
+            ("Número", find_kv(fields, "numero")),
+            ("Descripción De La Solicitud", find_kv(fields, "descripcion")),
+            ("Objeto De La Contratación", find_kv(fields, "objeto", "contratacion")),
+        ],
+        [
+            ("Entidad", find_kv(fields, "entidad")),
+            ("Dependencia", find_kv(fields, "dependencia")),
+            ("Unidad de compra", find_kv(fields, "unidad", "compra")),
+            ("Dirección", find_kv(fields, "direccion")),
+            ("Provincia de Entrega", find_kv(fields, "provincia", "entrega")),
+        ],
+        [
+            ("Nombre", find_kv(fields, "nombre")),
+            ("Cargo", find_kv(fields, "cargo")),
+            ("Telefono", find_kv(fields, "telefono")),
+            ("Correo_Electronico", find_kv(fields, "correo")),
+        ],
+        [
+            ("Forma de Entrega", find_kv(fields, "forma", "entrega")),
+            ("Dias de Entrega", find_kv(fields, "dias", "entrega")),
+            ("Forma de Pago", find_kv(fields, "forma", "pago")),
+        ],
+        [
+            ("Dia y Hora de Entrega", find_kv(fields, "dia", "hora", "entrega")),
+        ],
     ]
-    extra = [f"{k}: {v}" for k, v in pairs if v]
-    if extra:
-        lines.append("")
-        lines.extend(extra)
+    for section in sections:
+        before = len(lines)
+        if _append_calendar_pairs(lines, section) and before:
+            lines.insert(before, "")
     if items:
-        lines.append("")
-        lines.append("Items:")
+        if lines:
+            lines.append("")
+        lines.append("Cantidad:    Unidad de Medida: Descripcion:")
         for it in items:
-            lines.append(f"- {it['cantidad']} {it['unidad_de_medida']} {it['descripcion']}".rstrip())
+            item_line = " ".join(p for p in [
+                str(it.get("cantidad") or "").strip(),
+                str(it.get("unidad_de_medida") or "").strip(),
+                str(it.get("descripcion") or "").strip(),
+            ] if p)
+            if item_line:
+                lines.append(item_line)
     return "\n".join(lines)
 
 def build_calendar(fields, items, numero="", dtstamp=None):
