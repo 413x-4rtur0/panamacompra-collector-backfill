@@ -90,7 +90,7 @@ The workflow has two phases run back-to-back by the worker:
   pages is heavy. Splitting them keeps browser work small at any one moment.
 - **One browser process at a time.** The worker takes a `flock` lock. If a new
   trigger arrives while it is running, a request flag is left behind and the worker
-  runs one more full sequence after it finishes — no duplicate Chromium sessions.
+  runs one more full sequence after it finishes — no duplicate Firefox sessions.
 - **Immutable archive.** Existing JSON / HTML / text files are never overwritten;
   completed folders are skipped.
 
@@ -105,8 +105,8 @@ The scripts resolve their own location, so the project can live in **any directo
 
 - Linux (Debian / Ubuntu / Linux Mint recommended)
 - Python 3.10+ (3.12 used in development)
-- Chromium or Google Chrome — the collectors use the system browser if present at
-  `/usr/bin/chromium`, `/usr/bin/google-chrome`, or `/usr/bin/chromium-browser`
+- Playwright Firefox browser — install it in the active virtualenv with
+  `python -m playwright install firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`
 - Optional: `sqlite3` CLI for manual inspection
 
@@ -189,7 +189,7 @@ example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed
 cd ~/Apps/panamacompra-collector
 
 # System packages: browser + complete Python venv support + optional Tk monitor
-sudo apt update && sudo apt install -y chromium python3-venv python3-full python3-tk
+sudo apt update && sudo apt install -y python3-venv python3-full python3-tk
 
 # Python environment
 python3 -m venv .venv
@@ -197,8 +197,8 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-# Optional: only needed if you do not want to use the system Chromium package
-python -m playwright install chromium
+# Browser engine used by the collectors
+python -m playwright install firefox
 ```
 
 `requirements.txt` intentionally lists only pip-installable Python modules. The
@@ -566,7 +566,7 @@ https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-l
 
 **Watch configuration**
 
-- Fetch method: Playwright / Chromium (JavaScript mode)
+- Fetch method: Playwright / Firefox (JavaScript mode)
 - JS actions: close popup → click *Programadas* → set 50 rows/page → crawl pages →
   click *Abiertas* → set 50 rows/page → crawl pages → output stable text keyed by `NUMERO`
 - CSS filter: `#pc-monitor-output`
