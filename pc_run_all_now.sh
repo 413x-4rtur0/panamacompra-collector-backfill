@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
-DETAIL_LIMIT="${1:-999999}"
+DETAIL_LIMIT="${1:-99}"
 
 mkdir -p data/queue data/logs
 

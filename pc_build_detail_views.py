@@ -15,24 +15,47 @@ views for new records; this tool is for archives already on disk.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 
-from pc_common import RECORDS_DIR, VIEWS_SCHEMA_VERSION, build_detail_views, safe_name, write_calendar_ics
+from pc_common import (
+    RECORDS_DIR,
+    VIEWS_SCHEMA_VERSION,
+    build_detail_views,
+    safe_name,
+    save_table_jsons,
+    write_calendar_ics,
+)
 
 DETAIL_SUFFIX = ".detail.json"
 
 def load_tables(detail_json_path):
-    """Saved table JSONs for a record (used to enrich items with códigos)."""
-    tables = []
+    """Reassemble full table dicts from disk (for item parsing and migration).
+
+    Merges the split layout (``.table.<ident>.NNN.json`` + ``.raw`` + ``.raw_wL``)
+    by table_index, and also reads the legacy single ``.table_NNN.json`` files, so
+    items keep their códigos and a migration can rewrite the split files.
+    """
     tables_dir = detail_json_path.parent / "tables"
     if not tables_dir.is_dir():
-        return tables
+        return []
+    merged = {}
     for path in sorted(tables_dir.glob("*.json")):
         try:
-            tables.append(json.loads(path.read_text(encoding="utf-8")))
+            doc = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-    return tables
+        idx = doc.get("table_index")
+        if idx is None:
+            m = re.search(r"(\d+)\.json$", path.name)
+            idx = int(m.group(1)) if m else len(merged) + 1
+        table = merged.setdefault(int(idx), {"table_index": int(idx)})
+        for key in ("section", "identifier", "headers", "rows", "key_values",
+                    "links", "links_count", "raw_rows", "rows_with_links",
+                    "raw_rows_with_links"):
+            if key in doc and not table.get(key):
+                table[key] = doc[key]
+    return [merged[k] for k in sorted(merged)]
 
 def iter_detail_jsons(records_dir):
     for path in sorted(Path(records_dir).rglob(f"*{DETAIL_SUFFIX}")):
@@ -40,20 +63,20 @@ def iter_detail_jsons(records_dir):
             yield path
 
 def rebuild_one(detail_json_path):
-    """Return (data, items_count) with rebuilt views, or (None, 0) on read error."""
+    """Return (data, items_count, tables) with rebuilt views, or (None, 0, []) on error."""
     try:
         data = json.loads(detail_json_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None, 0
+        return None, 0, []
 
     base = detail_json_path.name[: -len(DETAIL_SUFFIX)]
     txt_path = detail_json_path.parent / f"{base}.detail.txt"
     text = txt_path.read_text(encoding="utf-8", errors="ignore") if txt_path.exists() else ""
 
     numero = data.get("numero") or base
+    tables = load_tables(detail_json_path)
     summary, items, calendar, fields = build_detail_views(
-        text, load_tables(detail_json_path), numero,
-        dtstamp=data.get("saved_at"), link=data.get("link"),
+        text, tables, numero, dtstamp=data.get("saved_at"), link=data.get("link"),
     )
 
     data.update({
@@ -64,7 +87,7 @@ def rebuild_one(detail_json_path):
         "fields_detected": fields,
         "views_schema_version": VIEWS_SCHEMA_VERSION,
     })
-    return data, len(items)
+    return data, len(items), tables
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill detail.json summary/items/calendar views.")
@@ -79,7 +102,7 @@ def main():
     counts = {"scanned": 0, "updated": 0, "no_text": 0, "errors": 0}
     for detail_json_path in iter_detail_jsons(args.records_dir):
         counts["scanned"] += 1
-        data, n_items = rebuild_one(detail_json_path)
+        data, n_items, tables = rebuild_one(detail_json_path)
         if data is None:
             counts["errors"] += 1
             print(f"ERROR      {detail_json_path}")
@@ -93,9 +116,13 @@ def main():
         counts["updated"] += 1
         print(f"VIEWS      {detail_json_path.name}  items={n_items}  finish={data['calendar'].get('dtend') or '-'}")
         if args.apply:
+            numero = data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)]
+            # Migrate table files to the split layout and record the tables index.
+            _, descriptors = save_table_jsons(detail_json_path.parent, numero, tables, overwrite=True)
+            data["tables"] = descriptors
+            data["tables_count"] = len(descriptors)
             detail_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            numero = safe_name(data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)])
-            write_calendar_ics(detail_json_path.parent / f"{numero}.calendar.ics", data.get("calendar"))
+            write_calendar_ics(detail_json_path.parent / f"{safe_name(numero)}.calendar.ics", data.get("calendar"))
 
     print("-" * 80)
     print(f"Scanned: {counts['scanned']}")

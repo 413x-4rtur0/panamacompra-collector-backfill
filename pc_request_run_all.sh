@@ -5,7 +5,7 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 mkdir -p data/logs data/queue
 
-DETAIL_LIMIT="${1:-999999}"
+DETAIL_LIMIT="${1:-99}"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 REQUEST_LOG="data/logs/run_all_requests.log"
 

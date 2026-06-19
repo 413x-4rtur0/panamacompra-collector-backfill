@@ -14,6 +14,9 @@ RECORDS_DIR = BASE_DIR / "records"
 LOG_DIR = DATA_DIR / "logs"
 DB_PATH = DATA_DIR / "panamacompra_archive.db"
 CSV_PATH = DATA_DIR / "panamacompra_index.csv"
+# Combined ICS calendar (every event) for a single Thunderbird subscription.
+CALENDAR_DIR = DATA_DIR / "calendar"
+COMBINED_CALENDAR_PATH = CALENDAR_DIR / "panamacompra.ics"
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
@@ -263,6 +266,86 @@ def build_record_folder_leaf(finish_stamp, numero, desc):
     """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
     return "[" + (finish_stamp or "") + "]-[" + str(numero) + "]-[" + (desc or "") + "]"
 
+# Words dropped when turning a section heading into a short file identifier.
+_SECTION_STOPWORDS = {"de", "la", "del", "el", "los", "las", "y", "en", "a", "para"}
+
+def section_identifier(section, index=0):
+    """Short, filename-safe identifier for a table's section/category heading.
+
+    Derived dynamically from the section title scraped from the page (accents
+    stripped, stopwords dropped, joined with '-', capped). Falls back to
+    'tabla-NNN' when no section heading was detected.
+    """
+    words = [
+        w for w in re.split(r"[^a-z0-9]+", strip_accents(str(section or "")).lower())
+        if w and w not in _SECTION_STOPWORDS
+    ]
+    ident = "-".join(words)[:28].strip("-")
+    return ident or f"tabla-{int(index or 0):03d}"
+
+def save_table_jsons(record_folder, numero, tables, overwrite=False):
+    """Write three JSON files per table and return ``(written, descriptors)``.
+
+    Each table is split into:
+      * ``<n>.table.<ident>.NNN.json``        — clean view (headers/rows/key_values/links)
+      * ``<n>.table.<ident>.NNN.raw.json``     — raw_rows
+      * ``<n>.table.<ident>.NNN.raw_wL.json``  — raw rows with links
+    where ``<ident>`` is the table's section identifier and ``NNN`` its index.
+    ``descriptors`` is the per-table index recorded in detail.json's ``tables``.
+    """
+    tables_dir = Path(record_folder) / "tables"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    n = safe_name(numero)
+    if overwrite:
+        # Remove both the legacy single-file and the split-file layouts.
+        for old_path in tables_dir.glob(f"{n}.table*.json"):
+            old_path.unlink()
+
+    written = 0
+    descriptors = []
+    for position, table in enumerate(tables, start=1):
+        idx = int(table.get("table_index") or position)
+        section = table.get("section") or ""
+        ident = section_identifier(section, idx)
+        base = f"{n}.table.{ident}.{idx:03d}"
+        clean_path = tables_dir / f"{base}.json"
+        raw_path = tables_dir / f"{base}.raw.json"
+        rawwl_path = tables_dir / f"{base}.raw_wL.json"
+        docs = [
+            (clean_path, {
+                "table_index": idx, "section": section, "identifier": ident,
+                "headers": table.get("headers", []),
+                "rows": table.get("rows", []),
+                "key_values": table.get("key_values", {}),
+                "links_count": table.get("links_count", 0),
+                "links": table.get("links", []),
+            }),
+            (raw_path, {
+                "table_index": idx, "section": section, "identifier": ident,
+                "raw_rows": table.get("raw_rows", []),
+            }),
+            (rawwl_path, {
+                "table_index": idx, "section": section, "identifier": ident,
+                "rows_with_links": table.get("rows_with_links", []),
+                "raw_rows_with_links": table.get("raw_rows_with_links", []),
+            }),
+        ]
+        for path, doc in docs:
+            if overwrite or not path.exists():
+                path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+                written += 1
+        descriptors.append({
+            "table_index": idx,
+            "section": section,
+            "identifier": ident,
+            "files": {
+                "clean": clean_path.name,
+                "raw": raw_path.name,
+                "raw_with_links": rawwl_path.name,
+            },
+        })
+    return written, descriptors
+
 def _ics_escape(value):
     """Escape a value for an iCalendar text property."""
     return (
@@ -311,20 +394,23 @@ def _ics_fold_line(line, limit=75):
     return out
 
 
-def calendar_to_ics(calendar):
-    """Return a VCALENDAR/VEVENT string from a detail.json calendar object."""
+_ICS_HEADER = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//panamacompra-collector//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+]
+
+def _vevent_lines(calendar):
+    """Folded VEVENT lines (BEGIN/END included) for one calendar object.
+
+    URL carries the record link so calendar apps (Thunderbird) show it as a
+    clickable link; the link is also repeated in DESCRIPTION. ATTENDEE lines live
+    inside the VEVENT so a multi-event calendar keeps each event's attendees.
+    """
     calendar = calendar or {}
     tz = calendar.get("timezone") or CALENDAR_TZ
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//panamacompra-collector//EN",
-        "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH",
-    ]
-    for attendee in calendar.get("attendees") or []:
-        lines.append(f"ATTENDEE:MAILTO:{attendee}")
-    lines.append("BEGIN:VEVENT")
     fields = [
         ("UID", calendar.get("uid")),
         ("SUMMARY", _ics_escape(calendar.get("summary"))),
@@ -344,11 +430,27 @@ def calendar_to_ics(calendar):
             params.append(f"ROLE={_ics_param(organizer.get('role'))}")
         param_text = ";" + ";".join(params) if params else ""
         fields.append((f"ORGANIZER{param_text}", f"MAILTO:{organizer.get('email')}"))
+    for attendee in calendar.get("attendees") or []:
+        fields.append(("ATTENDEE", f"MAILTO:{attendee}"))
+    out = ["BEGIN:VEVENT"]
     for key, value in fields:
         if value:
-            for folded in _ics_fold_line(f"{key}:{value}"):
-                lines.append(folded)
-    lines.extend(["END:VEVENT", "END:VCALENDAR", ""])
+            out.extend(_ics_fold_line(f"{key}:{value}"))
+    out.append("END:VEVENT")
+    return out
+
+def calendar_to_ics(calendar):
+    """Return a VCALENDAR string wrapping one record's VEVENT."""
+    lines = list(_ICS_HEADER) + _vevent_lines(calendar) + ["END:VCALENDAR", ""]
+    return "\r\n".join(lines)
+
+def calendars_to_ics(calendars):
+    """Return one VCALENDAR string containing a VEVENT for every calendar given."""
+    lines = list(_ICS_HEADER)
+    for calendar in calendars:
+        if calendar:
+            lines += _vevent_lines(calendar)
+    lines += ["END:VCALENDAR", ""]
     return "\r\n".join(lines)
 
 def write_calendar_ics(path, calendar):
@@ -631,6 +733,8 @@ def _calendar_description(fields, items, link=""):
         lines.append(f"LINK : {url}")
     descripcion = find_kv(fields, "descripcion")
     if descripcion:
+        if lines:
+            lines.append("")
         lines.append(f"DESCR: {descripcion}")
     if items:
         if lines:

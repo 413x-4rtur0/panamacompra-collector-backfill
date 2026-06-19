@@ -135,7 +135,17 @@ echo "7) Run repository health checks"
 ./review_panamacompra_system.sh
 
 echo ""
-echo "8) Optional smoke run request"
+echo "8) Refresh already-downloaded records (optional, manual)"
+echo "   A normal run only processes NEW records; it never re-pulls previously"
+echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
+echo "   and the per-section split-table layout, run one of these manually:"
+echo "     ./pc_build_detail_views.py --apply                  # rebuild views/.ics + split tables (no browser)"
+echo "     ./pc_update_day_folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
+echo "   Then rebuild the combined Thunderbird calendar:"
+echo "     ./pc_build_calendar.py"
+
+echo ""
+echo "9) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   ./pc_request_run_all.sh "$DETAIL_LIMIT"

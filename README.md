@@ -64,10 +64,12 @@ pc_request_run_all.sh       creates data/queue/run_all_requested.flag
 pc_run_all_worker.sh        single locked worker
         │
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
-        └─ STEP 2  pc_detail_downloader.py downloads pending detail pages
+        ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
+        └─ STEP 3  pc_build_calendar.py     merges every event into one .ics
         │
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
+data/calendar/panamacompra.ics                combined calendar for one Thunderbird subscription
 ```
 
 The workflow has two phases run back-to-back by the worker:
@@ -275,6 +277,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
+| `pc_build_calendar.py` | Merge every record's calendar event into one `data/calendar/panamacompra.ics` for a single Thunderbird subscription. Runs automatically as STEP 3 after each detail step; can also be run manually. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -293,7 +296,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
-| `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
+| `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -335,9 +338,17 @@ panamacompra-collector/
             ├── NUMERO.detail.html              # full page HTML
             ├── NUMERO.detail.txt               # visible text
             ├── NUMERO.calendar.ics             # importable calendar event
-            └── tables/
-                └── NUMERO.table_001.json
+            └── tables/                         # one detail-page section -> three files:
+                ├── NUMERO.table.<section>.001.json         # clean: headers/rows/key_values/links
+                ├── NUMERO.table.<section>.001.raw.json     # raw rows
+                └── NUMERO.table.<section>.001.raw_wL.json  # raw rows with links
 ```
+
+`<section>` is a short identifier derived from the detail-page section heading
+(e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
+per-table index — section, identifier and the three filenames — is also listed in
+`detail.json` under `tables`. The combined `data/calendar/panamacompra.ics` holds
+every record's event for one Thunderbird subscription.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -447,9 +458,9 @@ text (and the on-page items grid). They hold the same facts the old `SUMMARY.csv
   end on its date; older records fall back to the *Día y Hora de Entrega* window),
   `timezone`, `location` (`(Provincia) - (Dirección de la unidad de compra)`),
   `organizer` (the record's contact), `attendees`, `url_publico` (the record's link),
-  `url_interno`, `precio_estimado`, and a `description` (a `LINK :` line, a `DESCR:`
-  line, and an `ITEMS:` list). A sibling `NUMERO.calendar.ics` file is also written so
-  the event can be imported into a calendar app later.
+  `url_interno`, `precio_estimado`, and a blank-line-separated `description`
+  (`LINK :`, `DESCR:`, then an `ITEMS:` list). A sibling `NUMERO.calendar.ics` file
+  is also written so the event can be imported into a calendar app later.
 - **`fields_detected`** — the `Label → value` pairs parsed from the detail text. Both the
   current **V3** portal (tab-separated `Label⇥Value`) and older `Label: value` /
   label-on-its-own-line layouts are supported.
@@ -468,14 +479,22 @@ Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 `PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
 `.calendar.ics` file is a portable review/import copy generated during detail
 downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`. In the
-ICS export, configured attendees are emitted as top-level `ATTENDEE:MAILTO:...`
-lines, `DTSTART` / `DTEND` use `TZID=<timezone>;VALUE=DATE-TIME` (e.g.
+ICS export, each event's `ATTENDEE:MAILTO:...` lines sit inside its `VEVENT`,
+`DTSTART` / `DTEND` use `TZID=<timezone>;VALUE=DATE-TIME` (e.g.
 `DTSTART;TZID=America/Panama;VALUE=DATE-TIME:20260619T100000`), `DTSTAMP` ends
 with a trailing `Z`, organizer lines include quoted `CN` and `ROLE` parameters
 when available, `LOCATION` is `(Provincia) - (Dirección de la unidad de compra)`,
-and `DESCRIPTION` holds the record link, the request description, and the item
-list. (Commas in ICS text are written `\,` per the spec and display unescaped in
-calendar apps.)
+and `DESCRIPTION` is a `LINK :` line, a `DESCR:` line, then an `ITEMS:` list
+(blank-line separated). The record link is also set as the event `URL`, which
+Thunderbird renders as a clickable link. (Commas in ICS text are written `\,` per
+the spec and display unescaped in calendar apps.)
+
+**Combined Thunderbird calendar.** After each run, `pc_build_calendar.py` (STEP 3)
+merges every record's event into one `data/calendar/panamacompra.ics`. Subscribe to
+that file once in Thunderbird (New Calendar → *On My Computer*, or an iCalendar
+network calendar with a `file://` URL to that path) and every opportunity shows on
+your calendar; later runs refresh the file with new events. Run it manually any time
+with `./pc_build_calendar.py`.
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and

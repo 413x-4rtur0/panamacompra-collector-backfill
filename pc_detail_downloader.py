@@ -12,7 +12,7 @@ MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
 # Bump when the link/table cleaning rules change so existing archives are
 # refreshed from their saved HTML on the next run instead of keeping old noise.
 # v3 also adds the summary / numbered items / calendar views to detail.json.
-LINKS_SCHEMA_VERSION = 3
+LINKS_SCHEMA_VERSION = 4
 
 # Only keep genuinely useful links. The in-page extractors over-collect (every
 # anchor, [onclick], and regex-matched URL in the HTML), which produced a lot of
@@ -205,7 +205,30 @@ def extract_tables(page):
         return links;
       }
 
+      function sectionTitleFor(table) {
+        const sel = 'h1,h2,h3,h4,h5,h6,legend,.panel-title,.card-title,.card-header,.section-title,.titulo,.title';
+        function fromEl(el) {
+          if (!el || !el.matches) return '';
+          if (el.matches(sel)) return clean(el.innerText || el.textContent || '');
+          const h = el.querySelector ? el.querySelector(sel) : null;
+          if (h) return clean(h.innerText || h.textContent || '');
+          const t = clean(el.innerText || el.textContent || '');
+          if (t && t.length <= 60 && /:\\s*$/.test(t)) return t.replace(/:\\s*$/, '');
+          return '';
+        }
+        for (let node = table; node; node = node.parentElement) {
+          let sib = node.previousElementSibling;
+          while (sib) {
+            const t = fromEl(sib);
+            if (t) return t;
+            sib = sib.previousElementSibling;
+          }
+        }
+        return '';
+      }
+
       return Array.from(document.querySelectorAll('table')).map((table, idx) => {
+        const section = sectionTitleFor(table);
         const structuredRows = Array.from(table.querySelectorAll('tr')).map(tr =>
           Array.from(tr.querySelectorAll('th, td')).map(td => ({
             text: clean(td.innerText),
@@ -238,6 +261,7 @@ def extract_tables(page):
 
         return {
           table_index: idx + 1,
+          section,
           headers,
           rows: dataRows,
           raw_rows: rows,
@@ -320,23 +344,8 @@ def detail_pending_rows(conn, limit, max_attempts):
                 break
     return pending
 
-def save_table_jsons(record_folder, numero, tables, overwrite=False):
-    tables_dir = record_folder / "tables"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    if overwrite:
-        for old_path in tables_dir.glob(f"{safe_name(numero)}.table_*.json"):
-            old_path.unlink()
-
-    written = 0
-    for table in tables:
-        path = tables_dir / f"{safe_name(numero)}.table_{table['table_index']:03d}.json"
-        if overwrite:
-            path.write_text(json.dumps(table, ensure_ascii=False, indent=2), encoding="utf-8")
-            written += 1
-        elif write_json_once(path, table):
-            written += 1
-
-    return written
+# save_table_jsons now lives in pc_common (browser-free, shared with
+# pc_build_detail_views.py) and is imported via `from pc_common import *`.
 
 def detail_archive_has_link_metadata(detail_json_path):
     try:
@@ -352,21 +361,11 @@ def detail_archive_has_link_metadata(detail_json_path):
     if data.get("links_schema_version") != LINKS_SCHEMA_VERSION:
         return False
 
-    # The structured views are part of the current schema.
-    if "summary" not in data or "calendar" not in data:
+    # The structured views and the per-section tables index are part of the
+    # current schema. Individual table files are split (clean/raw/raw_wL), so the
+    # detail.json markers are authoritative rather than inspecting each file.
+    if "summary" not in data or "calendar" not in data or "tables" not in data:
         return False
-
-    table_paths = list((detail_json_path.parent / "tables").glob("*.json"))
-    if not table_paths:
-        return True
-
-    for table_path in table_paths:
-        try:
-            table = json.loads(table_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return False
-        if "rows_with_links" not in table or "links" not in table:
-            return False
 
     return True
 
@@ -379,7 +378,7 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
     finally:
         page.close()
 
-    save_table_jsons(Path(row["record_folder"]), row["numero"], tables, overwrite=True)
+    _, table_descriptors = save_table_jsons(Path(row["record_folder"]), row["numero"], tables, overwrite=True)
 
     n = safe_name(row["numero"])
     txt_path = Path(row["record_folder"]) / f"{n}.detail.txt"
@@ -408,6 +407,7 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         "links_detected": links,
         "links_schema_version": LINKS_SCHEMA_VERSION,
         "tables_count": len(tables),
+        "tables": table_descriptors,
         "tables_refreshed_for_links_at": now_iso(),
         "finish_stamp": finish_stamp,
         "desc_slug": slug,
@@ -475,7 +475,7 @@ def process_detail(browser, conn, row, force=False):
         else:
             write_text_once(html_path, html)
             write_text_once(txt_path, text)
-        tables_written = save_table_jsons(record_folder, numero, tables, overwrite=force)
+        tables_written, table_descriptors = save_table_jsons(record_folder, numero, tables, overwrite=force)
 
         detail_data = {
             "numero": numero,
@@ -500,6 +500,7 @@ def process_detail(browser, conn, row, force=False):
             "views_schema_version": VIEWS_SCHEMA_VERSION,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
+            "tables": table_descriptors,
             "links_count": len(links),
             "links_detected": links,
             "links_schema_version": LINKS_SCHEMA_VERSION,

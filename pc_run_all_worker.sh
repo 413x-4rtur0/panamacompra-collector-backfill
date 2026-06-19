@@ -19,7 +19,7 @@ CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
-DETAIL_LIMIT="${1:-999999}"
+DETAIL_LIMIT="${1:-99}"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
@@ -149,11 +149,29 @@ while true; do
     echo ""
     echo "Detail exit code: $DETAIL_EXIT"
     echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+  } >> "$CURRENT_LOG"
+
+  # STEP 3: rebuild the combined Thunderbird calendar from every record's event.
+  write_progress "CALENDAR" "RUNNING" "96" "Step 3/3: building combined Thunderbird calendar (.ics)..." "$STARTED"
+  {
+    echo ""
+    echo "-------------------- STEP 3: COMBINED CALENDAR -----------------"
+    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
+  } >> "$CURRENT_LOG"
+
+  "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
+  CALENDAR_EXIT=$?
+
+  {
+    echo "Calendar exit code: $CALENDAR_EXIT"
+    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION FINISHED: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "INDEX_EXIT=$INDEX_EXIT"
     echo "DETAIL_EXIT=$DETAIL_EXIT"
+    echo "CALENDAR_EXIT=$CALENDAR_EXIT"
     echo "============================================================"
   } >> "$CURRENT_LOG"
 
