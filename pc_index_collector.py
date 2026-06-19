@@ -284,14 +284,22 @@ def main():
 
                     existing = find_existing_opportunity(conn, numero)
 
+                    existing_on_disk = False
                     if existing:
                         date_folder = existing["date_folder"]
                         record_folder = Path(existing["record_folder"])
                         index_json_path = Path(existing["index_json_path"])
                     else:
-                        date_folder = date_folder_name()
-                        record_folder = get_record_folder(date_folder, numero)
-                        index_json_path = archive_index_json_path(record_folder, numero)
+                        disk_folder, disk_index_json = find_existing_record_archive(numero)
+                        if disk_folder and disk_index_json:
+                            existing_on_disk = True
+                            date_folder = disk_folder.parent.name
+                            record_folder = disk_folder
+                            index_json_path = disk_index_json
+                        else:
+                            date_folder = date_folder_name()
+                            record_folder = get_record_folder(date_folder, numero)
+                            index_json_path = archive_index_json_path(record_folder, numero)
 
                     record_folder.mkdir(parents=True, exist_ok=True)
 
@@ -312,7 +320,11 @@ def main():
                         "date_folder": date_folder,
                         "record_folder": str(record_folder),
                         "index_json_path": str(index_json_path),
-                        "detail_status": existing["detail_status"] if existing else "pending",
+                        "detail_status": (
+                            existing["detail_status"] if existing
+                            else "saved" if existing_on_disk and archive_complete(record_folder, numero)
+                            else "pending"
+                        ),
                         "finish_date_guess": existing["finish_date_guess"] if existing else "",
                         "source_page_first_seen_or_last_seen": page_number,
                         "visual_row_first_seen_or_last_seen": r.get("visual_row")
@@ -320,7 +332,7 @@ def main():
 
                     result = insert_or_update_index(conn, row)
 
-                    if result == "new":
+                    if result == "new" and not existing_on_disk:
                         new_records += 1
                     else:
                         existing_records += 1

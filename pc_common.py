@@ -126,10 +126,10 @@ def short_description(text, max_len=80):
     return text[:max_len].strip()
 
 # --------------------------------------------------------------------------
-# Folder-naming helpers: [finish_stamp]-{numero}-{desc_slug}
+# Folder-naming helpers: [finish_stamp]-[numero]-[desc_slug]
 #
 # Example leaf:
-#   [2022-10-11_12:00]-{2022-0-12-214-12-CL-008498}-{FRS-126--CMPRS-D-CJ-PLSTC}
+#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "40", minimum=1)
@@ -259,8 +259,66 @@ def compute_finish_stamp(key_values, text):
     return f"{date}_12:00" if date else ""
 
 def build_record_folder_leaf(finish_stamp, numero, desc):
-    """Compose the new record-folder leaf name: [stamp]-{numero}-{desc}."""
-    return "[" + (finish_stamp or "") + "]-{" + str(numero) + "}-{" + (desc or "") + "}"
+    """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
+    return "[" + (finish_stamp or "") + "]-[" + str(numero) + "]-[" + (desc or "") + "]"
+
+def _ics_escape(value):
+    """Escape a value for an iCalendar text property."""
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\n")
+    )
+
+def _ics_datetime(value):
+    """Convert YYYY-MM-DDTHH:MM:SS-ish values to ICS local date-time form."""
+    if not value:
+        return ""
+    return re.sub(r"[^0-9]", "", str(value))[:14]
+
+def calendar_to_ics(calendar):
+    """Return a VCALENDAR/VEVENT string from a detail.json calendar object."""
+    calendar = calendar or {}
+    tz = calendar.get("timezone") or CALENDAR_TZ
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//panamacompra-collector//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+    ]
+    fields = [
+        ("UID", calendar.get("uid")),
+        ("DTSTAMP", _ics_datetime(calendar.get("dtstamp"))),
+        (f"DTSTART;TZID={tz}", _ics_datetime(calendar.get("dtstart"))),
+        (f"DTEND;TZID={tz}", _ics_datetime(calendar.get("dtend"))),
+        ("SUMMARY", _ics_escape(calendar.get("summary"))),
+        ("LOCATION", _ics_escape(calendar.get("location"))),
+        ("DESCRIPTION", _ics_escape(calendar.get("description"))),
+        ("URL", calendar.get("url_publico") or calendar.get("url_interno")),
+    ]
+    organizer = calendar.get("organizer") or {}
+    if organizer.get("email"):
+        name = _ics_escape(organizer.get("name"))
+        fields.append((f"ORGANIZER;CN={name}", f"mailto:{organizer.get('email')}"))
+    for attendee in calendar.get("attendees") or []:
+        fields.append(("ATTENDEE", f"mailto:{attendee}"))
+    for key, value in fields:
+        if value:
+            lines.append(f"{key}:{value}")
+    lines.extend(["END:VEVENT", "END:VCALENDAR", ""])
+    return "\r\n".join(lines)
+
+def write_calendar_ics(path, calendar):
+    """Write a calendar .ics file for later import/review."""
+    path = Path(path)
+    path.write_bytes(calendar_to_ics(calendar).encode("utf-8"))
+    return path
 
 def key_values_from_rows(rows):
     """For a strictly 2-column table, return {col0: col1}; otherwise {}.
@@ -586,6 +644,7 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
             "detail_json": str(detail_json),
             "detail_html": str(target / f"{n}.detail.html"),
             "detail_txt": str(target / f"{n}.detail.txt"),
+            "calendar_ics": str(target / f"{n}.calendar.ics"),
             "tables_folder": str(target / "tables"),
         }
         data["folder_renamed_from"] = str(current)
@@ -699,6 +758,29 @@ def archive_index_json_path(record_folder, numero):
 
 def archive_detail_json_path(record_folder, numero):
     return record_folder / f"{safe_name(numero)}.detail.json"
+
+def find_existing_record_archive(numero, records_dir=RECORDS_DIR, date_folder=None):
+    """Find an on-disk archive folder for ``numero`` even after folder renames.
+
+    The immutable index JSON keeps the stable ``<NUMERO>.json`` filename inside
+    both old ``records/YY-MM-DD/NUMERO/`` leaves and renamed
+    ``records/YY-MM-DD/[finish]-[numero]-[desc]/`` leaves.  Use that file as
+    the source of truth so a rebuilt/empty DB does not create a duplicate
+    ``NUMERO`` folder just because the original leaf was renamed.
+    """
+    n = safe_name(numero)
+    root = Path(records_dir)
+    day_dirs = [root / date_folder] if date_folder else sorted(root.glob("*"))
+    for day_dir in day_dirs:
+        if not day_dir.is_dir():
+            continue
+        direct = day_dir / n / f"{n}.json"
+        if direct.exists():
+            return direct.parent, direct
+        for index_json in sorted(day_dir.glob(f"*/{n}.json")):
+            if index_json.is_file():
+                return index_json.parent, index_json
+    return None, None
 
 def archive_complete(record_folder, numero):
     n = safe_name(numero)
