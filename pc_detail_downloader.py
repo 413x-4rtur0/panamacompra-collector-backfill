@@ -9,6 +9,60 @@ from pc_common import *
 DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
 
+# Bump when the link/table cleaning rules change so existing archives are
+# refreshed from their saved HTML on the next run instead of keeping old noise.
+LINKS_SCHEMA_VERSION = 2
+
+# Only keep genuinely useful links. The in-page extractors over-collect (every
+# anchor, [onclick], and regex-matched URL in the HTML), which produced a lot of
+# unwanted nav/router/asset links. We keep document attachments and the real
+# PanamaCompra opportunity/portal links, and drop everything else.
+_DESIRED_DOC_RE = re.compile(
+    r"\.(pdf|docx?|xlsx?|pptx?|odt|ods|zip|rar|7z|csv|txt)(?:[?#]|$)", re.IGNORECASE
+)
+
+def is_desired_link(href):
+    if not href:
+        return False
+    low = href.lower()
+    if low.startswith(("javascript:", "mailto:", "tel:", "data:", "#")):
+        return False
+    if _DESIRED_DOC_RE.search(low):
+        return True
+    if "/solicitud-de-cotizacion/" in href or "/pliego-de-cargos/" in href:
+        return True
+    if "numlc=" in low or "vistapreviacp" in low or "escritorio" in low:
+        return True
+    return False
+
+def filter_links(links):
+    return [lk for lk in (links or []) if is_desired_link((lk or {}).get("href"))]
+
+def clean_table(table):
+    """Drop undesired links and add a key->value view for 2-column tables."""
+    if "links" in table:
+        table["links"] = filter_links(table.get("links"))
+        table["links_count"] = len(table["links"])
+    for key in ("rows_with_links", "raw_rows_with_links"):
+        for row in table.get(key) or []:
+            for cell in row:
+                if isinstance(cell, dict) and "links" in cell:
+                    cell["links"] = filter_links(cell.get("links"))
+    kv = key_values_from_rows(table.get("raw_rows"))
+    if kv:
+        table["key_values"] = kv
+    return table
+
+def naming_fields(tables, text, row):
+    """Compute (finish_stamp, desc_slug, proposed_folder_name) for a record."""
+    agg_kv = {}
+    for table in tables:
+        agg_kv.update(table.get("key_values", {}))
+    finish_stamp = compute_finish_stamp(agg_kv, text)
+    desc_source = find_kv(agg_kv, "descripcion") or row["descripcion"] or row["short_description"]
+    slug = desc_slug(desc_source)
+    return finish_stamp, slug, build_record_folder_leaf(finish_stamp, row["numero"], slug)
+
 def close_popup(page):
     page.evaluate("""
     (() => {
@@ -255,6 +309,11 @@ def detail_archive_has_link_metadata(detail_json_path):
     if "links_detected" not in data or "links_count" not in data:
         return False
 
+    # Re-process when the cleaning rules changed (also adds key_values and
+    # strips old unwanted links from already-saved archives).
+    if data.get("links_schema_version") != LINKS_SCHEMA_VERSION:
+        return False
+
     table_paths = list((detail_json_path.parent / "tables").glob("*.json"))
     if not table_paths:
         return True
@@ -273,12 +332,17 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
     page = browser.new_page(viewport={"width": 1280, "height": 720})
     try:
         page.set_content(html_path.read_text(encoding="utf-8", errors="ignore"), wait_until="domcontentloaded")
-        tables = extract_tables(page)
-        links = extract_links(page)
+        tables = [clean_table(t) for t in extract_tables(page)]
+        links = filter_links(extract_links(page))
     finally:
         page.close()
 
     save_table_jsons(Path(row["record_folder"]), row["numero"], tables, overwrite=True)
+
+    n = safe_name(row["numero"])
+    txt_path = Path(row["record_folder"]) / f"{n}.detail.txt"
+    text = txt_path.read_text(encoding="utf-8", errors="ignore") if txt_path.exists() else ""
+    finish_stamp, slug, proposed_folder_name = naming_fields(tables, text, row)
 
     try:
         detail_data = json.loads(detail_json_path.read_text(encoding="utf-8"))
@@ -295,8 +359,12 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
     detail_data.update({
         "links_count": len(links),
         "links_detected": links,
+        "links_schema_version": LINKS_SCHEMA_VERSION,
         "tables_count": len(tables),
         "tables_refreshed_for_links_at": now_iso(),
+        "finish_stamp": finish_stamp,
+        "desc_slug": slug,
+        "proposed_folder_name": proposed_folder_name,
     })
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -328,10 +396,11 @@ def process_detail(browser, conn, row):
 
         html = page.content()
         text = page.locator("body").inner_text(timeout=25000)
-        tables = extract_tables(page)
-        links = extract_links(page)
+        tables = [clean_table(t) for t in extract_tables(page)]
+        links = filter_links(extract_links(page))
         label_values = extract_label_values_from_text(text)
         finish_date_guess = guess_finish_date_from_text(text)
+        finish_stamp, slug, proposed_folder_name = naming_fields(tables, text, row)
 
         write_text_once(html_path, html)
         write_text_once(txt_path, text)
@@ -356,6 +425,10 @@ def process_detail(browser, conn, row):
             "tables_written_now": tables_written,
             "links_count": len(links),
             "links_detected": links,
+            "links_schema_version": LINKS_SCHEMA_VERSION,
+            "finish_stamp": finish_stamp,
+            "desc_slug": slug,
+            "proposed_folder_name": proposed_folder_name,
             "files": {
                 "index_json": row["index_json_path"],
                 "detail_json": str(detail_json_path),

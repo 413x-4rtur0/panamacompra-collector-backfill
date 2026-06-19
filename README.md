@@ -255,6 +255,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
+| `pc_rename_record_folders.py` | Rename record folders to `[finish]-{numero}-{desc}` from already-saved data. Dry-run by default; `--apply` to act. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -269,6 +270,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
+| `PC_DESC_SLUG_MAX` | `25` | folder naming | Max length of the `{description}` token in the record-folder name. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
@@ -317,6 +319,45 @@ panamacompra-collector/
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
 > the SQLite database for the live picture.
+
+### Record folder naming
+
+Folders are created as `NUMERO` during the index scan, then renamed to encode the
+key facts once detail data is available:
+
+```text
+records/YY-MM-DD/[<finish>]-{<numero>}-{<desc>}/
+              e.g. [2022-10-11_12:00]-{2022-0-12-214-12-CL-008498}-{FRS-126--CMPRS-D-CJ-PLSTC}
+```
+
+- **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
+  time of the *"Fecha y hora presentación de cotizaciones"* window (24-hour). For older
+  records without that field, the delivery (*entrega*) date at `12:00` is used. Empty `[]`
+  if no date can be found.
+- **`<numero>`** = the PanamaCompra `NUMERO`, unchanged.
+- **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
+  removed**, non-alphanumerics turned into `-`, truncated to `PC_DESC_SLUG_MAX` chars.
+
+Run it over the existing archive (reads only saved files, no network):
+
+```bash
+./pc_rename_record_folders.py            # dry-run: preview every planned rename
+./pc_rename_record_folders.py --apply    # rename folders and update the database
+```
+
+It is idempotent (already-named folders are skipped) and never overwrites an existing
+target. Inner files keep their `NUMERO.*` names.
+
+### Detail tables and links
+
+- Each two-column detail table also gets a **`key_values`** object
+  (`{"Fecha y hora presentación de cotizaciones": "19-06-2026 - 08:00 AM a 12:00 PM", …}`)
+  alongside the existing row arrays.
+- Saved links are filtered to the **useful** ones only — document attachments
+  (`pdf`/`doc`/`xls`/`zip`/…) and real PanamaCompra opportunity/portal URLs — dropping
+  navigation, in-page `#/` router links, `mailto:`/`javascript:`, and asset noise.
+  Already-saved archives are re-cleaned automatically from their stored HTML on the next
+  run (no re-download).
 
 ### Database
 

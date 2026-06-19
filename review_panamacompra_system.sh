@@ -89,6 +89,7 @@ python_files=(
   "pc_monitor_server.py"
   "webhook_listener.py"
   "migrate_previous_records.py"
+  "pc_rename_record_folders.py"
 )
 
 for f in "${python_files[@]}"; do

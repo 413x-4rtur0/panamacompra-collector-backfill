@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 
@@ -123,6 +124,158 @@ def short_description(text, max_len=80):
     text = clean(text)
     text = re.sub(r"[^A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ .,;:_()/-]+", "", text)
     return text[:max_len].strip()
+
+# --------------------------------------------------------------------------
+# Folder-naming helpers: [finish_stamp]-{numero}-{desc_slug}
+#
+# Example leaf:
+#   [2022-10-11_12:00]-{2022-0-12-214-12-CL-008498}-{FRS-126--CMPRS-D-CJ-PLSTC}
+# --------------------------------------------------------------------------
+
+DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "25", minimum=1)
+_VOWELS = set("AEIOU")
+
+def strip_accents(text):
+    """Map accented characters to ASCII, e.g. plásticas -> plasticas, Ñ -> N."""
+    nfkd = unicodedata.normalize("NFKD", str(text or ""))
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
+def desc_slug(text, max_len=DESC_SLUG_MAX):
+    """Build the description token for a folder name.
+
+    Uppercase, strip accents, drop vowels (A E I O U), turn every remaining
+    non ``[A-Z0-9]`` character into a single ``-`` (separators are NOT
+    collapsed, so a stray ``:`` produces ``--``), then truncate to ``max_len``.
+
+    'FORIS 126: Compras de Caja plásticas' -> 'FRS-126--CMPRS-D-CJ-PLSTC'
+    """
+    s = strip_accents(text).upper()
+    s = "".join(ch for ch in s if ch not in _VOWELS)
+    s = "".join(ch if ("A" <= ch <= "Z" or "0" <= ch <= "9") else "-" for ch in s)
+    return s[:max_len].strip("-")
+
+def _parse_ddmmyyyy(text):
+    """Return the first DD-MM-YYYY / DD/MM/YYYY date as ISO YYYY-MM-DD, else ''."""
+    m = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", str(text or ""))
+    if not m:
+        return ""
+    day, month, year = m.group(1), m.group(2), m.group(3)
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+def _parse_end_time_24h(text):
+    """Return the LAST clock time in ``text`` as 24h HH:MM, or '' if none.
+
+    Handles 12h AM/PM ('12:00 PM' -> '12:00', '03:00 PM' -> '15:00',
+    '12:00 AM' -> '00:00') and leaves bare 24h values as-is.
+    """
+    matches = re.findall(r"(\d{1,2}):(\d{2})\s*([AaPp]\.?\s*[Mm]\.?)?", str(text or ""))
+    if not matches:
+        return ""
+    hh, mm, ap = matches[-1]
+    hh, mm = int(hh), int(mm)
+    ap = ap.lower().replace(".", "").replace(" ", "")
+    if ap == "pm" and hh != 12:
+        hh += 12
+    elif ap == "am" and hh == 12:
+        hh = 0
+    return f"{hh % 24:02d}:{mm % 60:02d}"
+
+def find_kv(key_values, *needles):
+    """First value whose accent-insensitive lowercased key contains all needles."""
+    for key, value in (key_values or {}).items():
+        kl = strip_accents(str(key)).lower()
+        if value and all(n in kl for n in needles):
+            return str(value)
+    return ""
+
+def compute_finish_stamp(key_values, text):
+    """Return 'YYYY-MM-DD_HH:MM' for when proposals stop being accepted, or ''.
+
+    Priority:
+      1) A 'presentación de cotizaciones' / 'cierre' / 'límite' field: use its
+         date and the END time of its window in 24h. No time -> 12:00.
+      2) Otherwise the delivery ('entrega') date, or any date in the text, with
+         a default time of 12:00.
+    """
+    key_values = key_values or {}
+    text = str(text or "")
+
+    for key, value in key_values.items():
+        kl = strip_accents(str(key)).lower()
+        is_close = (
+            ("presentaci" in kl and ("cotiza" in kl or "propuesta" in kl))
+            or "cierre" in kl
+            or "limite" in kl
+        )
+        if is_close and value:
+            date = _parse_ddmmyyyy(value)
+            if date:
+                return f"{date}_{_parse_end_time_24h(value) or '12:00'}"
+
+    entrega = find_kv(key_values, "entrega")
+    if entrega:
+        date = _parse_ddmmyyyy(entrega)
+        if date:
+            return f"{date}_12:00"
+
+    m = re.search(
+        r"entrega[^0-9]{0,40}(\d{1,2}[-/]\d{1,2}[-/]\d{4})",
+        strip_accents(text),
+        flags=re.IGNORECASE,
+    )
+    if m:
+        date = _parse_ddmmyyyy(m.group(1))
+        if date:
+            return f"{date}_12:00"
+
+    date = _parse_ddmmyyyy(text)
+    return f"{date}_12:00" if date else ""
+
+def build_record_folder_leaf(finish_stamp, numero, desc):
+    """Compose the new record-folder leaf name: [stamp]-{numero}-{desc}."""
+    return "[" + (finish_stamp or "") + "]-{" + str(numero) + "}-{" + (desc or "") + "}"
+
+def key_values_from_rows(rows):
+    """For a strictly 2-column table, return {col0: col1}; otherwise {}.
+
+    Every row is used (including the first), so a header-like first row such as
+    'Fecha de Publicación' -> '18-06-2026 ...' is captured as a pair too.
+    """
+    rows = rows or []
+    if not rows or any(len(r) != 2 for r in rows):
+        return {}
+    out = {}
+    for key, value in rows:
+        key = clean(key)
+        if key:
+            out[key] = clean(value)
+    return out
+
+def rename_record_folder(conn, numero, current_folder, new_leaf):
+    """Rename a record folder's leaf and update the DB path columns.
+
+    Returns one of: 'already', 'missing', 'conflict', 'renamed'.
+    Does not merge into an existing target and never overwrites files.
+    """
+    current = Path(current_folder)
+    if not current.exists():
+        return "missing", current
+    if current.name == new_leaf:
+        return "already", current
+
+    target = current.parent / new_leaf
+    if target.exists():
+        return "conflict", target
+
+    current.rename(target)
+    n = safe_name(numero)
+    conn.execute(
+        "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
+        "detail_json_path = ? WHERE numero = ?",
+        (str(target), str(target / f"{n}.json"), str(target / f"{n}.detail.json"), numero),
+    )
+    conn.commit()
+    return "renamed", target
 
 def detect_url_type(link):
     link = link or ""
