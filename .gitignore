@@ -1,1 +1,16 @@
-Nothing should be ignored based on the provided file changes, as they only contain Python source files (.py) which are legitimate code files to track in version control.
+# Python virtual environments
+.venv/
+.venv.broken.*/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local runtime data and logs
+data/logs/
+data/queue/
+
+# Local OS/editor files
+.DS_Store
+*.swp
