@@ -292,7 +292,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `[description]` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
-| `PC_CALENDAR_ATTENDEES` | `alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
+| `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
@@ -443,33 +443,39 @@ text (and the on-page items grid). They hold the same facts the old `SUMMARY.csv
   Códigos and clasificación come from the on-page items grid when present; otherwise
   quantity/unit/description are read from the detail text (códigos left blank).
 - **`calendar`** — an ICS `VEVENT` expressed as JSON: `uid`, `summary`, `dtstart`/`dtend`
-  (the *Día y Hora de Entrega* window in 24-hour, on the delivery date), `timezone`,
-  `location`, `organizer` (the record's contact), `attendees`, `url_publico`,
-  `url_interno`, `precio_estimado`, and a human-readable `description`. A sibling
-  `NUMERO.calendar.ics` file is also written so the event can be imported into a
-  calendar app later.
-- **`fields_detected`** — the raw `Label: value` pairs parsed from the detail text.
+  (the **presentación de cotizaciones** / cierre / límite window in 24-hour — start and
+  end on its date; older records fall back to the *Día y Hora de Entrega* window),
+  `timezone`, `location` (`(Provincia) - (Dirección de la unidad de compra)`),
+  `organizer` (the record's contact), `attendees`, `url_publico` (the record's link),
+  `url_interno`, `precio_estimado`, and a `description` (a `LINK :` line, a `DESCR:`
+  line, and an `ITEMS:` list). A sibling `NUMERO.calendar.ics` file is also written so
+  the event can be imported into a calendar app later.
+- **`fields_detected`** — the `Label → value` pairs parsed from the detail text. Both the
+  current **V3** portal (tab-separated `Label⇥Value`) and older `Label: value` /
+  label-on-its-own-line layouts are supported.
 
-New records get these automatically. Existing archives are backfilled from their saved
-HTML on the next detail run (the detail schema version was bumped). To backfill without a
-browser or network, run:
+New records get these automatically when first downloaded. A normal run only processes
+**new** records — it never re-pulls or rewrites records that were already downloaded,
+even after the parsing rules change. Refresh previously-downloaded records **manually**:
 
 ```bash
 ./pc_build_detail_views.py            # dry-run: preview every record
-./pc_build_detail_views.py --apply    # write the views into detail.json
+./pc_build_detail_views.py --apply    # rebuild views + .ics from saved files (no browser)
+./pc_update_day_folder.py --date <YY-MM-DD> --apply   # re-download a day from the portal
 ```
 
 Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 `PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
 `.calendar.ics` file is a portable review/import copy generated during detail
-downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`. The
-ICS export follows the legacy review format as closely as possible: configured
-attendees are emitted as top-level `ATTENDEE:MAILTO:...` lines, `DTSTART` /
-`DTEND` use `TZID=<timezone>;VALUE=DATE-TIME`, `DTSTAMP` is emitted with a
-trailing `Z`, organizer lines include quoted `CN` and `ROLE` parameters when
-available, and the description includes the public/internal links, price,
-record number, request description, entity/dependency/contact/delivery/payment
-fields, and item rows.
+downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`. In the
+ICS export, configured attendees are emitted as top-level `ATTENDEE:MAILTO:...`
+lines, `DTSTART` / `DTEND` use `TZID=<timezone>;VALUE=DATE-TIME` (e.g.
+`DTSTART;TZID=America/Panama;VALUE=DATE-TIME:20260619T100000`), `DTSTAMP` ends
+with a trailing `Z`, organizer lines include quoted `CN` and `ROLE` parameters
+when available, `LOCATION` is `(Provincia) - (Dirección de la unidad de compra)`,
+and `DESCRIPTION` holds the record link, the request description, and the item
+list. (Commas in ICS text are written `\,` per the spec and display unescaped in
+calendar apps.)
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
