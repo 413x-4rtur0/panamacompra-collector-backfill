@@ -132,7 +132,7 @@ def short_description(text, max_len=80):
 #   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
 # --------------------------------------------------------------------------
 
-DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "40", minimum=1)
+DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)
 _VOWELS = set("AEIOU")
 
 def strip_accents(text):
@@ -143,15 +143,16 @@ def strip_accents(text):
 def desc_slug(text, max_len=DESC_SLUG_MAX):
     """Build the description token for a folder name.
 
-    Uppercase, strip accents, drop vowels (A E I O U), turn every remaining
-    non ``[A-Z0-9]`` character into a single ``-`` (separators are NOT
-    collapsed, so a stray ``:`` produces ``--``), then truncate to ``max_len``.
+    Uppercase, strip accents, drop vowels (A E I O U), collapse every run of
+    non ``[A-Z0-9]`` characters into one ``-``, then truncate to ``max_len``.
+    This keeps network-share folder names shorter and avoids ``--`` / ``---``.
 
-    'FORIS 126: Compras de Caja plásticas' -> 'FRS-126--CMPRS-D-CJ-PLSTC'
+    'FORIS 126: Compras de Caja plásticas' -> 'FRS-126-CMPRS-D-CJ-PLSTC'
     """
     s = strip_accents(text).upper()
     s = "".join(ch for ch in s if ch not in _VOWELS)
     s = "".join(ch if ("A" <= ch <= "Z" or "0" <= ch <= "9") else "-" for ch in s)
+    s = re.sub(r"-+", "-", s).strip("-")
     return s[:max_len].strip("-")
 
 def _parse_ddmmyyyy(text):
@@ -783,14 +784,29 @@ def find_existing_record_archive(numero, records_dir=RECORDS_DIR, date_folder=No
     return None, None
 
 def archive_complete(record_folder, numero):
+    """Return True only when the on-disk archive has the current file set.
+
+    Older migrated records may have just the index JSON, or detail HTML/text
+    without the newer summary/calendar views and ``.ics`` companion file. Treat
+    those as incomplete so update/backfill tools re-download or rebuild them
+    instead of leaving folders like ``[]-[NUMERO]-[DESC]`` stuck forever.
+    """
     n = safe_name(numero)
-    return (
-        record_folder.exists()
-        and (record_folder / f"{n}.json").exists()
-        and (record_folder / f"{n}.detail.json").exists()
-        and (record_folder / f"{n}.detail.html").exists()
-        and (record_folder / f"{n}.detail.txt").exists()
-    )
+    detail_json = record_folder / f"{n}.detail.json"
+    required = [
+        record_folder / f"{n}.json",
+        detail_json,
+        record_folder / f"{n}.detail.html",
+        record_folder / f"{n}.detail.txt",
+        record_folder / f"{n}.calendar.ics",
+    ]
+    if not record_folder.exists() or not all(path.exists() for path in required):
+        return False
+    try:
+        data = json.loads(detail_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return all(key in data for key in ("summary", "items", "calendar", "views_schema_version"))
 
 def write_json_once(path, data):
     if path.exists():
