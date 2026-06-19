@@ -14,3 +14,21 @@ data/queue/
 # Local OS/editor files
 .DS_Store
 *.swp
+
+# Local secrets
+.webhook_token
+
+# Local Python environments
+.venv/
+.venv.*/
+.venv.broken.*/
+
+# Python generated cache
+__pycache__/
+*.py[cod]
+
+# Local runtime data
+data/*.db
+data/*.csv
+records/
+deprecated_queue_scripts/
