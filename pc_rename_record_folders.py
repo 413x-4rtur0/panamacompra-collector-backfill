@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rename record folders to the scheme [finish]-{numero}-{desc}.
+"""Rename record folders to the scheme [finish]-[numero]-[desc].
 
 Old leaf:  records/YY-MM-DD/<NUMERO>/
-New leaf:  records/YY-MM-DD/[2022-10-11_12:00]-{<NUMERO>}-{FRS-126--CMPRS-D-CJ-PLSTC}/
+New leaf:  records/YY-MM-DD/[2022-10-11_12:00]-[<NUMERO>]-[FRS-126--CMPRS-D-CJ-PLSTC]/
 
 The finish stamp is when proposals stop being accepted (end of the
 "presentación de cotizaciones" window, or the delivery date at 12:00 for older
@@ -10,9 +10,12 @@ records). The description token is the request description with accents and
 vowels removed, shortened. Both are computed from already-saved data
 (tables/*.json and <numero>.detail.txt) - this tool does not hit the network.
 
-Dry-run by default; pass --apply to actually rename. The DB path columns are
-updated, the detail JSON "files" block is repointed, and inner files keep their
-<numero>.* names. Existing targets are never overwritten.
+Dry-run by default; pass --apply to actually rename. Use the dry-run first
+to verify previous/on-disk records will converge to the same
+[finish]-[numero]-[desc] format that new detail downloads create automatically.
+The DB path columns are updated, the detail JSON "files" block is repointed,
+and inner files keep their <numero>.* names. Existing targets are never
+overwritten.
 """
 import argparse
 import json

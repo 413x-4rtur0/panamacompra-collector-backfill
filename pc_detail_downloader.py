@@ -64,7 +64,7 @@ def naming_fields(tables, text, row):
     slug = desc_slug(desc_source)
     return finish_stamp, slug, build_record_folder_leaf(finish_stamp, row["numero"], slug)
 
-# Rename the record folder to [finish]-{numero}-{desc} after a successful
+# Rename the record folder to [finish]-[numero]-[desc] after a successful
 # detail save. On by default; set PC_RENAME_AFTER_DETAIL=0 to keep <numero>.
 RENAME_AFTER_DETAIL = os.environ.get("PC_RENAME_AFTER_DETAIL", "1") != "0"
 
@@ -394,13 +394,14 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         "views_schema_version": VIEWS_SCHEMA_VERSION,
     })
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_calendar_ics(Path(row["record_folder"]) / f"{n}.calendar.ics", calendar)
     return proposed_folder_name
 
 def process_detail(browser, conn, row, force=False):
     """Fetch and archive one record's detail page.
 
     With ``force=True`` the live page is re-fetched and the saved HTML / text /
-    detail JSON / table JSONs are overwritten in place (used by the manual
+    detail JSON / calendar ICS / table JSONs are overwritten in place (used by the manual
     day-folder updater to re-pull records as the current portal version);
     otherwise an already-complete record is skipped or just re-cleaned.
     """
@@ -484,6 +485,7 @@ def process_detail(browser, conn, row, force=False):
                 "detail_json": str(detail_json_path),
                 "detail_html": str(html_path),
                 "detail_txt": str(txt_path),
+                "calendar_ics": str(record_folder / f"{n}.calendar.ics"),
                 "tables_folder": str(record_folder / "tables"),
             }
         }
@@ -492,6 +494,8 @@ def process_detail(browser, conn, row, force=False):
             detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
         else:
             write_json_once(detail_json_path, detail_data)
+        if force or not (record_folder / f"{n}.calendar.ics").exists():
+            write_calendar_ics(record_folder / f"{n}.calendar.ics", calendar)
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
         maybe_rename_folder(conn, row, proposed_folder_name)
 

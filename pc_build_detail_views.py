@@ -17,7 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
-from pc_common import RECORDS_DIR, VIEWS_SCHEMA_VERSION, build_detail_views
+from pc_common import RECORDS_DIR, VIEWS_SCHEMA_VERSION, build_detail_views, safe_name, write_calendar_ics
 
 DETAIL_SUFFIX = ".detail.json"
 
@@ -93,6 +93,8 @@ def main():
         print(f"VIEWS      {detail_json_path.name}  items={n_items}  finish={data['calendar'].get('dtend') or '-'}")
         if args.apply:
             detail_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            numero = safe_name(data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)])
+            write_calendar_ics(detail_json_path.parent / f"{numero}.calendar.ics", data.get("calendar"))
 
     print("-" * 80)
     print(f"Scanned: {counts['scanned']}")

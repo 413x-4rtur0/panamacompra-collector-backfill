@@ -67,7 +67,7 @@ pc_run_all_worker.sh        single locked worker
         └─ STEP 2  pc_detail_downloader.py downloads pending detail pages
         │
         ▼
-records/YY-MM-DD/NUMERO/    NUMERO.json, NUMERO.detail.{json,html,txt}, tables/*.json
+records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
 ```
 
 The workflow has two phases run back-to-back by the worker:
@@ -254,10 +254,10 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
-| `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into `records/YY-MM-DD/NUMERO/`. |
-| `pc_rename_record_folders.py` | Rename record folders to `[finish]-{numero}-{desc}` from already-saved data. Dry-run by default; `--apply` to act. |
+| `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `[finish]-[NUMERO]-[desc]`. |
+| `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
-| `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/JSON/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
+| `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -272,21 +272,21 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
-| `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `{description}` token in the record-folder name. |
-| `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-{numero}-{desc}` after a successful detail save. Set `0` to keep `<numero>`. |
+| `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `[description]` token in the record-folder name. |
+| `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `999999` | `run_collector.sh` | Detail limit applied to webhook-triggered runs. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
-| `PC_MONITOR_TK_REFRESH_SECONDS` | `5` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
+| `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to wait after completion before closing the native monitor window. Use `0` to disable. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
-| `PC_MONITOR_WEB_REFRESH_SECONDS` | `10` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
+| `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
 | `PC_MONITOR_WEB_IDLE_REFRESH_SECONDS` | `30` | web monitor | Slower JSON polling interval after the system is idle/done. |
 | `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
 | `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
@@ -317,6 +317,7 @@ panamacompra-collector/
             ├── NUMERO.detail.json              # detail metadata
             ├── NUMERO.detail.html              # full page HTML
             ├── NUMERO.detail.txt               # visible text
+            ├── NUMERO.calendar.ics             # importable calendar event
             └── tables/
                 └── NUMERO.table_001.json
 ```
@@ -331,8 +332,8 @@ Folders are created as `NUMERO` during the index scan, then renamed to encode th
 key facts once detail data is available:
 
 ```text
-records/YY-MM-DD/[<finish>]-{<numero>}-{<desc>}/
-              e.g. [2022-10-11_12:00]-{2022-0-12-214-12-CL-008498}-{FRS-126--CMPRS-D-CJ-PLSTC}
+records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
+              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
 ```
 
 - **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
@@ -354,6 +355,49 @@ disk, run the tool below (reads only saved files, no network):
 
 It is idempotent (already-named folders are skipped) and never overwrites an existing
 target. Inner files keep their `NUMERO.*` names.
+
+#### Keeping new and previous records in the same format
+
+There are two supported paths, and both converge on the same
+`[finish]-[numero]-[desc]` leaf format:
+
+1. **New records** — run the normal collector. The index scan first creates a
+   temporary `records/YY-MM-DD/NUMERO/` folder; once detail data is downloaded,
+   `pc_detail_downloader.py` computes the finish stamp and description from the
+   detail text/tables and automatically renames the folder.
+2. **Previous records already on disk** — run `pc_rename_record_folders.py`. It
+   reads the saved `NUMERO.detail.txt` and `tables/*.json`, previews the same
+   target name in dry-run mode, and applies the rename only with `--apply`.
+   If a previous folder only has the index `NUMERO.json`, run
+   `pc_update_day_folder.py --date YY-MM-DD --apply` to fetch its detail page
+   first; the day updater syncs those index-only folders into SQLite before it
+   lists records to download.
+
+Recommended review/test commands before and after applying updates:
+
+```bash
+# 1) Preview old-folder renames without changing files
+./pc_rename_record_folders.py --limit 20
+
+# 2) Apply old-folder renames after the preview looks right
+./pc_rename_record_folders.py --apply
+
+# 3) Preview detail view/calendar backfill for previous records
+./pc_build_detail_views.py
+
+# 4) Apply detail view/calendar backfill for previous records
+./pc_build_detail_views.py --apply
+
+# 5) Test new records with a small live run, then check the resulting folder name
+./pc_request_run_all.sh 5
+./pc_run_all_status.sh
+```
+
+Use `pc_update_day_folder.py --date YY-MM-DD --apply` when previous records
+need to be **fetched/re-fetched from the live portal** instead of just renamed
+or rebuilt from saved detail files. This includes index-only folders that have
+`NUMERO.json` but do not yet have `NUMERO.detail.json`, `NUMERO.detail.html`,
+or `NUMERO.detail.txt`.
 
 ### Detail tables and links
 
@@ -384,7 +428,9 @@ text (and the on-page items grid). They hold the same facts the old `SUMMARY.csv
 - **`calendar`** — an ICS `VEVENT` expressed as JSON: `uid`, `summary`, `dtstart`/`dtend`
   (the *Día y Hora de Entrega* window in 24-hour, on the delivery date), `timezone`,
   `location`, `organizer` (the record's contact), `attendees`, `url_publico`,
-  `url_interno`, `precio_estimado`, and a human-readable `description`.
+  `url_interno`, `precio_estimado`, and a human-readable `description`. A sibling
+  `NUMERO.calendar.ics` file is also written so the event can be imported into a
+  calendar app later.
 - **`fields_detected`** — the raw `Label: value` pairs parsed from the detail text.
 
 New records get these automatically. Existing archives are backfilled from their saved
@@ -397,7 +443,9 @@ browser or network, run:
 ```
 
 Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
-`PC_CALENDAR_ATTENDEES`.
+`PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
+`.calendar.ics` file is a portable review/import copy generated during detail
+downloads, day-folder refreshes, and `pc_build_detail_views.py --apply`.
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
@@ -421,13 +469,18 @@ version that you now want pulled as the current one), use:
 
 It selects every record whose `date_folder` matches (the day it was first seen),
 lists them, and — after a confirmation, or immediately with `--apply` — force
-re-downloads each one, **overwriting** its saved HTML, text, detail JSON and table
-JSONs, re-deriving the summary/items/calendar views and re-naming the folder if the
-finish date or description changed. Without `--date` it prompts (defaulting to today)
+re-downloads each one from its stored detail link, **overwriting** its saved HTML,
+text, detail JSON, calendar `.ics`, and table JSONs, re-deriving the
+summary/items/calendar views and re-naming the folder if the finish date, `NUMERO`,
+or description changed. Without `--date` it prompts (defaulting to today)
 and shows the day folders present in the database.
 
 > Re-fetching uses each record's stored `link`. If the listing URLs may have changed,
-> run an index scan first so links and `last_seen` are refreshed.
+> run an index scan first so links and `last_seen` are refreshed. The index scan
+> also checks for an existing `NUMERO.json` anywhere under `records/YY-MM-DD/`,
+> including renamed `[finish]-[numero]-[desc]` folders, before creating a new
+> plain `NUMERO` folder. This prevents duplicate archives when the original
+> `NUMERO/` leaf was already renamed after detail download.
 
 ### Database
 
@@ -626,4 +679,4 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 - The webhook creates a run-all request
 - The index scan reports zero duplicate `NUMERO`
 - The detail downloader reports no pending rows after completion
-- Records are stored under `records/YY-MM-DD/NUMERO/` and existing files are skipped, not overwritten
+- Records are stored under `records/YY-MM-DD/[finish]-[NUMERO]-[desc]/` and existing files are skipped, not overwritten

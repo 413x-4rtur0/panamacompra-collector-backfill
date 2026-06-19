@@ -18,14 +18,27 @@ previous portal version — need to be refreshed to the current one.
 
 By default it lists the records and asks before downloading; pass --apply to skip
 the confirmation. Targeting works from the database's ``date_folder`` (the day a
-record was first seen). Tip: run an index scan first if links may have changed.
+record was first seen). It also syncs index-only folders from disk before
+listing so records with only ``<NUMERO>.json`` can be fetched. Tip: run an
+index scan first if links may have changed.
 """
 import argparse
+import json
 import re
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from pc_common import browser_executable, date_folder_name, init_db
+from pc_common import (
+    RECORDS_DIR,
+    archive_complete,
+    browser_executable,
+    date_folder_name,
+    find_existing_opportunity,
+    init_db,
+    insert_or_update_index,
+    now_iso,
+)
 
 
 def normalize_date_folder(value):
@@ -47,6 +60,59 @@ def normalize_date_folder(value):
         return f"{int(year):02d}-{int(month):02d}-{int(day):02d}"
     return s
 
+
+def sync_day_folder_indexes(conn, date_folder, records_dir=RECORDS_DIR):
+    """Register index-only folders in SQLite so updates can fetch details.
+
+    Some archives may contain only the immutable index JSON because detail
+    download did not run yet, or because the SQLite DB was rebuilt after files
+    were already on disk.  Before selecting rows for a day update, scan the
+    day folder for ``<NUMERO>.json`` files and insert any missing NUMERO into
+    the DB with its existing folder path.  This lets ``pc_update_day_folder.py``
+    catch those records and prevents the next index scan from creating a
+    duplicate plain ``NUMERO`` folder when a renamed folder already exists.
+    """
+    day_dir = Path(records_dir) / date_folder
+    if not day_dir.is_dir():
+        return 0
+
+    synced = 0
+    for index_json_path in sorted(day_dir.glob("*/*.json")):
+        if index_json_path.name.endswith(".detail.json"):
+            continue
+        try:
+            data = json.loads(index_json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        numero = str(data.get("numero") or "").strip()
+        if not numero or find_existing_opportunity(conn, numero):
+            continue
+
+        record_folder = index_json_path.parent
+        row = {
+            "numero": numero,
+            "grupo": data.get("grupo", ""),
+            "tipo_url": data.get("tipo_url", ""),
+            "estado": data.get("estado", ""),
+            "descripcion": data.get("descripcion", ""),
+            "short_description": data.get("short_description", data.get("descripcion", "")),
+            "entidad": data.get("entidad", ""),
+            "dependencia": data.get("dependencia", ""),
+            "fecha": data.get("fecha", ""),
+            "modalidad": data.get("modalidad", ""),
+            "link": data.get("link", ""),
+            "first_seen": data.get("first_seen") or now_iso(),
+            "last_seen": data.get("last_seen") or now_iso(),
+            "date_folder": date_folder,
+            "record_folder": str(record_folder),
+            "index_json_path": str(index_json_path),
+            "detail_status": "saved" if archive_complete(record_folder, numero) else "pending",
+            "finish_date_guess": data.get("finish_date_guess", ""),
+        }
+        insert_or_update_index(conn, row)
+        synced += 1
+    return synced
 
 def available_date_folders(conn):
     """[(date_folder, count)] for every day present in the database."""
@@ -136,9 +202,12 @@ def main():
 
     conn = init_db()
     target = resolve_target_date(args, conn)
+    synced = sync_day_folder_indexes(conn, target)
     rows = rows_for_date(conn, target)
 
     print(f"\nDay folder: {target}  ->  {len(rows)} record(s)")
+    if synced:
+        print(f"Synced index-only/on-disk record(s) into DB: {synced}")
     print("-" * 80)
     for row in rows:
         print(f"  {row['numero']:38}  {row['detail_status']:8}  {row['record_folder']}")
