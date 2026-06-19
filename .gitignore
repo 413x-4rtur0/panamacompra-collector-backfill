@@ -1,1 +1,20 @@
-Nothing should be ignored based on the provided file changes, as they only contain Python source files (.py) which are legitimate code files to track in version control.
+# Local secrets
+.webhook_token
+
+# Python virtual environments
+.venv/
+.venv.broken.*/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime collector data and downloaded archive
+# The application recreates these directories/files as needed.
+data/
+records/
+
+# Local OS/editor files
+.DS_Store
+*.swp

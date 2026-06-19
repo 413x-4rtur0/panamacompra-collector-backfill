@@ -72,6 +72,16 @@ venv_is_healthy() {
   .venv/bin/python -c "import ensurepip; import subprocess" >/dev/null 2>&1
 }
 
+playwright_firefox_available() {
+  python - <<'PY' >/dev/null 2>&1
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.firefox.launch(headless=True)
+    browser.close()
+PY
+}
+
 create_venv() {
   if ! python3 -m venv .venv; then
     echo "ERROR: Could not create .venv with python3 -m venv." >&2
@@ -104,11 +114,28 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
 echo ""
-echo "6) Run repository health checks"
+echo "6) Verify Playwright Firefox browser"
+if playwright_firefox_available; then
+  echo "Playwright Firefox is already installed and launchable."
+elif [ "${PC_UPDATE_SKIP_BROWSER_INSTALL:-0}" = "1" ]; then
+  echo "Skipped Playwright Firefox install because PC_UPDATE_SKIP_BROWSER_INSTALL=1."
+  echo "WARNING: Playwright Firefox is not currently launchable."
+else
+  python -m playwright install firefox
+  if ! playwright_firefox_available; then
+    echo "ERROR: Playwright Firefox installed but could not be launched." >&2
+    echo "Install missing system browser dependencies, then retry:" >&2
+    echo "  python -m playwright install --with-deps firefox" >&2
+    exit 1
+  fi
+fi
+
+echo ""
+echo "7) Run repository health checks"
 ./review_panamacompra_system.sh
 
 echo ""
-echo "7) Optional smoke run request"
+echo "8) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   ./pc_request_run_all.sh "$DETAIL_LIMIT"
