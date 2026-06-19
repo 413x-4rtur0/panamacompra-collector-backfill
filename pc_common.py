@@ -129,7 +129,7 @@ def short_description(text, max_len=80):
 # Folder-naming helpers: [finish_stamp]-[numero]-[desc_slug]
 #
 # Example leaf:
-#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
+#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)

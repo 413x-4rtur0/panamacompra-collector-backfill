@@ -287,7 +287,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
-| `PC_DESC_SLUG_MAX` | `40` | folder naming | Max length of the `[description]` token in the record-folder name. |
+| `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `[description]` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
@@ -348,7 +348,7 @@ key facts once detail data is available:
 
 ```text
 records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
-              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126--CMPRS-D-CJ-PLSTC]
+              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
 ```
 
 - **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
@@ -357,7 +357,7 @@ records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
   if no date can be found.
 - **`<numero>`** = the PanamaCompra `NUMERO`, unchanged.
 - **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
-  removed**, non-alphanumerics turned into `-`, truncated to `PC_DESC_SLUG_MAX` chars.
+  removed**, each run of non-alphanumerics collapsed to one `-`, truncated to `PC_DESC_SLUG_MAX` chars.
 
 New records are renamed automatically by the detail downloader after each successful
 save (disable with `PC_RENAME_AFTER_DETAIL=0`). To rename folders that already exist on
