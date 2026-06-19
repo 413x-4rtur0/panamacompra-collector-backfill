@@ -222,6 +222,29 @@ def compute_finish_stamp(key_values, text):
         if date:
             return f"{date}_12:00"
 
+    # Text fallbacks (no usable key_values): apply the same close-before-entrega
+    # priority to fields parsed straight from the saved detail text, so a
+    # "presentación de cotizaciones" / cierre / límite deadline in the text is
+    # not overtaken by a later delivery date.
+    text_fields = parse_detail_fields(text)
+    for key, value in text_fields.items():
+        kl = strip_accents(str(key)).lower()
+        is_close = (
+            ("presentaci" in kl and ("cotiza" in kl or "propuesta" in kl))
+            or "cierre" in kl
+            or "limite" in kl
+        )
+        if is_close and value:
+            date = _parse_ddmmyyyy(value)
+            if date:
+                return f"{date}_{_parse_end_time_24h(value) or '12:00'}"
+
+    entrega_text = find_kv(text_fields, "dia", "hora", "entrega")
+    if entrega_text:
+        date = _parse_ddmmyyyy(entrega_text)
+        if date:
+            return f"{date}_12:00"
+
     m = re.search(
         r"entrega[^0-9]{0,40}(\d{1,2}[-/]\d{1,2}[-/]\d{4})",
         strip_accents(text),
@@ -276,26 +299,63 @@ def _norm_label(text):
     """Accent-stripped, lowercased, ':'-trimmed label used to match fields."""
     return clean(strip_accents(str(text or ""))).lower().rstrip(":").strip()
 
-def parse_detail_fields(text):
-    """Parse 'Label: value' lines from the detail text into an ordered dict.
+# Known detail labels (normalized via _norm_label). Used only as a fallback for
+# portal pages that render each label on its own line with the value on the next
+# line (no ':'); colon-formatted pages never reach that path.
+_KNOWN_LABELS = {
+    "numero", "estado", "modalidad", "lugar",
+    "descripcion", "descripcion de la solicitud", "objeto de la contratacion",
+    "entidad", "dependencia", "unidad de compra", "direccion",
+    "provincia de entrega",
+    "nombre", "cargo", "telefono", "correo_electronico", "correo electronico",
+    "forma de entrega", "dias de entrega", "forma de pago",
+    "dia y hora de entrega", "precio estimado",
+    "enlace publico", "enlace interno",
+    "fecha y hora presentacion de cotizaciones", "fecha de presentacion",
+    "fecha y hora de cierre", "fecha limite", "presentacion de propuestas",
+}
 
-    Splits on the first ':' only (so URLs, clock times and multi-word labels
-    survive) and stops at the items header so the items grid is not mined for
-    fields.
+def parse_detail_fields(text):
+    """Parse 'Label: value' fields from the detail text into an ordered dict.
+
+    Same-line 'Label: value' pairs are read directly (split once, so values may
+    contain ':'). Parsing stops at the items header so the items grid is not
+    mined for fields. As a fallback for portal pages that render each label on
+    its own line with the value on the next line, when no same-line pairs are
+    found we pair known labels with the following line.
     """
-    fields = {}
-    for raw in str(text or "").splitlines():
-        line = clean(raw)
-        if not line:
-            continue
-        if _ITEMS_HEADER_RE.search(strip_accents(line)):
+    lines = [clean(x) for x in str(text or "").splitlines()]
+    cut = len(lines)
+    for i, line in enumerate(lines):
+        if line and _ITEMS_HEADER_RE.search(strip_accents(line)):
+            cut = i
             break
-        if ":" not in line:
+    lines = lines[:cut]
+
+    fields = {}
+    for line in lines:
+        if not line or ":" not in line:
             continue
         key, value = line.split(":", 1)
         key, value = clean(key), clean(value)
-        if key and key not in fields:
+        if key and value and key not in fields:
             fields[key] = value
+
+    # If same-line parsing yielded no recognizable label, the page likely renders
+    # each label on its own line with the value on the next (value lines may even
+    # contain ':' from clock times, so we cannot rely on "no pairs found"). Pair
+    # known labels with the following line, and adopt that only if it finds real
+    # labels, so colon-formatted pages are never disturbed.
+    if not any(_norm_label(key) in _KNOWN_LABELS for key in fields):
+        nextline = [line for line in lines if line]
+        paired = {}
+        for i, line in enumerate(nextline[:-1]):
+            if _norm_label(line) in _KNOWN_LABELS and line not in paired:
+                value = nextline[i + 1]
+                if _norm_label(value) not in _KNOWN_LABELS:
+                    paired[line] = value
+        if paired:
+            fields = paired
     return fields
 
 def _items_header_index(header):
