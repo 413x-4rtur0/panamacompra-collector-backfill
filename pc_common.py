@@ -383,10 +383,12 @@ def key_values_from_rows(rows):
 VIEWS_SCHEMA_VERSION = 1
 CALENDAR_TZ = os.environ.get("PC_CALENDAR_TZ", "America/Panama")
 # Default attendees for the calendar event (overridable, comma-separated).
-_DEFAULT_ATTENDEES = "alex.gutierrez@craw-ds.com,razelgutierrez@gmail.com"
+_DEFAULT_ATTENDEES = "a2gutierrezmora@gmail.com,razelgutierrez@gmail.com"
 
-# Header that introduces the items block in the detail text.
+# Header that introduces the items block in older detail text.
 _ITEMS_HEADER_RE = re.compile(r"cantidad.*unidad\s*de\s*medida.*descripcion", re.IGNORECASE)
+# Section title that precedes the items grid on the V3 portal ("Ítems de la cotización:").
+_ITEMS_SECTION_RE = re.compile(r"item\w*\s+de\s+la\s+cotiz", re.IGNORECASE)
 # An item text line: "<qty> <unit> <description>", e.g. "2 Unidad BATERIA 200 Ah".
 _ITEM_LINE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s+(\S+)\s+(.+)$")
 
@@ -394,10 +396,11 @@ def _norm_label(text):
     """Accent-stripped, lowercased, ':'-trimmed label used to match fields."""
     return clean(strip_accents(str(text or ""))).lower().rstrip(":").strip()
 
-# Known detail labels (normalized via _norm_label). Used only as a fallback for
-# portal pages that render each label on its own line with the value on the next
-# line (no ':'); colon-formatted pages never reach that path.
+# Known detail labels (normalized via _norm_label), across the older and the V3
+# portal layouts. Used to gate the label-on-its-own-line fallback in
+# parse_detail_fields; colon/tab pages never reach that path.
 _KNOWN_LABELS = {
+    # Older portal labels
     "numero", "estado", "modalidad", "lugar",
     "descripcion", "descripcion de la solicitud", "objeto de la contratacion",
     "entidad", "dependencia", "unidad de compra", "direccion",
@@ -408,41 +411,63 @@ _KNOWN_LABELS = {
     "enlace publico", "enlace interno",
     "fecha y hora presentacion de cotizaciones", "fecha de presentacion",
     "fecha y hora de cierre", "fecha limite", "presentacion de propuestas",
+    # V3 portal labels
+    "numero de proceso", "tipo de proceso", "titulo",
+    "modalidad de adjudicacion", "objeto de contratacion", "proceso posterior",
+    "provincia", "direccion de la unidad de compra", "fecha de publicacion",
+    "termino de entrega",
 }
 
-def parse_detail_fields(text):
-    """Parse 'Label: value' fields from the detail text into an ordered dict.
+def _field_pairs_on_line(raw):
+    """(label, value) pairs from one raw line.
 
-    Same-line 'Label: value' pairs are read directly (split once, so values may
-    contain ':'). Parsing stops at the items header so the items grid is not
-    mined for fields. As a fallback for portal pages that render each label on
-    its own line with the value on the next line, when no same-line pairs are
-    found we pair known labels with the following line.
+    Tab-separated 'Label<TAB>Value' (the V3 portal) is tried first — clean()
+    collapses tabs, so this must run on the raw line — otherwise a single
+    'Label: value' colon split (older portal; values may contain ':').
     """
-    lines = [clean(x) for x in str(text or "").splitlines()]
-    cut = len(lines)
-    for i, line in enumerate(lines):
-        if line and _ITEMS_HEADER_RE.search(strip_accents(line)):
-            cut = i
-            break
-    lines = lines[:cut]
-
-    fields = {}
-    for line in lines:
-        if not line or ":" not in line:
-            continue
+    if "\t" in raw:
+        parts = [clean(p) for p in raw.split("\t") if clean(p)]
+        if len(parts) == 2:
+            return [(parts[0], parts[1])]
+        return []
+    line = clean(raw)
+    if ":" in line:
         key, value = line.split(":", 1)
         key, value = clean(key), clean(value)
-        if key and value and key not in fields:
-            fields[key] = value
+        if key and value:
+            return [(key, value)]
+    return []
 
-    # If same-line parsing yielded no recognizable label, the page likely renders
-    # each label on its own line with the value on the next (value lines may even
-    # contain ':' from clock times, so we cannot rely on "no pairs found"). Pair
-    # known labels with the following line, and adopt that only if it finds real
-    # labels, so colon-formatted pages are never disturbed.
+def parse_detail_fields(text):
+    """Parse the saved detail text into an ordered {label: value} dict.
+
+    Handles the portal renderings seen in the archive:
+      * V3: tab-separated 'Label<TAB>Value' on one line.
+      * older: 'Label: value' on one line (split once; values may contain ':').
+      * older: a label on its own line with the value on the next line.
+    Parsing stops at the items section so the items grid is not mined for fields.
+    """
+    raw_lines = str(text or "").splitlines()
+    cut = len(raw_lines)
+    for i, raw in enumerate(raw_lines):
+        norm = strip_accents(clean(raw))
+        if norm and (_ITEMS_SECTION_RE.search(norm) or _ITEMS_HEADER_RE.search(norm)):
+            cut = i
+            break
+    raw_lines = raw_lines[:cut]
+
+    fields = {}
+    for raw in raw_lines:
+        for key, value in _field_pairs_on_line(raw):
+            if key and value and key not in fields:
+                fields[key] = value
+
+    # Fallback: a label on its own line with the value on the next (no tab/':').
+    # Only used when same-line parsing found no recognizable label, so the tab and
+    # colon paths are never disturbed (value lines may contain ':' from clock
+    # times, so "no pairs found" is not a reliable trigger).
     if not any(_norm_label(key) in _KNOWN_LABELS for key in fields):
-        nextline = [line for line in lines if line]
+        nextline = [clean(x) for x in raw_lines if clean(x)]
         paired = {}
         for i, line in enumerate(nextline[:-1]):
             if _norm_label(line) in _KNOWN_LABELS and line not in paired:
@@ -561,7 +586,7 @@ def build_summary(fields, numero=""):
             "correo_electronico": find_kv(fields, "correo"),
         },
         "forma_de_entrega": find_kv(fields, "forma", "entrega"),
-        "dias_de_entrega": find_kv(fields, "dias", "entrega"),
+        "dias_de_entrega": find_kv(fields, "dias", "entrega") or find_kv(fields, "termino", "entrega"),
         "forma_de_pago": find_kv(fields, "forma", "pago"),
         "dia_y_hora_de_entrega": find_kv(fields, "dia", "hora", "entrega"),
         "precio_estimado": find_kv(fields, "precio"),
@@ -573,59 +598,44 @@ def _calendar_attendees():
     raw = os.environ.get("PC_CALENDAR_ATTENDEES", _DEFAULT_ATTENDEES)
     return [a.strip() for a in raw.split(",") if a.strip()]
 
-def _append_calendar_pairs(lines, pairs):
-    added = False
-    for label, value in pairs:
-        if value:
-            lines.append(f"{label}: {value}")
-            added = True
-    return added
+def _close_window_value(fields):
+    """Value of the 'presentación de cotizaciones' / cierre / límite field, or ''."""
+    for key, value in (fields or {}).items():
+        kl = strip_accents(str(key)).lower()
+        if value and (
+            ("presentaci" in kl and ("cotiza" in kl or "propuesta" in kl))
+            or "cierre" in kl
+            or "limite" in kl
+        ):
+            return str(value)
+    return ""
 
+def _location(fields):
+    """LOCATION as '(Provincia) - (Dirección de la unidad de compra)'."""
+    provincia = ""
+    for key, value in (fields or {}).items():
+        if value and _norm_label(key) == "provincia":
+            provincia = str(value)
+            break
+    provincia = provincia or find_kv(fields, "provincia")
+    direccion = find_kv(fields, "direccion")
+    parts = [p for p in (provincia, direccion) if p]
+    return " - ".join(f"({p})" for p in parts) or "Panamá, PA"
 
-def _calendar_description(fields, items):
-    """Build a review-friendly ICS description similar to the legacy exports."""
+def _calendar_description(fields, items, link=""):
+    """Review-friendly ICS description: the link, the description, and the item
+    list (without the items-table header)."""
     lines = []
-    sections = [
-        [
-            ("Enlace Público", find_kv(fields, "enlace", "publico")),
-            ("Enlace Interno", find_kv(fields, "enlace", "interno")),
-            ("Precio Estimado", find_kv(fields, "precio")),
-        ],
-        [
-            ("Número", find_kv(fields, "numero")),
-            ("Descripción De La Solicitud", find_kv(fields, "descripcion")),
-            ("Objeto De La Contratación", find_kv(fields, "objeto", "contratacion")),
-        ],
-        [
-            ("Entidad", find_kv(fields, "entidad")),
-            ("Dependencia", find_kv(fields, "dependencia")),
-            ("Unidad de compra", find_kv(fields, "unidad", "compra")),
-            ("Dirección", find_kv(fields, "direccion")),
-            ("Provincia de Entrega", find_kv(fields, "provincia", "entrega")),
-        ],
-        [
-            ("Nombre", find_kv(fields, "nombre")),
-            ("Cargo", find_kv(fields, "cargo")),
-            ("Telefono", find_kv(fields, "telefono")),
-            ("Correo_Electronico", find_kv(fields, "correo")),
-        ],
-        [
-            ("Forma de Entrega", find_kv(fields, "forma", "entrega")),
-            ("Dias de Entrega", find_kv(fields, "dias", "entrega")),
-            ("Forma de Pago", find_kv(fields, "forma", "pago")),
-        ],
-        [
-            ("Dia y Hora de Entrega", find_kv(fields, "dia", "hora", "entrega")),
-        ],
-    ]
-    for section in sections:
-        before = len(lines)
-        if _append_calendar_pairs(lines, section) and before:
-            lines.insert(before, "")
+    url = link or find_kv(fields, "enlace", "publico") or find_kv(fields, "enlace", "interno")
+    if url:
+        lines.append(f"LINK : {url}")
+    descripcion = find_kv(fields, "descripcion")
+    if descripcion:
+        lines.append(f"DESCR: {descripcion}")
     if items:
         if lines:
             lines.append("")
-        lines.append("Cantidad:    Unidad de Medida: Descripcion:")
+        lines.append("ITEMS:")
         for it in items:
             item_line = " ".join(p for p in [
                 str(it.get("cantidad") or "").strip(),
@@ -636,17 +646,18 @@ def _calendar_description(fields, items):
                 lines.append(item_line)
     return "\n".join(lines)
 
-def build_calendar(fields, items, numero="", dtstamp=None):
+def build_calendar(fields, items, numero="", dtstamp=None, link=""):
     """An ICS VEVENT for the record, expressed as JSON.
 
-    DTSTART/DTEND come from the 'Dia y Hora de Entrega' window (first/last clock
-    time on the delivery date), matching the old .ics export.
+    DTSTART/DTEND come from the 'Fecha y hora presentación de cotizaciones' /
+    cierre / límite window (first/last clock time on its date), falling back to
+    the 'Día y Hora de Entrega' window for older records.
     """
     numero = find_kv(fields, "numero") or numero
     descripcion = find_kv(fields, "descripcion")
-    entrega = find_kv(fields, "dia", "hora", "entrega")
-    date = _parse_ddmmyyyy(entrega)
-    times = _parse_times_24h(entrega)
+    window = _close_window_value(fields) or find_kv(fields, "dia", "hora", "entrega")
+    date = _parse_ddmmyyyy(window)
+    times = _parse_times_24h(window)
     dtstart = f"{date}T{times[0]}:00" if date and times else ""
     dtend = f"{date}T{times[-1]}:00" if date and times else ""
     summary = " / ".join(p for p in [descripcion, f"({numero})" if numero else ""] if p)
@@ -657,26 +668,26 @@ def build_calendar(fields, items, numero="", dtstamp=None):
         "dtstart": dtstart,
         "dtend": dtend,
         "dtstamp": dtstamp or now_iso(),
-        "location": find_kv(fields, "provincia", "entrega") or "Panamá, PA",
+        "location": _location(fields),
         "organizer": {
             "name": find_kv(fields, "nombre"),
             "role": find_kv(fields, "cargo"),
             "email": find_kv(fields, "correo"),
         },
         "attendees": _calendar_attendees(),
-        "url_publico": find_kv(fields, "enlace", "publico"),
+        "url_publico": link or find_kv(fields, "enlace", "publico"),
         "url_interno": find_kv(fields, "enlace", "interno"),
         "precio_estimado": find_kv(fields, "precio"),
-        "description": _calendar_description(fields, items),
+        "description": _calendar_description(fields, items, link=link),
     }
 
-def build_detail_views(text, tables=None, numero="", dtstamp=None):
+def build_detail_views(text, tables=None, numero="", dtstamp=None, link=""):
     """Return (summary, items, calendar, fields) parsed from a record's detail
     text (and optional saved tables for item códigos)."""
     fields = parse_detail_fields(text)
     items = parse_detail_items(text, tables)
     summary = build_summary(fields, numero)
-    calendar = build_calendar(fields, items, numero, dtstamp=dtstamp)
+    calendar = build_calendar(fields, items, numero, dtstamp=dtstamp, link=link)
     return summary, items, calendar, fields
 
 def rename_record_folder(conn, numero, current_folder, new_leaf):
