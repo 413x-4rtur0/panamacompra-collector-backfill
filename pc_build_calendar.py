@@ -4,7 +4,7 @@
 By default this script exports only calendar events from detail files modified
 since the current run started (``PC_RUN_STARTED_AT``), then splits them into
 small timestamped packages such as
-``data/calendar/26-06-20_14-35_panamacompra_calendar_001.ics``.
+``data/calendar/26-06-20/26-06-20_14-35_panamacompra_calendar_001.ics``.
 
 Use ``--all`` when you intentionally want to rebuild packages from every saved
 record. Use ``--legacy-combined`` to additionally write the old single combined
@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from pc_common import CALENDAR_DIR, COMBINED_CALENDAR_PATH, RECORDS_DIR, calendars_to_ics, write_run_progress
+from pc_common import CALENDAR_DIR, COMBINED_CALENDAR_PATH, RECORDS_DIR, calendars_to_ics, date_folder_name, write_run_progress
 
 DEFAULT_PACKAGE_SIZE = 10
 
@@ -76,7 +76,9 @@ def chunks(items: list[dict], size: int):
         yield start // size + 1, items[start : start + size]
 
 
-def write_packages(calendars: list[dict], out_dir: Path, package_size: int, prefix: str) -> list[Path]:
+def write_packages(calendars: list[dict], out_dir: Path, package_size: int, prefix: str, *, date_subdir: str | None = None) -> list[Path]:
+    if date_subdir:
+        out_dir = out_dir / date_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for index, package in chunks(calendars, package_size):
@@ -89,11 +91,12 @@ def write_packages(calendars: list[dict], out_dir: Path, package_size: int, pref
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build timestamped PanamaCompra calendar import packages.")
     parser.add_argument("--records-dir", default=str(RECORDS_DIR), help="records tree to scan")
-    parser.add_argument("--out-dir", default=str(CALENDAR_DIR), help="directory for timestamped calendar packages")
+    parser.add_argument("--out-dir", default=str(CALENDAR_DIR), help="parent directory for timestamped calendar packages")
     parser.add_argument("--package-size", type=int, default=int(os.environ.get("PC_CALENDAR_PACKAGE_SIZE", DEFAULT_PACKAGE_SIZE)), help="VEVENTs per .ics package (default: 10)")
     parser.add_argument("--since", default=os.environ.get("PC_RUN_STARTED_AT", ""), help="only include detail JSON modified since this timestamp")
     parser.add_argument("--all", action="store_true", help="include every saved detail calendar instead of only new/changed ones")
     parser.add_argument("--legacy-combined", action="store_true", help=f"also write the old single combined file at {COMBINED_CALENDAR_PATH}")
+    parser.add_argument("--flat", action="store_true", help="write packages directly in --out-dir instead of --out-dir/YY-MM-DD/")
     args = parser.parse_args()
 
     package_size = max(1, args.package_size)
@@ -104,7 +107,8 @@ def main() -> int:
     write_run_progress("CALENDAR", "RUNNING", 96, "Step 3/4: collecting new calendar events for ICS packages...", step_current=3, step_total=4, extra=f"package_size={package_size}")
     calendars = iter_calendars(args.records_dir, since=since)
     out_dir = Path(args.out_dir)
-    written = write_packages(calendars, out_dir, package_size, prefix) if calendars else []
+    date_subdir = None if args.flat else date_folder_name()
+    written = write_packages(calendars, out_dir, package_size, prefix, date_subdir=date_subdir) if calendars else []
 
     if args.legacy_combined:
         out = Path(COMBINED_CALENDAR_PATH)
@@ -115,7 +119,7 @@ def main() -> int:
 
     count = len(calendars)
     if written:
-        print(f"Calendar packages written in {out_dir}: {len(written)} file(s), {count} event(s), package_size={package_size}")
+        print(f"Calendar packages written under {out_dir}: {len(written)} file(s), {count} event(s), package_size={package_size}")
         for path in written:
             print(f"  {path}")
     else:

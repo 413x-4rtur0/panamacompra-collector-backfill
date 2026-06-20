@@ -71,7 +71,7 @@ pc_run_all_worker.sh        single locked worker
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
 records_test/…                                isolated testing sandbox (shown as MODE=TEST in the monitor)
-data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics  import packages (default 10 events each)
+data/calendar/YY-MM-DD/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics  normal-run import packages
 ```
 
 ### Process diagram and test visibility
@@ -86,18 +86,15 @@ flowchart TD
     F --> G[STEP 2: pc_detail_downloader.py]
     G --> H[detail JSON, HTML, text, tables, per-record ICS]
     H --> I[STEP 3: pc_build_calendar.py]
-    I --> J[data/calendar timestamped ICS packages]
+    I --> J[data/calendar/YY-MM-DD timestamped ICS packages]
     D --> K{No pending new details?}
     K -- yes --> L[STEP 4: pc_test_zone.py]
-    L --> M[records_test + test calendar, MODE=TEST]
+    L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
     D --> N[data/logs/run_all_progress.env]
     N --> O[pc_monitor_tk.py / pc_monitor_server.py]
 ```
 
-The monitor now shows `calendar` and `test` process flags in addition to the
-worker/index/detail flags. Normal live runs show `MODE=LIVE`; the isolated test
-zone shows `MODE=TEST`, so it is visible when the worker is exercising code paths
-without touching the real archive.
+The monitor now shows separate `normal_run` and `test_run` flags, plus worker/index/detail/calendar flags. Normal live runs show `MODE=LIVE`; the isolated test zone shows `MODE=TEST`, so it is visible when the worker is exercising code paths without touching the real archive.
 
 The workflow has two phases run back-to-back by the worker:
 
@@ -304,8 +301,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record or `--legacy-combined` to also write the old single combined file. |
-| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/`, throwaway DB, separate `.ics`), leaving the real archive untouched, to verify current code when there is nothing new. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST`. |
+| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
+| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
 
@@ -378,7 +375,7 @@ panamacompra-collector/
 `<section>` is a short identifier derived from the detail-page section heading
 (e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
 per-table index — section, identifier and the three filenames — is also listed in
-`detail.json` under `tables`. Timestamped files under `data/calendar/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive.
+`detail.json` under `tables`. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -523,8 +520,8 @@ the spec and display unescaped in calendar apps.)
 exports only the new/changed record calendars from that run into timestamped files:
 
 ```text
-data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics
-data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_002.ics
+data/calendar/YY-MM-DD/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics
+data/calendar/YY-MM-DD/YY-MM-DD_HH-MM_panamacompra_calendar_002.ics
 ```
 
 The default package size is **10 events per file** (`PC_CALENDAR_PACKAGE_SIZE=10`).
@@ -539,8 +536,9 @@ Manual examples:
 
 ```bash
 ./pc_build_calendar.py                         # package only this run's new/changed records when PC_RUN_STARTED_AT exists
-./pc_build_calendar.py --all                   # package every saved record, split into 10-event files
+./pc_build_calendar.py --all                   # package every saved record under data/calendar/YY-MM-DD/
 PC_CALENDAR_PACKAGE_SIZE=5 ./pc_build_calendar.py --all
+./pc_build_calendar.py --all --flat            # write packages directly in data/calendar/
 ./pc_build_calendar.py --all --legacy-combined # also write data/calendar/panamacompra.ics
 ```
 
@@ -595,8 +593,7 @@ recent **N records (default 5)** through the full pipeline in an **isolated sand
 leaving the real archive and DB untouched, so you can see how the current code renders
 them.
 
-- Writes only to `records_test/`, a throwaway in-memory DB, and a separate
-  `data/calendar/panamacompra_test.ics` — diff these against the real outputs.
+- Writes only to `records_test/latest_5/`, a throwaway in-memory DB, and test ICS packages under `records_test/calendar/YY-MM-DD/` — diff these against the real outputs.
 - The run is published to the monitor as **`MODE=TEST`** (the monitor's *Mode* field
   shows `LIVE` vs `TEST`), with a *Test records* count, so it is clearly distinct from
   new (live) records.
@@ -612,8 +609,7 @@ Run it manually any time:
 ```
 
 Each run starts from a clean sandbox (the previous `records_test/` is cleared), and
-the full pipeline runs — live re-download, section-table split, views, and the
-combined test calendar — so browser extraction and parsing changes are both exercised.
+the full pipeline runs — live re-download, section-table split, views, and timestamped test calendar packages — so browser extraction and parsing changes are both exercised.
 
 ### Database
 

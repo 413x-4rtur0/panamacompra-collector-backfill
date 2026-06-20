@@ -17,4 +17,4 @@
 #   python -m playwright install firefox
 playwright>=1.40
 
-# No extra pip dependency is required for calendar packaging; ICS files are generated with the standard library.
+# No extra pip dependency is required for calendar packaging; ICS files are generated with the standard library, including normal and test calendar packages.

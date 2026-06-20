@@ -8,10 +8,27 @@ mkdir -p data/logs data/queue
 echo "PanamaCompra run-all status"
 echo "---------------------------"
 
+WORKER_RUNNING=0
+TEST_RUNNING=0
 if pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1; then
+  WORKER_RUNNING=1
   echo "Worker: RUNNING"
 else
   echo "Worker: not running"
+fi
+
+if pgrep -f "[p]ython3? -u ./pc_test_zone.py" >/dev/null 2>&1; then
+  TEST_RUNNING=1
+fi
+if [ "$WORKER_RUNNING" -eq 1 ] && [ "$TEST_RUNNING" -eq 0 ]; then
+  echo "Normal run: RUNNING"
+else
+  echo "Normal run: not running"
+fi
+if [ "$TEST_RUNNING" -eq 1 ]; then
+  echo "Test run: RUNNING"
+else
+  echo "Test run: not running"
 fi
 
 if pgrep -f "[p]ython3? -u ./pc_index_collector.py" >/dev/null 2>&1; then
@@ -24,6 +41,12 @@ if pgrep -f "[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1; then
   echo "Detail downloader: RUNNING"
 else
   echo "Detail downloader: not running"
+fi
+
+if pgrep -f "[p]ython3? -u ./pc_build_calendar.py" >/dev/null 2>&1; then
+  echo "Calendar packager: RUNNING"
+else
+  echo "Calendar packager: not running"
 fi
 
 if [ -f data/queue/run_all_requested.flag ]; then
@@ -51,7 +74,7 @@ fi
 
 echo ""
 echo "Related processes:"
-pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|timeout .*pc_" || true
+pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|pc_build_calendar|pc_test_zone|timeout .*pc_" || true
 
 echo ""
 echo "Recent run-all requests:"
