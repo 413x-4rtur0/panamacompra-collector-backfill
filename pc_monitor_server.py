@@ -85,8 +85,10 @@ def running(pattern: str) -> bool:
 def process_snapshot() -> dict[str, bool]:
     return {
         "worker": running("[p]c_run_all_worker.sh"),
-        "index": running("[p]ython -u ./pc_index_collector.py"),
-        "detail": running("[p]ython -u ./pc_detail_downloader.py"),
+        "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
+        "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
+        "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        "test": running("[p]ython(3)? -u ./pc_test_zone.py"),
         "request": REQUEST_FLAG.exists(),
     }
 

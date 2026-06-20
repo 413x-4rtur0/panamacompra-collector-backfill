@@ -65,14 +65,39 @@ pc_run_all_worker.sh        single locked worker
         │
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
         ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
-        ├─ STEP 3  pc_build_calendar.py     merges every event into one .ics
+        ├─ STEP 3  pc_build_calendar.py     writes timestamped .ics packages for new events
         └─ STEP 4  pc_test_zone.py          only when no new records: re-runs the last 5 in a sandbox
         │
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
 records_test/…                                isolated testing sandbox (shown as MODE=TEST in the monitor)
-data/calendar/panamacompra.ics                combined calendar for one Thunderbird subscription
+data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics  import packages (default 10 events each)
 ```
+
+### Process diagram and test visibility
+
+```mermaid
+flowchart TD
+    A[changedetection.io or manual request] --> B[pc_request_run_all.sh]
+    B --> C[data/queue/run_all_requested.flag]
+    C --> D[pc_run_all_worker.sh with flock lock]
+    D --> E[STEP 1: pc_index_collector.py]
+    E --> F[SQLite + records/YY-MM-DD/NUMERO index JSON]
+    F --> G[STEP 2: pc_detail_downloader.py]
+    G --> H[detail JSON, HTML, text, tables, per-record ICS]
+    H --> I[STEP 3: pc_build_calendar.py]
+    I --> J[data/calendar timestamped ICS packages]
+    D --> K{No pending new details?}
+    K -- yes --> L[STEP 4: pc_test_zone.py]
+    L --> M[records_test + test calendar, MODE=TEST]
+    D --> N[data/logs/run_all_progress.env]
+    N --> O[pc_monitor_tk.py / pc_monitor_server.py]
+```
+
+The monitor now shows `calendar` and `test` process flags in addition to the
+worker/index/detail flags. Normal live runs show `MODE=LIVE`; the isolated test
+zone shows `MODE=TEST`, so it is visible when the worker is exercising code paths
+without touching the real archive.
 
 The workflow has two phases run back-to-back by the worker:
 
@@ -279,7 +304,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `pc_build_calendar.py` | Merge every record's calendar event into one `data/calendar/panamacompra.ics` for a single Thunderbird subscription. Runs automatically as STEP 3 after each detail step; can also be run manually. |
+| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/`, throwaway DB, separate `.ics`), leaving the real archive untouched, to verify current code when there is nothing new. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST`. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks. |
@@ -299,6 +324,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
+| `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
@@ -307,7 +333,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to wait after completion before closing the native monitor window. Use `0` to disable. |
-| `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size. |
+| `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
+| `PC_MONITOR_TK_ALPHA` | `0.80` | native monitor | Native monitor opacity/transparency. `0.80` means 80% opaque. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
 | `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
@@ -351,8 +378,7 @@ panamacompra-collector/
 `<section>` is a short identifier derived from the detail-page section heading
 (e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
 per-table index — section, identifier and the three filenames — is also listed in
-`detail.json` under `tables`. The combined `data/calendar/panamacompra.ics` holds
-every record's event for one Thunderbird subscription.
+`detail.json` under `tables`. Timestamped files under `data/calendar/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -493,12 +519,30 @@ and `DESCRIPTION` is a `LINK :` line, a `DESCR:` line, then an `ITEMS:` list
 Thunderbird renders as a clickable link. (Commas in ICS text are written `\,` per
 the spec and display unescaped in calendar apps.)
 
-**Combined Thunderbird calendar.** After each run, `pc_build_calendar.py` (STEP 3)
-merges every record's event into one `data/calendar/panamacompra.ics`. Subscribe to
-that file once in Thunderbird (New Calendar → *On My Computer*, or an iCalendar
-network calendar with a `file://` URL to that path) and every opportunity shows on
-your calendar; later runs refresh the file with new events. Run it manually any time
-with `./pc_build_calendar.py`.
+**Calendar import packages.** After each run, `pc_build_calendar.py` (STEP 3)
+exports only the new/changed record calendars from that run into timestamped files:
+
+```text
+data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics
+data/calendar/YY-MM-DD_HH-MM_panamacompra_calendar_002.ics
+```
+
+The default package size is **10 events per file** (`PC_CALENDAR_PACKAGE_SIZE=10`).
+This is intentionally smaller than the old all-in-one calendar because Thunderbird
+and other clients can become noisy when a single import contains too many reminders
+or editable events. Import the packages produced by each run, then leave old
+packages alone. If an imported ICS calendar shows reminders for a calendar you do
+not want to edit, right-click that calendar in Thunderbird's calendar/task list,
+open **Properties**, and mark it **read-only**.
+
+Manual examples:
+
+```bash
+./pc_build_calendar.py                         # package only this run's new/changed records when PC_RUN_STARTED_AT exists
+./pc_build_calendar.py --all                   # package every saved record, split into 10-event files
+PC_CALENDAR_PACKAGE_SIZE=5 ./pc_build_calendar.py --all
+./pc_build_calendar.py --all --legacy-combined # also write data/calendar/panamacompra.ics
+```
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
