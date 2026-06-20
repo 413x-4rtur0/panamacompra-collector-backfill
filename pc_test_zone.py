@@ -4,7 +4,7 @@
 When a normal run has no new opportunities, there is nothing to verify current
 code against. This re-downloads the most recent N records (default 5) from the
 live portal into an ISOLATED sandbox — ``records_test/``, a throwaway in-memory
-DB, and a separate ``data/calendar/panamacompra_test.ics`` — leaving the real
+DB, and timestamped packages under ``records_test/calendar/YY-MM-DD/`` — leaving the real
 archive and DB untouched, so you can see how the current code renders them and
 diff against the real output. The run is published to the monitor as ``MODE=TEST``
 so it is clearly distinct from new (live) records.
@@ -18,20 +18,21 @@ Disable by setting PC_TEST_ZONE_LIMIT=0.
 """
 import argparse
 import json
+import os
 import shutil
+from datetime import datetime
 import sys
 from pathlib import Path
 
 from pc_common import (
     RECORDS_TEST_DIR,
-    TEST_CALENDAR_PATH,
-    calendars_to_ics,
     date_folder_name,
     init_db,
     now_iso,
     safe_name,
     write_run_progress,
 )
+from pc_build_calendar import write_packages
 from pc_update_day_folder import ensure_playwright_available
 
 
@@ -50,7 +51,7 @@ def recent_rows(conn, limit):
 def sandbox_row(real_row):
     """A copy of a record pointed at a fresh folder under records_test/."""
     numero = real_row["numero"]
-    date_folder = real_row["date_folder"] or date_folder_name()
+    date_folder = "latest_5"
     folder = RECORDS_TEST_DIR / date_folder / safe_name(numero)
     folder.mkdir(parents=True, exist_ok=True)
     row = dict(real_row)
@@ -62,8 +63,8 @@ def sandbox_row(real_row):
     return row
 
 
-def build_test_calendar():
-    """Combine the sandbox events into the separate test .ics. Returns count."""
+def build_test_calendar(package_size=10):
+    """Package sandbox events under records_test/calendar/YY-MM-DD/."""
     calendars = []
     for path in sorted(RECORDS_TEST_DIR.rglob("*.detail.json")):
         try:
@@ -74,9 +75,10 @@ def build_test_calendar():
         if calendar:
             calendars.append(calendar)
     calendars.sort(key=lambda c: (c.get("dtstart") or "", c.get("uid") or ""))
-    TEST_CALENDAR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TEST_CALENDAR_PATH.write_bytes(calendars_to_ics(calendars).encode("utf-8"))
-    return len(calendars)
+    stamp = datetime.now().strftime("%y-%m-%d_%H-%M")
+    out_dir = RECORDS_TEST_DIR / "calendar"
+    written = write_packages(calendars, out_dir, max(1, int(package_size)), f"{stamp}_panamacompra_test_calendar", date_subdir=date_folder_name()) if calendars else []
+    return len(calendars), written
 
 
 def run_test_zone(rows):
@@ -93,6 +95,7 @@ def run_test_zone(rows):
 
     total = len(rows)
     started = now_iso()
+    package_size = max(1, int(os.environ.get("PC_CALENDAR_PACKAGE_SIZE", "10")))
     saved = failed = 0
     with sync_playwright() as p:
         browser = p.firefox.launch(
@@ -120,14 +123,16 @@ def run_test_zone(rows):
         finally:
             browser.close()
 
-    events = build_test_calendar()
+    events, calendar_packages = build_test_calendar(package_size=package_size)
     write_run_progress(
         "TEST", "DONE", 100,
-        f"Test zone done: re-ran {saved}/{total} in sandbox, {events} calendar events. Real archive untouched.",
+        f"Test zone done: re-ran {saved}/{total} in sandbox, {events} calendar events in {len(calendar_packages)} package(s). Real archive untouched.",
         mode="TEST", started_at=started, item_current=total, item_total=total,
         records_saved=saved, records_failed=failed, records_test=total,
     )
-    print(f"\nTest zone: re-ran {saved}/{total} into {RECORDS_TEST_DIR} | failed {failed} | calendar {TEST_CALENDAR_PATH}")
+    print(f"\nTest zone: re-ran {saved}/{total} into {RECORDS_TEST_DIR} | failed {failed}")
+    for path in calendar_packages:
+        print(f"Test calendar package: {path}")
     return saved, failed
 
 

@@ -103,7 +103,7 @@ while true; do
 
   log "ITERATION $ITERATION started."
 
-  write_progress "INDEX" "RUNNING" "10" "Step 1/2: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/4: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
 
   {
     echo ""
@@ -144,7 +144,7 @@ PY
 )"
   [ -n "$PENDING_BEFORE" ] || PENDING_BEFORE="-1"
 
-  write_progress "DETAIL" "RUNNING" "55" "Step 2/2: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
+  write_progress "DETAIL" "RUNNING" "55" "Step 2/4: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
 
   {
     echo ""
@@ -162,11 +162,11 @@ PY
     echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
   } >> "$CURRENT_LOG"
 
-  # STEP 3: rebuild the combined Thunderbird calendar from every record's event.
-  write_progress "CALENDAR" "RUNNING" "96" "Step 3/3: building combined Thunderbird calendar (.ics)..." "$STARTED"
+  # STEP 3: build timestamped Thunderbird/ICS import packages from new events.
+  write_progress "CALENDAR" "RUNNING" "96" "Step 3/4: building timestamped calendar import packages (.ics)..." "$STARTED"
   {
     echo ""
-    echo "-------------------- STEP 3: COMBINED CALENDAR -----------------"
+    echo "-------------------- STEP 3: CALENDAR PACKAGES -----------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
   } >> "$CURRENT_LOG"
@@ -189,10 +189,10 @@ PY
   cat "$CURRENT_LOG" >> "$HISTORY_LOG"
 
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    write_progress "DONE" "DONE" "100" "Index, detail and combined calendar completed successfully." "$STARTED"
+    write_progress "DONE" "DONE" "100" "Index, detail and calendar packages completed successfully." "$STARTED"
     log "ITERATION $ITERATION finished successfully."
   elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
-    write_progress "CALENDAR" "FAILED" "98" "Detail finished but combined calendar build failed with exit=$CALENDAR_EXIT." "$STARTED"
+    write_progress "CALENDAR" "FAILED" "98" "Detail finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
     log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
   elif [ "$DETAIL_EXIT" -eq 124 ]; then
     write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"

@@ -81,10 +81,15 @@ def running(pattern: str) -> bool:
 
 
 def process_snapshot() -> dict[str, bool]:
+    worker = running("[p]c_run_all_worker.sh")
+    test = running("[p]ython(3)? -u ./pc_test_zone.py")
     return {
-        "worker": running("[p]c_run_all_worker.sh"),
-        "index": running("[p]ython -u ./pc_index_collector.py"),
-        "detail": running("[p]ython -u ./pc_detail_downloader.py"),
+        "normal_run": worker and not test,
+        "test_run": test,
+        "worker": worker,
+        "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
+        "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
+        "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
         "request": REQUEST_FLAG.exists(),
     }
 
@@ -129,8 +134,25 @@ def run_tk() -> int:
 
     root = tk.Tk()
     root.title("PanamaCompra Progress")
-    root.geometry(os.environ.get("PC_MONITOR_TK_GEOMETRY", "980x760"))
+    geometry = os.environ.get("PC_MONITOR_TK_GEOMETRY", "980x760")
+    root.geometry(geometry)
     root.configure(bg="#0f172a")
+    try:
+        root.attributes("-alpha", float(os.environ.get("PC_MONITOR_TK_ALPHA", "0.80")))
+    except tk.TclError:
+        pass
+
+    def center_window() -> None:
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        if width <= 1 or height <= 1:
+            width, height = [int(part) for part in geometry.split("x", 1)]
+        x = max(0, (root.winfo_screenwidth() - width) // 2)
+        y = max(0, (root.winfo_screenheight() - height) // 2)
+        root.geometry(f"{width}x{height}+{x}+{y}")
+
+    center_window()
 
     style = ttk.Style(root)
     try:

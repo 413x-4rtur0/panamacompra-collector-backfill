@@ -22,6 +22,8 @@ changedetection.io
   -> pc_run_all_worker.sh
        STEP 1: pc_index_collector.py
        STEP 2: pc_detail_downloader.py
+       STEP 3: pc_build_calendar.py -> data/calendar/YY-MM-DD/*.ics
+       STEP 4: pc_test_zone.py -> records_test/latest_5 + records_test/calendar/YY-MM-DD/*.ics (idle/no-new-records only)
 TXT
 
 echo ""
@@ -34,6 +36,8 @@ required_scripts=(
   "pc_run_all_worker.sh"
   "pc_index_collector.py"
   "pc_detail_downloader.py"
+  "pc_build_calendar.py"
+  "pc_test_zone.py"
   "pc_common.py"
   "pc_monitor_window.sh"
   "pc_monitor_tk.py"
