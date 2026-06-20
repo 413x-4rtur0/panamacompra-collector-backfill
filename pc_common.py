@@ -758,28 +758,62 @@ def _calendar_description(fields, items, link=""):
                 lines.append(item_line)
     return "\n".join(lines)
 
+def _calendar_window_datetimes(fields):
+    """Return (source text, dtstart, dtend) for calendar import.
+
+    Calendar clients need a DTSTART to place the event. Prefer the formal
+    presentation/cierre/límite window; if that has only a date, default it to
+    noon. Fall back to the delivery window and finally compute_finish_stamp so
+    records that still have any recognizable date keep importable ICS dates.
+    """
+    window = _close_window_value(fields) or find_kv(fields, "dia", "hora", "entrega")
+    date = _parse_ddmmyyyy(window)
+    times = _parse_times_24h(window)
+
+    if not date:
+        finish_stamp = compute_finish_stamp(fields, "")
+        if finish_stamp:
+            stamp_date, _, stamp_time = finish_stamp.partition("_")
+            date = stamp_date
+            if not times and stamp_time:
+                times = [stamp_time]
+            if not window:
+                window = finish_stamp
+
+    if not date:
+        return window, "", ""
+
+    if not times:
+        times = ["12:00"]
+
+    dtstart = f"{date}T{times[0]}:00"
+    dtend = f"{date}T{times[-1]}:00"
+    return window, dtstart, dtend
+
+
 def build_calendar(fields, items, numero="", dtstamp=None, link=""):
     """An ICS VEVENT for the record, expressed as JSON.
 
     DTSTART/DTEND come from the 'Fecha y hora presentación de cotizaciones' /
     cierre / límite window (first/last clock time on its date), falling back to
-    the 'Día y Hora de Entrega' window for older records.
+    the 'Día y Hora de Entrega' window for older records. If a source has a
+    date but no explicit clock time, the event is kept importable at 12:00.
     """
     numero = find_kv(fields, "numero") or numero
     descripcion = find_kv(fields, "descripcion")
-    window = _close_window_value(fields) or find_kv(fields, "dia", "hora", "entrega")
-    date = _parse_ddmmyyyy(window)
-    times = _parse_times_24h(window)
-    dtstart = f"{date}T{times[0]}:00" if date and times else ""
-    dtend = f"{date}T{times[-1]}:00" if date and times else ""
+    window, dtstart, dtend = _calendar_window_datetimes(fields)
     summary = " / ".join(p for p in [descripcion, f"({numero})" if numero else ""] if p)
     return {
         "uid": f"{numero}@panamacompra" if numero else "",
         "summary": summary,
         "timezone": CALENDAR_TZ,
+        "date": dtstart[:10] if dtstart else "",
+        "start": dtstart[11:16] if dtstart else "",
+        "end": dtend[11:16] if dtend else "",
         "dtstart": dtstart,
         "dtend": dtend,
         "dtstamp": dtstamp or now_iso(),
+        "source_window": window,
         "location": _location(fields),
         "organizer": {
             "name": find_kv(fields, "nombre"),
