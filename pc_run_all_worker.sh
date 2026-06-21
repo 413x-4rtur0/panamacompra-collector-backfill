@@ -14,12 +14,14 @@ mkdir -p data/logs data/queue
 
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
+IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
 WORKER_LOG="data/logs/run_all_worker.log"
 CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
 DETAIL_LIMIT="${1:-99}"
+RUN_COMPLETED=0
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
@@ -64,14 +66,38 @@ write_progress() {
   mv "$tmp" "$PROGRESS_FILE"
 }
 
+
+mark_abrupt_exit_for_resume() {
+  local exit_code="$?"
+  if [ "$RUN_COMPLETED" -eq 0 ]; then
+    touch "$REQUEST_FLAG"
+    rm -f "$IN_PROGRESS_FLAG"
+    log "Worker exited before clean completion with exit=$exit_code. Request flag restored so the next start resumes pending work."
+    write_progress "RESUME_PENDING" "FAILED" "0" "Worker stopped before clean completion. Pending work will resume on the next run-all start." "$(date '+%Y-%m-%d %H:%M:%S')" || true
+  else
+    rm -f "$IN_PROGRESS_FLAG"
+  fi
+}
+terminate_worker() {
+  local signal="$1"
+  log "Worker received $signal. Exiting and marking pending work for resume."
+  exit 128
+}
+trap mark_abrupt_exit_for_resume EXIT
+trap 'terminate_worker INT' INT
+trap 'terminate_worker TERM' TERM
+trap 'terminate_worker HUP' HUP
+
 exec 9>"$LOCK_FILE"
 
 if ! flock -n 9; then
+  RUN_COMPLETED=1
   log "Worker already running. This duplicate worker exits."
   exit 0
 fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
+touch "$IN_PROGRESS_FLAG"
 log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT"
 
 ITERATION=0
@@ -233,5 +259,7 @@ PY
   fi
 done
 
+RUN_COMPLETED=1
+rm -f "$IN_PROGRESS_FLAG"
 write_progress "IDLE" "DONE" "100" "Worker stopped. No active PanamaCompra process." "$(date '+%Y-%m-%d %H:%M:%S')"
 log "RUN-ALL WORKER STOPPED"
