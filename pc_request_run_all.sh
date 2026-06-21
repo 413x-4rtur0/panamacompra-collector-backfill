@@ -7,9 +7,14 @@ mkdir -p data/logs data/queue
 
 DETAIL_LIMIT="${1:-99}"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
+IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
 REQUEST_LOG="data/logs/run_all_requests.log"
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') | RUN-ALL REQUESTED detail_limit=$DETAIL_LIMIT" | tee -a "$REQUEST_LOG"
+
+if [ -f "$IN_PROGRESS_FLAG" ] && ! pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | Stale in-progress flag found; starting worker to resume pending work." | tee -a "$REQUEST_LOG"
+fi
 
 touch "$REQUEST_FLAG"
 

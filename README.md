@@ -117,6 +117,9 @@ The workflow has two phases run back-to-back by the worker:
 - **One browser process at a time.** The worker takes a `flock` lock. If a new
   trigger arrives while it is running, a request flag is left behind and the worker
   runs one more full sequence after it finishes — no duplicate Firefox sessions.
+  If the worker exits before a clean shutdown, it restores the request flag so the
+  next `pc_request_run_all.sh` start resumes pending database work instead of
+  losing the interrupted task.
 - **Immutable archive.** Existing JSON / HTML / text files are never overwritten;
   completed folders are skipped.
 
@@ -331,7 +334,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to wait after completion before closing the native monitor window. Use `0` to disable. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
-| `PC_MONITOR_TK_ALPHA` | `0.80` | native monitor | Native monitor opacity/transparency. `0.80` means 80% opaque. |
+| `PC_MONITOR_TK_ALPHA` | `0.60` | native monitor | Native monitor opacity/transparency. `0.60` means 60% opaque. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
 | `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |

@@ -138,7 +138,7 @@ def run_tk() -> int:
     root.geometry(geometry)
     root.configure(bg="#0f172a")
     try:
-        root.attributes("-alpha", float(os.environ.get("PC_MONITOR_TK_ALPHA", "0.80")))
+        root.attributes("-alpha", float(os.environ.get("PC_MONITOR_TK_ALPHA", "0.60")))
     except tk.TclError:
         pass
 
