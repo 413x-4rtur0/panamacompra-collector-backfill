@@ -20,6 +20,7 @@ changedetection.io
   -> run_collector.sh
   -> pc_request_run_all.sh
   -> pc_run_all_worker.sh
+       STEP 0: pc_update_before_run.sh
        STEP 1: pc_index_collector.py
        STEP 2: pc_detail_downloader.py
        STEP 3: pc_build_calendar.py -> data/calendar/YY-MM-DD/*.ics
@@ -34,6 +35,8 @@ required_scripts=(
   "run_collector.sh"
   "pc_request_run_all.sh"
   "pc_run_all_worker.sh"
+  "pc_update_before_run.sh"
+  "pc_waha_notify.py"
   "pc_index_collector.py"
   "pc_detail_downloader.py"
   "pc_build_calendar.py"
@@ -93,6 +96,7 @@ python_files=(
   "pc_detail_downloader.py"
   "pc_monitor_tk.py"
   "pc_monitor_server.py"
+  "pc_waha_notify.py"
   "webhook_listener.py"
   "migrate_previous_records.py"
   "pc_rename_record_folders.py"

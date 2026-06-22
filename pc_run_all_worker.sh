@@ -14,15 +14,26 @@ mkdir -p data/logs data/queue
 
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
+IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
 WORKER_LOG="data/logs/run_all_worker.log"
 CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
 DETAIL_LIMIT="${1:-99}"
+RUN_COMPLETED=0
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
+}
+
+notify_waha() {
+  local event="$1"
+  local status="$2"
+  local message="$3"
+  if [ -x ./pc_waha_notify.py ]; then
+    "$PYTHON_BIN" ./pc_waha_notify.py --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
+  fi
 }
 
 quote_value() {
@@ -64,14 +75,39 @@ write_progress() {
   mv "$tmp" "$PROGRESS_FILE"
 }
 
+
+mark_abrupt_exit_for_resume() {
+  local exit_code="$?"
+  if [ "$RUN_COMPLETED" -eq 0 ]; then
+    touch "$REQUEST_FLAG"
+    rm -f "$IN_PROGRESS_FLAG"
+    log "Worker exited before clean completion with exit=$exit_code. Request flag restored so the next start resumes pending work."
+    notify_waha "resume" "FAILED" "Worker stopped before clean completion. Pending work will resume on the next run-all start."
+    write_progress "RESUME_PENDING" "FAILED" "0" "Worker stopped before clean completion. Pending work will resume on the next run-all start." "$(date '+%Y-%m-%d %H:%M:%S')" || true
+  else
+    rm -f "$IN_PROGRESS_FLAG"
+  fi
+}
+terminate_worker() {
+  local signal="$1"
+  log "Worker received $signal. Exiting and marking pending work for resume."
+  exit 128
+}
+trap mark_abrupt_exit_for_resume EXIT
+trap 'terminate_worker INT' INT
+trap 'terminate_worker TERM' TERM
+trap 'terminate_worker HUP' HUP
+
 exec 9>"$LOCK_FILE"
 
 if ! flock -n 9; then
+  RUN_COMPLETED=1
   log "Worker already running. This duplicate worker exits."
   exit 0
 fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
+touch "$IN_PROGRESS_FLAG"
 log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT"
 
 ITERATION=0
@@ -88,6 +124,22 @@ while true; do
 
   rm -f "$REQUEST_FLAG"
   ITERATION=$((ITERATION + 1))
+
+  if [ "${PC_RUN_UPDATE_BEFORE_RUN:-1}" != "0" ] && [ -x ./pc_update_before_run.sh ]; then
+    write_progress "UPDATE" "RUNNING" "3" "Updating local copy before run-all iteration $ITERATION..." "$(date '+%Y-%m-%d %H:%M:%S')"
+    log "ITERATION $ITERATION pre-run local update started."
+    ./pc_update_before_run.sh >> "$WORKER_LOG" 2>&1
+    UPDATE_EXIT=$?
+    if [ "$UPDATE_EXIT" -ne 0 ]; then
+      write_progress "UPDATE" "FAILED" "3" "Pre-run local update failed with exit=$UPDATE_EXIT. Collector steps skipped." "$(date '+%Y-%m-%d %H:%M:%S')"
+      notify_waha "update" "FAILED" "Pre-run local update failed with exit=$UPDATE_EXIT. Collector steps skipped."
+      log "ITERATION $ITERATION pre-run local update failed with exit=$UPDATE_EXIT."
+      continue
+    fi
+    notify_waha "update" "DONE" "Pre-run local update completed for iteration $ITERATION."
+    log "ITERATION $ITERATION pre-run local update completed."
+  fi
+
   STARTED="$(date '+%Y-%m-%d %H:%M:%S')"
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
@@ -102,6 +154,7 @@ while true; do
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
+  notify_waha "start" "RUNNING" "Run-all iteration $ITERATION started with detail_limit=$DETAIL_LIMIT."
 
   write_progress "INDEX" "RUNNING" "10" "Step 1/4: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
 
@@ -124,6 +177,7 @@ while true; do
   if [ "$INDEX_EXIT" -ne 0 ]; then
     write_progress "INDEX" "FAILED" "50" "Index collector failed. Detail step skipped." "$STARTED"
     log "ITERATION $ITERATION index failed with exit=$INDEX_EXIT. Detail skipped."
+    notify_waha "failed" "FAILED" "Iteration $ITERATION index failed with exit=$INDEX_EXIT. Detail step skipped."
 
     {
       echo ""
@@ -190,15 +244,19 @@ PY
 
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
     write_progress "DONE" "DONE" "100" "Index, detail and calendar packages completed successfully." "$STARTED"
+    notify_waha "done" "DONE" "Iteration $ITERATION completed successfully."
     log "ITERATION $ITERATION finished successfully."
   elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
     write_progress "CALENDAR" "FAILED" "98" "Detail finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail finished but calendar build failed with exit=$CALENDAR_EXIT."
     log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
   elif [ "$DETAIL_EXIT" -eq 124 ]; then
     write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"
+    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out."
     log "ITERATION $ITERATION detail step timed out."
   else
     write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT."
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
   fi
 
@@ -223,6 +281,7 @@ PY
     } >> "$CURRENT_LOG"
     if [ "$TEST_EXIT" -ne 0 ]; then
       write_progress "TEST" "FAILED" "100" "Test zone failed with exit=$TEST_EXIT (real archive untouched)." "$STARTED"
+      notify_waha "failed" "FAILED" "Iteration $ITERATION test zone failed with exit=$TEST_EXIT (real archive untouched)."
       log "ITERATION $ITERATION test zone failed with exit=$TEST_EXIT."
     fi
   fi
@@ -233,5 +292,7 @@ PY
   fi
 done
 
+RUN_COMPLETED=1
+rm -f "$IN_PROGRESS_FLAG"
 write_progress "IDLE" "DONE" "100" "Worker stopped. No active PanamaCompra process." "$(date '+%Y-%m-%d %H:%M:%S')"
 log "RUN-ALL WORKER STOPPED"
