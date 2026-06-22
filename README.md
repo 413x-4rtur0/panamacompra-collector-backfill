@@ -330,12 +330,16 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
-| `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. |
+| `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
+| `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
 | `PC_UPDATE_BRANCH` | current branch | update scripts | Git branch to fast-forward before local/update or pre-run update. |
+| `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request after a successful local update. |
+| `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update_local_copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
+| `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Manual Monitor** desktop/application-menu shortcut for the native monitor with request-run and WhatsApp-destination buttons. Set to `0` to skip. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -353,16 +357,17 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
-| `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group notifications. If `PC_WAHA_CHAT_ID` is empty, notifications are skipped safely. |
+| `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If neither `PC_WAHA_CHAT_ID` nor the saved monitor destination is configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
-| `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Private WhatsApp group chat id, usually ending in `@g.us`. |
+| `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. If unset, `data/config/waha_chat_id.txt` saved from the monitor is used. Group ids usually end in `@g.us`. |
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update` | WAHA notifier | Comma-separated event names to send. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
-| saved WAHA message | `data/config/waha_message.txt` | WAHA notifier / web monitor | Reusable group-message text saved from the monitor or `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
+| saved WAHA destination | `data/config/waha_chat_id.txt` | WAHA notifier / monitor | Destination group/channel chat id saved from the monitor; used when `PC_WAHA_CHAT_ID` is not set. |
+| saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The web monitor includes buttons to request a run immediately and to save the reusable WhatsApp group message for the current and future runs.
+The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs.
 
 ### Optional WAHA private WhatsApp group alerts
 
@@ -423,7 +428,7 @@ panamacompra-collector/
 `<section>` is a short identifier derived from the detail-page section heading
 (e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
 per-table index — section, identifier and the three filenames — is also listed in
-`detail.json` under `tables`. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive.
+`detail.json` under `tables`. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive. To auto-open/import generated packages on a desktop machine, set `PC_CALENDAR_AUTO_IMPORT=1` or provide a custom `PC_CALENDAR_AUTO_IMPORT_CMD`.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -744,14 +749,14 @@ does not start a browser session directly.
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` to open a lightweight desktop window without starting Firefox,
-a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, and recent log tails. When the run is done, the
+`./pc_open_monitor.sh` or launch the **PanamaCompra Manual Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`.
+It opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and a **Manual script buttons** panel that includes an **Import generated calendars** button. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. When the run is done, the
 window slows its refresh and auto-closes after the configured delay.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./pc_open_monitor.sh`,
-then open `http://127.0.0.1:8766/`. The terminal UI is still available with
+then open `http://127.0.0.1:8766/`; the web monitor also includes run-mode/limit selectors and an **Import generated calendars** button. The terminal UI is still available with
 `PC_MONITOR_MODE=terminal ./pc_open_monitor.sh`. If no GUI can be opened, use
 `./pc_run_all_status.sh` or `./pc_follow_run_all.sh` from any terminal.
 

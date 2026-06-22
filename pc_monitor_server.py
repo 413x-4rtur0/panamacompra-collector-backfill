@@ -20,7 +20,8 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
-WAHA_MESSAGE_PATH = BASE_DIR / "data" / "config" / "waha_message.txt"
+WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
+MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
@@ -124,7 +125,7 @@ def status_payload() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 20),
         "current_log": tail(CURRENT_LOG, 35),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "waha_message": WAHA_MESSAGE_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_MESSAGE_PATH.exists() else "",
+        "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
     }
 
 
@@ -162,7 +163,7 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
   <p id="done-note" class="done" hidden></p>
   <div id="processes"></div>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><button onclick="requestRun()">Request run now</button><button onclick="saveWaha()">Save WhatsApp group message</button><span id="button-status" class="small"></span></p><p class="small">The WhatsApp text is reused when notifications do not pass a one-off message, and saving it remembers changes for later runs.</p><textarea id="waha-message" placeholder="Reusable WhatsApp group notification message"></textarea></div>
+<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button onclick="importCalendars()">Import generated calendars</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records.</p><p class="small"><strong>Import generated calendars:</strong> rebuilds the calendar packages and opens each generated .ics file with the desktop calendar app. Output is saved to data/logs/manual_actions.log.</p><p class="small">Enter the WhatsApp group or channel chat ID that receives automated PanamaCompra “what is new” notifications. Example group IDs usually end in @g.us.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
@@ -201,7 +202,7 @@ function render(data) {{
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
-  if (waha && document.activeElement !== waha) waha.value = data.waha_message || '';
+  if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
@@ -225,8 +226,13 @@ async function postForm(path, body) {{
   document.getElementById('button-status').textContent = text.trim();
   poll();
 }}
-function requestRun() {{ postForm('/api/request-run', 'detail_limit=99'); }}
-function saveWaha() {{ postForm('/api/waha-message', 'message=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+function requestRun() {{
+  const mode = encodeURIComponent(document.getElementById('run-mode').value);
+  const limit = encodeURIComponent(document.getElementById('run-limit').value || '99');
+  postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{limit}}`);
+}}
+function importCalendars() {{ postForm('/api/import-calendars', ''); }}
+function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -263,14 +269,29 @@ class MonitorHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         if path == "/api/request-run":
-            limit = form.get("detail_limit", ["99"])[0]
+            raw_limit = form.get("detail_limit", ["99"])[0].strip()
+            limit = raw_limit if raw_limit.isdigit() and int(raw_limit) > 0 else "99"
+            mode = form.get("mode", ["live"])[0].strip().lower()
+            if mode == "test":
+                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Test-zone run requested with limit {limit}.\n", "text/plain; charset=utf-8")
+                return
             subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.send_text(202, "Run requested.\n", "text/plain; charset=utf-8")
+            self.send_text(202, f"Live run requested with detail limit {limit}.\n", "text/plain; charset=utf-8")
             return
-        if path == "/api/waha-message":
-            WAHA_MESSAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            WAHA_MESSAGE_PATH.write_text(form.get("message", [""])[0].strip() + "\n", encoding="utf-8")
-            self.send_text(200, "WhatsApp message saved.\n", "text/plain; charset=utf-8")
+        if path == "/api/import-calendars":
+            MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | Import generated calendars =====\n")
+                log_file.write("Command: PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all\n")
+                subprocess.Popen(["bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"], cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+            self.send_text(202, "Calendar import started. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
+            return
+        if path in {"/api/waha-destination", "/api/waha-message"}:
+            WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+            chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
+            WAHA_CHAT_ID_PATH.write_text(chat_id + "\n", encoding="utf-8")
+            self.send_text(200, "WhatsApp destination saved.\n", "text/plain; charset=utf-8")
             return
         self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 
