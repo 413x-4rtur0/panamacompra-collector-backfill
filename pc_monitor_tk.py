@@ -25,7 +25,10 @@ WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 REFRESH_SECONDS = max(2, int(os.environ.get("PC_MONITOR_TK_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_TK_IDLE_REFRESH_SECONDS", "15")))
-AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "20")))
+# Default 0 = never auto-close. The monitor is opened manually, so it stays open
+# for manual work until the user closes it. Set PC_MONITOR_TK_AUTO_CLOSE_SECONDS
+# to a positive number for unattended/automated contexts that should self-close.
+AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "0")))
 
 class ManualAction(NamedTuple):
     label: str
@@ -218,11 +221,24 @@ def run_tk() -> int:
         canvas.itemconfigure(content_window, width=event.width)
 
     def on_mousewheel(event: tk.Event) -> None:
-        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        # X11 (Linux) delivers wheel events as Button-4 (up) / Button-5 (down)
+        # with no usable event.delta, so those events never scrolled the window.
+        # Windows/macOS deliver <MouseWheel> with a signed event.delta instead.
+        num = getattr(event, "num", 0)
+        if num == 4:
+            canvas.yview_scroll(-3, "units")
+        elif num == 5:
+            canvas.yview_scroll(3, "units")
+        elif event.delta:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)) * 3, "units")
 
     content.bind("<Configure>", update_scroll_region)
     canvas.bind("<Configure>", resize_content)
+    # Bind on all widgets so the wheel scrolls the page no matter where the
+    # pointer is. <MouseWheel> covers Windows/macOS; Button-4/5 cover X11/Linux.
     canvas.bind_all("<MouseWheel>", on_mousewheel)
+    canvas.bind_all("<Button-4>", on_mousewheel)
+    canvas.bind_all("<Button-5>", on_mousewheel)
 
     header = ttk.Frame(content, style="Card.TFrame", padding=14)
     header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))

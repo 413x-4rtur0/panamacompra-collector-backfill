@@ -152,11 +152,14 @@ cd ~/Apps/panamacompra-collector
 ./update_local_copy.sh
 ```
 
-The update script stops active collector workers, refuses to continue if local
-uncommitted changes would be overwritten, fast-forwards the current branch, refreshes
+The update script always brings the checkout up to date. It stops active collector
+workers, **auto-stashes** any local edits to *tracked* files (kept in the stash for
+recovery, never lost), ignores untracked runtime files (`data/`, `records/`,
+`.webhook_token`, `.venv.broken.*`, …), fast-forwards the current branch, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
-system review. It intentionally uses `git pull --ff-only`, so it will not create a
-merge commit or leave a half-resolved conflict during unattended updates. To request
+system review. It uses `git pull --ff-only`; if the local branch has diverged and a
+fast-forward is impossible, it resets the branch to the remote (diverging commits stay
+reachable via `git reflog`), so an unattended update never stops half-way. To request
 a small smoke run after the update, use:
 
 ```bash
@@ -299,7 +302,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. |
-| `pc_next_run_timer.py` | Tiny always-on-top timer centered near the top of the desktop (about 30 px down) showing countdown to the next 30-minute live run; withdraws while a live run is active and reappears when finished. |
+| `pc_next_run_timer.py` | Tiny always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and auto-closes after completion. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
@@ -313,8 +316,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
-| `update_local_copy.sh` | Safe in-place updater for an existing checkout: stop workers, fast-forward Git, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. |
-| `pc_update_loader.py` | Separate Tk updater loader window for desktop/manual updates; tails update output, then opens the monitor after a successful update. |
+| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop workers, auto-stash local tracked edits (kept for recovery), fast-forward Git (reset to remote if diverged), refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. |
+| `pc_update_loader.py` | Separate Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
 
 ---
 
@@ -347,7 +350,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
-| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to wait after completion before closing the native monitor window. Use `0` to disable. |
+| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `0` | native monitor | Seconds to wait after completion before closing the native monitor window. Default `0` keeps the manually-opened monitor open until you close it; set a positive number for unattended contexts that should self-close. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.60` | native monitor | Native monitor opacity/transparency. `0.60` means 60% opaque. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
@@ -754,16 +757,15 @@ does not start a browser session directly.
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first so update output remains visible in its own window; after `update_local_copy.sh` completes successfully, the normal monitor opens.
+`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–10 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and a **Manual script buttons** panel that includes an **Import generated calendars** button. The monitor body is scrollable, so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. When the run is done, the
-window slows its refresh and auto-closes after the configured delay.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and a **Manual script buttons** panel that includes an **Import generated calendars** button. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); set that variable to a positive number for unattended contexts.
 
-For a tiny always-on-top countdown timer showing when the next 30-minute live run is scheduled, run:
+For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
 python pc_next_run_timer.py
 ```
-This mini-monitor displays the next scheduled run time (at :00 and :30 past each hour by default) with a live countdown. `pc_open_monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen.
+This mini-monitor counts down to the next run, anchored to the last live run's start time (read from `data/logs/run_all_progress.env`) plus `PC_NEXT_RUN_INTERVAL_MINUTES`, so it tracks the real cadence and rolls forward when a run is overdue; before any run is recorded it falls back to clock boundaries (:00 and :30 past each hour by default). `pc_open_monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./pc_open_monitor.sh`,
