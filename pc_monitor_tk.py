@@ -72,6 +72,15 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with desktop calendar app."),
     ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts local webhook listener in background; use STOP all runners to halt."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens optional browser-based monitor at configured local URL."),
+    
+    # ========================================================================
+    # FOLDER MANAGEMENT - Open and manage data storage locations
+    # ========================================================================
+    ManualAction("Folder Management", "Open index parent folder", ("bash", "-c", "xdg-open \"$(dirname \"$(pwd)/data/index\")\""), "Opens the parent directory containing the index folder."),
+    ManualAction("Folder Management", "Open index folder", ("bash", "-c", "xdg-open \"$(pwd)/data/index\""), "Opens the main index folder where collected records are stored."),
+    ManualAction("Folder Management", "Open records folder", ("bash", "-c", "xdg-open \"$(pwd)/records\""), "Opens the records archive folder containing organized record subfolders."),
+    ManualAction("Folder Management", "Open logs folder", ("bash", "-c", "xdg-open \"$(pwd)/data/logs\""), "Opens the logs folder containing worker and action logs."),
+    ManualAction("Folder Management", "Open data root", ("bash", "-c", "xdg-open \"$(pwd)/data\""), "Opens the main data directory containing index, logs, queue, and config."),
 ]
 
 
@@ -330,8 +339,37 @@ def run_tk() -> int:
     waha_var = tk.StringVar(value="")
     ttk.Entry(controls, textvariable=waha_var).grid(row=3, column=1, columnspan=4, sticky="ew", pady=(8, 0))
 
+    # ========================================================================
+    # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
+    # This section shows real-time status of the collector process
+    # ========================================================================
+    diag = ttk.Frame(content, style="Card.TFrame", padding=14)
+    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    for col in range(4):
+        diag.columnconfigure(col, weight=1)
+
+    fields = [
+        ("Phase", "PHASE"), ("Status", "STATUS"), ("Mode", "MODE"), ("Step", "STEP"), ("Item", "ITEM"),
+        ("Detail limit", "DETAIL_LIMIT"), ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
+        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"), ("Existing", "RECORDS_EXISTING"),
+        ("Saved/skipped", "RECORDS_SAVED"), ("Failures", "RECORDS_FAILED"),
+        ("Pending", "RECORDS_PENDING"), ("Test", "RECORDS_TEST"), ("Extra", "EXTRA"),
+    ]
+    diag_vars: dict[str, tk.StringVar] = {}
+    for idx, (label, key) in enumerate(fields):
+        row = idx // 2
+        col = (idx % 2) * 2
+        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=2)
+        var = tk.StringVar(value="-")
+        diag_vars[key] = var
+        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
+
+    # ========================================================================
+    # SECTION 4: MANUAL ACTION BUTTONS - Organized by category
+    # Each button runs a specific script or opens a folder
+    # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
     actions.columnconfigure(1, weight=1)
     ttk.Label(actions, text="Manual script buttons", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
@@ -368,29 +406,8 @@ def run_tk() -> int:
             ttk.Label(actions, text=action.comment, style="Card.TLabel", wraplength=360).grid(row=row, column=col + 1, sticky="w", pady=3)
         row += 1
 
-    diag = ttk.Frame(content, style="Card.TFrame", padding=14)
-    diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
-    for col in range(4):
-        diag.columnconfigure(col, weight=1)
-
-    fields = [
-        ("Phase", "PHASE"), ("Status", "STATUS"), ("Mode", "MODE"), ("Step", "STEP"), ("Item", "ITEM"),
-        ("Detail limit", "DETAIL_LIMIT"), ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
-        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"), ("Existing", "RECORDS_EXISTING"),
-        ("Saved/skipped", "RECORDS_SAVED"), ("Failures", "RECORDS_FAILED"),
-        ("Pending", "RECORDS_PENDING"), ("Test", "RECORDS_TEST"), ("Extra", "EXTRA"),
-    ]
-    diag_vars: dict[str, tk.StringVar] = {}
-    for idx, (label, key) in enumerate(fields):
-        row = idx // 2
-        col = (idx % 2) * 2
-        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=2)
-        var = tk.StringVar(value="-")
-        diag_vars[key] = var
-        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
-
     logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=5, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=4, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
