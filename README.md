@@ -63,6 +63,7 @@ pc_request_run_all.sh       creates data/queue/run_all_requested.flag
         ▼
 pc_run_all_worker.sh        single locked worker
         │
+        ├─ STEP 0  pc_update_before_run.sh fast-forwards local checkout before each run
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
         ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
         ├─ STEP 3  pc_build_calendar.py     writes timestamped .ics packages for new events
@@ -81,7 +82,8 @@ flowchart TD
     A[changedetection.io or manual request] --> B[pc_request_run_all.sh]
     B --> C[data/queue/run_all_requested.flag]
     C --> D[pc_run_all_worker.sh with flock lock]
-    D --> E[STEP 1: pc_index_collector.py]
+    D --> U[STEP 0: pc_update_before_run.sh]
+    U --> E[STEP 1: pc_index_collector.py]
     E --> F[SQLite + records/YY-MM-DD/NUMERO index JSON]
     F --> G[STEP 2: pc_detail_downloader.py]
     G --> H[detail JSON, HTML, text, tables, per-record ICS]
@@ -100,6 +102,7 @@ The workflow has two phases run back-to-back by the worker:
 
 | Phase | Script | Work |
 |-------|--------|------|
+| **Pre-run update** | `pc_update_before_run.sh` | Before each worker iteration, fast-forward the local Git checkout, refresh installed Python requirements when `.venv` exists, and fix executable bits. Set `PC_RUN_UPDATE_BEFORE_RUN=0` to skip. |
 | **Index scan** | `pc_index_collector.py` | Open the table, select *Programadas*, set 50 rows/page, crawl all pages, repeat for *Abiertas*. Save lightweight index JSON + DB records. |
 | **Detail download** | `pc_detail_downloader.py` | Read pending records from SQLite, visit each detail URL, save HTML / text / metadata / table JSON, mark as saved. |
 
@@ -289,7 +292,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_index_collector.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `pc_detail_downloader.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `pc_run_all_worker.sh` | Locked sequential worker: index then detail; repeats if re-requested. |
+| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. |
+| `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; fast-forwards Git and refreshes requirements without stopping the active worker. |
+| `pc_waha_notify.py` | Optional dependency-free WAHA notifier for private WhatsApp group text alerts. Enabled only when WAHA environment variables are configured. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
@@ -327,6 +332,9 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
+| `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
+| `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
+| `PC_UPDATE_BRANCH` | current branch | update scripts | Git branch to fast-forward before local/update or pre-run update. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -344,8 +352,43 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
+| `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group notifications. If `PC_WAHA_CHAT_ID` is empty, notifications are skipped safely. |
+| `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
+| `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
+| `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Private WhatsApp group chat id, usually ending in `@g.us`. |
+| `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update` | WAHA notifier | Comma-separated event names to send. Use `all` to send every supported event. |
+| `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 
 The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`.
+
+### Optional WAHA private WhatsApp group alerts
+
+This project can send short text alerts to a private WhatsApp group through a
+self-hosted WAHA server. WAHA exposes `POST /api/sendText` with a JSON body that
+includes `session`, `chatId`, and `text`; group chat ids normally end in `@g.us`.
+The notifier is off by default and uses only Python's standard library.
+
+Example local configuration:
+
+```bash
+export PC_WAHA_ENABLED=1
+export PC_WAHA_BASE_URL="http://127.0.0.1:3000"
+export PC_WAHA_SESSION="default"
+export PC_WAHA_CHAT_ID="120363000000000000@g.us"
+# Optional, if your WAHA server is protected:
+export PC_WAHA_API_KEY="your-waha-api-key"
+```
+
+Test the notifier without running the collector:
+
+```bash
+./pc_waha_notify.py --event info --status TEST --message "PanamaCompra WAHA test"
+```
+
+Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
+bridge, not the official WhatsApp Business Cloud API, so the safest use is a
+private alert group controlled by you.
 
 ---
 
@@ -718,6 +761,7 @@ Key logs under `data/logs/`:
 | `run_all_history.log` | Appended history of completed runs. |
 | `run_all_worker.log` | Worker lifecycle events. |
 | `run_all_requests.log` | Run-all requests. |
+| `update_before_run_*.log` | Pre-run Git/dependency update output for each worker iteration. |
 | `collector_triggered.log` | Webhook → collector triggers. |
 | `webhook_listener.log` | Webhook listener activity. |
 | `monitor_open.log` | Attempts to start/open the web monitor, terminal monitor, or fallback. |

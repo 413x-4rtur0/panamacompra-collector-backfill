@@ -9,6 +9,9 @@
 # Runtime Python modules used by the collector:
 #   - playwright: browser automation for index/detail downloads and day refreshes
 #
+# WAHA WhatsApp group notifications use Python's standard library (urllib/json)
+# and do not require an additional pip dependency.
+#
 # System packages are not installable by pip. On Debian/Ubuntu/Linux Mint install:
 #   sudo apt install -y python3-venv python3-full python3-tk
 # If pip fails with ModuleNotFoundError: _posixsubprocess, recreate .venv with a
