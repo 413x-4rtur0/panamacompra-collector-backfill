@@ -14,16 +14,43 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 BASE_DIR = Path(__file__).resolve().parent
 PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
-WAHA_MESSAGE_PATH = BASE_DIR / "data" / "config" / "waha_message.txt"
+WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
+MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 REFRESH_SECONDS = max(2, int(os.environ.get("PC_MONITOR_TK_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_TK_IDLE_REFRESH_SECONDS", "15")))
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "20")))
+
+class ManualAction(NamedTuple):
+    label: str
+    command: tuple[str, ...]
+    comment: str
+
+
+MANUAL_ACTIONS = [
+    ManualAction("Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
+    ManualAction("Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
+    ManualAction("Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
+    ManualAction("Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
+    ManualAction("Update local copy", ("./update_local_copy.sh",), "Fast-forwards this checkout, refreshes dependencies, and reinstalls this shortcut."),
+    ManualAction("Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
+    ManualAction("Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without using the browser."),
+    ManualAction("Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages for all dated record folders."),
+    ManualAction("Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Button for calendar import: rebuilds all packages and opens each generated ICS with the desktop calendar app."),
+    ManualAction("Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in the isolated records_test sandbox."),
+    ManualAction("Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
+    ManualAction("Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives into the current layout."),
+    ManualAction("Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use Stop active run for collector jobs."),
+    ManualAction("Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser monitor at the configured local URL."),
+]
+
 
 DEFAULT_PROGRESS = {
     "PHASE": "IDLE",
@@ -122,7 +149,7 @@ def status_snapshot() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 18),
         "current_log": tail(CURRENT_LOG, 28),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "waha_message": WAHA_MESSAGE_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_MESSAGE_PATH.exists() else "",
+        "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
     }
 
 
@@ -171,7 +198,7 @@ def run_tk() -> int:
     style.configure("Horizontal.TProgressbar", thickness=26)
 
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(4, weight=1)
+    root.rowconfigure(5, weight=1)
 
     header = ttk.Frame(root, style="Card.TFrame", padding=14)
     header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
@@ -196,25 +223,60 @@ def run_tk() -> int:
     controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
     controls.columnconfigure(1, weight=1)
     button_status_var = tk.StringVar(value="")
+    run_mode_var = tk.StringVar(value="live")
+    run_limit_var = tk.StringVar(value="99")
+
+    def selected_limit(default: str = "99") -> str:
+        value = run_limit_var.get().strip() or default
+        return value if value.isdigit() and int(value) > 0 else default
 
     def request_run_now() -> None:
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set("Run requested.")
+        limit = selected_limit()
+        if run_mode_var.get() == "test":
+            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Test-zone run requested with limit {limit}.")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Live run requested with detail limit {limit}.")
 
-    def save_waha_message() -> None:
-        WAHA_MESSAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        WAHA_MESSAGE_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
-        button_status_var.set("WhatsApp message saved.")
+    def save_waha_destination() -> None:
+        WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
+        button_status_var.set("WhatsApp destination saved.")
 
-    ttk.Button(controls, text="Request run now", command=request_run_now).grid(row=0, column=0, sticky="w", padx=(0, 8))
-    ttk.Button(controls, text="Save WhatsApp group message", command=save_waha_message).grid(row=0, column=1, sticky="w")
-    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 0))
-    ttk.Label(controls, text="Reusable WhatsApp text:", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+    ttk.Label(controls, text="Run selector:", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Combobox(controls, textvariable=run_mode_var, values=("live", "test"), width=8, state="readonly").grid(row=0, column=1, sticky="w", padx=(0, 8))
+    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=0, column=2, sticky="e")
+    ttk.Entry(controls, textvariable=run_limit_var, width=8).grid(row=0, column=3, sticky="w", padx=(6, 8))
+    ttk.Button(controls, text="Request selected run", command=request_run_now).grid(row=0, column=4, sticky="w")
+    ttk.Label(controls, text="Choose live for the normal collector or test for the isolated test-zone script; limit controls detail/test records.", style="Card.TLabel", wraplength=520).grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+    ttk.Button(controls, text="Save WhatsApp destination", command=save_waha_destination).grid(row=2, column=0, sticky="w", pady=(8, 0))
+    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel").grid(row=2, column=1, columnspan=4, sticky="w", padx=(8, 0), pady=(8, 0))
+    ttk.Label(controls, text="WhatsApp group/channel ID for automated 'what is new' messages:", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 0))
     waha_var = tk.StringVar(value="")
-    ttk.Entry(controls, textvariable=waha_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Entry(controls, textvariable=waha_var).grid(row=3, column=1, columnspan=4, sticky="ew", pady=(8, 0))
+
+    actions = ttk.Frame(root, style="Card.TFrame", padding=14)
+    actions.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    actions.columnconfigure(1, weight=1)
+    ttk.Label(actions, text="Manual script buttons", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+    def run_manual_action(action: ManualAction) -> None:
+        MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.label} =====\n")
+            log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
+            subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+        button_status_var.set(f"Started: {action.label}. Output: {MANUAL_ACTION_LOG.relative_to(BASE_DIR)}")
+
+    for idx, action in enumerate(MANUAL_ACTIONS, start=1):
+        row = 1 + (idx - 1) // 2
+        col = 0 if idx % 2 else 2
+        ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected)).grid(row=row, column=col, sticky="ew", padx=(0, 8), pady=3)
+        ttk.Label(actions, text=action.comment, style="Card.TLabel", wraplength=360).grid(row=row, column=col + 1, sticky="w", pady=3)
 
     diag = ttk.Frame(root, style="Card.TFrame", padding=14)
-    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
     for col in range(4):
         diag.columnconfigure(col, weight=1)
 
@@ -235,7 +297,7 @@ def run_tk() -> int:
         ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
 
     logs = ttk.Frame(root, style="TFrame")
-    logs.grid(row=4, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=5, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -273,7 +335,7 @@ def run_tk() -> int:
                 var.set(str(progress.get(key, "-")))
 
         if not waha_var.get():
-            waha_var.set(str(snap.get("waha_message", "")))
+            waha_var.set(str(snap.get("waha_chat_id", "")))
 
         set_text(worker_text, str(snap["worker_log"]))
         set_text(current_text, str(snap["current_log"]))

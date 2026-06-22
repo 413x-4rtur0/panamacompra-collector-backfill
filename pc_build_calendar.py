@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -90,14 +91,25 @@ def write_packages(calendars: list[dict], out_dir: Path, package_size: int, pref
     return written
 
 
+def default_auto_import_command() -> str:
+    """Return a desktop opener command when simple calendar auto-import is enabled."""
+    if os.environ.get("PC_CALENDAR_AUTO_IMPORT", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return ""
+    for candidate in (("xdg-open",), ("gio", "open"), ("open",)):
+        if shutil.which(candidate[0]):
+            return " ".join(shlex.quote(part) for part in candidate)
+    return ""
+
+
 def run_auto_import(paths: list[Path]) -> None:
     """Optionally hand written ICS packages to a user-configured import command."""
     if not paths:
         return
-    command = os.environ.get("PC_CALENDAR_AUTO_IMPORT_CMD", "").strip()
+    command = os.environ.get("PC_CALENDAR_AUTO_IMPORT_CMD", "").strip() or default_auto_import_command()
     if not command:
         return
     for path in paths:
+        print(f"Auto-import/open calendar package: {path}")
         subprocess.run(shlex.split(command) + [str(path)], check=False)
 
 
