@@ -17,6 +17,7 @@ OPEN_LOG="data/logs/monitor_open.log"
 FALLBACK_LOG="data/logs/run_all_follow.log"
 WEB_LOG="data/logs/monitor_server.log"
 TK_LOG="data/logs/monitor_tk.log"
+TIMER_LOG="data/logs/next_run_timer.log"
 MONITOR_MODE="${PC_MONITOR_MODE:-tk}"
 MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
 MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
@@ -52,6 +53,27 @@ prepare_gui_environment() {
 
 tk_monitor_running() {
   pgrep -f "[p]c_monitor_tk.py" >/dev/null 2>&1
+}
+
+next_run_timer_running() {
+  pgrep -f "[p]c_next_run_timer.py" >/dev/null 2>&1
+}
+
+start_next_run_timer() {
+  if [ "${PC_NEXT_RUN_TIMER:-1}" = "0" ]; then
+    log "Next-run timer disabled by PC_NEXT_RUN_TIMER=0."
+    return 0
+  fi
+  if next_run_timer_running; then
+    log "Next-run timer already running."
+    return 0
+  fi
+  if [ -z "${DISPLAY:-}" ]; then
+    log "DISPLAY is empty; cannot open next-run timer."
+    return 1
+  fi
+  nohup "$PYTHON_BIN" ./pc_next_run_timer.py >> "$TIMER_LOG" 2>&1 &
+  log "Started next-run timer with log $TIMER_LOG."
 }
 
 start_tk_monitor() {
@@ -130,6 +152,7 @@ start_log_follower_fallback() {
 prepare_gui_environment
 
 if [ "$MONITOR_MODE" = "tk" ]; then
+  start_next_run_timer || true
   if start_tk_monitor; then
     exit 0
   fi

@@ -39,7 +39,7 @@ MANUAL_ACTIONS = [
     ManualAction("Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
     ManualAction("Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
-    ManualAction("Update local copy", ("./update_local_copy.sh",), "Fast-forwards this checkout, refreshes dependencies, and reinstalls this shortcut."),
+    ManualAction("Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens a separate updater loader, fast-forwards this checkout, refreshes dependencies, then reopens the monitor."),
     ManualAction("Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
     ManualAction("Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without using the browser."),
     ManualAction("Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages for all dated record folders."),
@@ -198,9 +198,33 @@ def run_tk() -> int:
     style.configure("Horizontal.TProgressbar", thickness=26)
 
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(5, weight=1)
+    root.rowconfigure(0, weight=1)
 
-    header = ttk.Frame(root, style="Card.TFrame", padding=14)
+    canvas = tk.Canvas(root, bg="#0f172a", highlightthickness=0)
+    scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    content = ttk.Frame(canvas, style="TFrame")
+    content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+    content.columnconfigure(0, weight=1)
+    content.rowconfigure(5, weight=1)
+
+    def update_scroll_region(_event: tk.Event | None = None) -> None:
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def resize_content(event: tk.Event) -> None:
+        canvas.itemconfigure(content_window, width=event.width)
+
+    def on_mousewheel(event: tk.Event) -> None:
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    content.bind("<Configure>", update_scroll_region)
+    canvas.bind("<Configure>", resize_content)
+    canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+    header = ttk.Frame(content, style="Card.TFrame", padding=14)
     header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
     header.columnconfigure(0, weight=1)
 
@@ -219,7 +243,7 @@ def run_tk() -> int:
     processes_var = tk.StringVar(value="")
     ttk.Label(header, textvariable=processes_var, style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
 
-    controls = ttk.Frame(root, style="Card.TFrame", padding=14)
+    controls = ttk.Frame(content, style="Card.TFrame", padding=14)
     controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
     controls.columnconfigure(1, weight=1)
     button_status_var = tk.StringVar(value="")
@@ -256,7 +280,7 @@ def run_tk() -> int:
     waha_var = tk.StringVar(value="")
     ttk.Entry(controls, textvariable=waha_var).grid(row=3, column=1, columnspan=4, sticky="ew", pady=(8, 0))
 
-    actions = ttk.Frame(root, style="Card.TFrame", padding=14)
+    actions = ttk.Frame(content, style="Card.TFrame", padding=14)
     actions.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
     actions.columnconfigure(1, weight=1)
     ttk.Label(actions, text="Manual script buttons", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
@@ -275,7 +299,7 @@ def run_tk() -> int:
         ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected)).grid(row=row, column=col, sticky="ew", padx=(0, 8), pady=3)
         ttk.Label(actions, text=action.comment, style="Card.TLabel", wraplength=360).grid(row=row, column=col + 1, sticky="w", pady=3)
 
-    diag = ttk.Frame(root, style="Card.TFrame", padding=14)
+    diag = ttk.Frame(content, style="Card.TFrame", padding=14)
     diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
     for col in range(4):
         diag.columnconfigure(col, weight=1)
@@ -296,7 +320,7 @@ def run_tk() -> int:
         diag_vars[key] = var
         ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
 
-    logs = ttk.Frame(root, style="TFrame")
+    logs = ttk.Frame(content, style="TFrame")
     logs.grid(row=5, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)

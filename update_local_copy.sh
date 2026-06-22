@@ -39,9 +39,9 @@ SVG
   cat > "$app_path" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=PanamaCompra Manual Monitor
-Comment=Open the manual PanamaCompra monitor with run and WhatsApp destination buttons
-Exec=$BASE_DIR/pc_open_monitor.sh
+Name=PanamaCompra Update + Monitor
+Comment=Update PanamaCompra Collector, then open the manual monitor
+Exec=$BASE_DIR/pc_update_loader.py --open-monitor-after
 Icon=$icon_path
 Terminal=false
 Categories=Utility;Monitor;
