@@ -14,9 +14,12 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 DEFAULT_SESSION = "default"
+CONFIG_DIR = Path(__file__).resolve().parent / "data" / "config"
+SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -32,12 +35,24 @@ def enabled_for_event(event: str) -> bool:
     return "all" in wanted or event.lower() in wanted
 
 
+def saved_message() -> str:
+    if not SAVED_MESSAGE_PATH.exists():
+        return ""
+    return SAVED_MESSAGE_PATH.read_text(encoding="utf-8", errors="replace").strip()
+
+
+def save_message(message: str) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SAVED_MESSAGE_PATH.write_text(message.strip() + "\n", encoding="utf-8")
+
+
 def build_message(event: str, status: str, message: str) -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     parts = [f"{prefix} [{event.upper()}]", f"Status: {status}", f"Time: {timestamp}"]
-    if message:
-        parts.append(message)
+    body = message.strip() or saved_message()
+    if body:
+        parts.append(body)
     return "\n".join(parts)
 
 
@@ -67,8 +82,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Send a PanamaCompra text notification through WAHA.")
     parser.add_argument("--event", default="info", help="Event name, for example start/done/failed/resume/update.")
     parser.add_argument("--status", default="INFO", help="Short status label for the message body.")
-    parser.add_argument("--message", default="", help="Additional notification message text.")
+    parser.add_argument("--message", default="", help="Additional notification message text. If omitted, the saved reusable message is used.")
+    parser.add_argument("--save-message", action="store_true", help="Save --message as the reusable group notification message for this and future runs.")
     args = parser.parse_args()
+
+    if args.save_message:
+        save_message(args.message)
+        print(f"Saved reusable WAHA message to {SAVED_MESSAGE_PATH}.")
 
     if not env_bool("PC_WAHA_ENABLED", False):
         print("WAHA notification skipped: set PC_WAHA_ENABLED=1 and PC_WAHA_CHAT_ID to enable.")

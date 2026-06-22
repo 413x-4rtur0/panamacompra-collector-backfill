@@ -330,6 +330,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
+| `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
@@ -359,8 +360,9 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update` | WAHA notifier | Comma-separated event names to send. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
+| saved WAHA message | `data/config/waha_message.txt` | WAHA notifier / web monitor | Reusable group-message text saved from the monitor or `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`.
+The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The web monitor includes buttons to request a run immediately and to save the reusable WhatsApp group message for the current and future runs.
 
 ### Optional WAHA private WhatsApp group alerts
 
