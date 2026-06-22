@@ -10,6 +10,7 @@ import json
 import os
 import shlex
 import subprocess
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +28,38 @@ PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_WEB_IDLE_REFRESH_SECONDS", "30")))
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_WEB_AUTO_CLOSE_SECONDS", "20")))
+
+
+class ManualAction(tuple):
+    __slots__ = ()
+    zone = property(lambda self: self[0])
+    label = property(lambda self: self[1])
+    command = property(lambda self: self[2])
+    comment = property(lambda self: self[3])
+    open_after = property(lambda self: self[4])
+
+    def __new__(cls, zone: str, label: str, command: tuple[str, ...], comment: str, open_after: Path | None = None):
+        return tuple.__new__(cls, (zone, label, command, comment, open_after))
+
+
+RECORDS_TEST_PARENT = BASE_DIR / "records_test"
+MANUAL_ACTIONS = [
+    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
+    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
+    ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
+    ManualAction("Tests", "Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
+    ManualAction("Updater / Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
+    ManualAction("Updater / Migration", "Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
+    ManualAction("Updater / Migration", "Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names."),
+    ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives."),
+    ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
+    ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages."),
+    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
+    ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener."),
+    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the browser monitor."),
+]
 
 DEFAULT_PROGRESS = {
     "PHASE": "IDLE",
@@ -111,6 +144,26 @@ def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
     return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
 
+
+def open_folder(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+    subprocess.Popen([opener, str(path)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_manual_action(action: ManualAction) -> None:
+    MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.zone} / {action.label} =====\n")
+        log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
+        proc = subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+
+    if action.open_after is not None:
+        def wait_then_open() -> None:
+            proc.wait()
+            open_folder(action.open_after)
+        threading.Thread(target=wait_then_open, daemon=True).start()
+
 def status_payload() -> dict[str, object]:
     progress = parse_progress_file()
     processes = process_snapshot()
@@ -120,6 +173,7 @@ def status_payload() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
+        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 20),
@@ -128,6 +182,10 @@ def status_payload() -> dict[str, object]:
         "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
     }
 
+ACTIONS_JSON = json.dumps([
+    {"zone": action.zone, "label": action.label, "comment": action.comment}
+    for action in MANUAL_ACTIONS
+], ensure_ascii=False)
 
 HTML = f"""<!doctype html>
 <html lang="en">
@@ -151,6 +209,9 @@ pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; bo
 .small {{ color: #94a3b8; }}
 .done {{ color: #bbf7d0; font-weight: 700; }}
 button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; margin-right: 8px; }}
+.zone {{ margin-top: 14px; padding-top: 8px; border-top: 1px solid #334155; }}
+.zone h3 {{ margin: 0 0 8px; color: #fef3c7; }}
+.danger {{ background: #dc2626; }}
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
 </style>
 </head>
@@ -163,13 +224,14 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
   <p id="done-note" class="done" hidden></p>
   <div id="processes"></div>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button onclick="importCalendars()">Import generated calendars</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records.</p><p class="small"><strong>Import generated calendars:</strong> rebuilds the calendar packages and opens each generated .ics file with the desktop calendar app. Output is saved to data/logs/manual_actions.log.</p><p class="small">Enter the WhatsApp group or channel chat ID that receives automated PanamaCompra “what is new” notifications. Example group IDs usually end in @g.us.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea></div>
+<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
 let doneSince = null;
 let timer = null;
+const actionZones = {ACTIONS_JSON};
 const labels = [
   ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Step', 'STEP'], ['Item', 'ITEM'],
   ['Detail limit', 'DETAIL_LIMIT'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
@@ -206,10 +268,10 @@ function render(data) {{
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
-    const wait = Number(data.auto_close_seconds || 0);
+    const wait = data.auto_close_enabled ? Number(data.auto_close_seconds || 0) : 0;
     const remaining = Math.max(0, wait - Math.floor((Date.now() - doneSince) / 1000));
     note.hidden = false;
-    note.textContent = wait > 0 ? `Run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished.';
+    note.textContent = wait > 0 ? `Live run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished. Auto-close is disabled for test zone and manual desktop actions.';
     if (wait > 0 && remaining <= 0) {{
       window.close();
       document.body.innerHTML = '<div class="card"><h1>PanamaCompra monitor finished</h1><p>The run is done. You can close this tab.</p></div>';
@@ -232,6 +294,13 @@ function requestRun() {{
   postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{limit}}`);
 }}
 function importCalendars() {{ postForm('/api/import-calendars', ''); }}
+function stopRun() {{ postForm('/api/manual-action', 'label=' + encodeURIComponent('Stop active run')); }}
+function runAction(label) {{ postForm('/api/manual-action', 'label=' + encodeURIComponent(label)); }}
+function renderActionZones() {{
+  const root = document.getElementById('action-zones');
+  const zones = [...new Set(actionZones.map(a => a.zone))];
+  root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
+}}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
 async function poll() {{
   try {{
@@ -245,6 +314,7 @@ async function poll() {{
   }}
 }}
 window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
+renderActionZones();
 poll();
 </script>
 </body>
@@ -279,12 +349,18 @@ class MonitorHandler(BaseHTTPRequestHandler):
             subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_text(202, f"Live run requested with detail limit {limit}.\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/manual-action":
+            label = form.get("label", [""])[0].strip()
+            for action in MANUAL_ACTIONS:
+                if action.label == label:
+                    run_manual_action(action)
+                    self.send_text(202, f"Started: {action.label}. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
+                    return
+            self.send_text(404, "unknown manual action\n", "text/plain; charset=utf-8")
+            return
         if path == "/api/import-calendars":
-            MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
-                log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | Import generated calendars =====\n")
-                log_file.write("Command: PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all\n")
-                subprocess.Popen(["bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"], cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+            action = next(action for action in MANUAL_ACTIONS if action.label == "Import generated calendars")
+            run_manual_action(action)
             self.send_text(202, "Calendar import started. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
             return
         if path in {"/api/waha-destination", "/api/waha-message"}:

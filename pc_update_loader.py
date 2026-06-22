@@ -50,8 +50,18 @@ def main() -> int:
 
     root = tk.Tk()
     root.title("PanamaCompra Local Update")
-    root.geometry("760x440")
+    geometry = "760x440"
+    root.geometry(geometry)
     root.configure(bg="#0f172a")
+
+    def center_window() -> None:
+        root.update_idletasks()
+        width, height = [int(part) for part in geometry.split("x", 1)]
+        x = max(0, (root.winfo_screenwidth() - width) // 2)
+        y = max(0, (root.winfo_screenheight() - height) // 2)
+        root.geometry(f"{width}x{height}+{x}+{y}")
+
+    center_window()
     root.columnconfigure(0, weight=1)
     root.rowconfigure(3, weight=1)
 

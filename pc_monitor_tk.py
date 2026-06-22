@@ -31,27 +31,32 @@ IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_TK_ID
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "0")))
 
 class ManualAction(NamedTuple):
+    zone: str
     label: str
     command: tuple[str, ...]
     comment: str
+    open_after: Path | None = None
+
+
+RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 
 
 MANUAL_ACTIONS = [
-    ManualAction("Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
-    ManualAction("Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
-    ManualAction("Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
-    ManualAction("Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
-    ManualAction("Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens a separate updater loader, fast-forwards this checkout, refreshes dependencies, then reopens the monitor."),
-    ManualAction("Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
-    ManualAction("Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without using the browser."),
-    ManualAction("Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages for all dated record folders."),
-    ManualAction("Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Button for calendar import: rebuilds all packages and opens each generated ICS with the desktop calendar app."),
-    ManualAction("Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in the isolated records_test sandbox."),
-    ManualAction("Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
-    ManualAction("Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives into the current layout."),
-    ManualAction("Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use Stop active run for collector jobs."),
-    ManualAction("Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser monitor at the configured local URL."),
+    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
+    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
+    ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
+    ManualAction("Tests", "Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
+    ManualAction("Updater / Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
+    ManualAction("Updater / Migration", "Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
+    ManualAction("Updater / Migration", "Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
+    ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives into the current layout."),
+    ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without using the browser."),
+    ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages for all dated record folders."),
+    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each generated ICS with the desktop calendar app."),
+    ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use Stop active run for collector jobs."),
+    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser monitor at the configured local URL."),
 ]
 
 
@@ -147,6 +152,7 @@ def status_snapshot() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
+        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 18),
@@ -301,19 +307,38 @@ def run_tk() -> int:
     actions.columnconfigure(1, weight=1)
     ttk.Label(actions, text="Manual script buttons", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
+    def open_folder(path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, str(path)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def run_manual_action(action: ManualAction) -> None:
         MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
         with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.label} =====\n")
+            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.zone} / {action.label} =====\n")
             log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
-            subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+
+        if action.open_after is not None:
+            def wait_then_open() -> None:
+                proc.wait()
+                root.after(0, open_folder, action.open_after)
+            import threading
+            threading.Thread(target=wait_then_open, daemon=True).start()
         button_status_var.set(f"Started: {action.label}. Output: {MANUAL_ACTION_LOG.relative_to(BASE_DIR)}")
 
-    for idx, action in enumerate(MANUAL_ACTIONS, start=1):
-        row = 1 + (idx - 1) // 2
-        col = 0 if idx % 2 else 2
-        ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected)).grid(row=row, column=col, sticky="ew", padx=(0, 8), pady=3)
-        ttk.Label(actions, text=action.comment, style="Card.TLabel", wraplength=360).grid(row=row, column=col + 1, sticky="w", pady=3)
+    row = 1
+    for zone in dict.fromkeys(action.zone for action in MANUAL_ACTIONS):
+        ttk.Label(actions, text=zone, style="Message.TLabel").grid(row=row, column=0, columnspan=4, sticky="w", pady=(8, 3))
+        row += 1
+        zone_actions = [action for action in MANUAL_ACTIONS if action.zone == zone]
+        for offset, action in enumerate(zone_actions):
+            col = 0 if offset % 2 == 0 else 2
+            if offset and offset % 2 == 0:
+                row += 1
+            ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected)).grid(row=row, column=col, sticky="ew", padx=(0, 8), pady=3)
+            ttk.Label(actions, text=action.comment, style="Card.TLabel", wraplength=360).grid(row=row, column=col + 1, sticky="w", pady=3)
+        row += 1
 
     diag = ttk.Frame(content, style="Card.TFrame", padding=14)
     diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
@@ -383,9 +408,12 @@ def run_tk() -> int:
         if snap["done"]:
             if done_since is None:
                 done_since = time.monotonic()
-            wait = int(snap["auto_close_seconds"])
+            wait = int(snap["auto_close_seconds"]) if snap.get("auto_close_enabled") else 0
             remaining = max(0, wait - int(time.monotonic() - done_since))
-            done_var.set(f"Run finished. This window will close in {remaining} seconds." if wait else "Run finished.")
+            if wait:
+                done_var.set(f"Live run finished. This window will close in {remaining} seconds.")
+            else:
+                done_var.set("Run finished. Auto-close is disabled for test zone and manual desktop actions.")
             if wait and remaining <= 0:
                 root.destroy()
                 return
