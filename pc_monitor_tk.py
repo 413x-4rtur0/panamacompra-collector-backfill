@@ -42,21 +42,36 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 
 
 MANUAL_ACTIONS = [
-    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
-    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
-    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
-    ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
-    ManualAction("Tests", "Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
-    ManualAction("Updater / Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
-    ManualAction("Updater / Migration", "Pre-run update only", ("./pc_update_before_run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
-    ManualAction("Updater / Migration", "Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
-    ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives into the current layout."),
-    ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without using the browser."),
-    ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages for all dated record folders."),
-    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each generated ICS with the desktop calendar app."),
-    ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use Stop active run for collector jobs."),
-    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser monitor at the configured local URL."),
+    # ========================================================================
+    # COLLECTOR RUNNERS - Start, stop, and monitor data collection
+    # ========================================================================
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99"), "Queues a normal live run (up to 99 details) and opens the monitor."),
+    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately in this terminal for up to 99 detail pages."),
+    ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "Stops ALL running processes: workers, test zone, calendar builder, monitors, webhook listener, and updaters."),
+    ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    
+    # ========================================================================
+    # TESTING & VALIDATION - Test zone and system health checks
+    # ========================================================================
+    ManualAction("Testing & Validation", "Run test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in isolated sandbox (records_test/), leaving real archive untouched.", RECORDS_TEST_PARENT),
+    ManualAction("Testing & Validation", "Review system health", ("./review_panamacompra_system.sh",), "Runs repository health checks and troubleshooting summary."),
+    
+    # ========================================================================
+    # UPDATER & MIGRATION - Keep code fresh and migrate data
+    # ========================================================================
+    ManualAction("Updater & Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens centered updater window, refreshes checkout/dependencies, then reopens monitor."),
+    ManualAction("Updater & Migration", "Pre-run update only", ("./pc_update_before_run.sh",), "Runs lightweight git/dependency refresh used before worker iterations."),
+    ManualAction("Updater & Migration", "Normalize folder names", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names using current naming rules."),
+    ManualAction("Updater & Migration", "Migrate old records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives into the current layout."),
+    
+    # ========================================================================
+    # DATA TOOLS - Rebuild views, calendars, and integrations
+    # ========================================================================
+    ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables without browser."),
+    ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages (.ics) for all dated record folders."),
+    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with desktop calendar app."),
+    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts local webhook listener in background; use STOP all runners to halt."),
+    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens optional browser-based monitor at configured local URL."),
 ]
 
 
@@ -117,8 +132,15 @@ def running(pattern: str) -> bool:
 
 
 def process_snapshot() -> dict[str, bool]:
+    """Detect all running PanamaCompra processes for the monitor display."""
     worker = running("[p]c_run_all_worker.sh")
     test = running("[p]ython(3)? -u ./pc_test_zone.py")
+    updater = running("[u]pdate_local_copy.sh") or running("[p]c_update_loader.py")
+    webhook = running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py")
+    monitor_tk = running("[p]c_monitor_tk.py") or running("[p]ython3? -u ./pc_monitor_tk.py")
+    monitor_server = running("[p]c_monitor_server.py") or running("[p]ython3? -u ./pc_monitor_server.py")
+    timer = running("[p]c_next_run_timer.py")
+    
     return {
         "normal_run": worker and not test,
         "test_run": test,
@@ -127,6 +149,12 @@ def process_snapshot() -> dict[str, bool]:
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
         "request": REQUEST_FLAG.exists(),
+        # Additional runners that should be stopped by pc_stop_run_all.sh
+        "updater": updater,
+        "webhook": webhook,
+        "monitor_tk": monitor_tk,
+        "monitor_server": monitor_server,
+        "timer": timer,
     }
 
 
