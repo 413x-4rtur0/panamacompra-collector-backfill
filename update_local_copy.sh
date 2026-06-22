@@ -40,7 +40,7 @@ SVG
 [Desktop Entry]
 Type=Application
 Name=PanamaCompra Update + Monitor
-Comment=Update PanamaCompra Collector, then open the manual monitor
+Comment=Open the centered updater loader, update PanamaCompra Collector, then open the manual monitor
 Exec=$BASE_DIR/pc_update_loader.py --open-monitor-after
 Icon=$icon_path
 Terminal=false
@@ -49,6 +49,7 @@ StartupNotify=false
 DESKTOP
   chmod +x "$app_path"
   echo "Installed application shortcut: $app_path"
+  echo "The shortcut starts pc_update_loader.py, whose Tk updater window is centered before the monitor opens."
 
   if [ -d "$desktop_dir" ]; then
     cp "$app_path" "$desktop_path"
