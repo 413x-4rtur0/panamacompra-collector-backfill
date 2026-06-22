@@ -100,8 +100,10 @@ fi
 
 echo ""
 echo "2) Verify there are no local code changes that would be overwritten"
-if [ -n "$(git status --porcelain)" ]; then
-  echo "ERROR: Local checkout has uncommitted changes. Review them before updating:"
+# Only fail on tracked file changes (M, D, R), not untracked files (?)
+TRACKED_CHANGES="$(git status --porcelain | grep -E '^[MDR]')"
+if [ -n "$TRACKED_CHANGES" ]; then
+  echo "ERROR: Local checkout has uncommitted changes to tracked files. Review them before updating:"
   git status --short
   exit 1
 fi

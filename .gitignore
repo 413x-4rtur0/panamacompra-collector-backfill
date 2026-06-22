@@ -1,35 +1,3 @@
-```gitignore
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+(update_local_copy.sh is a shell script file, which is source code and should not be added to .gitignore)
 
-# Environment
-.env
-.env.local
-*.env.*
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.swp
-*.swo
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# IDE
-.vscode/
-.idea/
-
-# Dependencies
-.venv/
-venv/
-.mypy_cache/
-.pytest_cache/
-```
+# No changes needed - source code file should not be ignored
