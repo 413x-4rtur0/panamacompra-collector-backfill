@@ -102,7 +102,7 @@ The workflow has two phases run back-to-back by the worker:
 
 | Phase | Script | Work |
 |-------|--------|------|
-| **Pre-run update** | `pc_update_before_run.sh` | Before each worker iteration, fast-forward the local Git checkout, refresh installed Python requirements when `.venv` exists, and fix executable bits. Set `PC_RUN_UPDATE_BEFORE_RUN=0` to skip. |
+| **Pre-run update** | `pc_update_before_run.sh` | Before each worker iteration, auto-stash any local edits to tracked files, fast-forward the local Git checkout (reset to remote if diverged), refresh installed Python requirements when `.venv` exists, and fix executable bits. Untracked runtime files never block it. If the update fails (e.g. no network), the worker logs a warning and **still runs** the collection with the current code instead of skipping. Set `PC_RUN_UPDATE_BEFORE_RUN=0` to skip the update entirely. |
 | **Index scan** | `pc_index_collector.py` | Open the table, select *Programadas*, set 50 rows/page, crawl all pages, repeat for *Abiertas*. Save lightweight index JSON + DB records. |
 | **Detail download** | `pc_detail_downloader.py` | Read pending records from SQLite, visit each detail URL, save HTML / text / metadata / table JSON, mark as saved. |
 
@@ -295,8 +295,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_index_collector.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `pc_detail_downloader.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. |
-| `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; fast-forwards Git and refreshes requirements without stopping the active worker. |
+| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
+| `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for private WhatsApp group text alerts. Enabled only when WAHA environment variables are configured. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
