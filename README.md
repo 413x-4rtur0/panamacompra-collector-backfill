@@ -299,6 +299,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window; no Firefox/browser or web server required. |
+| `pc_next_run_timer.py` | Tiny always-on-top timer showing countdown to the next 30-minute live run; hides countdown during active runs and resumes when finished. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and auto-closes after completion. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the native Tk monitor by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
@@ -753,6 +754,12 @@ The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
 It opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
 diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and a **Manual script buttons** panel that includes an **Import generated calendars** button. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. When the run is done, the
 window slows its refresh and auto-closes after the configured delay.
+
+For a tiny always-on-top countdown timer showing when the next 30-minute live run is scheduled, run:
+```bash
+python pc_next_run_timer.py
+```
+This mini-monitor displays the next scheduled run time (at :00 and :30 past each hour) with a live countdown. When a live run starts, it shows "RUNNING" and resumes the countdown automatically after the run finishes. Keep this window visible on your desktop to know exactly when the next collector run will begin.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./pc_open_monitor.sh`,

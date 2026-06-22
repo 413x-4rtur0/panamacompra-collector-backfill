@@ -1,22 +1,35 @@
-# Local secrets
-.webhook_token
-
-# Python virtual environments
-.venv/
-.venv.broken.*/
-
-# Python caches
+```gitignore
+# Python
 __pycache__/
-*.py[cod]
-.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
 
-# Runtime collector data, downloaded archive, and local migration backups
-# The application recreates active runtime directories/files as needed.
-data/
-records/
-records_test/
-deprecated_queue_scripts/
+# Environment
+.env
+.env.local
+*.env.*
 
-# Local OS/editor files
-.DS_Store
+# Logs
+*.log
+
+# Temporary files
+*.tmp
 *.swp
+*.swo
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Dependencies
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+```
