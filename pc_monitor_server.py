@@ -13,13 +13,14 @@ import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+WAHA_MESSAGE_PATH = BASE_DIR / "data" / "config" / "waha_message.txt"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
@@ -123,6 +124,7 @@ def status_payload() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 20),
         "current_log": tail(CURRENT_LOG, 35),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "waha_message": WAHA_MESSAGE_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_MESSAGE_PATH.exists() else "",
     }
 
 
@@ -147,6 +149,8 @@ pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; bo
 .message {{ font-size: 1.15rem; color: #fef3c7; }}
 .small {{ color: #94a3b8; }}
 .done {{ color: #bbf7d0; font-weight: 700; }}
+button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; margin-right: 8px; }}
+textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
 </style>
 </head>
 <body>
@@ -158,6 +162,7 @@ pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; bo
   <p id="done-note" class="done" hidden></p>
   <div id="processes"></div>
 </div>
+<div class="card"><h2>Monitor buttons</h2><p><button onclick="requestRun()">Request run now</button><button onclick="saveWaha()">Save WhatsApp group message</button><span id="button-status" class="small"></span></p><p class="small">The WhatsApp text is reused when notifications do not pass a one-off message, and saving it remembers changes for later runs.</p><textarea id="waha-message" placeholder="Reusable WhatsApp group notification message"></textarea></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
@@ -195,6 +200,8 @@ function render(data) {{
   ).join('');
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
+  const waha = document.getElementById('waha-message');
+  if (waha && document.activeElement !== waha) waha.value = data.waha_message || '';
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
@@ -212,6 +219,14 @@ function render(data) {{
     note.hidden = true;
   }}
 }}
+async function postForm(path, body) {{
+  const response = await fetch(path, {{method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body}});
+  const text = await response.text();
+  document.getElementById('button-status').textContent = text.trim();
+  poll();
+}}
+function requestRun() {{ postForm('/api/request-run', 'detail_limit=99'); }}
+function saveWaha() {{ postForm('/api/waha-message', 'message=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -242,6 +257,22 @@ class MonitorHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded)
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
+        if path == "/api/request-run":
+            limit = form.get("detail_limit", ["99"])[0]
+            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.send_text(202, "Run requested.\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/waha-message":
+            WAHA_MESSAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            WAHA_MESSAGE_PATH.write_text(form.get("message", [""])[0].strip() + "\n", encoding="utf-8")
+            self.send_text(200, "WhatsApp message saved.\n", "text/plain; charset=utf-8")
+            return
+        self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path = urlparse(self.path).path

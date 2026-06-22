@@ -20,6 +20,7 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+WAHA_MESSAGE_PATH = BASE_DIR / "data" / "config" / "waha_message.txt"
 REFRESH_SECONDS = max(2, int(os.environ.get("PC_MONITOR_TK_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_TK_IDLE_REFRESH_SECONDS", "15")))
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "20")))
@@ -121,6 +122,7 @@ def status_snapshot() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 18),
         "current_log": tail(CURRENT_LOG, 28),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "waha_message": WAHA_MESSAGE_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_MESSAGE_PATH.exists() else "",
     }
 
 
@@ -169,7 +171,7 @@ def run_tk() -> int:
     style.configure("Horizontal.TProgressbar", thickness=26)
 
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(3, weight=1)
+    root.rowconfigure(4, weight=1)
 
     header = ttk.Frame(root, style="Card.TFrame", padding=14)
     header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
@@ -190,8 +192,29 @@ def run_tk() -> int:
     processes_var = tk.StringVar(value="")
     ttk.Label(header, textvariable=processes_var, style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
 
+    controls = ttk.Frame(root, style="Card.TFrame", padding=14)
+    controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
+    controls.columnconfigure(1, weight=1)
+    button_status_var = tk.StringVar(value="")
+
+    def request_run_now() -> None:
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Run requested.")
+
+    def save_waha_message() -> None:
+        WAHA_MESSAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WAHA_MESSAGE_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
+        button_status_var.set("WhatsApp message saved.")
+
+    ttk.Button(controls, text="Request run now", command=request_run_now).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Button(controls, text="Save WhatsApp group message", command=save_waha_message).grid(row=0, column=1, sticky="w")
+    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 0))
+    ttk.Label(controls, text="Reusable WhatsApp text:", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+    waha_var = tk.StringVar(value="")
+    ttk.Entry(controls, textvariable=waha_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+
     diag = ttk.Frame(root, style="Card.TFrame", padding=14)
-    diag.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
+    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
     for col in range(4):
         diag.columnconfigure(col, weight=1)
 
@@ -212,7 +235,7 @@ def run_tk() -> int:
         ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
 
     logs = ttk.Frame(root, style="TFrame")
-    logs.grid(row=3, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=4, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -248,6 +271,9 @@ def run_tk() -> int:
                 var.set(f"{progress.get('ITEM_CURRENT', '-')} / {progress.get('ITEM_TOTAL', '-')}")
             else:
                 var.set(str(progress.get(key, "-")))
+
+        if not waha_var.get():
+            waha_var.set(str(snap.get("waha_message", "")))
 
         set_text(worker_text, str(snap["worker_log"]))
         set_text(current_text, str(snap["current_log"]))

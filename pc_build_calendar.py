@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -88,6 +90,17 @@ def write_packages(calendars: list[dict], out_dir: Path, package_size: int, pref
     return written
 
 
+def run_auto_import(paths: list[Path]) -> None:
+    """Optionally hand written ICS packages to a user-configured import command."""
+    if not paths:
+        return
+    command = os.environ.get("PC_CALENDAR_AUTO_IMPORT_CMD", "").strip()
+    if not command:
+        return
+    for path in paths:
+        subprocess.run(shlex.split(command) + [str(path)], check=False)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build timestamped PanamaCompra calendar import packages.")
     parser.add_argument("--records-dir", default=str(RECORDS_DIR), help="records tree to scan")
@@ -122,6 +135,7 @@ def main() -> int:
         print(f"Calendar packages written under {out_dir}: {len(written)} file(s), {count} event(s), package_size={package_size}")
         for path in written:
             print(f"  {path}")
+        run_auto_import(written)
     else:
         print("No new calendar events found for this run; no import package written.")
 
