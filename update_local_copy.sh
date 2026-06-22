@@ -13,6 +13,57 @@ REMOTE="${PC_UPDATE_REMOTE:-origin}"
 BRANCH="${PC_UPDATE_BRANCH:-$(git branch --show-current)}"
 DETAIL_LIMIT="${PC_UPDATE_TEST_DETAIL_LIMIT:-0}"
 
+install_desktop_shortcut() {
+  if [ "${PC_UPDATE_INSTALL_MONITOR_SHORTCUT:-1}" = "0" ]; then
+    echo "Skipped desktop shortcut install because PC_UPDATE_INSTALL_MONITOR_SHORTCUT=0."
+    return 0
+  fi
+
+  local desktop_file_name="panamacompra-manual-monitor.desktop"
+  local app_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  local app_path="$app_dir/$desktop_file_name"
+  local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
+  local desktop_path="$desktop_dir/$desktop_file_name"
+  local icon_path="$BASE_DIR/data/panamacompra-monitor-icon.svg"
+
+  mkdir -p "$app_dir" "$BASE_DIR/data"
+  cat > "$icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <rect x="18" y="24" width="92" height="62" rx="8" fill="#111827" stroke="#38bdf8" stroke-width="6"/>
+  <path d="M34 68h16l10-24 14 36 10-18h12" fill="none" stroke="#22c55e" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="42" y="94" width="44" height="8" rx="4" fill="#38bdf8"/>
+</svg>
+SVG
+
+  cat > "$app_path" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=PanamaCompra Manual Monitor
+Comment=Open the manual PanamaCompra monitor with run and WhatsApp destination buttons
+Exec=$BASE_DIR/pc_open_monitor.sh
+Icon=$icon_path
+Terminal=false
+Categories=Utility;Monitor;
+StartupNotify=false
+DESKTOP
+  chmod +x "$app_path"
+  echo "Installed application shortcut: $app_path"
+
+  if [ -d "$desktop_dir" ]; then
+    cp "$app_path" "$desktop_path"
+    chmod +x "$desktop_path"
+    echo "Installed desktop shortcut: $desktop_path"
+    echo "If your desktop asks, choose 'Allow Launching' or 'Trust and Launch' once."
+  else
+    echo "Desktop folder not found ($desktop_dir); application-menu shortcut was installed only."
+  fi
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$app_dir" >/dev/null 2>&1 || true
+  fi
+}
+
 if [ -z "$BRANCH" ]; then
   echo "ERROR: Could not detect the current git branch. Set PC_UPDATE_BRANCH explicitly." >&2
   exit 1
@@ -150,7 +201,11 @@ echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; m
 echo "     ./pc_test_zone.py --limit 5 --apply"
 
 echo ""
-echo "9) Optional smoke run request"
+echo "9) Install manual monitor desktop shortcut"
+install_desktop_shortcut
+
+echo ""
+echo "10) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   ./pc_request_run_all.sh "$DETAIL_LIMIT"
