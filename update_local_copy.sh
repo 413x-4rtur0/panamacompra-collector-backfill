@@ -99,20 +99,41 @@ else
 fi
 
 echo ""
-echo "2) Verify there are no local code changes that would be overwritten"
-# Only fail on tracked file changes (M, D, R), not untracked files (?)
-TRACKED_CHANGES="$(git status --porcelain | grep -E '^[MDR]')"
-if [ -n "$TRACKED_CHANGES" ]; then
-  echo "ERROR: Local checkout has uncommitted changes to tracked files. Review them before updating:"
-  git status --short
-  exit 1
+echo "2) Preserve any local changes to tracked files so the update always proceeds"
+# Untracked files (data/, records/, .venv.broken.*, .webhook_token, ...) never
+# block an update. Local edits to TRACKED files are auto-stashed instead of
+# aborting, so this checkout can always be brought up to date. The stash is
+# kept (not dropped) so nothing is lost; recover it later with `git stash list`.
+STASH_REF=""
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  STASH_MESSAGE="update_local_copy autostash $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "Local changes to tracked files detected. Auto-stashing them before updating:"
+  git status --short --untracked-files=no
+  if git stash push -m "$STASH_MESSAGE" >/dev/null 2>&1; then
+    STASH_REF="$(git rev-parse -q --verify stash@{0} 2>/dev/null || true)"
+    echo "Stashed as: $STASH_MESSAGE"
+    echo "Recover later with: git stash list  /  git stash apply stash@{0}"
+  else
+    echo "WARNING: Could not stash local changes; continuing with a hard reset to the remote branch."
+  fi
 fi
 
 echo ""
-echo "3) Fetch and fast-forward the current branch"
+echo "3) Fetch and update the current branch to match the remote"
 git fetch --prune "$REMOTE"
-git checkout "$BRANCH"
-git pull --ff-only "$REMOTE" "$BRANCH"
+git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH" "$REMOTE/$BRANCH"
+if git pull --ff-only "$REMOTE" "$BRANCH"; then
+  echo "Fast-forwarded $BRANCH to $REMOTE/$BRANCH."
+else
+  echo "Fast-forward not possible (local branch diverged). Resetting $BRANCH to $REMOTE/$BRANCH."
+  echo "Any diverging local commits remain reachable via the reflog (git reflog $BRANCH)."
+  git reset --hard "$REMOTE/$BRANCH"
+fi
+
+if [ -n "$STASH_REF" ]; then
+  echo "Your previous local edits are preserved in the stash ($STASH_REF). They were"
+  echo "NOT reapplied automatically to avoid conflicts during unattended updates."
+fi
 
 echo ""
 echo "4) Ensure executable bits are set"

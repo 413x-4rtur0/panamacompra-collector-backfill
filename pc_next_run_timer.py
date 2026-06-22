@@ -42,12 +42,49 @@ def is_live_run_active() -> bool:
     return values.get("MODE") == "LIVE" and (values.get("PHASE") in ACTIVE_PHASES or values.get("STATUS") in ACTIVE_STATUSES)
 
 
-def next_run_time() -> datetime:
-    now = datetime.now()
+def _parse_progress_timestamp(text: str) -> datetime | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def last_live_run_start() -> datetime | None:
+    """When the most recent live run started, taken from the progress file.
+
+    The timer counts down from the real previous run, so the countdown reflects
+    when the next run is actually due (last start + interval) instead of an
+    arbitrary wall-clock boundary.
+    """
+    values = progress_values()
+    if values.get("MODE") and values.get("MODE") != "LIVE":
+        return None
+    return _parse_progress_timestamp(values.get("STARTED_AT", "")) or _parse_progress_timestamp(values.get("UPDATED_AT", ""))
+
+
+def clock_bucket_next_run(now: datetime) -> datetime:
     minute_bucket = (now.minute // INTERVAL_MINUTES + 1) * INTERVAL_MINUTES
     if minute_bucket >= 60:
         return (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     return now.replace(minute=minute_bucket, second=0, microsecond=0)
+
+
+def next_run_time() -> datetime:
+    now = datetime.now()
+    started = last_live_run_start()
+    if started is not None:
+        target = started + timedelta(minutes=INTERVAL_MINUTES)
+        # If the expected run is overdue, roll forward in whole intervals so the
+        # countdown always points at the next upcoming slot rather than the past.
+        while target <= now:
+            target += timedelta(minutes=INTERVAL_MINUTES)
+        return target
+    return clock_bucket_next_run(now)
 
 
 def countdown_string(target: datetime) -> str:
@@ -95,7 +132,8 @@ def main() -> int:
             next_dt = next_run_time()
             next_var.set(next_dt.strftime("%H:%M:%S"))
             count_var.set(countdown_string(next_dt))
-            status_var.set(f"Every {INTERVAL_MINUTES} minutes" + (" · live run finished" if was_active else ""))
+            basis = "after last run" if last_live_run_start() is not None else "on the clock"
+            status_var.set(f"Every {INTERVAL_MINUTES} min ({basis})" + (" · run finished" if was_active else ""))
             was_active = False
         root.after(1000, refresh)
 

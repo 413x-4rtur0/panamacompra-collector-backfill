@@ -25,10 +25,12 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
-  echo "ERROR: Local checkout has uncommitted changes; refusing pre-run update." >&2
-  git status --short
-  exit 1
+# Untracked runtime files (data/, records/, .webhook_token, ...) never block a
+# pre-run update. Only local edits to TRACKED files are stashed out of the way so
+# the worker can always fast-forward before a run; the stash is kept for recovery.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "Local changes to tracked files detected; auto-stashing them before the pre-run update."
+  git stash push -m "pc_update_before_run autostash $(date '+%Y-%m-%d %H:%M:%S')" >/dev/null 2>&1 || true
 fi
 
 echo "Pre-run update started at $(date '+%Y-%m-%d %H:%M:%S')"
@@ -36,8 +38,11 @@ echo "Remote: $REMOTE"
 echo "Branch: $BRANCH"
 
 git fetch --prune "$REMOTE"
-git checkout "$BRANCH"
-git pull --ff-only "$REMOTE" "$BRANCH"
+git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH" "$REMOTE/$BRANCH"
+if ! git pull --ff-only "$REMOTE" "$BRANCH"; then
+  echo "Fast-forward not possible; resetting $BRANCH to $REMOTE/$BRANCH."
+  git reset --hard "$REMOTE/$BRANCH"
+fi
 chmod +x ./*.sh ./*.py
 
 if [ -d .venv ]; then

@@ -1,3 +1,44 @@
-(update_local_copy.sh is a shell script file, which is source code and should not be added to .gitignore)
+# PanamaCompra Collector — ignore runtime data and local environment.
+# The repository contains CODE ONLY. Everything written at runtime is ignored.
 
-# No changes needed - source code file should not be ignored
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment (and broken-venv backups made by update_local_copy.sh)
+.venv/
+.venv.broken.*/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# Runtime data, archives and the local webhook token
+data/
+records/
+records_test/
+.webhook_token
+
+# Deprecated/local-only helper folders that must never be committed
+deprecated_queue_scripts/
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/

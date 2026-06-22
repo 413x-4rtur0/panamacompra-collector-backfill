@@ -131,13 +131,17 @@ while true; do
     ./pc_update_before_run.sh >> "$WORKER_LOG" 2>&1
     UPDATE_EXIT=$?
     if [ "$UPDATE_EXIT" -ne 0 ]; then
-      write_progress "UPDATE" "FAILED" "3" "Pre-run local update failed with exit=$UPDATE_EXIT. Collector steps skipped." "$(date '+%Y-%m-%d %H:%M:%S')"
-      notify_waha "update" "FAILED" "Pre-run local update failed with exit=$UPDATE_EXIT. Collector steps skipped."
-      log "ITERATION $ITERATION pre-run local update failed with exit=$UPDATE_EXIT."
-      continue
+      # A failed pre-run update must NOT stop the collector. Previously the worker
+      # skipped the whole iteration here, so any update hiccup (e.g. local
+      # untracked files or no network) made the worker "do nothing". Warn and keep
+      # going with the code already on disk so the run still collects data.
+      write_progress "UPDATE" "RUNNING" "5" "Pre-run update failed with exit=$UPDATE_EXIT; continuing this run with the current local code." "$(date '+%Y-%m-%d %H:%M:%S')"
+      notify_waha "update" "FAILED" "Pre-run local update failed with exit=$UPDATE_EXIT. Continuing the run with the current local code."
+      log "ITERATION $ITERATION pre-run local update failed with exit=$UPDATE_EXIT; continuing with current code."
+    else
+      notify_waha "update" "DONE" "Pre-run local update completed for iteration $ITERATION."
+      log "ITERATION $ITERATION pre-run local update completed."
     fi
-    notify_waha "update" "DONE" "Pre-run local update completed for iteration $ITERATION."
-    log "ITERATION $ITERATION pre-run local update completed."
   fi
 
   STARTED="$(date '+%Y-%m-%d %H:%M:%S')"
