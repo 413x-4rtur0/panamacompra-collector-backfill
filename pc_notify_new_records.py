@@ -277,10 +277,86 @@ def flush_unannounced(conn) -> int:
     return sent
 
 
+def _short_label(row) -> str:
+    """One-line 'NUMERO — description' label for the monitor message line."""
+    numero = clean_field(row["numero"])
+    desc = clean_field(row["descripcion"] or row["short_description"])
+    return f"{numero} {DASH} {desc}"
+
+
+def _one_line_preview(text: str, limit: int = 160) -> str:
+    """Collapse the multi-line WhatsApp body to a single readable line for the
+    monitor's progress file (which is parsed line by line)."""
+    flat = " · ".join(part.strip() for part in text.splitlines() if part.strip())
+    return (flat[: limit - 1] + "…") if len(flat) > limit else flat
+
+
+def announce_with_progress(conn) -> int:
+    """Announce every not-yet-sent new record one by one, publishing run-all
+    progress before each send so the monitor shows a visible 'sending messages'
+    step (current item, total, and a preview of the message format).
+
+    Returns the number of messages actually sent. Never raises."""
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "4")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "5")
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
+        "ORDER BY detail_saved_at, first_seen"
+    ).fetchall()
+    total = len(rows)
+
+    if total == 0:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", 98,
+            "Step 4/5: no new opportunities to send.",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=0, records_new=0,
+        )
+        return 0
+
+    sent = 0
+    skipped = 0
+    for index, row in enumerate(rows, start=1):
+        numero = row["numero"]
+        full_row = fetch_row(conn, numero)
+        label = _short_label(full_row) if full_row is not None else numero
+        summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
+        match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+        preview = (
+            _one_line_preview(build_opportunity_message(full_row, summary, match_line))
+            if (full_row is not None and match_line is not None)
+            else f"{label} (sin coincidencia de palabra clave)"
+        )
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING",
+            min(99, 96 + int(3 * index / total)),
+            f"Step 4/5: sending WhatsApp {index}/{total}: {label}",
+            step_current=step_current, step_total=step_total,
+            item_current=index, item_total=total,
+            records_new=total, records_saved=sent,
+            extra=preview,
+        )
+        if notify_saved_record(conn, numero):
+            sent += 1
+        else:
+            skipped += 1
+
+    pc_common.write_run_progress(
+        "MESSAGING", "RUNNING", 99,
+        f"Step 4/5: WhatsApp done — {sent} sent, {skipped} skipped of {total} new.",
+        step_current=step_current, step_total=step_total,
+        item_current=total, item_total=total,
+        records_new=total, records_saved=sent,
+    )
+    print(f"WAHA announce complete: {sent} sent, {skipped} skipped of {total}.")
+    return sent
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
     parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent in real time (safety net)")
+    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
     args = parser.parse_args(argv)
 
     if not waha_enabled():
@@ -301,10 +377,16 @@ def main(argv=None) -> int:
         send_text("none", build_empty_message(total_records))
         return 0
 
-    # Default / --flush: announce stragglers (normally none, since records are
-    # announced in real time as each detail saves).
     if just_baselined:
+        # Nothing to announce on the very first run that established the baseline.
         return 0
+
+    if args.announce:
+        # Visible MESSAGING step: send every new record one by one with progress.
+        announce_with_progress(conn)
+        return 0
+
+    # Default / --flush: announce stragglers (e.g. a real-time send failed).
     sent = flush_unannounced(conn)
     print(f"WAHA flush complete: {sent} record(s) announced.")
     return 0

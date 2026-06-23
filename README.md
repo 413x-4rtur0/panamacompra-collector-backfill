@@ -71,7 +71,8 @@ pc_run_all_worker.sh        single locked worker
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
         ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
         ├─ STEP 3  pc_build_calendar.py     writes timestamped .ics packages for new events
-        └─ STEP 4  pc_test_zone.py          only when no new records: re-runs the last 5 in a sandbox
+        ├─ STEP 4  pc_notify_new_records.py --announce  sends the WhatsApp messages one by one (visible MESSAGING step)
+        └─ STEP 5  pc_test_zone.py          only when no new records: re-runs the last 5 in a sandbox
         │
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
@@ -93,8 +94,10 @@ flowchart TD
     G --> H[detail JSON, HTML, text, tables, per-record ICS]
     H --> I[STEP 3: pc_build_calendar.py]
     I --> J[data/calendar/YY-MM-DD timestamped ICS packages]
+    J --> P[STEP 4: pc_notify_new_records.py --announce]
+    P --> Q[WhatsApp messages sent one by one via WAHA, PHASE=MESSAGING]
     D --> K{No pending new details?}
-    K -- yes --> L[STEP 4: pc_test_zone.py]
+    K -- yes --> L[STEP 5: pc_test_zone.py]
     L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
     D --> N[data/logs/run_all_progress.env]
     N --> O[pc_monitor_tk.py / pc_monitor_server.py]
@@ -308,7 +311,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
-| `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
+| `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step to send one “🟢 NUEVA OPORTUNIDAD DETECTADA” message per new record with per-message monitor progress; `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends. With `PC_WAHA_REALTIME_PER_DETAIL=1`, `pc_detail_downloader.py` instead announces each record in real time as its detail saves. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. Runs `run_collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
@@ -391,6 +394,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
+| `PC_WAHA_REALTIME_PER_DETAIL` | `0` (worker) / `1` (standalone) | detail downloader | When `1`, each new record is announced in real time as its detail saves. The run-all worker defaults it to `0` so messages are sent in the visible MESSAGING step (STEP 4) instead. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA destination | `data/config/waha_chat_id.txt` | WAHA notifier / monitor | Destination group/channel chat id saved from the monitor; used when `PC_WAHA_CHAT_ID` is not set. |
@@ -446,10 +450,16 @@ private alert group controlled by you.
 #### Rich “what is new” opportunity messages
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
-new opportunities are announced **in real time**: `pc_detail_downloader.py` sends
-one WhatsApp message for each brand-new record **immediately after its detail page
-finishes downloading** (so every field is populated), then continues to the next
-new entry and repeats. The message uses this template:
+new opportunities are announced one message per record. By default the run-all
+worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 4):
+after the detail and calendar steps it runs `pc_notify_new_records.py --announce`,
+which sends one WhatsApp message per new index entry **one at a time** and
+publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 4/5`,
+`Item i/N`, and a one-line preview of the message in the **Extra** field — so you
+can watch each opportunity go out. Set `PC_WAHA_REALTIME_PER_DETAIL=1` to instead
+send each message in real time during the detail download (the previous behavior;
+then the MESSAGING step only flushes any record whose live send failed). Either
+way the message uses this template:
 
 ```text
 🟢 NUEVA OPORTUNIDAD DETECTADA
