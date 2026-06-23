@@ -131,7 +131,9 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
             "COALESCE(record_folder, '') AS record_folder, "
             "COALESCE(link, '') AS link, "
-            "COALESCE(detail_status, '') AS detail_status "
+            "COALESCE(detail_status, '') AS detail_status, "
+            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -148,6 +150,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "record_folder": str(row["record_folder"] or ""),
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
+            "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or ""),
         }
         for row in rows
     ]
@@ -291,7 +295,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 </div>
 <div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="live" checked><span>live collector</span></label><label><input type="radio" name="run-mode" value="test"><span>test zone</span></label></span> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. The mode toggle and Request button lock while a run is active (including webhook-triggered runs).</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Record index</h2><p class="small">Collected records as “NUMERO — description”, newest first. Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -383,26 +387,67 @@ function renderActionZones() {{
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
 let recordIndex = [];
+let recordFiltered = [];
+const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
+const STATUS_COLOR = {{expired: '#fca5a5', soon: '#fcd34d', upcoming: '#86efac', unknown: '#94a3b8'}};
+const STATUS_TAG = {{expired: 'EXPIRED', soon: 'SOON', upcoming: 'ok', unknown: 'no date'}};
+function parseDeadline(rec) {{
+  const raw = (rec.finish_date_guess || '').trim().replace('_', ' ');
+  const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 12), Number(m[5] || 0));
+}}
+function expiryStatus(rec) {{
+  const dt = parseDeadline(rec);
+  if (!dt) return 'unknown';
+  const now = new Date();
+  if (dt < now) return 'expired';
+  if (dt <= new Date(now.getTime() + RECORD_SOON_DAYS * 86400000)) return 'soon';
+  return 'upcoming';
+}}
+function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
+function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
+const FAR_FUTURE = new Date(8640000000000000);
 function selectedRecord() {{
   const sel = document.getElementById('record-index');
   const idx = sel ? Number(sel.value) : -1;
-  return (idx >= 0 && idx < recordIndex.length) ? recordIndex[idx] : null;
+  return (idx >= 0 && idx < recordFiltered.length) ? recordFiltered[idx] : null;
 }}
 function renderRecordDetail() {{
   const rec = selectedRecord();
   const node = document.getElementById('record-detail');
-  if (!rec) {{ node.textContent = recordIndex.length ? 'Select a record.' : 'No records collected yet. Run the collector, then Refresh list.'; return; }}
-  const status = rec.detail_status ? '   ·   status: ' + rec.detail_status : '';
-  node.textContent = 'NUMERO: ' + rec.numero + '  —  ' + (rec.descripcion || '-') + status;
+  if (!rec) {{ node.textContent = recordIndex.length ? 'No records match the filter.' : 'No records collected yet. Run the collector, then Refresh list.'; return; }}
+  const st = expiryStatus(rec);
+  const detail = rec.detail_status ? '   ·   detail: ' + esc(rec.detail_status) : '';
+  node.innerHTML = '<span style="color:' + STATUS_COLOR[st] + ';font-weight:700">' + st.toUpperCase() + '</span>  ·  NUMERO: ' + esc(rec.numero) + detail
+    + '<br>' + esc(rec.descripcion || '-')
+    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
+}}
+function applyRecordFilter() {{
+  const status = (document.getElementById('record-status') || {{}}).value || 'all';
+  const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
+  const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
+  recordFiltered = recordIndex.filter(r => {{
+    if (status !== 'all' && expiryStatus(r) !== status) return false;
+    if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
+    return true;
+  }});
+  recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
+  const sel = document.getElementById('record-index');
+  sel.innerHTML = recordFiltered.map((r, i) => {{
+    const st = expiryStatus(r);
+    const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
+    const label = '[' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
+  }}).join('');
+  renderRecordDetail();
 }}
 async function refreshRecordIndex() {{
   try {{
     const response = await fetch('/api/record-index', {{cache: 'no-store'}});
     recordIndex = await response.json();
   }} catch (err) {{ recordIndex = []; }}
-  const sel = document.getElementById('record-index');
-  sel.innerHTML = recordIndex.map((r, i) => `<option value="${{i}}">${{esc((r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)'))}}</option>`).join('');
-  renderRecordDetail();
+  applyRecordFilter();
 }}
 function openRecordFolder() {{
   const rec = selectedRecord();
@@ -428,6 +473,8 @@ async function poll() {{
 window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
 renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
+document.getElementById('record-status').addEventListener('change', applyRecordFilter);
+document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
 refreshRecordIndex();
 poll();
 </script>

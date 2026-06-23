@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -214,7 +215,9 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
             "COALESCE(record_folder, '') AS record_folder, "
             "COALESCE(link, '') AS link, "
-            "COALESCE(detail_status, '') AS detail_status "
+            "COALESCE(detail_status, '') AS detail_status, "
+            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -231,9 +234,56 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "record_folder": str(row["record_folder"] or ""),
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
+            "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or ""),
         }
         for row in rows
     ]
+
+
+# How many days ahead still counts as "next to expire" (amber) instead of a calm
+# "upcoming" (green). Records past their DTEND are "expired" (red).
+SOON_DAYS = setting_int("PC_MONITOR_DEADLINE_SOON_DAYS", 7, minimum=1)
+STATUS_COLORS = {"expired": "#fca5a5", "soon": "#fcd34d", "upcoming": "#86efac", "unknown": "#94a3b8"}
+STATUS_TAGS = {"expired": "EXPIRED", "soon": "SOON", "upcoming": "ok", "unknown": "no date"}
+# Friendly labels for the status selector, mapped back to the internal keys.
+STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming")
+STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming"}
+
+
+def parse_deadline(rec: dict[str, str]) -> datetime | None:
+    """The record's DTEND/deadline (finish_date_guess 'YYYY-MM-DD_HH:MM'), or None."""
+    raw = (rec.get("finish_date_guess") or "").strip().replace("_", " ")
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def deadline_text(rec: dict[str, str]) -> str:
+    dt = parse_deadline(rec)
+    return dt.strftime("%Y-%m-%d %H:%M") if dt else "—"
+
+
+def downloaded_text(rec: dict[str, str]) -> str:
+    raw = (rec.get("detail_saved_at") or "").strip()
+    return raw[:16].replace("T", " ") if raw else "—"
+
+
+def expiry_status(rec: dict[str, str], now: datetime | None = None) -> str:
+    dt = parse_deadline(rec)
+    if dt is None:
+        return "unknown"
+    now = now or datetime.now()
+    if dt < now:
+        return "expired"
+    if dt <= now + timedelta(days=SOON_DAYS):
+        return "soon"
+    return "upcoming"
 
 
 def running(pattern: str) -> bool:
@@ -477,7 +527,9 @@ def run_tk() -> int:
         # that list itself and stop — otherwise the list scroll and the whole-page
         # scroll fight each other and are impossible to separate.
         widget = getattr(event, "widget", None)
-        if isinstance(widget, tk.Listbox):
+        # Over the record list or a log pane, scroll that widget itself so its own
+        # scrollbar moves instead of the whole page fighting with it.
+        if isinstance(widget, (tk.Listbox, tk.Text)):
             widget.yview_scroll(step, "units")
             return "break"
         canvas.yview_scroll(step, "units")
@@ -759,6 +811,8 @@ def run_tk() -> int:
     index_records: list[dict[str, str]] = []
     index_filtered: list[dict[str, str]] = []
     index_filter_var = tk.StringVar(value="")
+    index_status_var = tk.StringVar(value="All")
+    index_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
     ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
@@ -766,8 +820,23 @@ def run_tk() -> int:
     index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
     add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
 
+    # Dates selector: a status filter (expired / next to expire / upcoming) plus a
+    # DTEND date picker. Each row shows its downloaded date and DTEND, colored red
+    # (expired), amber (next to expire) or green (upcoming) so it is obvious at a
+    # glance which records are still actionable.
+    dates_row = ttk.Frame(record_index, style="Card.TFrame")
+    dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+    ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
+    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
+    ttk.Label(dates_row, text="DTEND on/after (YYYY-MM-DD):", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=14)
+    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 8))
+    add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
+    add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
+
     list_frame = ttk.Frame(record_index, style="Card.TFrame")
-    list_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+    list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
     list_frame.columnconfigure(0, weight=1)
     index_listbox = tk.Listbox(
         list_frame, height=8, activestyle="none", exportselection=False,
@@ -779,13 +848,13 @@ def run_tk() -> int:
     index_listbox.grid(row=0, column=0, sticky="ew")
     index_scroll.grid(row=0, column=1, sticky="ns")
 
-    # Read-only, selectable Text so the NUMERO/description can be copied for
+    # Read-only, selectable Text so the NUMERO/description/dates can be copied for
     # further actions (search, paste into the portal, etc.).
     index_detail_text = tk.Text(
-        record_index, height=2, wrap="word", bd=0, highlightthickness=0,
+        record_index, height=3, wrap="word", bd=0, highlightthickness=0,
         bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9),
     )
-    index_detail_text.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+    index_detail_text.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
     def set_index_detail(text: str) -> None:
         index_detail_text.configure(state="normal")
@@ -800,6 +869,13 @@ def run_tk() -> int:
         desc = rec["descripcion"] or "(sin descripción)"
         return f"{numero} — {desc}"
 
+    def index_row_text(rec: dict[str, str]) -> str:
+        """List row prefixed with the DTEND deadline and a status tag."""
+        dt = parse_deadline(rec)
+        dtend = dt.strftime("%y-%m-%d") if dt else "  no date"
+        tag = STATUS_TAGS[expiry_status(rec)]
+        return f"[{dtend} {tag:>7}]  {index_label(rec)}"
+
     def selected_record() -> dict[str, str] | None:
         selection = index_listbox.curselection()
         if not selection:
@@ -811,15 +887,20 @@ def run_tk() -> int:
         rec = selected_record()
         if not rec:
             return
-        status = f"   ·   status: {rec['detail_status']}" if rec["detail_status"] else ""
-        set_index_detail(f"NUMERO: {rec['numero']}\nDescripción: {rec['descripcion'] or '-'}{status}")
+        status = f"   ·   detail: {rec['detail_status']}" if rec["detail_status"] else ""
+        set_index_detail(
+            f"NUMERO: {rec['numero']}   ·   {expiry_status(rec).upper()}{status}\n"
+            f"Descripción: {rec['descripcion'] or '-'}\n"
+            f"Downloaded: {downloaded_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
+        )
 
     def populate_listbox(records: list[dict[str, str]]) -> None:
         nonlocal index_filtered
         index_filtered = records
         index_listbox.delete(0, "end")
-        for rec in records:
-            index_listbox.insert("end", index_label(rec))
+        for idx, rec in enumerate(records):
+            index_listbox.insert("end", index_row_text(rec))
+            index_listbox.itemconfig(idx, foreground=STATUS_COLORS[expiry_status(rec)])
         if records:
             index_listbox.selection_clear(0, "end")
             index_listbox.selection_set(0)
@@ -828,10 +909,30 @@ def run_tk() -> int:
 
     def apply_filter(*_args: object) -> None:
         needle = index_filter_var.get().strip().lower()
-        if needle:
-            records = [r for r in index_records if needle in index_label(r).lower()]
-        else:
-            records = list(index_records)
+        wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
+        min_date = None
+        raw_min = index_mindate_var.get().strip()
+        if raw_min:
+            try:
+                min_date = datetime.strptime(raw_min, "%Y-%m-%d")
+            except ValueError:
+                min_date = None
+
+        records = []
+        for rec in index_records:
+            if needle and needle not in index_label(rec).lower():
+                continue
+            if wanted_status and expiry_status(rec) != wanted_status:
+                continue
+            if min_date is not None:
+                dt = parse_deadline(rec)
+                if dt is None or dt < min_date:
+                    continue
+            records.append(rec)
+
+        # Show the soonest deadlines first so "next to expire" floats to the top;
+        # records without a DTEND sink to the bottom.
+        records.sort(key=lambda r: (parse_deadline(r) or datetime.max))
         populate_listbox(records)
         if not records:
             set_index_detail("No records match the filter." if index_records else
@@ -871,9 +972,11 @@ def run_tk() -> int:
     index_listbox.bind("<<ListboxSelect>>", show_selected_detail)
     index_listbox.bind("<Double-Button-1>", lambda _e: open_selected_folder())
     index_filter_var.trace_add("write", apply_filter)
+    index_status_var.trace_add("write", apply_filter)
+    index_mindate_var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
-    index_buttons.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
     refresh_index_button = ttk.Button(index_buttons, text="Refresh list", command=refresh_index_list)
     refresh_index_button.grid(row=0, column=0, padx=(0, 8))
     open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
@@ -940,10 +1043,23 @@ def run_tk() -> int:
     logs.rowconfigure(1, weight=1)
     ttk.Label(logs, text="Recent worker log").grid(row=0, column=0, sticky="w")
     ttk.Label(logs, text="Current action log").grid(row=0, column=1, sticky="w")
-    worker_text = tk.Text(logs, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
-    current_text = tk.Text(logs, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
-    worker_text.grid(row=1, column=0, sticky="nsew", padx=(0, 7))
-    current_text.grid(row=1, column=1, sticky="nsew", padx=(7, 0))
+
+    # Each log is a fixed-height box WITH its own scrollbar, so the pane scrolls
+    # the log itself (wheel or scrollbar) instead of moving the whole page.
+    def make_log_pane(parent: tk.Widget, grid_col: int, pad: tuple[int, int]) -> tk.Text:
+        frame = ttk.Frame(parent, style="TFrame")
+        frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        text = tk.Text(frame, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
+        bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=bar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        bar.grid(row=0, column=1, sticky="ns")
+        return text
+
+    worker_text = make_log_pane(logs, 0, (0, 7))
+    current_text = make_log_pane(logs, 1, (7, 0))
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
