@@ -36,11 +36,13 @@ notify_waha() {
   fi
 }
 
-# Send the rich "new opportunity" / "no new entries" WhatsApp messages for the
-# records this iteration just saved. Never allowed to break the run.
+# Send the rich "new opportunity" / "no new entries" WhatsApp messages. New
+# records are announced in real time by pc_detail_downloader.py as each detail
+# saves; here we only send the "Sin nuevas entradas" status when a run found
+# nothing new, or flush any record whose real-time send failed.
 notify_new_records() {
   if [ -x ./pc_notify_new_records.py ]; then
-    "$PYTHON_BIN" ./pc_notify_new_records.py >> "$WORKER_LOG" 2>&1 || true
+    "$PYTHON_BIN" ./pc_notify_new_records.py "$@" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -272,10 +274,15 @@ PY
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
   fi
 
-  # Announce newly saved opportunities (or "no new entries") on WhatsApp whenever
-  # the detail step finished cleanly, regardless of the calendar build outcome.
+  # WhatsApp summary after a clean detail step. New records were already announced
+  # in real time during the download; here we either report "no new entries"
+  # (nothing was pending) or flush any record whose live send failed.
   if [ "$DETAIL_EXIT" -eq 0 ]; then
-    notify_new_records
+    if [ "$PENDING_BEFORE" = "0" ]; then
+      notify_new_records --idle
+    else
+      notify_new_records --flush
+    fi
   fi
 
   # STEP 4: when this run had no new records to process, exercise the current

@@ -298,7 +298,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
-| `pc_notify_new_records.py` | Sends rich “🟢 NUEVA OPORTUNIDAD DETECTADA” messages for each newly saved record (or one “⚪ Sin nuevas entradas” status) after every successful run. Supports an optional keyword filter and a first-run baseline so the existing archive is never re-announced. |
+| `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
@@ -354,7 +354,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.50` | native monitor | Native monitor opacity. `0.50` = 50% transparent (clamped to 0.10–1.00). Editable live from the monitor's Settings panel. |
-| settings file | `data/config/monitor_settings.env` | native monitor / WAHA notifier | `KEY=VALUE` file written by the monitor's Settings panel (transparency, auto-close/refresh seconds, WAHA source/max-messages). Read at startup and by the notifier. Precedence: environment variable > this file > built-in default. |
+| settings file | `data/config/monitor_settings.env` | native monitor / WAHA notifier | `KEY=VALUE` file written by the monitor's Settings panel (transparency, auto-close/refresh seconds, WAHA source label). Read at startup and by the notifier. Precedence: environment variable > this file > built-in default. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
 | `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the tiny timer window. |
@@ -375,7 +375,6 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
-| `PC_WAHA_MAX_NEW_MESSAGES` | `12` | new-record notifier | Maximum individual “nueva oportunidad” messages per run; extra new records are summarized in one follow-up line. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA destination | `data/config/waha_chat_id.txt` | WAHA notifier / monitor | Destination group/channel chat id saved from the monitor; used when `PC_WAHA_CHAT_ID` is not set. |
@@ -430,9 +429,10 @@ private alert group controlled by you.
 #### Rich “what is new” opportunity messages
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
-the worker calls `pc_notify_new_records.py` after every successful index+detail
-step. It reads the archive database for records that were just saved and never
-announced, then sends one message per new opportunity using this template:
+new opportunities are announced **in real time**: `pc_detail_downloader.py` sends
+one WhatsApp message for each brand-new record **immediately after its detail page
+finishes downloading** (so every field is populated), then continues to the next
+new entry and repeats. The message uses this template:
 
 ```text
 🟢 NUEVA OPORTUNIDAD DETECTADA
@@ -454,8 +454,8 @@ announced, then sends one message per new opportunity using this template:
 🆔 ID: {numero}
 ```
 
-When a run completes with no new records, a single status message is sent
-instead:
+When a run completes with no new records, the worker sends a single status
+message instead (`pc_notify_new_records.py --idle`):
 
 ```text
 ⚪ Sin nuevas entradas
@@ -468,22 +468,26 @@ instead:
 
 Behavior notes:
 
-- **No backlog flood.** The first time the notifier runs it records a baseline
-  (marks every existing saved record as already-announced via the new
-  `notified_at` column and writes `data/config/waha_notify_initialized`) and
-  sends nothing, so only genuinely new records are announced from then on.
+- **One message per new record, as it arrives.** Each record is announced once,
+  right after its detail saves, and the worker then moves on to the next entry.
+- **No backlog flood.** On first use (before any new detail is downloaded)
+  `ensure_baseline` marks every existing saved record as already-announced via
+  the `notified_at` column and writes `data/config/waha_notify_initialized`, so
+  only records saved afterwards are announced.
+- **Sent at most once.** Announcing is guarded by `notified_at`; a record is
+  never re-sent, even if its detail is later rebuilt/re-downloaded.
 - **Optional keyword filter.** Put one keyword per line in
   `data/config/waha_keywords.txt`. When present, only records whose
   title/description/entity match a keyword are announced and the matched
   keywords are listed in `🔎 Coincidencia`. When the file is missing or empty,
   every new record is announced and the line reads
   `Sin filtro (todas las entradas)`.
-- **Burst cap.** At most `PC_WAHA_MAX_NEW_MESSAGES` (default `12`) individual
-  opportunity messages are sent per run; any extra new records are summarized in
-  one follow-up line.
 - **Never blocks a run.** Any notifier or network failure is caught and logged;
-  records that could not be sent keep `notified_at` empty and are retried on the
-  next run.
+  records whose live send failed keep `notified_at` empty and are retried by the
+  end-of-run flush (`pc_notify_new_records.py --flush`) or the next run.
+- **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
+  `http://127.0.0.1:3000`) and a destination chat id (`PC_WAHA_CHAT_ID` or the
+  monitor's Settings panel, e.g. a group id ending in `@g.us`).
 
 ---
 

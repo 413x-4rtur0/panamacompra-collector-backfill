@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 """Send rich PanamaCompra "what is new" notifications to WhatsApp via WAHA.
 
-The run-all worker calls this script after a successful index+detail iteration.
-It looks at the archive database for records that were saved but never announced
-and sends one WhatsApp message per new opportunity using the
-"🟢 NUEVA OPORTUNIDAD DETECTADA" template. When nothing new is found it sends a
-single "⚪ Sin nuevas entradas" status message instead.
+Two paths use the helpers here:
+
+* Real time (preferred): ``pc_detail_downloader.py`` calls ``notify_saved_record``
+  immediately after each individual detail page is downloaded and saved, so one
+  "🟢 NUEVA OPORTUNIDAD DETECTADA" message goes out per new record as soon as its
+  detail (and therefore all of its fields) is available — then it moves on to the
+  next new entry and repeats.
+* End of run: the worker calls this script with ``--idle`` when a run found no new
+  records (sends one "⚪ Sin nuevas entradas" status) or ``--flush`` to announce
+  any saved record whose real-time send failed (a safety net).
 
 Design notes
 ------------
-* Dependency-free: it reuses pc_common (stdlib only) for the archive DB and
+* Dependency-free: reuses pc_common (stdlib only) for the archive DB and
   pc_waha_notify for the WAHA HTTP send + enable/skip logic.
-* It NEVER blocks a collector run: any failure is caught and logged, and the
-  worker invokes it with `|| true`.
-* First-run baseline: when the `notified_at` column is brand new, every existing
-  saved record would otherwise look "new" and flood the group. The first run
-  records a baseline (marks current saved records as already-notified) and sends
-  no opportunity messages, so only genuinely new records are announced later.
-* Optional keyword filter: put one keyword per line in
-  data/config/waha_keywords.txt. When present, only records whose title /
-  description / entity match a keyword are announced (and the matched keywords
-  are listed in the message). When the file is missing/empty, every new record
-  is announced and the match line reads "Sin filtro (todas las entradas)".
+* It NEVER blocks a collector run: every failure is caught and logged.
+* First-use baseline: ``ensure_baseline`` marks the records that already existed
+  when WAHA was first enabled as already-announced, so an existing archive does
+  not produce a burst of messages. Only records saved AFTER that are announced.
+* Optional keyword filter: one keyword per line in data/config/waha_keywords.txt.
+  When present, only records whose title/description/entity match a keyword are
+  announced (matched keywords are listed). When empty, every new record is
+  announced and the match line reads "Sin filtro (todas las entradas)".
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -73,6 +76,14 @@ SOURCE_NAME = cfg("PC_WAHA_SOURCE", "Panamá Compra")
 
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def waha_enabled() -> bool:
+    return waha.env_bool("PC_WAHA_ENABLED", False)
+
+
+def waha_destination() -> str:
+    return os.environ.get("PC_WAHA_CHAT_ID", "").strip() or waha.saved_chat_id()
 
 
 def load_keywords() -> list[str]:
@@ -162,111 +173,32 @@ def mark_notified(conn, numero: str) -> None:
     conn.commit()
 
 
-def establish_baseline(conn) -> None:
-    """First run: announce nothing, just remember the records that already exist."""
-    conn.execute(
-        "UPDATE opportunities SET notified_at = ? WHERE detail_status = 'saved' AND notified_at IS NULL",
-        (now_str(),),
-    )
-    conn.commit()
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
-    print("WAHA new-record baseline established; existing saved records will not be re-announced.")
+def fetch_row(conn, numero: str):
+    return conn.execute("SELECT * FROM opportunities WHERE numero = ?", (numero,)).fetchone()
 
 
-def main() -> int:
-    if not waha.env_bool("PC_WAHA_ENABLED", False):
-        print("WAHA new-record notification skipped: set PC_WAHA_ENABLED=1 to enable.")
-        return 0
-
-    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip() or waha.saved_chat_id()
-    if not chat_id:
-        # Without a destination nothing can be sent. Do NOT touch the database so
-        # records remain "new" and get announced once a chat id is configured.
-        print("WAHA new-record notification skipped: PC_WAHA_CHAT_ID is not set.")
-        return 0
-
-    conn = pc_common.init_db()
-
-    # Establish the baseline on the very first run so an existing archive does not
-    # produce a burst of "new opportunity" messages.
-    if not BASELINE_MARKER.exists():
-        establish_baseline(conn)
-        return 0
-
-    total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-
-    new_rows = conn.execute(
-        """
-        SELECT * FROM opportunities
-        WHERE detail_status = 'saved' AND notified_at IS NULL
-        ORDER BY detail_saved_at, first_seen
-        """
-    ).fetchall()
-
-    keywords = load_keywords()
-    try:
-        max_messages = max(1, int(cfg("PC_WAHA_MAX_NEW_MESSAGES", "12")))
-    except ValueError:
-        max_messages = 12
-
-    sent = 0
-    truncated_extra = 0
-    for row in new_rows:
-        summary = load_detail_summary(row["detail_json_path"])
-        if keywords:
-            haystack = " ".join(
-                str(value)
-                for value in (
-                    row["descripcion"],
-                    row["short_description"],
-                    row["entidad"],
-                    summary.get("descripcion"),
-                )
-                if value
-            )
-            matches = matched_keywords(haystack, keywords)
-            if not matches:
-                # No keyword matched: mark as seen so it is not rechecked, but do
-                # not announce it.
-                mark_notified(conn, row["numero"])
-                continue
-            match_line = ", ".join(matches)
-        else:
-            match_line = "Sin filtro (todas las entradas)"
-
-        if sent >= max_messages:
-            truncated_extra += 1
-            mark_notified(conn, row["numero"])
-            continue
-
-        message = build_opportunity_message(row, summary, match_line)
-        if not enabled_and_send("new", message):
-            # Leave notified_at unset so the record is retried on the next run
-            # rather than silently lost when WAHA is unreachable.
-            continue
-        mark_notified(conn, row["numero"])
-        sent += 1
-
-    if truncated_extra:
-        enabled_and_send(
-            "new",
-            (
-                "🟢 PanamaCompra: además de las anteriores se detectaron "
-                f"{truncated_extra} oportunidad(es) nueva(s) adicionales.\n"
-                f"🕒 {now_str()}"
-            ),
+def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
+    """Return the '🔎 Coincidencia' line, or None when a keyword filter is active
+    and this record matched nothing (so it should not be announced)."""
+    if not keywords:
+        return "Sin filtro (todas las entradas)"
+    haystack = " ".join(
+        str(value)
+        for value in (
+            row["descripcion"],
+            row["short_description"],
+            row["entidad"],
+            summary.get("descripcion"),
         )
+        if value
+    )
+    matches = matched_keywords(haystack, keywords)
+    return ", ".join(matches) if matches else None
 
-    if sent == 0 and truncated_extra == 0:
-        enabled_and_send("none", build_empty_message(total_records))
 
-    return 0
-
-
-def enabled_and_send(event: str, text: str) -> bool:
-    """Send through WAHA respecting the per-event enable list. Returns True on a
-    successful send (or a configured skip that should still be treated as done)."""
+def send_text(event: str, text: str) -> bool:
+    """Send through WAHA respecting the per-event enable list. Returns True only
+    when the message was actually sent."""
     if not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
@@ -276,6 +208,106 @@ def enabled_and_send(event: str, text: str) -> bool:
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         return False
+
+
+def ensure_baseline(conn) -> bool:
+    """Mark the records that already existed when WAHA was first enabled as
+    already-announced. Returns True if the baseline was established on this call.
+
+    Called once at the start of a detail-download run (before new records are
+    saved), so only records saved afterwards are announced."""
+    if BASELINE_MARKER.exists():
+        return False
+    if not (waha_enabled() and waha_destination()):
+        # Wait until WAHA is usable so the baseline reflects the real "before"
+        # state the first time messages can actually be sent.
+        return False
+    conn.execute(
+        "UPDATE opportunities SET notified_at = ? WHERE detail_status = 'saved' AND notified_at IS NULL",
+        (now_str(),),
+    )
+    conn.commit()
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
+    print("WAHA baseline established; existing saved records will not be announced.")
+    return True
+
+
+def notify_saved_record(conn, numero: str) -> bool:
+    """Announce a single just-saved record in real time. Idempotent: a record is
+    sent at most once (guarded by notified_at). Returns True if a message was
+    sent. Designed to be called right after a detail is saved; never raises."""
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        if not BASELINE_MARKER.exists():
+            # Baseline not set up yet (ensure_baseline should run first). Skip to
+            # avoid mistaking a pre-existing record for a new one.
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or row["detail_status"] != "saved" or row["notified_at"]:
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        match_line = match_line_for(row, summary, load_keywords())
+        if match_line is None:
+            # Filtered out by keywords: remember it so it is not rechecked.
+            mark_notified(conn, numero)
+            return False
+        if not send_text("new", build_opportunity_message(row, summary, match_line)):
+            # Leave notified_at unset so a later --flush retries it.
+            return False
+        mark_notified(conn, numero)
+        return True
+    except Exception as exc:  # noqa: BLE001 - defensive: never break a download
+        print(f"WAHA per-detail notify error for {numero}: {exc}", file=sys.stderr)
+        return False
+
+
+def flush_unannounced(conn) -> int:
+    """Announce any saved records that were not yet sent (e.g. a real-time send
+    failed because WAHA was briefly unreachable). Returns the number sent."""
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
+        "ORDER BY detail_saved_at, first_seen"
+    ).fetchall()
+    sent = 0
+    for row in rows:
+        if notify_saved_record(conn, row["numero"]):
+            sent += 1
+    return sent
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
+    parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
+    parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent in real time (safety net)")
+    args = parser.parse_args(argv)
+
+    if not waha_enabled():
+        print("WAHA notification skipped: set PC_WAHA_ENABLED=1 to enable.")
+        return 0
+    if not waha_destination():
+        print("WAHA notification skipped: no chat id (PC_WAHA_CHAT_ID or data/config/waha_chat_id.txt).")
+        return 0
+
+    conn = pc_common.init_db()
+    just_baselined = ensure_baseline(conn)
+
+    if args.idle:
+        if just_baselined:
+            # Right after establishing the baseline, do not claim "no new entries".
+            return 0
+        total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+        send_text("none", build_empty_message(total_records))
+        return 0
+
+    # Default / --flush: announce stragglers (normally none, since records are
+    # announced in real time as each detail saves).
+    if just_baselined:
+        return 0
+    sent = flush_unannounced(conn)
+    print(f"WAHA flush complete: {sent} record(s) announced.")
+    return 0
 
 
 if __name__ == "__main__":

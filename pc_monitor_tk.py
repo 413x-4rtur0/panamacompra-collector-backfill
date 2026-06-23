@@ -474,7 +474,6 @@ def run_tk() -> int:
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
     idle_var = tk.StringVar(value=str(runtime["idle_refresh"]))
     source_var = tk.StringVar(value=setting("PC_WAHA_SOURCE", "Panamá Compra"))
-    maxmsg_var = tk.StringVar(value=setting("PC_WAHA_MAX_NEW_MESSAGES", "12"))
     waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else ""))
     existing_keywords = []
     if WAHA_KEYWORDS_PATH.exists():
@@ -492,8 +491,7 @@ def run_tk() -> int:
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages. Default 'Panamá Compra'.")
-    field(3, 2, "Max new WhatsApp msgs/run:", maxmsg_var, 8, "Cap on individual 'nueva oportunidad' messages per run; extras are summarized. Default 12.")
+    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Every new record is announced in real time as its detail downloads.")
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
@@ -519,14 +517,12 @@ def run_tk() -> int:
         runtime["auto_close"] = as_int(autoclose_var, runtime["auto_close"], 0)
         runtime["refresh"] = as_int(refresh_var, runtime["refresh"], 2)
         runtime["idle_refresh"] = max(runtime["refresh"], as_int(idle_var, runtime["idle_refresh"], 2))
-        max_msgs = as_int(maxmsg_var, 12, 1)
 
         # Reflect the normalized values back into the entries.
         alpha_var.set(f"{alpha:.2f}")
         autoclose_var.set(str(runtime["auto_close"]))
         refresh_var.set(str(runtime["refresh"]))
         idle_var.set(str(runtime["idle_refresh"]))
-        maxmsg_var.set(str(max_msgs))
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
@@ -539,7 +535,6 @@ def run_tk() -> int:
             "PC_MONITOR_TK_REFRESH_SECONDS": str(runtime["refresh"]),
             "PC_MONITOR_TK_IDLE_REFRESH_SECONDS": str(runtime["idle_refresh"]),
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
-            "PC_WAHA_MAX_NEW_MESSAGES": str(max_msgs),
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -557,7 +552,7 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings)
     apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 in the environment. Source, max messages and keywords here are read by the notifier.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
     # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
