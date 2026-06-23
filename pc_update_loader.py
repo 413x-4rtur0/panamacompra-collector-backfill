@@ -24,8 +24,8 @@ LOG_DIR = BASE_DIR / "data" / "logs"
 UPDATE_SCRIPT = BASE_DIR / "update_local_copy.sh"
 MONITOR_SCRIPT = BASE_DIR / "pc_open_monitor.sh"
 
-# update_local_copy.sh prints numbered steps "1) ..." through "10) ...".
-TOTAL_STEPS = 10
+# update_local_copy.sh prints numbered steps "1) ..." through "11) ...".
+TOTAL_STEPS = 11
 STEP_RE = re.compile(r"^\s*(\d{1,2})\)\s")
 
 
@@ -35,7 +35,7 @@ def open_monitor() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run update_local_copy.sh in a separate loader window")
-    parser.add_argument("--open-monitor-after", action="store_true", help="open the normal monitor after a successful update")
+    parser.add_argument("--open-monitor-after", action="store_true", help="open the normal monitor after the update attempt")
     args = parser.parse_args()
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,7 @@ def main() -> int:
     if not os.environ.get("DISPLAY"):
         with log_file.open("w", encoding="utf-8") as out:
             result = subprocess.run([str(UPDATE_SCRIPT)], cwd=BASE_DIR, stdout=out, stderr=subprocess.STDOUT)
-        if result.returncode == 0 and args.open_monitor_after:
+        if args.open_monitor_after:
             open_monitor()
         return result.returncode
 
@@ -124,7 +124,9 @@ def main() -> int:
                 else:
                     root.after(1500, root.destroy)
             else:
-                status_var.set(f"Update failed with exit {code}. Review the log: {log_file.relative_to(BASE_DIR)}")
+                status_var.set(f"Update failed with exit {code}. Opening monitor anyway; review: {log_file.relative_to(BASE_DIR)}")
+                if args.open_monitor_after:
+                    root.after(900, open_monitor)
 
         root.after(0, finish)
 
