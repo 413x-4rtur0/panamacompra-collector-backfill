@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
+ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
@@ -111,6 +113,44 @@ def tail(path: Path, lines: int) -> str:
         return f"No {path.name} yet."
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(content[-lines:])
+
+
+def load_record_index(limit: int = 500) -> list[dict[str, str]]:
+    """Read collected records (NUMERO + description + folder/link) from the
+    archive DB for the record-index selector. Newest first; never raises."""
+    if not ARCHIVE_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT numero, "
+            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
+            "COALESCE(record_folder, '') AS record_folder, "
+            "COALESCE(link, '') AS link, "
+            "COALESCE(detail_status, '') AS detail_status "
+            "FROM opportunities "
+            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    return [
+        {
+            "numero": str(row["numero"] or ""),
+            "descripcion": str(row["descripcion"] or ""),
+            "record_folder": str(row["record_folder"] or ""),
+            "link": str(row["link"] or ""),
+            "detail_status": str(row["detail_status"] or ""),
+        }
+        for row in rows
+    ]
 
 
 def running(pattern: str) -> bool:
@@ -215,6 +255,7 @@ button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padd
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
 select, input {{ border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: 1rem; }}
 select#run-mode {{ min-width: 150px; }}
+select#record-index {{ min-width: 60%; max-width: 100%; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; }}
 </style>
 </head>
@@ -229,6 +270,7 @@ select#run-mode {{ min-width: 150px; }}
 </div>
 <div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “NUMERO — description”, newest first. Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -305,6 +347,38 @@ function renderActionZones() {{
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+let recordIndex = [];
+function selectedRecord() {{
+  const sel = document.getElementById('record-index');
+  const idx = sel ? Number(sel.value) : -1;
+  return (idx >= 0 && idx < recordIndex.length) ? recordIndex[idx] : null;
+}}
+function renderRecordDetail() {{
+  const rec = selectedRecord();
+  const node = document.getElementById('record-detail');
+  if (!rec) {{ node.textContent = recordIndex.length ? 'Select a record.' : 'No records collected yet. Run the collector, then Refresh list.'; return; }}
+  const status = rec.detail_status ? '   ·   status: ' + rec.detail_status : '';
+  node.textContent = 'NUMERO: ' + rec.numero + '  —  ' + (rec.descripcion || '-') + status;
+}}
+async function refreshRecordIndex() {{
+  try {{
+    const response = await fetch('/api/record-index', {{cache: 'no-store'}});
+    recordIndex = await response.json();
+  }} catch (err) {{ recordIndex = []; }}
+  const sel = document.getElementById('record-index');
+  sel.innerHTML = recordIndex.map((r, i) => `<option value="${{i}}">${{esc((r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)'))}}</option>`).join('');
+  renderRecordDetail();
+}}
+function openRecordFolder() {{
+  const rec = selectedRecord();
+  if (!rec) {{ document.getElementById('button-status').textContent = 'Select a record first.'; return; }}
+  postForm('/api/open-record-folder', 'numero=' + encodeURIComponent(rec.numero));
+}}
+function openRecordPortal() {{
+  const rec = selectedRecord();
+  if (!rec || !rec.link) {{ document.getElementById('button-status').textContent = 'No portal link for the selected record.'; return; }}
+  window.open(rec.link, '_blank', 'noopener');
+}}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -318,6 +392,8 @@ async function poll() {{
 }}
 window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
 renderActionZones();
+document.getElementById('record-index').addEventListener('change', renderRecordDetail);
+refreshRecordIndex();
 poll();
 </script>
 </body>
@@ -366,6 +442,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
             run_manual_action(action)
             self.send_text(202, "Calendar import started. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/open-record-folder":
+            numero = form.get("numero", [""])[0].strip()
+            for record in load_record_index():
+                if record["numero"] == numero:
+                    folder = record["record_folder"]
+                    if not folder or not Path(folder).exists():
+                        self.send_text(404, f"Record folder not found on disk for {numero}.\n", "text/plain; charset=utf-8")
+                        return
+                    opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+                    subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self.send_text(202, f"Opened record folder for {numero}.\n", "text/plain; charset=utf-8")
+                    return
+            self.send_text(404, f"Unknown record: {numero}\n", "text/plain; charset=utf-8")
+            return
         if path in {"/api/waha-destination", "/api/waha-message"}:
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
@@ -381,6 +471,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/record-index":
+            self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")

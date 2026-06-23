@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -26,6 +27,9 @@ REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
+# Archive database read (read-only) to populate the record-index selector with
+# the collected opportunities (NUMERO + description + folder/link).
+ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 # Editable settings the user can change from the monitor's Settings panel. Saved
 # here as KEY=VALUE and consulted at startup (and by the WAHA notifier) so the
 # choices survive restarts. Precedence everywhere is: real environment variable >
@@ -188,6 +192,48 @@ def tail(path: Path, lines: int) -> str:
         return f"No {path.name} yet."
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(content[-lines:])
+
+
+def load_record_index(limit: int = 500) -> list[dict[str, str]]:
+    """Read collected records (NUMERO + description + folder/link) from the
+    archive DB for the monitor's record-index selector. Newest first.
+
+    Never raises: a missing, empty or locked database simply yields an empty
+    list so the monitor keeps working before the collector has ever run.
+    """
+    if not ARCHIVE_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT numero, "
+            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
+            "COALESCE(record_folder, '') AS record_folder, "
+            "COALESCE(link, '') AS link, "
+            "COALESCE(detail_status, '') AS detail_status "
+            "FROM opportunities "
+            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    return [
+        {
+            "numero": str(row["numero"] or ""),
+            "descripcion": str(row["descripcion"] or ""),
+            "record_folder": str(row["record_folder"] or ""),
+            "link": str(row["link"] or ""),
+            "detail_status": str(row["detail_status"] or ""),
+        }
+        for row in rows
+    ]
 
 
 def running(pattern: str) -> bool:
@@ -378,7 +424,7 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    content.rowconfigure(5, weight=1)
+    content.rowconfigure(6, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -603,12 +649,110 @@ def run_tk() -> int:
     ttk.Label(diag, textvariable=extra_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=2)
 
     # ========================================================================
-    # SECTION 4: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
+    # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
+    # and open its archive folder or the portal page. Populated read-only from
+    # data/panamacompra_archive.db; empty until the collector has run.
+    # ========================================================================
+    record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
+    record_index.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    record_index.columnconfigure(1, weight=1)
+
+    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+    index_records: list[dict[str, str]] = []
+    index_choice_var = tk.StringVar(value="")
+    index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
+
+    ttk.Label(record_index, text="Record:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    # A wide selector listing "NUMERO — description", newest first. The field
+    # itself is broad and the full number/description are echoed below so long
+    # values stay fully readable even when the dropdown truncates them.
+    index_box = ttk.Combobox(record_index, textvariable=index_choice_var, state="readonly", width=60)
+    index_box.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(index_box, "Collected records as 'NUMERO — description', newest first. Pick one to open its archive folder or the portal page.")
+
+    ttk.Label(record_index, textvariable=index_detail_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 4))
+
+    def index_label(rec: dict[str, str]) -> str:
+        numero = rec["numero"] or "(sin número)"
+        desc = rec["descripcion"] or "(sin descripción)"
+        return f"{numero} — {desc}"
+
+    def selected_record() -> dict[str, str] | None:
+        choice = index_choice_var.get()
+        for rec in index_records:
+            if index_label(rec) == choice:
+                return rec
+        return None
+
+    def on_index_selected(_event: object = None) -> None:
+        rec = selected_record()
+        if not rec:
+            return
+        status = f"   ·   status: {rec['detail_status']}" if rec["detail_status"] else ""
+        index_detail_var.set(f"NUMERO: {rec['numero']}\nDescripción: {rec['descripcion'] or '-'}{status}")
+
+    def refresh_index_list() -> None:
+        nonlocal index_records
+        index_records = load_record_index()
+        values = [index_label(rec) for rec in index_records]
+        index_box.configure(values=values)
+        if values:
+            if index_choice_var.get() not in values:
+                index_choice_var.set(values[0])
+            on_index_selected()
+            button_status_var.set(f"Loaded {len(values)} record(s) into the index selector.")
+        else:
+            index_choice_var.set("")
+            index_detail_var.set("No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then click Refresh list.")
+
+    def open_selected_folder() -> None:
+        rec = selected_record()
+        if not rec:
+            button_status_var.set("Select a record first.")
+            return
+        folder = rec["record_folder"]
+        if not folder or not Path(folder).exists():
+            button_status_var.set(f"Record folder not found on disk for {rec['numero'] or 'the selection'}.")
+            return
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened record folder for {rec['numero']}.")
+
+    def open_selected_portal() -> None:
+        rec = selected_record()
+        if not rec:
+            button_status_var.set("Select a record first.")
+            return
+        if not rec["link"]:
+            button_status_var.set(f"No portal link stored for {rec['numero'] or 'the selection'}.")
+            return
+        subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opening portal page for {rec['numero']}.")
+
+    index_box.bind("<<ComboboxSelected>>", on_index_selected)
+
+    index_buttons = ttk.Frame(record_index, style="Card.TFrame")
+    index_buttons.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    refresh_index_button = ttk.Button(index_buttons, text="Refresh list", command=refresh_index_list)
+    refresh_index_button.grid(row=0, column=0, padx=(0, 8))
+    open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
+    open_folder_button.grid(row=0, column=1, padx=(0, 8))
+    open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
+    open_portal_button.grid(row=0, column=2, padx=(0, 8))
+    add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
+    add_tooltip(open_folder_button, "Open the selected record's archive folder in the file manager.")
+    add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
+
+    refresh_index_list()
+
+    # ========================================================================
+    # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
     # Each button's explanation is shown as a hover tooltip (not an inline label)
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -649,7 +793,7 @@ def run_tk() -> int:
         grid_row += 1
 
     logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=5, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=6, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)

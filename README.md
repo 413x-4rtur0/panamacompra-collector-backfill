@@ -401,10 +401,11 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - WhatsApp source label, destination chat id, and keyword filter.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
 3. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row.
-4. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
-5. **Recent worker / current action logs**.
+4. **Record index** — a wide selector listing every collected record as `NUMERO — description` (newest first), read straight from `data/panamacompra_archive.db`. Because the number and description are long, the full values of the current selection are echoed on their own wide line, and buttons let you **Open record folder** (the archived `records/…` folder) or **Open in portal** (the PanamaCompra page). Use **Refresh list** after a new collection. The list is empty until the collector has run at least once.
+5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
+6. **Recent worker / current action logs**.
 
-Transparency, refresh cadence and the auto-close countdown can all be changed from the Settings panel without restarting the monitor.
+Transparency, refresh cadence and the auto-close countdown can all be changed from the Settings panel without restarting the monitor. The web monitor (`pc_monitor_server.py`) exposes the same record-index selector, backed by the `/api/record-index` endpoint.
 
 ### Optional WAHA private WhatsApp group alerts
 
