@@ -17,6 +17,79 @@ REMOTE="${PC_UPDATE_REMOTE:-origin}"
 BRANCH="${PC_UPDATE_BRANCH:-}"
 DETAIL_LIMIT="${PC_UPDATE_TEST_DETAIL_LIMIT:-0}"
 CHECKED_OUT_BRANCH=""
+WEBHOOK_WAS_RUNNING=0
+WEBHOOK_RESTORED=0
+
+webhook_listener_running() {
+  pgrep -f "[w]ebhook_listener.py" >/dev/null 2>&1
+}
+
+restart_webhook_listener() {
+  if [ "$WEBHOOK_RESTORED" = "1" ]; then
+    return 0
+  fi
+  WEBHOOK_RESTORED=1
+
+  if [ "${PC_UPDATE_RESTART_WEBHOOK:-auto}" = "0" ]; then
+    echo "Skipped webhook listener restart because PC_UPDATE_RESTART_WEBHOOK=0."
+    return 0
+  fi
+
+  local should_restart=0
+  if [ "${PC_UPDATE_RESTART_WEBHOOK:-auto}" = "1" ]; then
+    should_restart=1
+  elif [ "$WEBHOOK_WAS_RUNNING" = "1" ]; then
+    should_restart=1
+  elif systemctl --user is-enabled panamacompra-webhook.service >/dev/null 2>&1; then
+    should_restart=1
+  fi
+
+  if [ "$should_restart" != "1" ]; then
+    echo "Webhook listener was not running before the update and no user service is enabled; not starting it automatically."
+    echo "Start it manually with: PC_UPDATE_RESTART_WEBHOOK=1 ./update_local_copy.sh"
+    return 0
+  fi
+
+  if systemctl --user is-enabled panamacompra-webhook.service >/dev/null 2>&1; then
+    echo "Restarting user systemd service: panamacompra-webhook.service"
+    if systemctl --user restart panamacompra-webhook.service; then
+      systemctl --user --no-pager --lines=0 status panamacompra-webhook.service || true
+      return 0
+    fi
+    echo "WARNING: systemd restart failed; falling back to nohup listener start."
+  fi
+
+  if webhook_listener_running; then
+    echo "Webhook listener is already running."
+    return 0
+  fi
+
+  local webhook_python="python3"
+  if [ -x .venv/bin/python ]; then
+    webhook_python=".venv/bin/python"
+  fi
+
+  mkdir -p data/logs
+  nohup env PC_WEBHOOK_HOST="${PC_WEBHOOK_HOST:-0.0.0.0}" PC_WEBHOOK_PORT="${PC_WEBHOOK_PORT:-8765}" \
+    "$webhook_python" ./webhook_listener.py \
+    >> data/logs/webhook_listener.out.log 2>&1 &
+  sleep 1
+
+  if webhook_listener_running; then
+    echo "Webhook listener restarted on ${PC_WEBHOOK_HOST:-0.0.0.0}:${PC_WEBHOOK_PORT:-8765}."
+  else
+    echo "WARNING: webhook listener did not stay running; check data/logs/webhook_listener.out.log."
+  fi
+}
+
+restore_webhook_on_exit() {
+  local code=$?
+  if [ "$code" -ne 0 ]; then
+    echo ""
+    echo "Update exited with status $code; restoring webhook listener before exit if it was active."
+    restart_webhook_listener || true
+  fi
+}
 
 install_desktop_shortcut() {
   if [ "${PC_UPDATE_INSTALL_MONITOR_SHORTCUT:-1}" = "0" ]; then
@@ -90,6 +163,11 @@ echo "Log: $LOG_FILE"
 echo ""
 
 echo "1) Stop the active collector pipeline before updating"
+if webhook_listener_running; then
+  WEBHOOK_WAS_RUNNING=1
+  echo "Webhook listener is currently running; it will be restarted after the update."
+fi
+trap restore_webhook_on_exit EXIT
 # IMPORTANT: do NOT call ./pc_stop_run_all.sh from here. That broad stopper also
 # runs `pkill update_local_copy.sh`, `pkill pc_update_loader.py` and
 # `pkill pc_monitor_tk.py` — i.e. it would terminate THIS update process, the
@@ -310,6 +388,11 @@ if [ "$DETAIL_LIMIT" != "0" ]; then
 else
   echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to request one after update."
 fi
+
+echo ""
+echo "11) Restore webhook listener after update"
+restart_webhook_listener
+trap - EXIT
 
 echo ""
 echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"

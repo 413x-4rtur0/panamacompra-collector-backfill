@@ -157,10 +157,14 @@ workers, **auto-stashes** any local edits to *tracked* files (kept in the stash 
 recovery, never lost), ignores untracked runtime files (`data/`, `records/`,
 `.webhook_token`, `.venv.broken.*`, …), fast-forwards the current branch, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
-system review. It uses `git pull --ff-only`; if the local branch has diverged and a
-fast-forward is impossible, it resets the branch to the remote (diverging commits stay
-reachable via `git reflog`), so an unattended update never stops half-way. To request
-a small smoke run after the update, use:
+system review. If the webhook listener was running before the update, or if the
+`panamacompra-webhook.service` user service is enabled, the updater restores it at
+the end so changedetection.io does not keep seeing `Connection refused` after a
+manual **Update + Monitor** launch. It also tries to restore the listener on failed
+updates before exiting. It uses `git pull --ff-only`; if the local branch has diverged
+and a fast-forward is impossible, it resets the branch to the remote (diverging
+commits stay reachable via `git reflog`), so an unattended update never stops
+half-way. To request a small smoke run after the update, use:
 
 ```bash
 cd ~/Apps/panamacompra-collector
@@ -347,6 +351,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request after a successful local update. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update_local_copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor. Set to `0` to skip. |
+| `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update_local_copy.sh` | Controls whether the updater restores `webhook_listener.py` after stopping it for a safe code update. `auto` restarts it when it was already running or when the `panamacompra-webhook.service` user service is enabled; `1` always starts it after update; `0` leaves it stopped. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -927,7 +932,7 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–10 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
+`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–11 of `update_local_copy.sh`) and streams the update output, and only **after** the update attempt finishes does the normal monitor/timer open. If the update fails, the loader keeps the error visible and still starts the monitor so you can inspect logs and controls.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
 diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
@@ -1015,7 +1020,10 @@ tail -80 data/logs/run_all_requests.log
 
 If local curl returns `202` but the Docker test fails, add
 `extra_hosts: ["host.docker.internal:host-gateway"]` to the changedetection.io
-compose service or use the workstation LAN IP in the notification URL.
+compose service or use the workstation LAN IP in the notification URL. If the error
+started right after the manual **Update + Monitor** launcher, run
+`./update_local_copy.sh` again after this version is installed; it now restores the
+webhook listener after stopping it for the update.
 
 **Data files show up in git** — verify `.gitignore` is working:
 
