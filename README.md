@@ -933,6 +933,12 @@ webhook container on the compose network (no `host.docker.internal` needed):
 json://webhook:8765/panamacompra/YOUR_SECRET_TOKEN?method=POST
 ```
 
+If changedetection is running in Docker Compose, prefer `webhook:8765`. Using
+`host.docker.internal:8765` bypasses the compose webhook service and talks to a
+host listener instead; that is only for the all-host setup. The listener returns
+HTTP 202 before starting work and ignores the large changedetection JSON body, so
+short changedetection read timeouts should not block the notification request.
+
 Run the host runner as a user service so requests are always picked up:
 
 ```bash
@@ -987,7 +993,10 @@ source .venv/bin/activate
 python webhook_listener.py
 ```
 
-The listener accepts requests at `/panamacompra/<TOKEN>`:
+The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
+202 immediately, before queueing/starting collector work. For Docker Compose use
+`json://webhook:8765/...`; use `host.docker.internal:8765` only when you are
+intentionally targeting a listener running on the host.
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
