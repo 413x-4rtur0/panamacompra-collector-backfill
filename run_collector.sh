@@ -10,7 +10,15 @@ mkdir -p data/logs data/queue
 DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-99}"
 
 echo "===== changedetection webhook received at $(date '+%Y-%m-%d %H:%M:%S') =====" >> data/logs/collector_triggered.log
-echo "Requesting full sequence: index + detail, detail_limit=$DETAIL_LIMIT" >> data/logs/collector_triggered.log
+echo "Requesting full sequence: pre-run update + index + detail + calendar, detail_limit=$DETAIL_LIMIT" >> data/logs/collector_triggered.log
+
+# Start/reuse the monitor and next-run timer immediately for webhook-triggered
+# runs. pc_request_run_all.sh also opens the monitor, but doing it here makes
+# changedetection-triggered runs visible even if the request is deferred during
+# a local update or the worker is already active.
+if [ -x ./pc_open_monitor.sh ]; then
+  PC_MONITOR_LAUNCH_CONTEXT=auto ./pc_open_monitor.sh >> data/logs/collector_triggered.log 2>&1 || true
+fi
 
 if [ -f data/queue/update_in_progress.flag ]; then
   touch data/queue/run_all_requested.flag
@@ -18,6 +26,7 @@ if [ -f data/queue/update_in_progress.flag ]; then
   exit 0
 fi
 
+echo "Worker pre-run update is enabled by PC_RUN_UPDATE_BEFORE_RUN=${PC_RUN_UPDATE_BEFORE_RUN:-1}." >> data/logs/collector_triggered.log
 ./pc_request_run_all.sh "$DETAIL_LIMIT" >> data/logs/collector_triggered.log 2>&1
 
 echo "Full sequence requested at $(date '+%Y-%m-%d %H:%M:%S')" >> data/logs/collector_triggered.log

@@ -153,7 +153,7 @@ cd ~/Apps/panamacompra-collector
 ```
 
 The update script always brings the checkout up to date. It stops active collector
-workers while keeping `webhook_listener.py` alive; webhook hits received during the update are deferred with `data/queue/run_all_requested.flag` and resumed after the update finishes. It **auto-stashes** any local edits to *tracked* files (kept in the stash for
+workers while keeping `webhook_listener.py` alive; webhook hits received during the update still open/reuse the monitor, are deferred with `data/queue/run_all_requested.flag`, and are resumed after the update finishes. It **auto-stashes** any local edits to *tracked* files (kept in the stash for
 recovery, never lost), ignores untracked runtime files (`data/`, `records/`,
 `.webhook_token`, `.venv.broken.*`, …), fast-forwards the current branch, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
@@ -303,7 +303,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
 | `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
-| `run_collector.sh` | Bridge called by the webhook listener; requests a full run, or defers it while `update_local_copy.sh` is in progress. |
+| `run_collector.sh` | Bridge called by the webhook listener; starts/reuses the monitor + next-run timer for changedetection-triggered runs, then requests a full run or defers it while `update_local_copy.sh` is in progress. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Runners, Tests, Updater / Migration, and Settings zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run, with previous run index/detail counters. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
@@ -855,7 +855,7 @@ does not start a browser session directly.
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
 `./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–10 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status (including deferred update-in-progress requests), recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close. Normal/scheduled live runs opened by `pc_request_run_all.sh` set `PC_MONITOR_LAUNCH_CONTEXT=auto`, so those monitor windows close only after all live-run tasks finish; test-zone and manual desktop actions still do not auto-close.
+diagnostics counters, process status (including deferred update-in-progress requests from changedetection), recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close. Normal/scheduled live runs opened by `pc_request_run_all.sh` set `PC_MONITOR_LAUNCH_CONTEXT=auto`, so those monitor windows close only after all live-run tasks finish; test-zone and manual desktop actions still do not auto-close.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
@@ -935,6 +935,7 @@ curl -fsS http://127.0.0.1:8765/health
 test -f data/queue/update_in_progress.flag && echo "Update is in progress; webhook runs are deferred."
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
+tail -80 data/logs/monitor_open.log
 ```
 
 **Data files show up in git** — verify `.gitignore` is working:
