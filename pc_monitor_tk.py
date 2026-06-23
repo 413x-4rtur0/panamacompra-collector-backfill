@@ -112,7 +112,7 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99"), "Queues a normal live run (up to 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART"), "Queues a manual restart run (up to 99 detail pages) for the background worker. Safe default action."),
     ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
@@ -561,7 +561,7 @@ def run_tk() -> int:
     # Process status used to be one long wrapped line ("normal_run: off  test_run:
     # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
     # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
-    ttk.Label(header, text="Processes", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 2)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
     process_frame = ttk.Frame(header, style="Card.TFrame")
     process_frame.grid(row=6, column=0, sticky="ew")
     process_chips: dict[str, tk.Label] = {}
@@ -586,13 +586,13 @@ def run_tk() -> int:
             )
 
     # ========================================================================
-    # SECTION 1: RUN CONTROLS - request a live or test-zone run
+    # SECTION 1: RUN CONTROLS - request a restart or test-zone run
     # ========================================================================
     controls = ttk.Frame(content, style="Card.TFrame", padding=14)
     controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
-    run_mode_var = tk.StringVar(value="live")
+    run_mode_var = tk.StringVar(value="restart")
     run_limit_var = tk.StringVar(value="99")
 
     def selected_limit(default: str = "99") -> str:
@@ -605,16 +605,17 @@ def run_tk() -> int:
             subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Test-zone run requested with limit {limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Live run requested with detail limit {limit}.")
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit, "RESTART"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Manual restart run requested with detail limit {limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
-    # Mode is a pair of radio toggles (live = real pipeline, test = sandbox) and
-    # the Limit entry is wide enough for large counts. The whole row is disabled
+    # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
+    # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
+    # The Limit entry is wide enough for large counts. The whole row is disabled
     # while a collection is active (e.g. a webhook-triggered run) so you cannot
     # change mode or queue a conflicting run mid-flight; it re-enables when idle.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    live_radio = ttk.Radiobutton(controls, text="live", value="live", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio = ttk.Radiobutton(controls, text="restart", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
     live_radio.grid(row=1, column=1, sticky="w")
     test_radio = ttk.Radiobutton(controls, text="test", value="test", variable=run_mode_var, style="Card.TRadiobutton")
     test_radio.grid(row=1, column=2, sticky="w", padx=(0, 16))
@@ -624,9 +625,9 @@ def run_tk() -> int:
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
     run_button.grid(row=1, column=5, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-    add_tooltip(live_radio, "live = the normal collector pipeline (real archive).")
+    add_tooltip(live_radio, "restart = manually start/restart the normal collector pipeline (real archive). AUTO mode is used only when changedetection fires the webhook.")
     add_tooltip(test_radio, "test = the isolated test zone (records_test/), real archive untouched.")
-    add_tooltip(limit_entry, "Maximum detail pages (live) or sandbox records (test) to process this run.")
+    add_tooltip(limit_entry, "Maximum detail pages (restart) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
 
     # Keys that mean "real collection work is happening". A webhook-triggered run

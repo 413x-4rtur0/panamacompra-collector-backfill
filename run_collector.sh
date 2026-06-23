@@ -12,6 +12,6 @@ DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-99}"
 echo "===== changedetection webhook received at $(date '+%Y-%m-%d %H:%M:%S') =====" >> data/logs/collector_triggered.log
 echo "Requesting full sequence: index + detail, detail_limit=$DETAIL_LIMIT" >> data/logs/collector_triggered.log
 
-./pc_request_run_all.sh "$DETAIL_LIMIT" >> data/logs/collector_triggered.log 2>&1
+PC_RUN_MODE=AUTO ./pc_request_run_all.sh "$DETAIL_LIMIT" AUTO >> data/logs/collector_triggered.log 2>&1
 
 echo "Full sequence requested at $(date '+%Y-%m-%d %H:%M:%S')" >> data/logs/collector_triggered.log

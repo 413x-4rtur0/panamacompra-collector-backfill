@@ -66,7 +66,7 @@ write_progress() {
     echo "STARTED_AT='$(quote_value "$started_at")'"
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
     echo "WORKER_PID='$$'"
-    echo "MODE='LIVE'"
+    echo "MODE='$(quote_value "${PC_RUN_MODE:-RESTART}")'"
     echo "STEP_CURRENT='-'"
     echo "STEP_TOTAL='-'"
     echo "ITEM_CURRENT='-'"
@@ -117,7 +117,7 @@ fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
 touch "$IN_PROGRESS_FLAG"
-log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT"
+log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
 
 ITERATION=0
 
