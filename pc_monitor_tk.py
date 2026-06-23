@@ -89,6 +89,9 @@ AUTO_CLOSE_SECONDS = setting_int("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", 20, minimum
 # Lower it (e.g. 0.50) from the Settings panel for a more see-through look.
 # Clamped so the window can never become unreadable/invisible.
 ALPHA = setting_float("PC_MONITOR_TK_ALPHA", 0.85, 0.30, 1.0)
+LAUNCH_CONTEXT = os.environ.get("PC_MONITOR_LAUNCH_CONTEXT", "manual").strip().lower()
+AUTO_CLOSE_CONTEXTS = {"auto", "scheduled", "schedule", "request", "live"}
+AUTO_CLOSE_ALLOWED = LAUNCH_CONTEXT in AUTO_CLOSE_CONTEXTS
 
 class ManualAction(NamedTuple):
     zone: str
@@ -254,7 +257,8 @@ def status_snapshot() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
-        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "auto_close_enabled": AUTO_CLOSE_ALLOWED and done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "launch_context": LAUNCH_CONTEXT,
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 18),
@@ -690,7 +694,7 @@ def run_tk() -> int:
         # Refresh cadence comes from the live runtime settings (editable via the
         # Settings panel), not the static snapshot values.
         active_delay = runtime["idle_refresh"] if snap["done"] else runtime["refresh"]
-        meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
+        meta_var.set(f"Time: {snap['time']} · Launch: {snap.get('launch_context', 'manual')} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
         processes_var.set("  ".join(f"{name}: {'RUNNING' if value else 'off'}" for name, value in snap["processes"].items()))
 
@@ -732,7 +736,7 @@ def run_tk() -> int:
                 overlay_var.set(f"✅ Run finished\n\nClosing in {remaining} s")
                 overlay.place(relx=0.5, rely=0.5, anchor="center")
             else:
-                done_var.set("Run finished. Auto-close is disabled for test zone and manual desktop actions.")
+                done_var.set("Run finished. Auto-close is disabled for manual monitor launches and test-zone/manual desktop actions.")
                 overlay.place_forget()
             if wait and remaining <= 0:
                 root.destroy()

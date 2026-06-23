@@ -26,7 +26,7 @@ else
 fi
 
 if [ -x "./pc_open_monitor.sh" ]; then
-  ./pc_open_monitor.sh >/dev/null 2>&1 || true
+  PC_MONITOR_LAUNCH_CONTEXT=auto ./pc_open_monitor.sh >/dev/null 2>&1 || true
 fi
 
 echo "Run-all request submitted."

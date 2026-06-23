@@ -29,6 +29,7 @@ PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_WEB_IDLE_REFRESH_SECONDS", "30")))
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_WEB_AUTO_CLOSE_SECONDS", "20")))
+LAUNCH_CONTEXT = os.environ.get("PC_MONITOR_LAUNCH_CONTEXT", "manual").strip().lower()
 
 
 class ManualAction(tuple):
@@ -181,6 +182,7 @@ def status_payload() -> dict[str, object]:
         "processes": processes,
         "done": done,
         "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "launch_context": LAUNCH_CONTEXT,
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 20),
@@ -239,6 +241,9 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
 <script>
 let doneSince = null;
 let timer = null;
+let sawActive = false;
+const serverLaunchContext = "{LAUNCH_CONTEXT}";
+const allowAutoClose = new URLSearchParams(window.location.search).get("auto_close") === "1" || serverLaunchContext === "auto";
 const actionZones = {ACTIONS_JSON};
 const labels = [
   ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Step', 'STEP'], ['Item', 'ITEM'],
@@ -274,12 +279,15 @@ function render(data) {{
   const waha = document.getElementById('waha-message');
   if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
   const note = document.getElementById('done-note');
+  if (!data.done) {{
+    sawActive = true;
+  }}
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
-    const wait = data.auto_close_enabled ? Number(data.auto_close_seconds || 0) : 0;
+    const wait = (allowAutoClose && sawActive && data.auto_close_enabled) ? Number(data.auto_close_seconds || 0) : 0;
     const remaining = Math.max(0, wait - Math.floor((Date.now() - doneSince) / 1000));
     note.hidden = false;
-    note.textContent = wait > 0 ? `Live run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished. Auto-close is disabled for test zone and manual desktop actions.';
+    note.textContent = wait > 0 ? `Live run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished. Auto-close is disabled for manual monitor launches and test zone/manual desktop actions.';
     if (wait > 0 && remaining <= 0) {{
       window.close();
       document.body.innerHTML = '<div class="card"><h1>PanamaCompra monitor finished</h1><p>The run is done. You can close this tab.</p></div>';

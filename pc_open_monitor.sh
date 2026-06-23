@@ -21,6 +21,7 @@ TIMER_LOG="data/logs/next_run_timer.log"
 MONITOR_MODE="${PC_MONITOR_MODE:-tk}"
 MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
 MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
+MONITOR_LAUNCH_CONTEXT="${PC_MONITOR_LAUNCH_CONTEXT:-manual}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
 CMD="cd $(printf '%q' "$BASE_DIR") && ./pc_monitor_window.sh"
 
@@ -88,7 +89,7 @@ start_tk_monitor() {
     return 1
   fi
 
-  nohup "$PYTHON_BIN" ./pc_monitor_tk.py >> "$TK_LOG" 2>&1 &
+  PC_MONITOR_LAUNCH_CONTEXT="$MONITOR_LAUNCH_CONTEXT" nohup "$PYTHON_BIN" ./pc_monitor_tk.py >> "$TK_LOG" 2>&1 &
   local tk_pid=$!
   sleep 1
 
@@ -110,7 +111,7 @@ start_web_monitor() {
   if monitor_server_running; then
     log "Web monitor already running at $MONITOR_URL."
   else
-    PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup "$PYTHON_BIN" ./pc_monitor_server.py >> "$WEB_LOG" 2>&1 &
+    PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" PC_MONITOR_LAUNCH_CONTEXT="$MONITOR_LAUNCH_CONTEXT" nohup "$PYTHON_BIN" ./pc_monitor_server.py >> "$WEB_LOG" 2>&1 &
     log "Started web monitor at $MONITOR_URL with log $WEB_LOG."
     sleep 1
   fi
@@ -123,14 +124,22 @@ open_url_if_possible() {
   fi
 
   if command -v xdg-open >/dev/null 2>&1; then
-    nohup xdg-open "$MONITOR_URL" >/dev/null 2>&1 &
-    log "Opened web monitor with xdg-open: $MONITOR_URL."
+    local open_url="$MONITOR_URL"
+    if [ "$MONITOR_LAUNCH_CONTEXT" = "auto" ]; then
+      open_url="${MONITOR_URL}?auto_close=1"
+    fi
+    nohup xdg-open "$open_url" >/dev/null 2>&1 &
+    log "Opened web monitor with xdg-open: $open_url."
     return 0
   fi
 
   if command -v sensible-browser >/dev/null 2>&1; then
-    nohup sensible-browser "$MONITOR_URL" >/dev/null 2>&1 &
-    log "Opened web monitor with sensible-browser: $MONITOR_URL."
+    local open_url="$MONITOR_URL"
+    if [ "$MONITOR_LAUNCH_CONTEXT" = "auto" ]; then
+      open_url="${MONITOR_URL}?auto_close=1"
+    fi
+    nohup sensible-browser "$open_url" >/dev/null 2>&1 &
+    log "Opened web monitor with sensible-browser: $open_url."
     return 0
   fi
 
