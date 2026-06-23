@@ -64,7 +64,7 @@ MANUAL_ACTIONS = [
     ManualAction("Settings", "Build online calendar feed", ("./pc_build_calendar.py", "--all", "--online-feed"), "Writes one all-events ICS feed for Google Calendar From URL / online subscription workflows."),
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
     ManualAction("Settings", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds generated ICS files and opens them using Thunderbird profile a2gutierrezmora."),
-    ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener."),
+    ManualAction("Settings", "Webhook listener", ("./pc_ensure_webhook_listener.sh",), "Starts or verifies the local webhook listener."),
     ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the browser monitor."),
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", "xdg-open \"$(pwd)/data/index\""), "Opens the main index folder where collected records are stored."),
     ManualAction("Folder Management", "Open records folder", ("bash", "-c", "xdg-open \"$(pwd)/records\""), "Opens the records archive folder containing organized record subfolders."),

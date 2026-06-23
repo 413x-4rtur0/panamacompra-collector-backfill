@@ -313,7 +313,15 @@ echo "9) Install manual monitor desktop shortcut"
 install_desktop_shortcut
 
 echo ""
-echo "10) Resume deferred autorun or optional smoke run"
+echo "10) Ensure webhook listener is running"
+if [ "${PC_WEBHOOK_AUTO_START:-1}" != "0" ] && [ -x ./pc_ensure_webhook_listener.sh ]; then
+  ./pc_ensure_webhook_listener.sh || echo "WARNING: webhook listener did not become healthy; changedetection may show connection refused."
+else
+  echo "Skipped webhook auto-start. Set PC_WEBHOOK_AUTO_START=1 or ensure pc_ensure_webhook_listener.sh exists."
+fi
+
+echo ""
+echo "11) Resume deferred autorun or optional smoke run"
 cleanup_update_flag
 trap - EXIT
 if [ -f data/queue/run_all_requested.flag ]; then

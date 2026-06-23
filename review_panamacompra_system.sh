@@ -32,6 +32,7 @@ echo "2) Required active scripts"
 echo "--------------------------"
 required_scripts=(
   "webhook_listener.py"
+  "pc_ensure_webhook_listener.sh"
   "run_collector.sh"
   "pc_request_run_all.sh"
   "pc_run_all_worker.sh"
@@ -153,7 +154,7 @@ if pgrep -f "[w]ebhook_listener.py" >/dev/null 2>&1; then
   fi
 else
   echo "PROCESS WARN: webhook_listener.py is not running; changedetection.io cannot autorun the collector."
-  echo "Start it with: python3 webhook_listener.py"
+  echo "Start it with: ./pc_ensure_webhook_listener.sh"
 fi
 
 echo ""
@@ -171,11 +172,12 @@ echo "-----------------------"
 cat <<'TXT'
 Manual small test:   ./pc_request_run_all.sh 5
 Run all pending:     ./pc_request_run_all.sh
-Open native monitor: ./pc_open_monitor.sh
+Open native monitor: ./pc_open_monitor.sh  (also verifies webhook listener)
 Open web monitor:    PC_MONITOR_MODE=web ./pc_open_monitor.sh
 Watch in terminal:   PC_MONITOR_MODE=terminal ./pc_open_monitor.sh
 Follow logs:         ./pc_follow_run_all.sh
 Check status:        ./pc_run_all_status.sh
+Ensure webhook:      ./pc_ensure_webhook_listener.sh
 Stop collector only: ./pc_stop_run_all.sh
 Stop incl. webhook:  PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh
 TXT

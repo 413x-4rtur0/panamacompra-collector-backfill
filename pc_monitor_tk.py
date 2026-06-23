@@ -167,7 +167,7 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Build online calendar feed", ("./pc_build_calendar.py", "--all", "--online-feed"), "Writes one all-events ICS feed for Google Calendar From URL / online subscription workflows."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
     ManualAction("Data Tools", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds all calendar packages and opens each .ics using Thunderbird profile a2gutierrezmora."),
-    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to halt it."),
+    ManualAction("Data Tools", "Start webhook listener", ("./pc_ensure_webhook_listener.sh",), "Starts or verifies the local webhook listener in the background; use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to halt it."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
     # --- 4. Testing & Validation: sandbox runs and health checks -------------

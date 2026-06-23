@@ -60,6 +60,16 @@ next_run_timer_running() {
   pgrep -f "[p]c_next_run_timer.py" >/dev/null 2>&1
 }
 
+ensure_webhook_listener() {
+  if [ "${PC_WEBHOOK_AUTO_START:-1}" = "0" ]; then
+    log "Webhook auto-start disabled by PC_WEBHOOK_AUTO_START=0."
+    return 0
+  fi
+  if [ -x ./pc_ensure_webhook_listener.sh ]; then
+    ./pc_ensure_webhook_listener.sh >> "$OPEN_LOG" 2>&1 || log "Webhook listener ensure failed; changedetection may show connection refused."
+  fi
+}
+
 start_next_run_timer() {
   if [ "${PC_NEXT_RUN_TIMER:-1}" = "0" ]; then
     log "Next-run timer disabled by PC_NEXT_RUN_TIMER=0."
@@ -159,6 +169,7 @@ start_log_follower_fallback() {
 }
 
 prepare_gui_environment
+ensure_webhook_listener
 
 if [ "$MONITOR_MODE" = "tk" ]; then
   start_next_run_timer || true

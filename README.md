@@ -237,9 +237,10 @@ python -m playwright install firefox
 ```
 
 `requirements.txt` intentionally lists only pip-installable Python modules. The
-collector's non-stdlib runtime module is `playwright`; `tkinter` and the Python
-stdlib extension `_posixsubprocess` come from the operating-system Python
-packages above. If an existing `.venv` fails with `ModuleNotFoundError:
+collector's non-stdlib runtime module is `playwright`; webhook health checks,
+monitor status fields, folder selectors, and ICS feed generation use Python/shell
+standard tooling. `tkinter` and the Python stdlib extension `_posixsubprocess`
+come from the operating-system Python packages above. If an existing `.venv` fails with `ModuleNotFoundError:
 _posixsubprocess`, install `python3-venv` / `python3-full` and rerun
 `./update_local_copy.sh`; the updater detects an incomplete `.venv`, moves it to
 `.venv.broken.YYYYMMDD_HHMMSS`, and recreates a clean one.
@@ -305,11 +306,12 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; starts/reuses the monitor + next-run timer for changedetection-triggered runs, then requests a full run or defers it while `update_local_copy.sh` is in progress. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
+| `pc_ensure_webhook_listener.sh` | Idempotently starts/verifies `webhook_listener.py` and checks `/health`, preventing changedetection.io `connection refused` errors after updates, refreshes, or manual stops. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Runners, Tests, Updater / Migration, and Settings zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run, with previous run index/detail counters. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, mirrors the Tk button zones/stop controls, and auto-closes only after completed live runs. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
-| `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
+| `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default, and verifies the webhook listener unless `PC_WEBHOOK_AUTO_START=0`. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
@@ -356,6 +358,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_STOP_WEBHOOK` | `0` | `update_local_copy.sh` | Leave unset/`0` to keep changedetection autorun alive during updates. Set `1` only when intentionally stopping the webhook listener while updating. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
+| `PC_WEBHOOK_AUTO_START` | `1` | monitor opener / updater | `pc_open_monitor.sh` and `update_local_copy.sh` run `pc_ensure_webhook_listener.sh` to start or verify the listener after manual refreshes and updates. Set `0` only if another service manager owns the listener. |
 | `PC_STOP_WEBHOOK` | `0` | stop script | By default `pc_stop_run_all.sh` preserves `webhook_listener.py` so changedetection.io autorun keeps working. Set `PC_STOP_WEBHOOK=1` only when you intentionally want to stop the webhook receiver too. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_LAUNCH_CONTEXT` | `manual` | monitor opener | Internal/manual override for auto-close behavior. `pc_request_run_all.sh` sets `auto` so normal or scheduled live runs close after all tasks are done; direct manual monitor launches stay open. |
@@ -844,11 +847,10 @@ changedetection notifies the local listener. Create the token first:
 
 ```bash
 printf 'YOUR_SECRET_TOKEN' > .webhook_token
-source .venv/bin/activate
-python webhook_listener.py
+./pc_ensure_webhook_listener.sh
 ```
 
-The listener accepts requests at `/panamacompra/<TOKEN>`:
+`pc_ensure_webhook_listener.sh` uses the repository virtualenv when available, starts the listener in the background if it is not healthy, and writes diagnostics to `data/logs/webhook_ensure.log` plus `data/logs/webhook_listener.log`. The listener accepts requests at `/panamacompra/<TOKEN>`:
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
@@ -863,7 +865,7 @@ does not start a browser session directly.
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–10 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
+`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–11 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
 diagnostics counters, process status (including deferred update-in-progress requests from changedetection), a record-folder selector by number/description, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close. Normal/scheduled live runs opened by `pc_request_run_all.sh` set `PC_MONITOR_LAUNCH_CONTEXT=auto`, so those monitor windows close only after all live-run tasks finish; test-zone and manual desktop actions still do not auto-close.
 
@@ -940,9 +942,10 @@ PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 **Webhook does not trigger the collector** — first confirm the listener is still running. `./pc_stop_run_all.sh` preserves it by default, but older stops or `PC_STOP_WEBHOOK=1` may have stopped it. Check the health endpoint/logs and confirm `.webhook_token` exists and matches the changedetection.io URL:
 
 ```bash
-pgrep -af webhook_listener.py || python3 webhook_listener.py
+pgrep -af webhook_listener.py || ./pc_ensure_webhook_listener.sh
 curl -fsS http://127.0.0.1:8765/health
 test -f data/queue/update_in_progress.flag && echo "Update is in progress; webhook runs are deferred."
+tail -80 data/logs/webhook_ensure.log
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
 tail -80 data/logs/monitor_open.log
