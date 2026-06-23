@@ -213,6 +213,9 @@ button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padd
 .zone h3 {{ margin: 0 0 8px; color: #fef3c7; }}
 .danger {{ background: #dc2626; }}
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
+select, input {{ border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: 1rem; }}
+select#run-mode {{ min-width: 150px; }}
+#diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; }}
 </style>
 </head>
 <body>
@@ -233,8 +236,8 @@ let doneSince = null;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Step', 'STEP'], ['Item', 'ITEM'],
-  ['Detail limit', 'DETAIL_LIMIT'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
   ['Pending details', 'RECORDS_PENDING'], ['Test records', 'RECORDS_TEST'], ['Extra', 'EXTRA']

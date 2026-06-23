@@ -449,12 +449,15 @@ def run_tk() -> int:
         button_status_var.set(f"Live run requested with detail limit {limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+    # The Mode selector comes first and is wide enough to read the full option
+    # text, and the Limit entry is widened so large detail/sandbox counts stay
+    # legible. Both sit on their own row with the trigger button at the end.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    mode_box = ttk.Combobox(controls, textvariable=run_mode_var, values=("live", "test"), width=8, state="readonly")
-    mode_box.grid(row=1, column=1, sticky="w", padx=(0, 8))
+    mode_box = ttk.Combobox(controls, textvariable=run_mode_var, values=("live", "test"), width=14, state="readonly")
+    mode_box.grid(row=1, column=1, sticky="w", padx=(0, 16))
     ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=2, sticky="e")
-    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=8)
-    limit_entry.grid(row=1, column=3, sticky="w", padx=(6, 8))
+    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=10)
+    limit_entry.grid(row=1, column=3, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now)
     run_button.grid(row=1, column=4, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
@@ -562,24 +565,42 @@ def run_tk() -> int:
     # ========================================================================
     diag = ttk.Frame(content, style="Card.TFrame", padding=14)
     diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
-    for col in range(4):
-        diag.columnconfigure(col, weight=1)
+    # Keep the two label columns narrow and let the two value columns absorb the
+    # remaining width, so large counters and long descriptions stay readable.
+    diag.columnconfigure(0, weight=0, minsize=130)
+    diag.columnconfigure(1, weight=1, minsize=200)
+    diag.columnconfigure(2, weight=0, minsize=130)
+    diag.columnconfigure(3, weight=1, minsize=200)
 
+    ttk.Label(diag, text="Live diagnostics", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+    # Fields are grouped left-to-right, top-to-bottom: lifecycle, progress,
+    # timing, then record counters. "Extra" is rendered separately on its own
+    # full-width row because it can hold a long human-readable note.
     fields = [
-        ("Phase", "PHASE"), ("Status", "STATUS"), ("Mode", "MODE"), ("Step", "STEP"), ("Item", "ITEM"),
-        ("Detail limit", "DETAIL_LIMIT"), ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
-        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"), ("Existing", "RECORDS_EXISTING"),
-        ("Saved/skipped", "RECORDS_SAVED"), ("Failures", "RECORDS_FAILED"),
-        ("Pending", "RECORDS_PENDING"), ("Test", "RECORDS_TEST"), ("Extra", "EXTRA"),
+        ("Phase", "PHASE"), ("Status", "STATUS"),
+        ("Mode", "MODE"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Step", "STEP"), ("Item", "ITEM"),
+        ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
+        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),
+        ("Existing", "RECORDS_EXISTING"), ("Saved/skipped", "RECORDS_SAVED"),
+        ("Failures", "RECORDS_FAILED"), ("Pending", "RECORDS_PENDING"),
+        ("Test", "RECORDS_TEST"),
     ]
     diag_vars: dict[str, tk.StringVar] = {}
     for idx, (label, key) in enumerate(fields):
-        row = idx // 2
+        row = idx // 2 + 1  # row 0 holds the section title
         col = (idx % 2) * 2
         ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=2)
         var = tk.StringVar(value="-")
         diag_vars[key] = var
-        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
+        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=460, justify="left").grid(row=row, column=col + 1, sticky="ew", pady=2)
+
+    extra_row = len(fields) // 2 + 2
+    ttk.Label(diag, text="Extra:", style="Card.TLabel").grid(row=extra_row, column=0, sticky="w", padx=(0, 6), pady=2)
+    extra_var = tk.StringVar(value="-")
+    diag_vars["EXTRA"] = extra_var
+    ttk.Label(diag, textvariable=extra_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=2)
 
     # ========================================================================
     # SECTION 4: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.

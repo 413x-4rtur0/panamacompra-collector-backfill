@@ -155,7 +155,9 @@ cd ~/Apps/panamacompra-collector
 The update script always brings the checkout up to date. It stops active collector
 workers, **auto-stashes** any local edits to *tracked* files (kept in the stash for
 recovery, never lost), ignores untracked runtime files (`data/`, `records/`,
-`.webhook_token`, `.venv.broken.*`, …), fast-forwards the current branch, refreshes
+`.webhook_token`, `.venv.broken.*`, …), auto-selects the branch to track (the most
+recent unmerged remote branch, otherwise `main`; pin one with `PC_UPDATE_BRANCH`),
+fast-forwards it, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
 system review. If the webhook listener was running before the update, or if the
 `panamacompra-webhook.service` user service is enabled, the updater restores it at
@@ -307,9 +309,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
-| `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Runners, Tests, Updater / Migration, and Settings zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
+| `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Collector Runners, Updater & Migration, Data Tools, Testing & Validation, and Folder Management zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Tiny always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
-| `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, mirrors the Tk button zones/stop controls, and auto-closes only after completed live runs. |
+| `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same live/test run request and stop controls plus its own grouped action buttons, and auto-closes only after completed live runs. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
@@ -392,13 +394,13 @@ The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. T
 
 The native Tk monitor is organized top-to-bottom into clear sections:
 
-1. **Run controls** — choose `live`/`test` mode and the detail/sandbox limit, then request the run.
+1. **Run controls** — a wide `live`/`test` mode selector comes first, followed by the detail/sandbox limit entry and the **Request selected run** button, all on one row.
 2. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
-   - WhatsApp source label, max new messages per run, destination chat id, and keyword filter.
+   - WhatsApp source label, destination chat id, and keyword filter.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
-3. **Diagnostic fields** — live phase/status/record counters.
+3. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row.
 4. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 5. **Recent worker / current action logs**.
 
@@ -507,11 +509,14 @@ panamacompra-collector/
 ├── data/                                      # runtime data (gitignored)
 │   ├── panamacompra_archive.db                # SQLite database
 │   ├── panamacompra_index.csv                 # append-only "first seen" log
-│   ├── logs/
-│   └── queue/
+│   ├── config/                                # monitor_settings.env, waha_chat_id.txt, waha_keywords.txt
+│   ├── index/                                 # lightweight per-day index JSON
+│   ├── calendar/                              # YY-MM-DD timestamped .ics import packages
+│   ├── logs/                                  # worker / monitor / webhook logs + run_all_progress.env
+│   └── queue/                                 # run_all_requested.flag
 └── records/                                   # archive (gitignored)
     └── YY-MM-DD/
-        └── NUMERO/
+        └── [<finish>]-[<numero>]-[<desc>]/     # created as NUMERO, then renamed (see Record folder naming)
             ├── NUMERO.json                     # index record
             ├── NUMERO.detail.json              # detail metadata
             ├── NUMERO.detail.html              # full page HTML
