@@ -351,6 +351,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_flag_watcher.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`pc_request_run_all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `pc_migrate_apps_layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector`, with optional compatibility symlinks. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Collector Runners, Updater & Migration, Data Tools, Testing & Validation, and Folder Management zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **latest collected records** (newest NUMERO + short description, read from `data/panamacompra_archive.db`), and a **last-run summary** (New/Saved counts + total archive size). Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same restart/test run request and stop controls plus its own grouped action buttons, and auto-closes only after completed collector runs. |
@@ -938,6 +939,23 @@ If changedetection is running in Docker Compose, prefer `webhook:8765`. Using
 host listener instead; that is only for the all-host setup. The listener returns
 HTTP 202 before starting work and ignores the large changedetection JSON body, so
 short changedetection read timeouts should not block the notification request.
+
+If you previously split the stack into separate folders such as
+`/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and
+`/Apps/waha`, consolidate them into `/Apps/panamacompra-collector` so Docker
+volumes, `.webhook_token`, queue files, and the updated listener all refer to the
+same checkout:
+
+```bash
+# Review first; no files are changed.
+./pc_migrate_apps_layout.sh --apps-root /Apps --collector /Apps/panamacompra-collector
+
+# Copy legacy data into this repo layout.
+./pc_migrate_apps_layout.sh --apply --apps-root /Apps --collector /Apps/panamacompra-collector
+
+# Optional: replace old folders with symlinks after backing them up.
+./pc_migrate_apps_layout.sh --apply --link-legacy --apps-root /Apps --collector /Apps/panamacompra-collector
+```
 
 Run the host runner as a user service so requests are always picked up:
 
