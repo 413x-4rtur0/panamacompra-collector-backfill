@@ -22,6 +22,7 @@ browser sessions and performs the index scan and detail download sequentially.
 7. [Configuration](#configuration)
 8. [Data and storage](#data-and-storage)
 9. [changedetection.io and the webhook](#changedetectionio-and-the-webhook)
+   - [Run the stack with Docker Compose](#run-the-stack-with-docker-compose)
 10. [Monitoring and logs](#monitoring-and-logs)
 11. [Troubleshooting](#troubleshooting)
 12. [Security notes](#security-notes)
@@ -49,11 +50,14 @@ new opportunities are inserted at the top of the table.
 ## How it works
 
 ```text
-changedetection.io          detects a change in the PanamaCompra table
+changedetection.io          detects a change in the PanamaCompra table (Docker)
         │
         ▼
 webhook_listener.py         receives the webhook
-        │
+        │                     • host/systemd mode → runs run_collector.sh directly
+        │                     • docker enqueue mode (PC_WEBHOOK_ENQUEUE_ONLY=1) →
+        │                       only writes data/queue/run_all_requested.flag, then
+        │                       pc_run_all_flag_watcher.sh (host) picks it up
         ▼
 run_collector.sh            requests the full collector sequence
         │
@@ -307,7 +311,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
-| `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
+| `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. Runs `run_collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
+| `pc_run_all_flag_watcher.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`pc_request_run_all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
+| `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Collector Runners, Updater & Migration, Data Tools, Testing & Validation, and Folder Management zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Tiny always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
@@ -356,6 +362,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update_local_copy.sh` | Controls whether the updater restores `webhook_listener.py` after stopping it for a safe code update. `auto` restarts it when it was already running or when the `panamacompra-webhook.service` user service is enabled; `1` always starts it after update; `0` leaves it stopped. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
+| `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `run_collector.sh`, so a host runner performs the actual collection. |
+| `PC_RUNNER_POLL_SECONDS` | `5` | `pc_run_all_flag_watcher.sh` | How often the host runner polls for an enqueued run request. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
@@ -811,9 +819,76 @@ sqlite3 data/panamacompra_archive.db \
 
 ## changedetection.io and the webhook
 
-changedetection.io is run separately (typically via Docker, with `sockpuppetbrowser`).
-It is used **only** to detect changes and fire the webhook — it must not download
-detail pages itself.
+changedetection.io is used **only** to detect changes and fire the webhook — it
+must not download detail pages itself. You can run it (and the WhatsApp/WAHA
+server and the webhook listener) from the committed [Docker Compose stack](#run-the-stack-with-docker-compose),
+or wire up your own changedetection.io instance and run the listener on the host.
+
+### Run the stack with Docker Compose
+
+The repo ships a `docker-compose.yml` that brings the container-friendly pieces
+into one reproducible stack:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `changedetection` | `dgtlmoon/changedetection.io` | Watches the PanamaCompra table and fires the webhook. UI on `http://localhost:5000`. |
+| `sockpuppetbrowser` | `dgtlmoon/sockpuppetbrowser` | Headless Chromium that renders the JavaScript watch page for changedetection. |
+| `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:3000` (scan the QR once to log in). |
+| `webhook` | built from `docker/Dockerfile.webhook` | `webhook_listener.py` in **enqueue-only** mode on port `8765`. |
+
+```bash
+cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
+printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
+docker compose up -d            # changedetection + browser + waha + webhook
+```
+
+**Why the webhook container only “enqueues”.** The real collector (Playwright
+Firefox writing to the host `./records` and `./data`) runs on the **host**, not in
+a container. So the `webhook` container runs with `PC_WEBHOOK_ENQUEUE_ONLY=1`: on a
+valid request it only writes `data/queue/run_all_requested.flag` into the
+bind-mounted checkout. A tiny **host** runner then performs the actual collection:
+
+```bash
+# On the host checkout, run the watcher (or install it as a user service below):
+./pc_run_all_flag_watcher.sh
+```
+
+In the changedetection.io UI, set the watch **notification URL** to reach the
+webhook container on the compose network (no `host.docker.internal` needed):
+
+```text
+json://webhook:8765/panamacompra/YOUR_SECRET_TOKEN?method=POST
+```
+
+Run the host runner as a user service so requests are always picked up:
+
+```bash
+cat > ~/.config/systemd/user/panamacompra-runner.service <<'EOF'
+[Unit]
+Description=PanamaCompra run-all flag watcher (host collector launcher)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Apps/panamacompra-collector
+ExecStart=%h/Apps/panamacompra-collector/pc_run_all_flag_watcher.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now panamacompra-runner.service
+```
+
+> Prefer the all-host setup instead? Skip the `webhook` compose service and run
+> `webhook_listener.py` on the host (see [Persistent webhook listener with
+> systemd](#persistent-webhook-listener-with-systemd)). In that mode the listener
+> runs `run_collector.sh` itself and no flag watcher is needed.
+
+### Watch and webhook configuration
 
 **Watch URL**
 

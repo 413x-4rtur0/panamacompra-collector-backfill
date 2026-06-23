@@ -26,3 +26,8 @@ __pycache__/
 .venv/
 .venv.broken.*/
 .webhook_token
+
+# Docker Compose runtime state (changedetection datastore, WAHA sessions). The
+# compose file and Dockerfile are committed; their mounted data never is.
+/docker/changedetection-data/
+/docker/waha-sessions/
