@@ -153,7 +153,7 @@ cd ~/Apps/panamacompra-collector
 ```
 
 The update script always brings the checkout up to date. It stops active collector
-workers, **auto-stashes** any local edits to *tracked* files (kept in the stash for
+workers while keeping `webhook_listener.py` alive; webhook hits received during the update still open/reuse the monitor, are deferred with `data/queue/run_all_requested.flag`, and are resumed after the update finishes. It **auto-stashes** any local edits to *tracked* files (kept in the stash for
 recovery, never lost), ignores untracked runtime files (`data/`, `records/`,
 `.webhook_token`, `.venv.broken.*`, …), fast-forwards the current branch, refreshes
 the Python virtual environment dependencies, fixes executable bits, and runs the
@@ -237,9 +237,10 @@ python -m playwright install firefox
 ```
 
 `requirements.txt` intentionally lists only pip-installable Python modules. The
-collector's non-stdlib runtime module is `playwright`; `tkinter` and the Python
-stdlib extension `_posixsubprocess` come from the operating-system Python
-packages above. If an existing `.venv` fails with `ModuleNotFoundError:
+collector's non-stdlib runtime module is `playwright`; webhook health checks,
+monitor status fields, folder selectors, and ICS feed generation use Python/shell
+standard tooling. `tkinter` and the Python stdlib extension `_posixsubprocess`
+come from the operating-system Python packages above. If an existing `.venv` fails with `ModuleNotFoundError:
 _posixsubprocess`, install `python3-venv` / `python3-full` and rerun
 `./update_local_copy.sh`; the updater detects an incomplete `.venv`, moves it to
 `.venv.broken.YYYYMMDD_HHMMSS`, and recreates a clean one.
@@ -273,8 +274,11 @@ All commands assume you are in the project directory.
 # Follow the logs live
 ./pc_follow_run_all.sh
 
-# Emergency stop (use only if a browser step is frozen)
+# Emergency stop collector processes only; webhook stays alive for changedetection autorun
 ./pc_stop_run_all.sh
+
+# Stop the webhook too only when intentionally disabling autorun
+PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh
 ```
 
 You can also run a single phase manually:
@@ -294,19 +298,20 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_common.py` | Shared module: paths, DB schema, JSON helpers, URL/date detection. **Not run directly.** |
 | `pc_index_collector.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `pc_detail_downloader.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
-| `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
+| `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. Used by changedetection/webhook and by deferred autorun after updates. |
 | `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
 | `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
-| `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
+| `run_collector.sh` | Bridge called by the webhook listener; starts/reuses the monitor + next-run timer for changedetection-triggered runs, then requests a full run or defers it while `update_local_copy.sh` is in progress. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
+| `pc_ensure_webhook_listener.sh` | Idempotently starts/verifies `webhook_listener.py` and checks `/health`, preventing changedetection.io `connection refused` errors after updates, refreshes, or manual stops. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Runners, Tests, Updater / Migration, and Settings zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
-| `pc_next_run_timer.py` | Tiny always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
+| `pc_next_run_timer.py` | Always-on-top timer centered near the top of the desktop (about 30 px down) counting down to the next live run, with previous run index/detail counters. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue; it falls back to clock boundaries when no previous run is recorded. Withdraws while a live run is active and reappears when finished. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, mirrors the Tk button zones/stop controls, and auto-closes only after completed live runs. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
-| `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
+| `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default, and verifies the webhook listener unless `PC_WEBHOOK_AUTO_START=0`. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
@@ -314,10 +319,10 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
+| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, `--legacy-combined` for the old combined file, or `--online-feed` for one all-events ICS feed suitable for online-calendar subscription/import workflows. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
-| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
+| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stops only the active collector pipeline, keeps the webhook listener alive, defers changedetection requests during the update, auto-stashes local tracked edits (kept for recovery), auto-selects the branch, resets to the remote, refreshes dependencies, runs health checks, and installs the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore`. |
 | `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
 
 ---
@@ -336,8 +341,12 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
-| `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
-| `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
+| `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package after it is written. If `PC_CALENDAR_THUNDERBIRD_PROFILE` is set, Thunderbird is preferred; otherwise the desktop opener (`xdg-open`, `gio open`, or macOS `open`) is used. |
+| `PC_CALENDAR_THUNDERBIRD_PROFILE` | unset | calendar builder | Thunderbird profile name for calendar imports, e.g. `a2gutierrezmora`. When set with `PC_CALENDAR_AUTO_IMPORT=1`, packages are opened as `thunderbird -P <profile> <package.ics>`. |
+| `PC_CALENDAR_THUNDERBIRD_CMD` | `thunderbird` | calendar builder | Thunderbird executable/command used with `PC_CALENDAR_THUNDERBIRD_PROFILE`. |
+| `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener and Thunderbird profile command. |
+| `PC_CALENDAR_ONLINE_FEED` | unset | calendar builder | Set to `1` to also write one all-events ICS feed for online calendar subscription/import workflows. |
+| `PC_CALENDAR_ONLINE_FEED_PATH` | `data/calendar/panamacompra_online_feed.ics` | calendar builder | Output path for the all-events online ICS feed. Host this file at a reachable URL if you want Google Calendar to subscribe via **From URL**. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
@@ -346,33 +355,39 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request after a successful local update. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update_local_copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor. Set to `0` to skip. |
+| `PC_UPDATE_STOP_WEBHOOK` | `0` | `update_local_copy.sh` | Leave unset/`0` to keep changedetection autorun alive during updates. Set `1` only when intentionally stopping the webhook listener while updating. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
+| `PC_WEBHOOK_AUTO_START` | `1` | monitor opener / updater | `pc_open_monitor.sh` and `update_local_copy.sh` run `pc_ensure_webhook_listener.sh` to start or verify the listener after manual refreshes and updates. Set `0` only if another service manager owns the listener. |
+| `PC_STOP_WEBHOOK` | `0` | stop script | By default `pc_stop_run_all.sh` preserves `webhook_listener.py` so changedetection.io autorun keeps working. Set `PC_STOP_WEBHOOK=1` only when you intentionally want to stop the webhook receiver too. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
+| `PC_MONITOR_LAUNCH_CONTEXT` | `manual` | monitor opener | Internal/manual override for auto-close behavior. `pc_request_run_all.sh` sets `auto` so normal or scheduled live runs close after all tasks are done; direct manual monitor launches stay open. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
-| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
+| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after an automatic/scheduled LIVE run finishes before the native monitor closes itself. Manual monitor launches (`./pc_open_monitor.sh`) stay open; auto-close is enabled when `pc_request_run_all.sh` opens the monitor with `PC_MONITOR_LAUNCH_CONTEXT=auto`. Set `0` to disable. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.85` | native monitor | Native monitor whole-window opacity (text shares it; Tk has no per-widget transparency). `0.85` is lightly translucent but readable; lower toward `0.30` for a more see-through window (clamped to 0.30–1.00). Editable live from the monitor's Settings panel; re-applied after the window is visible so it works on X11 WMs. |
 | settings file | `data/config/monitor_settings.env` | native monitor / WAHA notifier | `KEY=VALUE` file written by the monitor's Settings panel (transparency, auto-close/refresh seconds, WAHA source label). Read at startup and by the notifier. Precedence: environment variable > this file > built-in default. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
-| `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the tiny timer window. |
+| `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the timer window. |
+| `PC_NEXT_RUN_TIMER_WIDTH` | `420` | next-run timer | Width of the timer window. Increase if desktop font scaling cuts text. |
+| `PC_NEXT_RUN_TIMER_HEIGHT` | `232` | next-run timer | Height of the timer window. Increase if extra status lines are clipped. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
 | `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
 | `PC_MONITOR_WEB_IDLE_REFRESH_SECONDS` | `30` | web monitor | Slower JSON polling interval after the system is idle/done. |
-| `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
+| `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after an automatic/scheduled LIVE run completes before a web monitor tab opened with `?auto_close=1` tries to close. Manual web monitor tabs stay open. Use `0` to disable. |
 | `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
-| `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If neither `PC_WAHA_CHAT_ID` nor the saved monitor destination is configured, notifications are skipped safely. |
+| `WAHA_ENABLED` / `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `WAHA_ENABLED=true` (or legacy `PC_WAHA_ENABLED=1`) to enable private WhatsApp group alerts. If no group chat id is configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
-| `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. If unset, `data/config/waha_chat_id.txt` saved from the monitor is used. Group ids usually end in `@g.us`. |
-| `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
-| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
+| `WAHA_GROUP_CHAT_ID` / `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group chat id for automated NEW/UPDATED alerts. If unset, `data/config/waha_chat_id.txt` saved from the monitor is used. Group ids usually end in `@g.us`. |
+| `WAHA_API_KEY_PLAIN` / `WAHA_API_KEY` / `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. `WAHA_API_KEY_PLAIN` wins when both key names exist. The monitor can save a local key to `data/config/waha_api_key.txt` (ignored by git). |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich NEW opportunity messages, `update` = rich UPDATED opportunity messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
@@ -390,7 +405,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
 2. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
-   - WhatsApp source label, max new messages per run, destination chat id, and keyword filter.
+   - WhatsApp source label, destination group chat id, WAHA API key field, and keyword filter.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
 3. **Diagnostic fields** — live phase/status/record counters.
 4. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
@@ -408,12 +423,12 @@ The notifier is off by default and uses only Python's standard library.
 Example local configuration:
 
 ```bash
-export PC_WAHA_ENABLED=1
-export PC_WAHA_BASE_URL="http://127.0.0.1:3000"
-export PC_WAHA_SESSION="default"
-export PC_WAHA_CHAT_ID="120363000000000000@g.us"
-# Optional, if your WAHA server is protected:
-export PC_WAHA_API_KEY="your-waha-api-key"
+export WAHA_ENABLED=true
+export WAHA_BASE_URL="http://127.0.0.1:3000"
+export WAHA_SESSION="default"
+export WAHA_GROUP_CHAT_ID="120363175324031424@g.us"
+# Optional, if your WAHA server is protected. Plain key wins when both exist:
+export WAHA_API_KEY_PLAIN="your-waha-api-key"
 ```
 
 Test the notifier without running the collector:
@@ -468,14 +483,12 @@ message instead (`pc_notify_new_records.py --idle`):
 
 Behavior notes:
 
-- **One message per new record, as it arrives.** Each record is announced once,
-  right after its detail saves, and the worker then moves on to the next entry.
+- **One message per meaningful change.** NEW records are announced once right after detail saves. Existing records whose watched index fields change are marked `UPDATED`, clear `notified_at`, and are announced with an updated-opportunity heading. UNCHANGED rows keep their notification state and are not re-sent.
 - **No backlog flood.** On first use (before any new detail is downloaded)
   `ensure_baseline` marks every existing saved record as already-announced via
   the `notified_at` column and writes `data/config/waha_notify_initialized`, so
   only records saved afterwards are announced.
-- **Sent at most once.** Announcing is guarded by `notified_at`; a record is
-  never re-sent, even if its detail is later rebuilt/re-downloaded.
+- **Sent at most once per change.** Announcing is guarded by `notified_at`; unchanged records are not re-sent, while a later meaningful update intentionally clears `notified_at` so the update can be alerted.
 - **Optional keyword filter.** Put one keyword per line in
   `data/config/waha_keywords.txt`. When present, only records whose
   title/description/entity match a keyword are announced and the matched
@@ -485,9 +498,9 @@ Behavior notes:
 - **Never blocks a run.** Any notifier or network failure is caught and logged;
   records whose live send failed keep `notified_at` empty and are retried by the
   end-of-run flush (`pc_notify_new_records.py --flush`) or the next run.
-- **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
-  `http://127.0.0.1:3000`) and a destination chat id (`PC_WAHA_CHAT_ID` or the
-  monitor's Settings panel, e.g. a group id ending in `@g.us`).
+- **Config.** Requires `WAHA_ENABLED=true` (or legacy `PC_WAHA_ENABLED=1`), a WAHA server (default
+  `http://127.0.0.1:3000`) and a destination chat id (`WAHA_GROUP_CHAT_ID`, legacy `PC_WAHA_CHAT_ID`, or the
+  monitor's Settings panel, e.g. `120363175324031424@g.us`).
 
 ---
 
@@ -685,7 +698,18 @@ Manual examples:
 PC_CALENDAR_PACKAGE_SIZE=5 ./pc_build_calendar.py --all
 ./pc_build_calendar.py --all --flat            # write packages directly in data/calendar/
 ./pc_build_calendar.py --all --legacy-combined # also write data/calendar/panamacompra.ics
+./pc_build_calendar.py --all --online-feed     # write data/calendar/panamacompra_online_feed.ics
+PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all
 ```
+
+The monitor's **Data Tools** section also includes **Import to Thunderbird a2gutierrezmora**, which runs the same Thunderbird-profile import command for generated packages. It also includes **Build online calendar feed** for the one-file `.ics` feed.
+
+Calendar integration notes:
+
+- The Thunderbird action opens/imports generated `.ics` files using the selected Thunderbird profile. Thunderbird decides which calendar receives the import; if that profile has a Google/CalDAV calendar configured and you choose it in Thunderbird, Thunderbird can sync those events online. The CLI cannot force Thunderbird to pick a specific calendar inside the profile.
+- The private Google Calendar iCal URL (like `https://calendar.google.com/calendar/ical/.../basic.ics`) is a read/subscription address, not a write endpoint. It cannot be used to push events into Google Calendar.
+- For Google Calendar without OAuth/API credentials, the efficient path is `--online-feed`: generate one all-events `.ics` feed, publish/host it at a URL Google can reach, then add it in Google Calendar via **Other calendars → From URL**. Google’s own help distinguishes file import from URL subscription; imported files do not stay in sync, while a URL subscription reads from the hosted feed.
+- True direct writes to a Google Calendar require the Google Calendar API and OAuth/service-account credentials; that is intentionally not added here because it would require secrets and new dependencies.
 
 > **Portal versions.** The collector reads the current
 > `…/Inicio/#/solicitud-de-cotizacion/{numero}/{token}` pages (both *abierta* and
@@ -823,11 +847,10 @@ changedetection notifies the local listener. Create the token first:
 
 ```bash
 printf 'YOUR_SECRET_TOKEN' > .webhook_token
-source .venv/bin/activate
-python webhook_listener.py
+./pc_ensure_webhook_listener.sh
 ```
 
-The listener accepts requests at `/panamacompra/<TOKEN>`:
+`pc_ensure_webhook_listener.sh` uses the repository virtualenv when available, starts the listener in the background if it is not healthy, and writes diagnostics to `data/logs/webhook_ensure.log` plus `data/logs/webhook_listener.log`. The listener accepts requests at `/panamacompra/<TOKEN>`:
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
@@ -842,15 +865,15 @@ does not start a browser session directly.
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–10 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
+`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–11 of `update_local_copy.sh`) and streams the update output, and only **after** the update finishes does the normal monitor open, so the monitor always reflects the already-updated code.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status (including deferred update-in-progress requests from changedetection), a record-folder selector by number/description, recent log tails, run-mode/limit selectors for the live collector or test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close. Normal/scheduled live runs opened by `pc_request_run_all.sh` set `PC_MONITOR_LAUNCH_CONTEXT=auto`, so those monitor windows close only after all live-run tasks finish; test-zone and manual desktop actions still do not auto-close.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
 python pc_next_run_timer.py
 ```
-This mini-monitor counts down to the next run, anchored to the last live run's start time (read from `data/logs/run_all_progress.env`) plus `PC_NEXT_RUN_INTERVAL_MINUTES`, so it tracks the real cadence and rolls forward when a run is overdue; before any run is recorded it falls back to clock boundaries (:00 and :30 past each hour by default). `pc_open_monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen.
+This mini-monitor counts down to the next run, anchored to the last live run's start time (read from `data/logs/run_all_progress.env`) plus `PC_NEXT_RUN_INTERVAL_MINUTES`, so it tracks the real cadence and rolls forward when a run is overdue; before any run is recorded it falls back to clock boundaries (:00 and :30 past each hour by default). It also shows the previous run phase/status plus the last index counters (`RECORDS_FOUND`, `RECORDS_NEW`, `RECORDS_EXISTING`) and detail counters (`RECORDS_SAVED`, `RECORDS_FAILED`, `RECORDS_PENDING`) so important news is visible between runs. `pc_open_monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen; use `PC_NEXT_RUN_TIMER_WIDTH` and `PC_NEXT_RUN_TIMER_HEIGHT` if your desktop scaling clips text.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./pc_open_monitor.sh`,
@@ -916,12 +939,16 @@ PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 ./pc_follow_run_all.sh
 ```
 
-**Webhook does not trigger the collector** — check the logs and confirm `.webhook_token`
-exists and matches the URL:
+**Webhook does not trigger the collector** — first confirm the listener is still running. `./pc_stop_run_all.sh` preserves it by default, but older stops or `PC_STOP_WEBHOOK=1` may have stopped it. Check the health endpoint/logs and confirm `.webhook_token` exists and matches the changedetection.io URL:
 
 ```bash
+pgrep -af webhook_listener.py || ./pc_ensure_webhook_listener.sh
+curl -fsS http://127.0.0.1:8765/health
+test -f data/queue/update_in_progress.flag && echo "Update is in progress; webhook runs are deferred."
+tail -80 data/logs/webhook_ensure.log
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
+tail -80 data/logs/monitor_open.log
 ```
 
 **Data files show up in git** — verify `.gitignore` is working:

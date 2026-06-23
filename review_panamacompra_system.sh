@@ -32,6 +32,7 @@ echo "2) Required active scripts"
 echo "--------------------------"
 required_scripts=(
   "webhook_listener.py"
+  "pc_ensure_webhook_listener.sh"
   "run_collector.sh"
   "pc_request_run_all.sh"
   "pc_run_all_worker.sh"
@@ -132,7 +133,29 @@ done
 echo ""
 echo "6) Current related processes"
 echo "----------------------------"
-pgrep -af "pc_run_all_worker|pc_index_collector|pc_detail_downloader|pc_monitor_window|pc_monitor_tk|pc_monitor_server|timeout .*pc_" || echo "No related active process."
+pgrep -af "webhook_listener|pc_run_all_worker|pc_index_collector|pc_detail_downloader|pc_monitor_window|pc_monitor_tk|pc_monitor_server|timeout .*pc_" || echo "No related active process."
+
+
+echo "6b) Webhook listener health"
+echo "---------------------------"
+WEBHOOK_HOST="${PC_WEBHOOK_HOST:-127.0.0.1}"
+[ "$WEBHOOK_HOST" = "0.0.0.0" ] && WEBHOOK_HOST="127.0.0.1"
+WEBHOOK_PORT="${PC_WEBHOOK_PORT:-8765}"
+if pgrep -f "[w]ebhook_listener.py" >/dev/null 2>&1; then
+  echo "PROCESS OK: webhook_listener.py is running."
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 "http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/health" >/dev/null 2>&1; then
+      echo "HEALTH OK: http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/health"
+    else
+      echo "HEALTH WARN: process is running but /health did not respond at http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/health"
+    fi
+  else
+    echo "HEALTH SKIP: curl is not installed."
+  fi
+else
+  echo "PROCESS WARN: webhook_listener.py is not running; changedetection.io cannot autorun the collector."
+  echo "Start it with: ./pc_ensure_webhook_listener.sh"
+fi
 
 echo ""
 echo "7) Current run-all status"
@@ -149,12 +172,14 @@ echo "-----------------------"
 cat <<'TXT'
 Manual small test:   ./pc_request_run_all.sh 5
 Run all pending:     ./pc_request_run_all.sh
-Open native monitor: ./pc_open_monitor.sh
+Open native monitor: ./pc_open_monitor.sh  (also verifies webhook listener)
 Open web monitor:    PC_MONITOR_MODE=web ./pc_open_monitor.sh
 Watch in terminal:   PC_MONITOR_MODE=terminal ./pc_open_monitor.sh
 Follow logs:         ./pc_follow_run_all.sh
 Check status:        ./pc_run_all_status.sh
-Stop if stuck:       ./pc_stop_run_all.sh
+Ensure webhook:      ./pc_ensure_webhook_listener.sh
+Stop collector only: ./pc_stop_run_all.sh
+Stop incl. webhook:  PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh
 TXT
 
 echo ""

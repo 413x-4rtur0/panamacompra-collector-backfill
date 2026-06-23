@@ -11,6 +11,9 @@
 #
 # WAHA WhatsApp group notifications use Python's standard library (urllib/json)
 # and do not require an additional pip dependency.
+# The webhook auto-start health/defer workflow, monitor status flags, record-folder
+# selectors, and generated online ICS feed also use only Python/shell standard
+# tooling; no extra pip dependency is required.
 #
 # System packages are not installable by pip. On Debian/Ubuntu/Linux Mint install:
 #   sudo apt install -y python3-venv python3-full python3-tk

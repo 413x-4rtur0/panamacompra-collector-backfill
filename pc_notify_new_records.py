@@ -79,11 +79,16 @@ def now_str() -> str:
 
 
 def waha_enabled() -> bool:
-    return waha.env_bool("PC_WAHA_ENABLED", False)
+    return waha.env_bool("WAHA_ENABLED", False) or waha.env_bool("PC_WAHA_ENABLED", False)
 
 
 def waha_destination() -> str:
-    return os.environ.get("PC_WAHA_CHAT_ID", "").strip() or waha.saved_chat_id()
+    return (
+        os.environ.get("WAHA_GROUP_CHAT_ID", "").strip()
+        or os.environ.get("WAHA_CHAT_ID", "").strip()
+        or os.environ.get("PC_WAHA_CHAT_ID", "").strip()
+        or waha.saved_chat_id()
+    )
 
 
 def load_keywords() -> list[str]:
@@ -135,9 +140,11 @@ def build_opportunity_message(row, summary: dict, match_line: str) -> str:
     url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
     detected_at = clean_field(row["detail_saved_at"] or row["first_seen"] or now_str())
     entry_id = clean_field(row["numero"])
+    change_status = clean_field(row["waha_change_status"] if "waha_change_status" in row.keys() else "NEW").upper()
+    heading = "🟡 OPORTUNIDAD ACTUALIZADA" if change_status == "UPDATED" else "🟢 NUEVA OPORTUNIDAD DETECTADA"
 
     return (
-        "🟢 NUEVA OPORTUNIDAD DETECTADA\n"
+        f"{heading}\n"
         "\n"
         f"📌 Fuente: {SOURCE_NAME}\n"
         f"🏷️ Título: {title}\n"
@@ -253,7 +260,8 @@ def notify_saved_record(conn, numero: str) -> bool:
             # Filtered out by keywords: remember it so it is not rechecked.
             mark_notified(conn, numero)
             return False
-        if not send_text("new", build_opportunity_message(row, summary, match_line)):
+        event = "update" if ("waha_change_status" in row.keys() and str(row["waha_change_status"]).upper() == "UPDATED") else "new"
+        if not send_text(event, build_opportunity_message(row, summary, match_line)):
             # Leave notified_at unset so a later --flush retries it.
             return False
         mark_notified(conn, numero)

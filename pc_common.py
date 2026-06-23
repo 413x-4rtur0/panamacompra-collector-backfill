@@ -921,6 +921,7 @@ def ensure_db_schema(conn):
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
         # pc_notify_new_records.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
+        "waha_change_status": "ALTER TABLE opportunities ADD COLUMN waha_change_status TEXT",
     }
 
     for column, statement in migrations.items():
@@ -1084,7 +1085,11 @@ def insert_or_update_index(conn, row):
     existing = find_existing_opportunity(conn, row["numero"])
 
     if existing:
-        # Do not rewrite files. Only update lightweight DB tracking.
+        watched_fields = ("grupo", "estado", "descripcion", "short_description", "entidad", "dependencia", "fecha", "modalidad", "link", "tipo_url", "finish_date_guess")
+        changed = any(str(existing[field] or "") != str(row.get(field) or "") for field in watched_fields if field in existing.keys())
+        # Do not rewrite files. Only update lightweight DB tracking. Meaningful
+        # changes are flagged so WAHA can send UPDATED alerts; unchanged rows keep
+        # their previous notification state and are not re-announced.
         conn.execute("""
         UPDATE opportunities
         SET grupo = ?,
@@ -1097,7 +1102,9 @@ def insert_or_update_index(conn, row):
             modalidad = ?,
             link = ?,
             last_seen = ?,
-            tipo_url = ?
+            tipo_url = ?,
+            notified_at = CASE WHEN ? THEN NULL ELSE notified_at END,
+            waha_change_status = CASE WHEN ? THEN 'UPDATED' ELSE waha_change_status END
         WHERE numero = ?
         """, (
             row["grupo"],
@@ -1111,6 +1118,8 @@ def insert_or_update_index(conn, row):
             row["link"],
             row["last_seen"],
             row["tipo_url"],
+            1 if changed else 0,
+            1 if changed else 0,
             row["numero"],
         ))
         conn.commit()
@@ -1121,9 +1130,9 @@ def insert_or_update_index(conn, row):
         numero, grupo, tipo_url, estado, descripcion, short_description,
         entidad, dependencia, fecha, modalidad, link, first_seen, last_seen,
         date_folder, record_folder, index_json_path, detail_status,
-        finish_date_guess
+        finish_date_guess, waha_change_status
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         row["numero"],
         row["grupo"],
@@ -1143,6 +1152,7 @@ def insert_or_update_index(conn, row):
         row["index_json_path"],
         row["detail_status"],
         row["finish_date_guess"],
+        "NEW",
     ))
 
     conn.commit()

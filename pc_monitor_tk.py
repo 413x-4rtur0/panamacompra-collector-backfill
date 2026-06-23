@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -23,7 +24,10 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+DB_PATH = BASE_DIR / "data" / "panamacompra_archive.db"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_in_progress.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+WAHA_API_KEY_PATH = CONFIG_DIR / "waha_api_key.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 # Editable settings the user can change from the monitor's Settings panel. Saved
@@ -31,6 +35,42 @@ MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 # choices survive restarts. Precedence everywhere is: real environment variable >
 # this file > built-in default.
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
+
+
+def recent_record_folders(limit: int = 80) -> list[tuple[str, Path]]:
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT numero, descripcion, short_description, entidad, record_folder, last_seen, first_seen
+            FROM opportunities
+            WHERE COALESCE(record_folder, '') != ''
+            ORDER BY COALESCE(detail_saved_at, last_seen, first_seen) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        try:
+            conn.close()
+        except UnboundLocalError:
+            pass
+
+    choices: list[tuple[str, Path]] = []
+    for row in rows:
+        folder = row["record_folder"] or ""
+        path = Path(folder) if Path(folder).is_absolute() else BASE_DIR / folder
+        title = row["descripcion"] or row["short_description"] or "Sin descripción"
+        label = f"{row['numero']} — {title[:90]}"
+        if row["entidad"]:
+            label += f" ({str(row['entidad'])[:50]})"
+        choices.append((label, path))
+    return choices
 
 
 def load_settings_file() -> dict[str, str]:
@@ -88,6 +128,9 @@ AUTO_CLOSE_SECONDS = setting_int("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", 20, minimum
 # Lower it (e.g. 0.50) from the Settings panel for a more see-through look.
 # Clamped so the window can never become unreadable/invisible.
 ALPHA = setting_float("PC_MONITOR_TK_ALPHA", 0.85, 0.30, 1.0)
+LAUNCH_CONTEXT = os.environ.get("PC_MONITOR_LAUNCH_CONTEXT", "manual").strip().lower()
+AUTO_CLOSE_CONTEXTS = {"auto", "scheduled", "schedule", "request", "live"}
+AUTO_CLOSE_ALLOWED = LAUNCH_CONTEXT in AUTO_CLOSE_CONTEXTS
 
 class ManualAction(NamedTuple):
     zone: str
@@ -110,7 +153,7 @@ MANUAL_ACTIONS = [
     ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99"), "Queues a normal live run (up to 99 detail pages) for the background worker. Safe default action."),
     ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Collector Runners", "STOP collector runners", ("./pc_stop_run_all.sh",), "Stops worker/index/detail/test/calendar/updater/monitor processes but keeps the webhook listener alive for changedetection autorun. Use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to stop the webhook too."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
     ManualAction("Updater & Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
@@ -121,8 +164,10 @@ MANUAL_ACTIONS = [
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
+    ManualAction("Data Tools", "Build online calendar feed", ("./pc_build_calendar.py", "--all", "--online-feed"), "Writes one all-events ICS feed for Google Calendar From URL / online subscription workflows."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
-    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds all calendar packages and opens each .ics using Thunderbird profile a2gutierrezmora."),
+    ManualAction("Data Tools", "Start webhook listener", ("./pc_ensure_webhook_listener.sh",), "Starts or verifies the local webhook listener in the background; use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to halt it."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
     # --- 4. Testing & Validation: sandbox runs and health checks -------------
@@ -212,6 +257,7 @@ def process_snapshot() -> dict[str, bool]:
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
         "request": REQUEST_FLAG.exists(),
+        "update_in_progress": UPDATE_IN_PROGRESS_FLAG.exists(),
         # Additional runners that should be stopped by pc_stop_run_all.sh
         "updater": updater,
         "webhook": webhook,
@@ -234,7 +280,7 @@ def percent_value(progress: dict[str, str]) -> int:
 # the passive webhook listener must NOT count — otherwise the monitor detects
 # ITSELF as running and "done" is never reached, so the finish countdown never
 # appears.
-WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request")
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request", "update_in_progress")
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -252,7 +298,8 @@ def status_snapshot() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
-        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "auto_close_enabled": AUTO_CLOSE_ALLOWED and done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "launch_context": LAUNCH_CONTEXT,
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 18),
@@ -476,7 +523,8 @@ def run_tk() -> int:
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
     idle_var = tk.StringVar(value=str(runtime["idle_refresh"]))
     source_var = tk.StringVar(value=setting("PC_WAHA_SOURCE", "Panamá Compra"))
-    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else ""))
+    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "120363175324031424@g.us"))
+    waha_api_key_var = tk.StringVar(value="")
     existing_keywords = []
     if WAHA_KEYWORDS_PATH.exists():
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
@@ -497,10 +545,14 @@ def run_tk() -> int:
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for NEW and UPDATED alerts. Saved to data/config/waha_chat_id.txt.")
+    ttk.Label(settings, text="WAHA API key (plain; blank keeps previous):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    key_entry = ttk.Entry(settings, textvariable=waha_api_key_var, show="*")
+    key_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(key_entry, "Optional X-Api-Key for WAHA. Saved locally to data/config/waha_api_key.txt; data/ is ignored by git.")
+    ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
-    kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
+    kw_entry.grid(row=6, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
 
     def apply_settings() -> None:
@@ -527,7 +579,9 @@ def run_tk() -> int:
         idle_var.set(str(runtime["idle_refresh"]))
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_PATH.write_text((waha_var.get().strip() or "120363175324031424@g.us") + "\n", encoding="utf-8")
+        if waha_api_key_var.get().strip():
+            WAHA_API_KEY_PATH.write_text(waha_api_key_var.get().strip() + "\n", encoding="utf-8")
         keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
         WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
 
@@ -552,9 +606,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings)
-    apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=7, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires WAHA_ENABLED=true (or PC_WAHA_ENABLED=1) and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
     # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
@@ -593,10 +647,47 @@ def run_tk() -> int:
         actions.columnconfigure(col, weight=1, uniform="actions")
     ttk.Label(actions, text="Manual script buttons  (hover a button for what it does)", style="Title.TLabel").grid(row=0, column=0, columnspan=button_columns, sticky="w", pady=(0, 8))
 
+    record_choices: dict[str, Path] = {}
+    record_choice_var = tk.StringVar(value="")
+
     def open_folder(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
         opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
         subprocess.Popen([opener, str(path)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def refresh_record_selector() -> None:
+        choices = recent_record_folders()
+        record_choices.clear()
+        values = []
+        for label, path in choices:
+            record_choices[label] = path
+            values.append(label)
+        record_box.configure(values=values)
+        if values and not record_choice_var.get():
+            record_choice_var.set(values[0])
+        elif not values:
+            record_choice_var.set("No saved record folders found")
+
+    def open_selected_record_folder() -> None:
+        selected = record_choice_var.get()
+        path = record_choices.get(selected)
+        if path is None:
+            button_status_var.set("No saved record folder selected.")
+            return
+        open_folder(path)
+        button_status_var.set(f"Opening record folder: {path}")
+
+    ttk.Label(actions, text="Open record folder by number/description:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 4))
+    record_box = ttk.Combobox(actions, textvariable=record_choice_var, values=(), state="readonly")
+    record_box.grid(row=1, column=1, sticky="ew", padx=4, pady=(0, 4))
+    open_record_button = ttk.Button(actions, text="Open selected", command=open_selected_record_folder)
+    open_record_button.grid(row=1, column=2, sticky="ew", padx=4, pady=(0, 4))
+    refresh_record_button = ttk.Button(actions, text="Refresh record folder list", command=refresh_record_selector)
+    refresh_record_button.grid(row=2, column=2, sticky="ew", padx=4, pady=(0, 8))
+    add_tooltip(record_box, "Recent saved records from the database, shown as NUMERO — description (entity).")
+    add_tooltip(open_record_button, "Open the saved folder for the selected opportunity.")
+    add_tooltip(refresh_record_button, "Reload the recent record folder list after a collector run finishes.")
+    refresh_record_selector()
 
     def run_manual_action(action: ManualAction) -> None:
         MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -613,7 +704,7 @@ def run_tk() -> int:
             threading.Thread(target=wait_then_open, daemon=True).start()
         button_status_var.set(f"Started: {action.label}. Output: {MANUAL_ACTION_LOG.relative_to(BASE_DIR)}")
 
-    grid_row = 1
+    grid_row = 3
     for zone in dict.fromkeys(action.zone for action in MANUAL_ACTIONS):
         ttk.Label(actions, text=zone, style="Message.TLabel").grid(row=grid_row, column=0, columnspan=button_columns, sticky="w", pady=(10, 4))
         grid_row += 1
@@ -681,7 +772,7 @@ def run_tk() -> int:
         # Refresh cadence comes from the live runtime settings (editable via the
         # Settings panel), not the static snapshot values.
         active_delay = runtime["idle_refresh"] if snap["done"] else runtime["refresh"]
-        meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
+        meta_var.set(f"Time: {snap['time']} · Launch: {snap.get('launch_context', 'manual')} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
         processes_var.set("  ".join(f"{name}: {'RUNNING' if value else 'off'}" for name, value in snap["processes"].items()))
 
@@ -723,7 +814,7 @@ def run_tk() -> int:
                 overlay_var.set(f"✅ Run finished\n\nClosing in {remaining} s")
                 overlay.place(relx=0.5, rely=0.5, anchor="center")
             else:
-                done_var.set("Run finished. Auto-close is disabled for test zone and manual desktop actions.")
+                done_var.set("Run finished. Auto-close is disabled for manual monitor launches and test-zone/manual desktop actions.")
                 overlay.place_forget()
             if wait and remaining <= 0:
                 root.destroy()

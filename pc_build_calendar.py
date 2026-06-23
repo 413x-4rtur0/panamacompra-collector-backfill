@@ -24,6 +24,7 @@ from pathlib import Path
 from pc_common import CALENDAR_DIR, COMBINED_CALENDAR_PATH, RECORDS_DIR, calendars_to_ics, date_folder_name, write_run_progress
 
 DEFAULT_PACKAGE_SIZE = 10
+DEFAULT_ONLINE_FEED_PATH = CALENDAR_DIR / "panamacompra_online_feed.ics"
 
 
 def parse_started_at(value: str | None) -> datetime | None:
@@ -92,13 +93,41 @@ def write_packages(calendars: list[dict], out_dir: Path, package_size: int, pref
 
 
 def default_auto_import_command() -> str:
-    """Return a desktop opener command when simple calendar auto-import is enabled."""
+    """Return a desktop opener/import command when auto-import is enabled.
+
+    If PC_CALENDAR_THUNDERBIRD_PROFILE is set, prefer Thunderbird with that
+    profile (for example ``a2gutierrezmora``) so generated ICS packages open in
+    the intended Thunderbird calendar profile. Otherwise fall back to the
+    desktop's normal calendar/file opener.
+    """
     if os.environ.get("PC_CALENDAR_AUTO_IMPORT", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return ""
+
+    profile = os.environ.get("PC_CALENDAR_THUNDERBIRD_PROFILE", "").strip()
+    if profile:
+        thunderbird_cmd = os.environ.get("PC_CALENDAR_THUNDERBIRD_CMD", "thunderbird").strip() or "thunderbird"
+        thunderbird_bin = shlex.split(thunderbird_cmd)[0]
+        if shutil.which(thunderbird_bin):
+            parts = shlex.split(thunderbird_cmd) + ["-P", profile]
+            return " ".join(shlex.quote(part) for part in parts)
+        print(f"Thunderbird auto-import requested, but command not found: {thunderbird_bin}")
+
     for candidate in (("xdg-open",), ("gio", "open"), ("open",)):
         if shutil.which(candidate[0]):
             return " ".join(shlex.quote(part) for part in candidate)
     return ""
+
+
+def write_online_feed(calendars: list[dict], path: Path) -> Path:
+    """Write one all-events ICS feed for online calendar subscription/import.
+
+    This does not push to Google Calendar. It creates a single ICS file that can
+    be imported manually, opened by Thunderbird, or hosted at a URL for Google
+    Calendar's "From URL" subscription workflow.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(calendars_to_ics(clean_calendar(c) for c in calendars).encode("utf-8"))
+    return path
 
 
 def run_auto_import(paths: list[Path]) -> None:
@@ -122,6 +151,8 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="include every saved detail calendar instead of only new/changed ones")
     parser.add_argument("--legacy-combined", action="store_true", help=f"also write the old single combined file at {COMBINED_CALENDAR_PATH}")
     parser.add_argument("--flat", action="store_true", help="write packages directly in --out-dir instead of --out-dir/YY-MM-DD/")
+    parser.add_argument("--online-feed", action="store_true", default=os.environ.get("PC_CALENDAR_ONLINE_FEED", "").strip().lower() in {"1", "true", "yes", "on"}, help="also write one all-events ICS feed for online calendar subscription/import")
+    parser.add_argument("--online-feed-path", default=os.environ.get("PC_CALENDAR_ONLINE_FEED_PATH", str(DEFAULT_ONLINE_FEED_PATH)), help="path for --online-feed output")
     args = parser.parse_args()
 
     package_size = max(1, args.package_size)
@@ -135,12 +166,17 @@ def main() -> int:
     date_subdir = None if args.flat else date_folder_name()
     written = write_packages(calendars, out_dir, package_size, prefix, date_subdir=date_subdir) if calendars else []
 
+    all_calendars = None
     if args.legacy_combined:
         out = Path(COMBINED_CALENDAR_PATH)
-        out.parent.mkdir(parents=True, exist_ok=True)
         all_calendars = iter_calendars(args.records_dir, since=None)
-        out.write_bytes(calendars_to_ics(clean_calendar(c) for c in all_calendars).encode("utf-8"))
+        write_online_feed(all_calendars, out)
         print(f"Legacy combined calendar written: {out} ({len(all_calendars)} events)")
+
+    if args.online_feed:
+        all_calendars = all_calendars if all_calendars is not None else iter_calendars(args.records_dir, since=None)
+        feed_path = write_online_feed(all_calendars, Path(args.online_feed_path))
+        print(f"Online calendar feed written: {feed_path} ({len(all_calendars)} events)")
 
     count = len(calendars)
     if written:
