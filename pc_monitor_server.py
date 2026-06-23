@@ -244,20 +244,40 @@ table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ text-align: left; border-bottom: 1px solid #334155; padding: 7px 10px; vertical-align: top; }}
 th {{ width: 220px; color: #93c5fd; }}
 pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 12px; max-height: 360px; overflow: auto; }}
-.pill {{ display: inline-block; margin: 4px 8px 4px 0; padding: 6px 10px; border-radius: 999px; font-weight: 700; }}
-.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #374151; color: #d1d5db; }}
+/* Process status is a tidy flex grid of small chips instead of one crowded
+   wrapped line: green = RUNNING, gray = off, even gaps. */
+.proc-wrap {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
+.pill {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-weight: 700; font-size: .8rem; }}
+.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #1f2937; color: #9ca3af; }}
 .message {{ font-size: 1.15rem; color: #fef3c7; }}
 .small {{ color: #94a3b8; }}
 .done {{ color: #bbf7d0; font-weight: 700; }}
-button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; margin-right: 8px; }}
+button {{ background: #334155; color: #e5e7eb; border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 700; cursor: pointer; margin: 0 8px 8px 0; transition: background .15s ease, transform .05s ease; }}
+button:hover {{ background: #475569; }}
+button:active {{ transform: translateY(1px); }}
+button:disabled {{ background: #1f2937; color: #6b7280; cursor: not-allowed; transform: none; }}
+button.primary {{ background: #2563eb; color: #fff; }}
+button.primary:hover {{ background: #1d4ed8; }}
+button.primary:disabled {{ background: #1e293b; color: #6b7280; }}
 .zone {{ margin-top: 14px; padding-top: 8px; border-top: 1px solid #334155; }}
 .zone h3 {{ margin: 0 0 8px; color: #fef3c7; }}
-.danger {{ background: #dc2626; }}
+.danger {{ background: #dc2626; color: #fff; }} .danger:hover {{ background: #b91c1c; }}
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
 select, input {{ border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: 1rem; }}
-select#run-mode {{ min-width: 150px; }}
+input:disabled {{ opacity: .5; cursor: not-allowed; }}
+/* Run mode as radio toggles. */
+.mode-group {{ display: inline-flex; gap: 4px; vertical-align: middle; }}
+.mode-group label {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #475569; border-radius: 8px; background: #020617; cursor: pointer; font-weight: 700; color: #cbd5e1; }}
+.mode-group input {{ accent-color: #2563eb; margin: 0; }}
+.mode-group label:has(input:checked) {{ border-color: #2563eb; color: #93c5fd; background: #0b1220; }}
+.mode-group input:disabled + span, .mode-group label:has(input:disabled) {{ opacity: .5; cursor: not-allowed; }}
 select#record-index {{ min-width: 60%; max-width: 100%; }}
-#diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; }}
+#diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
+/* Slim dark scrollbars for the log panes. */
+pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+pre::-webkit-scrollbar-track {{ background: #0f172a; border-radius: 8px; }}
+pre::-webkit-scrollbar-thumb {{ background: #334155; border-radius: 8px; }}
+pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 </style>
 </head>
 <body>
@@ -267,9 +287,9 @@ select#record-index {{ min-width: 60%; max-width: 100%; }}
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
   <p id="done-note" class="done" hidden></p>
-  <div id="processes"></div>
+  <div id="processes" class="proc-wrap"></div>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="live" checked><span>live collector</span></label><label><input type="radio" name="run-mode" value="test"><span>test zone</span></label></span> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. The mode toggle and Request button lock while a run is active (including webhook-triggered runs).</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Record index</h2><p class="small">Collected records as “NUMERO — description”, newest first. Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -307,6 +327,7 @@ function render(data) {{
   document.getElementById('processes').innerHTML = Object.entries(data.processes || {{}}).map(([name, value]) =>
     `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
   ).join('');
+  updateRunControls(data);
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
@@ -334,8 +355,21 @@ async function postForm(path, body) {{
   document.getElementById('button-status').textContent = text.trim();
   poll();
 }}
+// Keys that mean real collection work is happening. A webhook-triggered run
+// shows up here, so the mode toggle + Request button lock while any is active.
+const RUN_WORK_KEYS = ['worker', 'index', 'detail', 'calendar', 'messaging', 'test_run', 'request'];
+function updateRunControls(data) {{
+  const procs = data.processes || {{}};
+  const busy = RUN_WORK_KEYS.some(k => procs[k]);
+  document.querySelectorAll('input[name="run-mode"]').forEach(el => {{ el.disabled = busy; }});
+  const limit = document.getElementById('run-limit');
+  if (limit) limit.disabled = busy;
+  const runBtn = document.getElementById('run-button');
+  if (runBtn) {{ runBtn.disabled = busy; runBtn.textContent = busy ? 'Run in progress…' : 'Request selected run'; }}
+}}
 function requestRun() {{
-  const mode = encodeURIComponent(document.getElementById('run-mode').value);
+  const checked = document.querySelector('input[name="run-mode"]:checked');
+  const mode = encodeURIComponent(checked ? checked.value : 'live');
   const limit = encodeURIComponent(document.getElementById('run-limit').value || '99');
   postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{limit}}`);
 }}

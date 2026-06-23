@@ -413,6 +413,32 @@ def run_tk() -> int:
     style.configure("Message.TLabel", background="#111827", foreground="#fef3c7", font=("Sans", 11, "bold"))
     style.configure("Done.TLabel", background="#111827", foreground="#bbf7d0", font=("Sans", 10, "bold"))
     style.configure("Horizontal.TProgressbar", thickness=26)
+    # Flat, rounded-feeling buttons with clear primary/danger variants and a
+    # readable disabled state, plus matching scrollbars, radios and entries so
+    # the whole window shares one cohesive dark style.
+    style.configure("TButton", padding=(12, 6), relief="flat", borderwidth=0,
+                    background="#334155", foreground="#e5e7eb", font=("Sans", 10))
+    style.map("TButton",
+              background=[("active", "#475569"), ("disabled", "#1f2937")],
+              foreground=[("disabled", "#6b7280")])
+    style.configure("Accent.TButton", background="#2563eb", foreground="#ffffff", font=("Sans", 10, "bold"))
+    style.map("Accent.TButton",
+              background=[("active", "#1d4ed8"), ("disabled", "#1e293b")],
+              foreground=[("disabled", "#6b7280")])
+    style.configure("Danger.TButton", background="#dc2626", foreground="#ffffff", font=("Sans", 10, "bold"))
+    style.map("Danger.TButton",
+              background=[("active", "#b91c1c"), ("disabled", "#3f1d1d")],
+              foreground=[("disabled", "#9ca3af")])
+    style.configure("Vertical.TScrollbar", background="#334155", troughcolor="#0f172a",
+                    arrowcolor="#94a3b8", borderwidth=0, relief="flat")
+    style.map("Vertical.TScrollbar", background=[("active", "#475569")])
+    style.configure("Card.TRadiobutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
+    style.map("Card.TRadiobutton",
+              background=[("active", "#111827")],
+              foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
+    style.configure("TEntry", fieldbackground="#020617", foreground="#e5e7eb",
+                    bordercolor="#475569", insertcolor="#e5e7eb")
+    style.map("TEntry", fieldbackground=[("readonly", "#0b1220")], foreground=[("readonly", "#e5e7eb")])
 
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
@@ -480,8 +506,32 @@ def run_tk() -> int:
     ttk.Label(header, textvariable=message_var, style="Message.TLabel", wraplength=900).grid(row=3, column=0, sticky="w", pady=(8, 4))
     done_var = tk.StringVar(value="")
     ttk.Label(header, textvariable=done_var, style="Done.TLabel").grid(row=4, column=0, sticky="w")
-    processes_var = tk.StringVar(value="")
-    ttk.Label(header, textvariable=processes_var, style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
+    # Process status used to be one long wrapped line ("normal_run: off  test_run:
+    # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
+    # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
+    ttk.Label(header, text="Processes", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    process_frame = ttk.Frame(header, style="Card.TFrame")
+    process_frame.grid(row=6, column=0, sticky="ew")
+    process_chips: dict[str, tk.Label] = {}
+    PROCESS_CHIP_COLUMNS = 5
+    for col in range(PROCESS_CHIP_COLUMNS):
+        process_frame.columnconfigure(col, weight=1, uniform="proc")
+
+    def update_process_chips(processes: dict[str, bool]) -> None:
+        for idx, (name, value) in enumerate(processes.items()):
+            chip = process_chips.get(name)
+            if chip is None:
+                chip = tk.Label(process_frame, anchor="w", padx=8, pady=2,
+                                font=("Sans", 8, "bold"), borderwidth=0)
+                chip.grid(row=idx // PROCESS_CHIP_COLUMNS,
+                          column=idx % PROCESS_CHIP_COLUMNS,
+                          sticky="ew", padx=2, pady=2)
+                process_chips[name] = chip
+            chip.configure(
+                text=f"{name}: {'RUNNING' if value else 'off'}",
+                bg="#14532d" if value else "#1f2937",
+                fg="#bbf7d0" if value else "#9ca3af",
+            )
 
     # ========================================================================
     # SECTION 1: RUN CONTROLS - request a live or test-zone run
@@ -507,21 +557,44 @@ def run_tk() -> int:
         button_status_var.set(f"Live run requested with detail limit {limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
-    # The Mode selector comes first and is wide enough to read the full option
-    # text, and the Limit entry is widened so large detail/sandbox counts stay
-    # legible. Both sit on their own row with the trigger button at the end.
+    # Mode is a pair of radio toggles (live = real pipeline, test = sandbox) and
+    # the Limit entry is wide enough for large counts. The whole row is disabled
+    # while a collection is active (e.g. a webhook-triggered run) so you cannot
+    # change mode or queue a conflicting run mid-flight; it re-enables when idle.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    mode_box = ttk.Combobox(controls, textvariable=run_mode_var, values=("live", "test"), width=14, state="readonly")
-    mode_box.grid(row=1, column=1, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=2, sticky="e")
+    live_radio = ttk.Radiobutton(controls, text="live", value="live", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio.grid(row=1, column=1, sticky="w")
+    test_radio = ttk.Radiobutton(controls, text="test", value="test", variable=run_mode_var, style="Card.TRadiobutton")
+    test_radio.grid(row=1, column=2, sticky="w", padx=(0, 16))
+    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=3, sticky="e")
     limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=10)
-    limit_entry.grid(row=1, column=3, sticky="w", padx=(6, 16))
-    run_button = ttk.Button(controls, text="Request selected run", command=request_run_now)
-    run_button.grid(row=1, column=4, sticky="w")
+    limit_entry.grid(row=1, column=4, sticky="w", padx=(6, 16))
+    run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
+    run_button.grid(row=1, column=5, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-    add_tooltip(mode_box, "live = the normal collector pipeline (real archive). test = the isolated test zone (records_test/), real archive untouched.")
+    add_tooltip(live_radio, "live = the normal collector pipeline (real archive).")
+    add_tooltip(test_radio, "test = the isolated test zone (records_test/), real archive untouched.")
     add_tooltip(limit_entry, "Maximum detail pages (live) or sandbox records (test) to process this run.")
-    add_tooltip(run_button, "Queue the selected run with the chosen mode and limit.")
+    add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
+
+    # Keys that mean "real collection work is happening". A webhook-triggered run
+    # shows up here (worker/index/detail/...), so the run controls lock while any
+    # of them are active and unlock once the run is fully idle.
+    run_control_widgets = (live_radio, test_radio, limit_entry, run_button)
+
+    def update_run_controls(snap: dict[str, object]) -> None:
+        processes = snap.get("processes", {}) or {}
+        busy = any(processes.get(key) for key in WORK_PROCESS_KEYS)
+        target_state = "disabled" if busy else "normal"
+        for widget in run_control_widgets:
+            try:
+                widget.configure(state=target_state)
+            except tk.TclError:
+                pass
+        if busy:
+            run_button.configure(text="Run in progress…")
+        else:
+            run_button.configure(text="Request selected run")
 
     # ========================================================================
     # SECTION 3: SETTINGS - editable fields with defaults; leave as-is to keep
@@ -615,7 +688,7 @@ def run_tk() -> int:
         _SETTINGS_FILE.update(merged)
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
-    apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings)
+    apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
     ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
@@ -649,20 +722,23 @@ def run_tk() -> int:
         ("Failures", "RECORDS_FAILED"), ("Pending", "RECORDS_PENDING"),
         ("Test", "RECORDS_TEST"),
     ]
+    # Values are read-only Entry widgets (not Labels) so the operator can select
+    # and copy any phase/count/timestamp for further actions; readonly keeps them
+    # uneditable while still selectable. Tighter pady reduces the old line crowd.
     diag_vars: dict[str, tk.StringVar] = {}
     for idx, (label, key) in enumerate(fields):
         row = idx // 2 + 1  # row 0 holds the section title
         col = (idx % 2) * 2
-        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=1)
         var = tk.StringVar(value="-")
         diag_vars[key] = var
-        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=460, justify="left").grid(row=row, column=col + 1, sticky="ew", pady=2)
+        ttk.Entry(diag, textvariable=var, state="readonly").grid(row=row, column=col + 1, sticky="ew", pady=1, padx=(0, 8))
 
     extra_row = len(fields) // 2 + 2
-    ttk.Label(diag, text="Extra:", style="Card.TLabel").grid(row=extra_row, column=0, sticky="w", padx=(0, 6), pady=2)
+    ttk.Label(diag, text="Extra:", style="Card.TLabel").grid(row=extra_row, column=0, sticky="w", padx=(0, 6), pady=1)
     extra_var = tk.StringVar(value="-")
     diag_vars["EXTRA"] = extra_var
-    ttk.Label(diag, textvariable=extra_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=2)
+    ttk.Entry(diag, textvariable=extra_var, state="readonly").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=1, padx=(0, 8))
 
     # ========================================================================
     # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
@@ -703,7 +779,21 @@ def run_tk() -> int:
     index_listbox.grid(row=0, column=0, sticky="ew")
     index_scroll.grid(row=0, column=1, sticky="ns")
 
-    ttk.Label(record_index, textvariable=index_detail_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 4))
+    # Read-only, selectable Text so the NUMERO/description can be copied for
+    # further actions (search, paste into the portal, etc.).
+    index_detail_text = tk.Text(
+        record_index, height=2, wrap="word", bd=0, highlightthickness=0,
+        bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9),
+    )
+    index_detail_text.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
+    def set_index_detail(text: str) -> None:
+        index_detail_text.configure(state="normal")
+        index_detail_text.delete("1.0", "end")
+        index_detail_text.insert("1.0", text)
+        index_detail_text.configure(state="disabled")
+
+    set_index_detail(index_detail_var.get())
 
     def index_label(rec: dict[str, str]) -> str:
         numero = rec["numero"] or "(sin número)"
@@ -722,7 +812,7 @@ def run_tk() -> int:
         if not rec:
             return
         status = f"   ·   status: {rec['detail_status']}" if rec["detail_status"] else ""
-        index_detail_var.set(f"NUMERO: {rec['numero']}\nDescripción: {rec['descripcion'] or '-'}{status}")
+        set_index_detail(f"NUMERO: {rec['numero']}\nDescripción: {rec['descripcion'] or '-'}{status}")
 
     def populate_listbox(records: list[dict[str, str]]) -> None:
         nonlocal index_filtered
@@ -744,8 +834,8 @@ def run_tk() -> int:
             records = list(index_records)
         populate_listbox(records)
         if not records:
-            index_detail_var.set("No records match the filter." if index_records else
-                                 "No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then Refresh list.")
+            set_index_detail("No records match the filter." if index_records else
+                             "No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then Refresh list.")
 
     def refresh_index_list() -> None:
         nonlocal index_records
@@ -837,7 +927,8 @@ def run_tk() -> int:
             col = offset % button_columns
             if offset and col == 0:
                 grid_row += 1
-            button = ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected))
+            button_style = "Danger.TButton" if "STOP" in action.label.upper() else "TButton"
+            button = ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected), style=button_style)
             button.grid(row=grid_row, column=col, sticky="ew", padx=4, pady=4)
             add_tooltip(button, action.comment)
         grid_row += 1
@@ -898,7 +989,8 @@ def run_tk() -> int:
         active_delay = runtime["idle_refresh"] if snap["done"] else runtime["refresh"]
         meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
-        processes_var.set("  ".join(f"{name}: {'RUNNING' if value else 'off'}" for name, value in snap["processes"].items()))
+        update_process_chips(snap["processes"])
+        update_run_controls(snap)
 
         for key, var in diag_vars.items():
             if key == "STEP":
