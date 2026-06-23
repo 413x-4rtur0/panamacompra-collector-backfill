@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import threading
 import time
@@ -21,6 +22,7 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+DB_PATH = BASE_DIR / "data" / "panamacompra_archive.db"
 UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_in_progress.flag"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 WAHA_API_KEY_PATH = BASE_DIR / "data" / "config" / "waha_api_key.txt"
@@ -59,6 +61,7 @@ MANUAL_ACTIONS = [
     ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives."),
     ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
     ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages."),
+    ManualAction("Settings", "Build online calendar feed", ("./pc_build_calendar.py", "--all", "--online-feed"), "Writes one all-events ICS feed for Google Calendar From URL / online subscription workflows."),
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
     ManualAction("Settings", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds generated ICS files and opens them using Thunderbird profile a2gutierrezmora."),
     ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener."),
@@ -174,6 +177,42 @@ def run_manual_action(action: ManualAction) -> None:
             open_folder(action.open_after)
         threading.Thread(target=wait_then_open, daemon=True).start()
 
+
+def recent_record_folders(limit: int = 80) -> list[dict[str, str]]:
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT numero, descripcion, short_description, entidad, record_folder, last_seen, first_seen
+            FROM opportunities
+            WHERE COALESCE(record_folder, '') != ''
+            ORDER BY COALESCE(detail_saved_at, last_seen, first_seen) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        try:
+            conn.close()
+        except UnboundLocalError:
+            pass
+
+    out = []
+    for row in rows:
+        folder = row["record_folder"] or ""
+        path = Path(folder) if Path(folder).is_absolute() else BASE_DIR / folder
+        title = row["descripcion"] or row["short_description"] or "Sin descripción"
+        label = f"{row['numero']} — {title[:90]}"
+        if row["entidad"]:
+            label += f" ({str(row['entidad'])[:50]})"
+        out.append({"numero": row["numero"] or "", "label": label, "path": str(path)})
+    return out
+
 def status_payload() -> dict[str, object]:
     progress = parse_progress_file()
     processes = process_snapshot()
@@ -237,6 +276,7 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
   <div id="processes"></div>
 </div>
 <div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp settings</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><label class="small">WhatsApp group chat ID</label><textarea id="waha-message" placeholder="120363175324031424@g.us"></textarea><label class="small">WAHA API key (saved locally, not committed)</label><input id="waha-api-key" type="password" placeholder="Leave blank to keep previous key" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid #475569;background:#020617;color:#e5e7eb;padding:10px;"><div id="action-zones"></div></div>
+<div class="card"><h2>Record folder selector</h2><p class="small">Choose a collected opportunity by number and description, then open its saved folder.</p><p><select id="record-folder-select" style="width:70%;background:#020617;color:#e5e7eb;border:1px solid #475569;border-radius:8px;padding:10px;"></select> <button onclick="openSelectedRecordFolder()">Open selected folder</button><button onclick="loadRecordFolders()">Refresh list</button></p></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
@@ -320,6 +360,21 @@ function renderActionZones() {{
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value) + '&api_key=' + encodeURIComponent(document.getElementById('waha-api-key').value)); }}
+async function loadRecordFolders() {{
+  const select = document.getElementById('record-folder-select');
+  try {{
+    const response = await fetch('/api/record-folders', {{cache: 'no-store'}});
+    const rows = await response.json();
+    select.innerHTML = rows.length ? rows.map(row => `<option value="${{esc(row.path)}}">${{esc(row.label)}}</option>`).join('') : '<option value="">No saved record folders found</option>';
+  }} catch (err) {{
+    select.innerHTML = '<option value="">Could not load record folders</option>';
+  }}
+}}
+function openSelectedRecordFolder() {{
+  const path = document.getElementById('record-folder-select').value;
+  if (!path) return;
+  postForm('/api/open-record-folder', 'path=' + encodeURIComponent(path));
+}}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -333,6 +388,7 @@ async function poll() {{
 }}
 window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
 renderActionZones();
+loadRecordFolders();
 poll();
 </script>
 </body>
@@ -381,6 +437,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
             run_manual_action(action)
             self.send_text(202, "Calendar import started. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/open-record-folder":
+            raw_path = form.get("path", [""])[0].strip()
+            if not raw_path:
+                self.send_text(400, "missing folder path\n", "text/plain; charset=utf-8")
+                return
+            folder = Path(raw_path)
+            try:
+                folder.resolve().relative_to(BASE_DIR.resolve())
+            except ValueError:
+                self.send_text(403, "folder outside repository is not allowed\n", "text/plain; charset=utf-8")
+                return
+            open_folder(folder)
+            self.send_text(202, f"Opening folder: {folder}\n", "text/plain; charset=utf-8")
+            return
         if path in {"/api/waha-destination", "/api/waha-message"}:
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
@@ -399,6 +469,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/record-folders":
+            self.send_text(200, json.dumps(recent_record_folders(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")

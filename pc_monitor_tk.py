@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+DB_PATH = BASE_DIR / "data" / "panamacompra_archive.db"
 UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_in_progress.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_API_KEY_PATH = CONFIG_DIR / "waha_api_key.txt"
@@ -33,6 +35,42 @@ MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 # choices survive restarts. Precedence everywhere is: real environment variable >
 # this file > built-in default.
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
+
+
+def recent_record_folders(limit: int = 80) -> list[tuple[str, Path]]:
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT numero, descripcion, short_description, entidad, record_folder, last_seen, first_seen
+            FROM opportunities
+            WHERE COALESCE(record_folder, '') != ''
+            ORDER BY COALESCE(detail_saved_at, last_seen, first_seen) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        try:
+            conn.close()
+        except UnboundLocalError:
+            pass
+
+    choices: list[tuple[str, Path]] = []
+    for row in rows:
+        folder = row["record_folder"] or ""
+        path = Path(folder) if Path(folder).is_absolute() else BASE_DIR / folder
+        title = row["descripcion"] or row["short_description"] or "Sin descripción"
+        label = f"{row['numero']} — {title[:90]}"
+        if row["entidad"]:
+            label += f" ({str(row['entidad'])[:50]})"
+        choices.append((label, path))
+    return choices
 
 
 def load_settings_file() -> dict[str, str]:
@@ -126,6 +164,7 @@ MANUAL_ACTIONS = [
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
+    ManualAction("Data Tools", "Build online calendar feed", ("./pc_build_calendar.py", "--all", "--online-feed"), "Writes one all-events ICS feed for Google Calendar From URL / online subscription workflows."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
     ManualAction("Data Tools", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds all calendar packages and opens each .ics using Thunderbird profile a2gutierrezmora."),
     ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to halt it."),
@@ -608,10 +647,47 @@ def run_tk() -> int:
         actions.columnconfigure(col, weight=1, uniform="actions")
     ttk.Label(actions, text="Manual script buttons  (hover a button for what it does)", style="Title.TLabel").grid(row=0, column=0, columnspan=button_columns, sticky="w", pady=(0, 8))
 
+    record_choices: dict[str, Path] = {}
+    record_choice_var = tk.StringVar(value="")
+
     def open_folder(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
         opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
         subprocess.Popen([opener, str(path)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def refresh_record_selector() -> None:
+        choices = recent_record_folders()
+        record_choices.clear()
+        values = []
+        for label, path in choices:
+            record_choices[label] = path
+            values.append(label)
+        record_box.configure(values=values)
+        if values and not record_choice_var.get():
+            record_choice_var.set(values[0])
+        elif not values:
+            record_choice_var.set("No saved record folders found")
+
+    def open_selected_record_folder() -> None:
+        selected = record_choice_var.get()
+        path = record_choices.get(selected)
+        if path is None:
+            button_status_var.set("No saved record folder selected.")
+            return
+        open_folder(path)
+        button_status_var.set(f"Opening record folder: {path}")
+
+    ttk.Label(actions, text="Open record folder by number/description:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 4))
+    record_box = ttk.Combobox(actions, textvariable=record_choice_var, values=(), state="readonly")
+    record_box.grid(row=1, column=1, sticky="ew", padx=4, pady=(0, 4))
+    open_record_button = ttk.Button(actions, text="Open selected", command=open_selected_record_folder)
+    open_record_button.grid(row=1, column=2, sticky="ew", padx=4, pady=(0, 4))
+    refresh_record_button = ttk.Button(actions, text="Refresh record folder list", command=refresh_record_selector)
+    refresh_record_button.grid(row=2, column=2, sticky="ew", padx=4, pady=(0, 8))
+    add_tooltip(record_box, "Recent saved records from the database, shown as NUMERO — description (entity).")
+    add_tooltip(open_record_button, "Open the saved folder for the selected opportunity.")
+    add_tooltip(refresh_record_button, "Reload the recent record folder list after a collector run finishes.")
+    refresh_record_selector()
 
     def run_manual_action(action: ManualAction) -> None:
         MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -628,7 +704,7 @@ def run_tk() -> int:
             threading.Thread(target=wait_then_open, daemon=True).start()
         button_status_var.set(f"Started: {action.label}. Output: {MANUAL_ACTION_LOG.relative_to(BASE_DIR)}")
 
-    grid_row = 1
+    grid_row = 3
     for zone in dict.fromkeys(action.zone for action in MANUAL_ACTIONS):
         ttk.Label(actions, text=zone, style="Message.TLabel").grid(row=grid_row, column=0, columnspan=button_columns, sticky="w", pady=(10, 4))
         grid_row += 1
