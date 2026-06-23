@@ -23,6 +23,7 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_in_progress.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_API_KEY_PATH = CONFIG_DIR / "waha_api_key.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
@@ -217,6 +218,7 @@ def process_snapshot() -> dict[str, bool]:
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
         "request": REQUEST_FLAG.exists(),
+        "update_in_progress": UPDATE_IN_PROGRESS_FLAG.exists(),
         # Additional runners that should be stopped by pc_stop_run_all.sh
         "updater": updater,
         "webhook": webhook,
@@ -239,7 +241,7 @@ def percent_value(progress: dict[str, str]) -> int:
 # the passive webhook listener must NOT count — otherwise the monitor detects
 # ITSELF as running and "done" is never reached, so the finish countdown never
 # appears.
-WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request")
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request", "update_in_progress")
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
