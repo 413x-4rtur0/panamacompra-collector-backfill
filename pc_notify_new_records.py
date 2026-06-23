@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Send rich PanamaCompra "what is new" notifications to WhatsApp via WAHA.
 
-Two paths use the helpers here:
-
-* Real time (preferred): ``pc_detail_downloader.py`` calls ``notify_saved_record``
-  immediately after each individual detail page is downloaded and saved, so one
-  "🟢 NUEVA OPORTUNIDAD DETECTADA" message goes out per new record as soon as its
-  detail (and therefore all of its fields) is available — then it moves on to the
-  next new entry and repeats.
-* End of run: the worker calls this script with ``--idle`` when a run found no new
-  records (sends one "⚪ Sin nuevas entradas" status) or ``--flush`` to announce
-  any saved record whose real-time send failed (a safety net).
+The run-all worker calls this script after detail and calendar processing.
+``--announce`` sends one rich "🟢 NUEVA OPORTUNIDAD DETECTADA" message per saved
+record with monitor-visible progress; ``--idle`` sends one "⚪ Sin nuevas
+entradas" status; ``--flush`` retries saved records that still have no
+``notified_at`` timestamp.
 
 Design notes
 ------------
@@ -83,7 +78,7 @@ def waha_enabled() -> bool:
 
 
 def waha_destination() -> str:
-    return os.environ.get("PC_WAHA_CHAT_ID", "").strip() or waha.saved_chat_id()
+    return os.environ.get("PC_WAHA_CHAT_ID", "").strip()
 
 
 def load_keywords() -> list[str]:
@@ -264,9 +259,9 @@ def ensure_baseline(conn) -> bool:
 
 
 def notify_saved_record(conn, numero: str) -> bool:
-    """Announce a single just-saved record in real time. Idempotent: a record is
-    sent at most once (guarded by notified_at). Returns True if a message was
-    sent. Designed to be called right after a detail is saved; never raises."""
+    """Announce a single saved record. Idempotent: a record is sent at most
+    once (guarded by notified_at). Returns True if a message was sent. Never
+    raises, so messaging failures do not break collection runs."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
@@ -289,7 +284,7 @@ def notify_saved_record(conn, numero: str) -> bool:
         mark_notified(conn, numero)
         return True
     except Exception as exc:  # noqa: BLE001 - defensive: never break a download
-        print(f"WAHA per-detail notify error for {numero}: {exc}", file=sys.stderr)
+        print(f"WAHA record notify error for {numero}: {exc}", file=sys.stderr)
         return False
 
 
@@ -323,8 +318,8 @@ def notify_status_change(conn, numero: str) -> bool:
 
 
 def flush_unannounced(conn) -> int:
-    """Announce any saved records that were not yet sent (e.g. a real-time send
-    failed because WAHA was briefly unreachable). Returns the number sent."""
+    """Announce any saved records that were not yet sent (for example because
+    WAHA was briefly unreachable). Returns the number sent."""
     rows = conn.execute(
         "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
         "ORDER BY detail_saved_at, first_seen"
@@ -431,7 +426,7 @@ def announce_with_progress(conn) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
-    parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent in real time (safety net)")
+    parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent (safety net)")
     parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
     args = parser.parse_args(argv)
 
@@ -439,7 +434,7 @@ def main(argv=None) -> int:
         print("WAHA notification skipped: set PC_WAHA_ENABLED=1 to enable.")
         return 0
     if not waha_destination():
-        print("WAHA notification skipped: no chat id (PC_WAHA_CHAT_ID or data/config/waha_chat_id.txt).")
+        print("WAHA notification skipped: PC_WAHA_CHAT_ID is not set.")
         return 0
 
     conn = pc_common.init_db()
@@ -466,7 +461,7 @@ def main(argv=None) -> int:
         announce_with_progress(conn)
         return 0
 
-    # Default / --flush: announce stragglers (e.g. a real-time send failed).
+    # Default / --flush: announce stragglers (for example after WAHA failed).
     sent = flush_unannounced(conn)
     print(f"WAHA flush complete: {sent} record(s) announced.")
     return 0

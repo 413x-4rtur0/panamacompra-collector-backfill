@@ -36,10 +36,9 @@ notify_waha() {
   fi
 }
 
-# Send the rich "new opportunity" / "no new entries" WhatsApp messages. New
-# records are announced in real time by pc_detail_downloader.py as each detail
-# saves; here we only send the "Sin nuevas entradas" status when a run found
-# nothing new, or flush any record whose real-time send failed.
+# Send rich WhatsApp messages after detail and calendar processing. This keeps
+# downloads free of mid-stream notification side effects and lets the monitor
+# show each outbound message in the dedicated MESSAGING step.
 notify_new_records() {
   if [ -x ./pc_notify_new_records.py ]; then
     "$PYTHON_BIN" ./pc_notify_new_records.py "$@" >> "$WORKER_LOG" 2>&1 || true
@@ -146,10 +145,8 @@ while true; do
       # untracked files or no network) made the worker "do nothing". Warn and keep
       # going with the code already on disk so the run still collects data.
       write_progress "UPDATE" "RUNNING" "5" "Pre-run update failed with exit=$UPDATE_EXIT; continuing this run with the current local code." "$(date '+%Y-%m-%d %H:%M:%S')"
-      notify_waha "update" "FAILED" "Pre-run local update failed with exit=$UPDATE_EXIT. Continuing the run with the current local code."
       log "ITERATION $ITERATION pre-run local update failed with exit=$UPDATE_EXIT; continuing with current code."
     else
-      notify_waha "update" "DONE" "Pre-run local update completed for iteration $ITERATION."
       log "ITERATION $ITERATION pre-run local update completed."
     fi
   fi
@@ -158,12 +155,6 @@ while true; do
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
-  # Send the WhatsApp opportunity messages in the dedicated, monitor-visible
-  # MESSAGING step (below) instead of silently during the detail download, so the
-  # monitor shows them going out one by one. Set PC_WAHA_REALTIME_PER_DETAIL=1 to
-  # restore the old real-time-per-detail behaviour.
-  export PC_WAHA_REALTIME_PER_DETAIL="${PC_WAHA_REALTIME_PER_DETAIL:-0}"
-
   {
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION STARTED: $STARTED"
@@ -173,8 +164,6 @@ while true; do
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  notify_waha "start" "RUNNING" "Run-all iteration $ITERATION started with detail_limit=$DETAIL_LIMIT."
-
   write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
 
   {
@@ -263,7 +252,6 @@ PY
 
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
     write_progress "DONE" "DONE" "100" "Index, detail and calendar packages completed successfully." "$STARTED"
-    notify_waha "done" "DONE" "Iteration $ITERATION completed successfully."
     log "ITERATION $ITERATION finished successfully."
   elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
     write_progress "CALENDAR" "FAILED" "98" "Detail finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
