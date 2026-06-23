@@ -52,7 +52,7 @@ services:
     image: devlikeapro/waha:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${WAHA_PORT:-3000}:3000"
     environment:
       # Optional API key; when set, pass the same value as PC_WAHA_API_KEY to the
       # collector so it can authenticate to /api/sendText.

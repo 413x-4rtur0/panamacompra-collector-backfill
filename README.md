@@ -907,13 +907,15 @@ into one reproducible stack:
 |---------|-------|---------|
 | `changedetection` | `dgtlmoon/changedetection.io` | Watches the PanamaCompra table and fires the webhook. UI on `http://localhost:5000`. |
 | `sockpuppetbrowser` | `dgtlmoon/sockpuppetbrowser` | Headless Chromium that renders the JavaScript watch page for changedetection. |
-| `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:3000` (scan the QR once to log in). |
+| `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:${WAHA_PORT:-3000}` (scan the QR once to log in). |
 | `webhook` | built from `docker/Dockerfile.webhook` | `webhook_listener.py` in **enqueue-only** mode on port `8765`. |
 
 ```bash
 cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
 printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
-docker compose up -d            # changedetection + browser + waha + webhook
+docker compose up -d webhook changedetection   # webhook + changedetection + browser
+docker compose up -d waha                      # add WAHA if host port 3000 is free
+# If another WAHA already owns port 3000: WAHA_PORT=3001 docker compose up -d waha
 # Runtime volumes live under ./integrations/changedetection and ./integrations/waha
 ```
 
@@ -940,22 +942,32 @@ If changedetection is running in Docker Compose, prefer `webhook:8765`. Using
 host listener instead; that is only for the all-host setup. The listener returns
 HTTP 202 before starting work and ignores the large changedetection JSON body, so
 short changedetection read timeouts should not block the notification request.
+If Apprise/changedetection still logs a huge payload (`message` length near
+200,000) or a 4-second read timeout, the notification URL is still using the old
+`format=html&overflow=upstream` style; replace it with the `format=text` +
+`overflow=truncate` URL above.
 
 If you previously split the stack into separate folders such as
-`/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and
-`/Apps/waha`, consolidate them into `/Apps/panamacompra-collector/integrations/` so Docker
-volumes, `.webhook_token`, queue files, and the updated listener all refer to the
-same checkout. The helper also supports compatibility symlinks for the old paths:
+`~/Apps/panamacompra-monitor`, `~/Apps/panamacompra-webhook-receiver`,
+`~/Apps/waha`, or the same names under `/Apps`, consolidate them into the
+collector checkout's `integrations/` folder so Docker volumes, `.webhook_token`,
+queue files, and the updated listener all refer to the same checkout. The helper
+defaults to the `Apps` directory that contains the script (for example
+`~/Apps/panamacompra-collector` stays under `~/Apps`, not `/Apps`) and also
+supports compatibility symlinks for the old paths:
 
 ```bash
 # Review first; no files are changed.
-./pc_migrate_apps_layout.sh --apps-root /Apps --collector /Apps/panamacompra-collector
+./pc_migrate_apps_layout.sh
 
 # Copy legacy data into this repo layout.
-./pc_migrate_apps_layout.sh --apply --apps-root /Apps --collector /Apps/panamacompra-collector
+./pc_migrate_apps_layout.sh --apply
 
 # Optional: replace old folders with symlinks after backing them up.
-./pc_migrate_apps_layout.sh --apply --link-legacy --apps-root /Apps --collector /Apps/panamacompra-collector
+./pc_migrate_apps_layout.sh --apply --link-legacy
+
+# Override only when the target is really /Apps instead of ~/Apps.
+./pc_migrate_apps_layout.sh --apply --apps-root /Apps --collector /Apps/panamacompra-collector
 ```
 
 Run the host runner as a user service so requests are always picked up:
@@ -1015,7 +1027,11 @@ python webhook_listener.py
 The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
 202 immediately, before queueing/starting collector work. For Docker Compose use
 `json://webhook:8765/...` with `format=text&overflow=truncate&rto=15&cto=10`; use `host.docker.internal:8765` only when you are
-intentionally targeting a listener running on the host.
+intentionally targeting a listener running on the host. If
+`curl http://127.0.0.1:8765/health` returns JSON naming the old
+`panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
+host listener; stop that service/container or choose a free `PC_WEBHOOK_PORT`
+before starting the new listener.
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
@@ -1188,16 +1204,24 @@ PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 ./pc_follow_run_all.sh
 ```
 
-**Webhook does not trigger the collector** — first distinguish reachability from token
-validation. `Connection refused to host.docker.internal:8765` means changedetection.io
-could not connect to the listener at all; a wrong token reaches the listener and returns
-`403 Forbidden`. Run the diagnostic/fix helper, then check logs:
+**Webhook does not trigger the collector** — first distinguish reachability, token
+validation, and container startup. `Connection refused to host.docker.internal:8765`
+means changedetection.io could not connect to the listener at all; a wrong token
+reaches the listener and returns `403 Forbidden` / `Rejected path`. If the logs show
+`Rejected path: /panamacompra/<old-token>`, update the changedetection notification
+URL with the current value from `cat .webhook_token`. If `docker compose up` fails
+with `Bind for 0.0.0.0:3000 failed: port is already allocated`, another WAHA
+instance is already using port 3000; either keep that instance and start only
+`webhook changedetection`, or run compose WAHA on another host port with
+`WAHA_PORT=3001 docker compose up -d waha`. Run the diagnostic/fix helper, then
+check logs:
 
 ```bash
 ./pc_webhook_diagnostic.sh
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
 tail -80 data/logs/run_all_requests.log
+./pc_queue_status.sh
 ```
 
 If local curl returns `202` but the Docker test fails, add

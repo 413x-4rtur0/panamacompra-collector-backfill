@@ -4,7 +4,22 @@ set -euo pipefail
 # Consolidate older split PanamaCompra app folders into this checkout.
 # Default is DRY-RUN. Use --apply to copy/link files.
 
-APPS_ROOT="${APPS_ROOT:-/Apps}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+DEFAULT_APPS_ROOT=""
+case "$SCRIPT_DIR" in
+  */Apps/panamacompra-collector) DEFAULT_APPS_ROOT="$(dirname "$SCRIPT_DIR")" ;;
+  *)
+    if [ -d "$HOME/Apps/panamacompra-collector" ]; then
+      DEFAULT_APPS_ROOT="$HOME/Apps"
+    elif [ -d "/Apps/panamacompra-collector" ]; then
+      DEFAULT_APPS_ROOT="/Apps"
+    else
+      DEFAULT_APPS_ROOT="$HOME/Apps"
+    fi
+    ;;
+esac
+
+APPS_ROOT="${APPS_ROOT:-$DEFAULT_APPS_ROOT}"
 COLLECTOR_DIR="${COLLECTOR_DIR:-$APPS_ROOT/panamacompra-collector}"
 APPLY=0
 LINK_LEGACY=0
@@ -37,7 +52,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-CURRENT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+CURRENT_DIR="$SCRIPT_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
 say() { printf '%s\n' "$*"; }
@@ -99,6 +114,7 @@ link_legacy_dir() {
 
 say "PanamaCompra /Apps layout consolidation"
 say "Current checkout: $CURRENT_DIR"
+say "Detected Apps root: $APPS_ROOT"
 say "Target collector: $COLLECTOR_DIR"
 [ "$APPLY" = "1" ] || say "Mode: DRY-RUN (add --apply to change files)"
 [ "$APPLY" = "1" ] && say "Mode: APPLY"
@@ -133,9 +149,12 @@ link_legacy_dir "$COLLECTOR_DIR/docker/waha-sessions" "$COLLECTOR_DIR/integratio
 say ""
 say "Next recommended checks:"
 say "  cd $COLLECTOR_DIR"
-say "  docker compose up -d webhook changedetection waha"
-say "  ./pc_start_webhook_listener.sh   # only for all-host / host.docker.internal mode"
+say "  docker compose up -d webhook changedetection"
+say "  docker compose up -d waha                  # if host port 3000 is free"
+say "  WAHA_PORT=3001 docker compose up -d waha  # if port 3000 is already used"
+say "  ./pc_start_webhook_listener.sh            # only for all-host / host.docker.internal mode"
 say "  ./pc_webhook_diagnostic.sh"
+say "  ./pc_queue_status.sh"
 say ""
 say "changedetection URL guidance:"
 say "  Docker Compose path: json://webhook:8765/panamacompra/<TOKEN>?method=POST&format=text&overflow=truncate&rto=15&cto=10"
