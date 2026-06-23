@@ -1,0 +1,19 @@
+# Minimal container for the PanamaCompra webhook listener (enqueue-only mode).
+#
+# It deliberately carries no Playwright/Firefox: the listener only receives the
+# changedetection.io notification and records a run request into the shared
+# ./data/queue volume. The actual collection runs on the host. The repository is
+# bind-mounted at /app by docker-compose, so the image stays tiny and always runs
+# the current webhook_listener.py without a rebuild.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# webhook_listener.py uses only the Python standard library, so there are no pip
+# dependencies to install here.
+
+EXPOSE 8765
+
+# PC_WEBHOOK_ENQUEUE_ONLY=1 is set by docker-compose; the listener then writes the
+# request flag instead of trying to start the host worker.
+CMD ["python", "webhook_listener.py"]

@@ -168,6 +168,36 @@ def build_empty_message(records_checked: int) -> str:
     )
 
 
+# Human-readable label for a pending_status_change code stored by the index step.
+STATUS_CHANGE_LABELS = {
+    "abierta": "Programada → Abierta",
+    "cancelada": "Programada → Cancelada",  # planned future transition
+}
+
+
+def build_status_change_message(row, summary: dict, change_code: str) -> str:
+    title = clean_field(row["descripcion"] or row["short_description"] or summary.get("descripcion"))
+    entity = clean_field(row["entidad"] or summary.get("entidad"))
+    closing_date = clean_field(row["finish_date_guess"])
+    url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
+    change_label = STATUS_CHANGE_LABELS.get(change_code, change_code or DASH)
+    return (
+        "🔄 OPORTUNIDAD ACTUALIZADA\n"
+        "\n"
+        f"📌 Fuente: {SOURCE_NAME}\n"
+        f"🏷️ Título: {title}\n"
+        f"🏢 Entidad: {entity}\n"
+        f"🔁 Estado: {change_label}\n"
+        f"⏰ Cierre: {closing_date}\n"
+        "\n"
+        "🔗 Ver oportunidad:\n"
+        f"{url}\n"
+        "\n"
+        f"🕒 Actualizado: {now_str()}\n"
+        f"🆔 ID: {clean_field(row['numero'])}"
+    )
+
+
 def mark_notified(conn, numero: str) -> None:
     conn.execute("UPDATE opportunities SET notified_at = ? WHERE numero = ?", (now_str(), numero))
     conn.commit()
@@ -263,6 +293,35 @@ def notify_saved_record(conn, numero: str) -> bool:
         return False
 
 
+def clear_status_change(conn, numero: str) -> None:
+    conn.execute("UPDATE opportunities SET pending_status_change = NULL WHERE numero = ?", (numero,))
+    conn.commit()
+
+
+def notify_status_change(conn, numero: str) -> bool:
+    """Announce a single record's status transition (e.g. Programada → Abierta).
+    Idempotent: clears the pending flag whether or not a message is sent. Returns
+    True only when a message was actually sent. Never raises."""
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or not row["pending_status_change"]:
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        # Respect the same keyword filter as new records.
+        if match_line_for(row, summary, load_keywords()) is None:
+            clear_status_change(conn, numero)
+            return False
+        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]))
+        if sent:
+            clear_status_change(conn, numero)
+        return sent
+    except Exception as exc:  # noqa: BLE001 - never break a run
+        print(f"WAHA status-change notify error for {numero}: {exc}", file=sys.stderr)
+        return False
+
+
 def flush_unannounced(conn) -> int:
     """Announce any saved records that were not yet sent (e.g. a real-time send
     failed because WAHA was briefly unreachable). Returns the number sent."""
@@ -277,10 +336,103 @@ def flush_unannounced(conn) -> int:
     return sent
 
 
+def _short_label(row) -> str:
+    """One-line 'NUMERO — description' label for the monitor message line."""
+    numero = clean_field(row["numero"])
+    desc = clean_field(row["descripcion"] or row["short_description"])
+    return f"{numero} {DASH} {desc}"
+
+
+def _one_line_preview(text: str, limit: int = 160) -> str:
+    """Collapse the multi-line WhatsApp body to a single readable line for the
+    monitor's progress file (which is parsed line by line)."""
+    flat = " · ".join(part.strip() for part in text.splitlines() if part.strip())
+    return (flat[: limit - 1] + "…") if len(flat) > limit else flat
+
+
+def announce_with_progress(conn) -> int:
+    """Visible MESSAGING step. After the detail download, send — one by one with
+    per-message monitor progress — a message for every:
+
+      * new entry (🟢 NUEVA OPORTUNIDAD DETECTADA), and
+      * status change (🔄 OPORTUNIDAD ACTUALIZADA, e.g. Programada → Abierta).
+
+    When there is nothing to send it publishes the "Sin nuevas entradas" status.
+    Returns the number of messages actually sent. Never raises."""
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "4")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "5")
+
+    # ("new", numero) then ("update", numero), oldest first within each group.
+    new_rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
+        "ORDER BY detail_saved_at, first_seen"
+    ).fetchall()
+    update_rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE pending_status_change IS NOT NULL "
+        "ORDER BY last_seen, first_seen"
+    ).fetchall()
+    queue = [("new", r["numero"]) for r in new_rows] + [("update", r["numero"]) for r in update_rows]
+    total = len(queue)
+
+    if total == 0:
+        total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+        send_text("none", build_empty_message(total_records))
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", 98,
+            "Step 4/5: no new opportunities or status changes to send.",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=0, records_new=0,
+        )
+        return 0
+
+    sent = 0
+    skipped = 0
+    for index, (kind, numero) in enumerate(queue, start=1):
+        full_row = fetch_row(conn, numero)
+        label = _short_label(full_row) if full_row is not None else numero
+        summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
+        if kind == "update":
+            change = full_row["pending_status_change"] if full_row is not None else ""
+            verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
+            preview = f"🔄 {label} ({verb})"
+        else:
+            match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+            preview = (
+                _one_line_preview(build_opportunity_message(full_row, summary, match_line))
+                if (full_row is not None and match_line is not None)
+                else f"{label} (sin coincidencia de palabra clave)"
+            )
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING",
+            min(99, 96 + int(3 * index / total)),
+            f"Step 4/5: sending WhatsApp {index}/{total} ({kind}): {label}",
+            step_current=step_current, step_total=step_total,
+            item_current=index, item_total=total,
+            records_new=total, records_saved=sent,
+            extra=preview,
+        )
+        ok = notify_status_change(conn, numero) if kind == "update" else notify_saved_record(conn, numero)
+        if ok:
+            sent += 1
+        else:
+            skipped += 1
+
+    pc_common.write_run_progress(
+        "MESSAGING", "RUNNING", 99,
+        f"Step 4/5: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows)} updates).",
+        step_current=step_current, step_total=step_total,
+        item_current=total, item_total=total,
+        records_new=len(new_rows), records_saved=sent,
+    )
+    print(f"WAHA announce complete: {sent} sent, {skipped} skipped of {total}.")
+    return sent
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
     parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent in real time (safety net)")
+    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
     args = parser.parse_args(argv)
 
     if not waha_enabled():
@@ -301,10 +453,20 @@ def main(argv=None) -> int:
         send_text("none", build_empty_message(total_records))
         return 0
 
-    # Default / --flush: announce stragglers (normally none, since records are
-    # announced in real time as each detail saves).
     if just_baselined:
+        # Nothing to announce on the very first run that established the baseline;
+        # also drop any status-change flags so the baseline run stays silent.
+        conn.execute("UPDATE opportunities SET pending_status_change = NULL")
+        conn.commit()
         return 0
+
+    if args.announce:
+        # Visible MESSAGING step: send every new record and status change one by
+        # one with per-message progress.
+        announce_with_progress(conn)
+        return 0
+
+    # Default / --flush: announce stragglers (e.g. a real-time send failed).
     sent = flush_unannounced(conn)
     print(f"WAHA flush complete: {sent} record(s) announced.")
     return 0

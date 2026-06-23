@@ -11,9 +11,11 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -26,6 +28,9 @@ REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
+# Archive database read (read-only) to populate the record-index selector with
+# the collected opportunities (NUMERO + description + folder/link).
+ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 # Editable settings the user can change from the monitor's Settings panel. Saved
 # here as KEY=VALUE and consulted at startup (and by the WAHA notifier) so the
 # choices survive restarts. Precedence everywhere is: real environment variable >
@@ -190,6 +195,97 @@ def tail(path: Path, lines: int) -> str:
     return "\n".join(content[-lines:])
 
 
+def load_record_index(limit: int = 500) -> list[dict[str, str]]:
+    """Read collected records (NUMERO + description + folder/link) from the
+    archive DB for the monitor's record-index selector. Newest first.
+
+    Never raises: a missing, empty or locked database simply yields an empty
+    list so the monitor keeps working before the collector has ever run.
+    """
+    if not ARCHIVE_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT numero, "
+            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
+            "COALESCE(record_folder, '') AS record_folder, "
+            "COALESCE(link, '') AS link, "
+            "COALESCE(detail_status, '') AS detail_status, "
+            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "FROM opportunities "
+            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    return [
+        {
+            "numero": str(row["numero"] or ""),
+            "descripcion": str(row["descripcion"] or ""),
+            "record_folder": str(row["record_folder"] or ""),
+            "link": str(row["link"] or ""),
+            "detail_status": str(row["detail_status"] or ""),
+            "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or ""),
+        }
+        for row in rows
+    ]
+
+
+# How many days ahead still counts as "next to expire" (amber) instead of a calm
+# "upcoming" (green). Records past their DTEND are "expired" (red).
+SOON_DAYS = setting_int("PC_MONITOR_DEADLINE_SOON_DAYS", 7, minimum=1)
+STATUS_COLORS = {"expired": "#fca5a5", "soon": "#fcd34d", "upcoming": "#86efac", "unknown": "#94a3b8"}
+STATUS_TAGS = {"expired": "EXPIRED", "soon": "SOON", "upcoming": "ok", "unknown": "no date"}
+# Friendly labels for the status selector, mapped back to the internal keys.
+STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming")
+STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming"}
+
+
+def parse_deadline(rec: dict[str, str]) -> datetime | None:
+    """The record's DTEND/deadline (finish_date_guess 'YYYY-MM-DD_HH:MM'), or None."""
+    raw = (rec.get("finish_date_guess") or "").strip().replace("_", " ")
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def deadline_text(rec: dict[str, str]) -> str:
+    dt = parse_deadline(rec)
+    return dt.strftime("%Y-%m-%d %H:%M") if dt else "—"
+
+
+def downloaded_text(rec: dict[str, str]) -> str:
+    raw = (rec.get("detail_saved_at") or "").strip()
+    return raw[:16].replace("T", " ") if raw else "—"
+
+
+def expiry_status(rec: dict[str, str], now: datetime | None = None) -> str:
+    dt = parse_deadline(rec)
+    if dt is None:
+        return "unknown"
+    now = now or datetime.now()
+    if dt < now:
+        return "expired"
+    if dt <= now + timedelta(days=SOON_DAYS):
+        return "soon"
+    return "upcoming"
+
+
 def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
@@ -211,6 +307,8 @@ def process_snapshot() -> dict[str, bool]:
         "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        # WhatsApp MESSAGING step: visible while the notifier sends messages.
+        "messaging": running("[p]c_notify_new_records.py"),
         "request": REQUEST_FLAG.exists(),
         # Additional runners that should be stopped by pc_stop_run_all.sh
         "updater": updater,
@@ -234,7 +332,7 @@ def percent_value(progress: dict[str, str]) -> int:
 # the passive webhook listener must NOT count — otherwise the monitor detects
 # ITSELF as running and "done" is never reached, so the finish countdown never
 # appears.
-WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request")
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "messaging", "test_run", "updater", "request")
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -365,6 +463,32 @@ def run_tk() -> int:
     style.configure("Message.TLabel", background="#111827", foreground="#fef3c7", font=("Sans", 11, "bold"))
     style.configure("Done.TLabel", background="#111827", foreground="#bbf7d0", font=("Sans", 10, "bold"))
     style.configure("Horizontal.TProgressbar", thickness=26)
+    # Flat, rounded-feeling buttons with clear primary/danger variants and a
+    # readable disabled state, plus matching scrollbars, radios and entries so
+    # the whole window shares one cohesive dark style.
+    style.configure("TButton", padding=(12, 6), relief="flat", borderwidth=0,
+                    background="#334155", foreground="#e5e7eb", font=("Sans", 10))
+    style.map("TButton",
+              background=[("active", "#475569"), ("disabled", "#1f2937")],
+              foreground=[("disabled", "#6b7280")])
+    style.configure("Accent.TButton", background="#2563eb", foreground="#ffffff", font=("Sans", 10, "bold"))
+    style.map("Accent.TButton",
+              background=[("active", "#1d4ed8"), ("disabled", "#1e293b")],
+              foreground=[("disabled", "#6b7280")])
+    style.configure("Danger.TButton", background="#dc2626", foreground="#ffffff", font=("Sans", 10, "bold"))
+    style.map("Danger.TButton",
+              background=[("active", "#b91c1c"), ("disabled", "#3f1d1d")],
+              foreground=[("disabled", "#9ca3af")])
+    style.configure("Vertical.TScrollbar", background="#334155", troughcolor="#0f172a",
+                    arrowcolor="#94a3b8", borderwidth=0, relief="flat")
+    style.map("Vertical.TScrollbar", background=[("active", "#475569")])
+    style.configure("Card.TRadiobutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
+    style.map("Card.TRadiobutton",
+              background=[("active", "#111827")],
+              foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
+    style.configure("TEntry", fieldbackground="#020617", foreground="#e5e7eb",
+                    bordercolor="#475569", insertcolor="#e5e7eb")
+    style.map("TEntry", fieldbackground=[("readonly", "#0b1220")], foreground=[("readonly", "#e5e7eb")])
 
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
@@ -378,7 +502,7 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    content.rowconfigure(5, weight=1)
+    content.rowconfigure(6, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -392,11 +516,23 @@ def run_tk() -> int:
         # Windows/macOS deliver <MouseWheel> with a signed event.delta instead.
         num = getattr(event, "num", 0)
         if num == 4:
-            canvas.yview_scroll(-3, "units")
+            step = -3
         elif num == 5:
-            canvas.yview_scroll(3, "units")
+            step = 3
         elif event.delta:
-            canvas.yview_scroll(int(-1 * (event.delta / 120)) * 3, "units")
+            step = int(-1 * (event.delta / 120)) * 3
+        else:
+            return
+        # If the pointer is over an inner Listbox (the record browser), scroll
+        # that list itself and stop — otherwise the list scroll and the whole-page
+        # scroll fight each other and are impossible to separate.
+        widget = getattr(event, "widget", None)
+        # Over the record list or a log pane, scroll that widget itself so its own
+        # scrollbar moves instead of the whole page fighting with it.
+        if isinstance(widget, (tk.Listbox, tk.Text)):
+            widget.yview_scroll(step, "units")
+            return "break"
+        canvas.yview_scroll(step, "units")
 
     content.bind("<Configure>", update_scroll_region)
     canvas.bind("<Configure>", resize_content)
@@ -422,8 +558,32 @@ def run_tk() -> int:
     ttk.Label(header, textvariable=message_var, style="Message.TLabel", wraplength=900).grid(row=3, column=0, sticky="w", pady=(8, 4))
     done_var = tk.StringVar(value="")
     ttk.Label(header, textvariable=done_var, style="Done.TLabel").grid(row=4, column=0, sticky="w")
-    processes_var = tk.StringVar(value="")
-    ttk.Label(header, textvariable=processes_var, style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
+    # Process status used to be one long wrapped line ("normal_run: off  test_run:
+    # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
+    # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
+    ttk.Label(header, text="Processes", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    process_frame = ttk.Frame(header, style="Card.TFrame")
+    process_frame.grid(row=6, column=0, sticky="ew")
+    process_chips: dict[str, tk.Label] = {}
+    PROCESS_CHIP_COLUMNS = 5
+    for col in range(PROCESS_CHIP_COLUMNS):
+        process_frame.columnconfigure(col, weight=1, uniform="proc")
+
+    def update_process_chips(processes: dict[str, bool]) -> None:
+        for idx, (name, value) in enumerate(processes.items()):
+            chip = process_chips.get(name)
+            if chip is None:
+                chip = tk.Label(process_frame, anchor="w", padx=8, pady=2,
+                                font=("Sans", 8, "bold"), borderwidth=0)
+                chip.grid(row=idx // PROCESS_CHIP_COLUMNS,
+                          column=idx % PROCESS_CHIP_COLUMNS,
+                          sticky="ew", padx=2, pady=2)
+                process_chips[name] = chip
+            chip.configure(
+                text=f"{name}: {'RUNNING' if value else 'off'}",
+                bg="#14532d" if value else "#1f2937",
+                fg="#bbf7d0" if value else "#9ca3af",
+            )
 
     # ========================================================================
     # SECTION 1: RUN CONTROLS - request a live or test-zone run
@@ -449,25 +609,54 @@ def run_tk() -> int:
         button_status_var.set(f"Live run requested with detail limit {limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+    # Mode is a pair of radio toggles (live = real pipeline, test = sandbox) and
+    # the Limit entry is wide enough for large counts. The whole row is disabled
+    # while a collection is active (e.g. a webhook-triggered run) so you cannot
+    # change mode or queue a conflicting run mid-flight; it re-enables when idle.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    mode_box = ttk.Combobox(controls, textvariable=run_mode_var, values=("live", "test"), width=8, state="readonly")
-    mode_box.grid(row=1, column=1, sticky="w", padx=(0, 8))
-    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=2, sticky="e")
-    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=8)
-    limit_entry.grid(row=1, column=3, sticky="w", padx=(6, 8))
-    run_button = ttk.Button(controls, text="Request selected run", command=request_run_now)
-    run_button.grid(row=1, column=4, sticky="w")
+    live_radio = ttk.Radiobutton(controls, text="live", value="live", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio.grid(row=1, column=1, sticky="w")
+    test_radio = ttk.Radiobutton(controls, text="test", value="test", variable=run_mode_var, style="Card.TRadiobutton")
+    test_radio.grid(row=1, column=2, sticky="w", padx=(0, 16))
+    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=3, sticky="e")
+    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=10)
+    limit_entry.grid(row=1, column=4, sticky="w", padx=(6, 16))
+    run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
+    run_button.grid(row=1, column=5, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-    add_tooltip(mode_box, "live = the normal collector pipeline (real archive). test = the isolated test zone (records_test/), real archive untouched.")
+    add_tooltip(live_radio, "live = the normal collector pipeline (real archive).")
+    add_tooltip(test_radio, "test = the isolated test zone (records_test/), real archive untouched.")
     add_tooltip(limit_entry, "Maximum detail pages (live) or sandbox records (test) to process this run.")
-    add_tooltip(run_button, "Queue the selected run with the chosen mode and limit.")
+    add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
+
+    # Keys that mean "real collection work is happening". A webhook-triggered run
+    # shows up here (worker/index/detail/...), so the run controls lock while any
+    # of them are active and unlock once the run is fully idle.
+    run_control_widgets = (live_radio, test_radio, limit_entry, run_button)
+
+    def update_run_controls(snap: dict[str, object]) -> None:
+        processes = snap.get("processes", {}) or {}
+        busy = any(processes.get(key) for key in WORK_PROCESS_KEYS)
+        target_state = "disabled" if busy else "normal"
+        for widget in run_control_widgets:
+            try:
+                widget.configure(state=target_state)
+            except tk.TclError:
+                pass
+        if busy:
+            run_button.configure(text="Run in progress…")
+        else:
+            run_button.configure(text="Request selected run")
 
     # ========================================================================
-    # SECTION 2: SETTINGS - editable fields with defaults; leave as-is to keep
+    # SECTION 3: SETTINGS - editable fields with defaults; leave as-is to keep
     # the defaults. Saved to data/config/monitor_settings.env and applied live.
+    # (Rendered at grid row 3, below the Live diagnostics section.)
     # ========================================================================
     settings = ttk.Frame(content, style="Card.TFrame", padding=14)
-    settings.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    # Live diagnostics sits at row 2 (directly under Run controls); Settings moves
+    # to row 3, so the live run status is visible without scrolling past Settings.
+    settings.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
     settings.columnconfigure(1, weight=1)
     settings.columnconfigure(3, weight=1)
 
@@ -551,43 +740,262 @@ def run_tk() -> int:
         _SETTINGS_FILE.update(merged)
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
-    apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings)
+    apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
     ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
-    # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
-    # This section shows real-time status of the collector process
+    # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
+    # Rendered at grid row 2 (directly under Run controls) so the live run status
+    # is the third section on screen, above Settings.
     # ========================================================================
     diag = ttk.Frame(content, style="Card.TFrame", padding=14)
-    diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
-    for col in range(4):
-        diag.columnconfigure(col, weight=1)
+    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    # Keep the two label columns narrow and let the two value columns absorb the
+    # remaining width, so large counters and long descriptions stay readable.
+    diag.columnconfigure(0, weight=0, minsize=130)
+    diag.columnconfigure(1, weight=1, minsize=200)
+    diag.columnconfigure(2, weight=0, minsize=130)
+    diag.columnconfigure(3, weight=1, minsize=200)
 
+    ttk.Label(diag, text="Live diagnostics", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+    # Fields are grouped left-to-right, top-to-bottom: lifecycle, progress,
+    # timing, then record counters. "Extra" is rendered separately on its own
+    # full-width row because it can hold a long human-readable note.
     fields = [
-        ("Phase", "PHASE"), ("Status", "STATUS"), ("Mode", "MODE"), ("Step", "STEP"), ("Item", "ITEM"),
-        ("Detail limit", "DETAIL_LIMIT"), ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
-        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"), ("Existing", "RECORDS_EXISTING"),
-        ("Saved/skipped", "RECORDS_SAVED"), ("Failures", "RECORDS_FAILED"),
-        ("Pending", "RECORDS_PENDING"), ("Test", "RECORDS_TEST"), ("Extra", "EXTRA"),
+        ("Phase", "PHASE"), ("Status", "STATUS"),
+        ("Mode", "MODE"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Step", "STEP"), ("Item", "ITEM"),
+        ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
+        ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),
+        ("Existing", "RECORDS_EXISTING"), ("Saved/skipped", "RECORDS_SAVED"),
+        ("Failures", "RECORDS_FAILED"), ("Pending", "RECORDS_PENDING"),
+        ("Test", "RECORDS_TEST"),
     ]
+    # Values are read-only Entry widgets (not Labels) so the operator can select
+    # and copy any phase/count/timestamp for further actions; readonly keeps them
+    # uneditable while still selectable. Tighter pady reduces the old line crowd.
     diag_vars: dict[str, tk.StringVar] = {}
     for idx, (label, key) in enumerate(fields):
-        row = idx // 2
+        row = idx // 2 + 1  # row 0 holds the section title
         col = (idx % 2) * 2
-        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(diag, text=f"{label}:", style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=1)
         var = tk.StringVar(value="-")
         diag_vars[key] = var
-        ttk.Label(diag, textvariable=var, style="Card.TLabel", wraplength=320).grid(row=row, column=col + 1, sticky="w", pady=2)
+        ttk.Entry(diag, textvariable=var, state="readonly").grid(row=row, column=col + 1, sticky="ew", pady=1, padx=(0, 8))
+
+    extra_row = len(fields) // 2 + 2
+    ttk.Label(diag, text="Extra:", style="Card.TLabel").grid(row=extra_row, column=0, sticky="w", padx=(0, 6), pady=1)
+    extra_var = tk.StringVar(value="-")
+    diag_vars["EXTRA"] = extra_var
+    ttk.Entry(diag, textvariable=extra_var, state="readonly").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=1, padx=(0, 8))
 
     # ========================================================================
-    # SECTION 4: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
+    # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
+    # and open its archive folder or the portal page. Populated read-only from
+    # data/panamacompra_archive.db; empty until the collector has run.
+    # ========================================================================
+    record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
+    record_index.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    record_index.columnconfigure(1, weight=1)
+
+    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    # The folder selector is a type-to-filter box plus a dedicated, self-scrolling
+    # list (with its own scrollbar) instead of a dropdown. A dropdown's popup
+    # scroll fought the whole-page scroll and the long "NUMERO — description"
+    # entries were impossible to separate; this list scrolls on its own (see the
+    # Listbox branch in on_mousewheel) and the filter box narrows it instantly.
+    index_records: list[dict[str, str]] = []
+    index_filtered: list[dict[str, str]] = []
+    index_filter_var = tk.StringVar(value="")
+    index_status_var = tk.StringVar(value="All")
+    index_mindate_var = tk.StringVar(value="")
+    index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
+
+    ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    index_filter_entry = ttk.Entry(record_index, textvariable=index_filter_var)
+    index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
+    add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
+
+    # Dates selector: a status filter (expired / next to expire / upcoming) plus a
+    # DTEND date picker. Each row shows its downloaded date and DTEND, colored red
+    # (expired), amber (next to expire) or green (upcoming) so it is obvious at a
+    # glance which records are still actionable.
+    dates_row = ttk.Frame(record_index, style="Card.TFrame")
+    dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+    ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
+    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
+    ttk.Label(dates_row, text="DTEND on/after (YYYY-MM-DD):", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=14)
+    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 8))
+    add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
+    add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
+
+    list_frame = ttk.Frame(record_index, style="Card.TFrame")
+    list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+    list_frame.columnconfigure(0, weight=1)
+    index_listbox = tk.Listbox(
+        list_frame, height=8, activestyle="none", exportselection=False,
+        bg="#020617", fg="#e5e7eb", selectbackground="#2563eb", selectforeground="#ffffff",
+        highlightthickness=0, borderwidth=0,
+    )
+    index_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=index_listbox.yview)
+    index_listbox.configure(yscrollcommand=index_scroll.set)
+    index_listbox.grid(row=0, column=0, sticky="ew")
+    index_scroll.grid(row=0, column=1, sticky="ns")
+
+    # Read-only, selectable Text so the NUMERO/description/dates can be copied for
+    # further actions (search, paste into the portal, etc.).
+    index_detail_text = tk.Text(
+        record_index, height=3, wrap="word", bd=0, highlightthickness=0,
+        bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9),
+    )
+    index_detail_text.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
+    def set_index_detail(text: str) -> None:
+        index_detail_text.configure(state="normal")
+        index_detail_text.delete("1.0", "end")
+        index_detail_text.insert("1.0", text)
+        index_detail_text.configure(state="disabled")
+
+    set_index_detail(index_detail_var.get())
+
+    def index_label(rec: dict[str, str]) -> str:
+        numero = rec["numero"] or "(sin número)"
+        desc = rec["descripcion"] or "(sin descripción)"
+        return f"{numero} — {desc}"
+
+    def index_row_text(rec: dict[str, str]) -> str:
+        """List row prefixed with the DTEND deadline and a status tag."""
+        dt = parse_deadline(rec)
+        dtend = dt.strftime("%y-%m-%d") if dt else "  no date"
+        tag = STATUS_TAGS[expiry_status(rec)]
+        return f"[{dtend} {tag:>7}]  {index_label(rec)}"
+
+    def selected_record() -> dict[str, str] | None:
+        selection = index_listbox.curselection()
+        if not selection:
+            return None
+        idx = selection[0]
+        return index_filtered[idx] if 0 <= idx < len(index_filtered) else None
+
+    def show_selected_detail(_event: object = None) -> None:
+        rec = selected_record()
+        if not rec:
+            return
+        status = f"   ·   detail: {rec['detail_status']}" if rec["detail_status"] else ""
+        set_index_detail(
+            f"NUMERO: {rec['numero']}   ·   {expiry_status(rec).upper()}{status}\n"
+            f"Descripción: {rec['descripcion'] or '-'}\n"
+            f"Downloaded: {downloaded_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
+        )
+
+    def populate_listbox(records: list[dict[str, str]]) -> None:
+        nonlocal index_filtered
+        index_filtered = records
+        index_listbox.delete(0, "end")
+        for idx, rec in enumerate(records):
+            index_listbox.insert("end", index_row_text(rec))
+            index_listbox.itemconfig(idx, foreground=STATUS_COLORS[expiry_status(rec)])
+        if records:
+            index_listbox.selection_clear(0, "end")
+            index_listbox.selection_set(0)
+            index_listbox.see(0)
+            show_selected_detail()
+
+    def apply_filter(*_args: object) -> None:
+        needle = index_filter_var.get().strip().lower()
+        wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
+        min_date = None
+        raw_min = index_mindate_var.get().strip()
+        if raw_min:
+            try:
+                min_date = datetime.strptime(raw_min, "%Y-%m-%d")
+            except ValueError:
+                min_date = None
+
+        records = []
+        for rec in index_records:
+            if needle and needle not in index_label(rec).lower():
+                continue
+            if wanted_status and expiry_status(rec) != wanted_status:
+                continue
+            if min_date is not None:
+                dt = parse_deadline(rec)
+                if dt is None or dt < min_date:
+                    continue
+            records.append(rec)
+
+        # Show the soonest deadlines first so "next to expire" floats to the top;
+        # records without a DTEND sink to the bottom.
+        records.sort(key=lambda r: (parse_deadline(r) or datetime.max))
+        populate_listbox(records)
+        if not records:
+            set_index_detail("No records match the filter." if index_records else
+                             "No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then Refresh list.")
+
+    def refresh_index_list() -> None:
+        nonlocal index_records
+        index_records = load_record_index()
+        apply_filter()
+        if index_records:
+            button_status_var.set(f"Loaded {len(index_records)} record(s) into the index list.")
+
+    def open_selected_folder() -> None:
+        rec = selected_record()
+        if not rec:
+            button_status_var.set("Select a record from the list first.")
+            return
+        folder = rec["record_folder"]
+        if not folder or not Path(folder).exists():
+            button_status_var.set(f"Record folder not found on disk for {rec['numero'] or 'the selection'}.")
+            return
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened record folder for {rec['numero']}.")
+
+    def open_selected_portal() -> None:
+        rec = selected_record()
+        if not rec:
+            button_status_var.set("Select a record from the list first.")
+            return
+        if not rec["link"]:
+            button_status_var.set(f"No portal link stored for {rec['numero'] or 'the selection'}.")
+            return
+        subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opening portal page for {rec['numero']}.")
+
+    index_listbox.bind("<<ListboxSelect>>", show_selected_detail)
+    index_listbox.bind("<Double-Button-1>", lambda _e: open_selected_folder())
+    index_filter_var.trace_add("write", apply_filter)
+    index_status_var.trace_add("write", apply_filter)
+    index_mindate_var.trace_add("write", apply_filter)
+
+    index_buttons = ttk.Frame(record_index, style="Card.TFrame")
+    index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    refresh_index_button = ttk.Button(index_buttons, text="Refresh list", command=refresh_index_list)
+    refresh_index_button.grid(row=0, column=0, padx=(0, 8))
+    open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
+    open_folder_button.grid(row=0, column=1, padx=(0, 8))
+    open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
+    open_portal_button.grid(row=0, column=2, padx=(0, 8))
+    add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
+    add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
+    add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
+
+    refresh_index_list()
+
+    # ========================================================================
+    # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
     # Each button's explanation is shown as a hover tooltip (not an inline label)
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -622,22 +1030,36 @@ def run_tk() -> int:
             col = offset % button_columns
             if offset and col == 0:
                 grid_row += 1
-            button = ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected))
+            button_style = "Danger.TButton" if "STOP" in action.label.upper() else "TButton"
+            button = ttk.Button(actions, text=action.label, command=lambda selected=action: run_manual_action(selected), style=button_style)
             button.grid(row=grid_row, column=col, sticky="ew", padx=4, pady=4)
             add_tooltip(button, action.comment)
         grid_row += 1
 
     logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=5, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=6, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
     ttk.Label(logs, text="Recent worker log").grid(row=0, column=0, sticky="w")
     ttk.Label(logs, text="Current action log").grid(row=0, column=1, sticky="w")
-    worker_text = tk.Text(logs, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
-    current_text = tk.Text(logs, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
-    worker_text.grid(row=1, column=0, sticky="nsew", padx=(0, 7))
-    current_text.grid(row=1, column=1, sticky="nsew", padx=(7, 0))
+
+    # Each log is a fixed-height box WITH its own scrollbar, so the pane scrolls
+    # the log itself (wheel or scrollbar) instead of moving the whole page.
+    def make_log_pane(parent: tk.Widget, grid_col: int, pad: tuple[int, int]) -> tk.Text:
+        frame = ttk.Frame(parent, style="TFrame")
+        frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        text = tk.Text(frame, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
+        bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=bar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        bar.grid(row=0, column=1, sticky="ns")
+        return text
+
+    worker_text = make_log_pane(logs, 0, (0, 7))
+    current_text = make_log_pane(logs, 1, (7, 0))
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
@@ -683,7 +1105,8 @@ def run_tk() -> int:
         active_delay = runtime["idle_refresh"] if snap["done"] else runtime["refresh"]
         meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
-        processes_var.set("  ".join(f"{name}: {'RUNNING' if value else 'off'}" for name, value in snap["processes"].items()))
+        update_process_chips(snap["processes"])
+        update_run_controls(snap)
 
         for key, var in diag_vars.items():
             if key == "STEP":

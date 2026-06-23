@@ -158,6 +158,11 @@ while true; do
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
+  # Send the WhatsApp opportunity messages in the dedicated, monitor-visible
+  # MESSAGING step (below) instead of silently during the detail download, so the
+  # monitor shows them going out one by one. Set PC_WAHA_REALTIME_PER_DETAIL=1 to
+  # restore the old real-time-per-detail behaviour.
+  export PC_WAHA_REALTIME_PER_DETAIL="${PC_WAHA_REALTIME_PER_DETAIL:-0}"
 
   {
     echo "============================================================"
@@ -170,7 +175,7 @@ while true; do
   log "ITERATION $ITERATION started."
   notify_waha "start" "RUNNING" "Run-all iteration $ITERATION started with detail_limit=$DETAIL_LIMIT."
 
-  write_progress "INDEX" "RUNNING" "10" "Step 1/4: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
 
   {
     echo ""
@@ -212,7 +217,7 @@ PY
 )"
   [ -n "$PENDING_BEFORE" ] || PENDING_BEFORE="-1"
 
-  write_progress "DETAIL" "RUNNING" "55" "Step 2/4: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
+  write_progress "DETAIL" "RUNNING" "55" "Step 2/5: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
 
   {
     echo ""
@@ -231,7 +236,7 @@ PY
   } >> "$CURRENT_LOG"
 
   # STEP 3: build timestamped Thunderbird/ICS import packages from new events.
-  write_progress "CALENDAR" "RUNNING" "96" "Step 3/4: building timestamped calendar import packages (.ics)..." "$STARTED"
+  write_progress "CALENDAR" "RUNNING" "94" "Step 3/5: building timestamped calendar import packages (.ics)..." "$STARTED"
   {
     echo ""
     echo "-------------------- STEP 3: CALENDAR PACKAGES -----------------"
@@ -274,27 +279,38 @@ PY
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
   fi
 
-  # WhatsApp summary after a clean detail step. New records were already announced
-  # in real time during the download; here we either report "no new entries"
-  # (nothing was pending) or flush any record whose live send failed.
+  # STEP 4: MESSAGING — send the rich WhatsApp messages one by one. This is a
+  # visible step: pc_notify_new_records.py --announce publishes per-message
+  # progress (current/total + a preview), so the monitor shows each message going
+  # out. It announces new opportunities AND status changes (e.g. Programada →
+  # Abierta), or sends the single "Sin nuevas entradas" status when there is
+  # nothing to send.
   if [ "$DETAIL_EXIT" -eq 0 ]; then
-    if [ "$PENDING_BEFORE" = "0" ]; then
-      notify_new_records --idle
-    else
-      notify_new_records --flush
-    fi
+    write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
+    {
+      echo ""
+      echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    } >> "$CURRENT_LOG"
+    notify_new_records --announce
+    {
+      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+    } >> "$CURRENT_LOG"
   fi
 
-  # STEP 4: when this run had no new records to process, exercise the current
-  # code on the last N records in an isolated sandbox (records_test/) so a
-  # "nothing new" run still verifies code changes. The script publishes its own
-  # MODE=TEST progress. Disable with PC_TEST_ZONE_LIMIT=0.
+  # STEP 5: OPTIONAL test zone. When this run had no new records to process, it
+  # can exercise the current code on the last N records in an isolated sandbox
+  # (records_test/) so a "nothing new" run still verifies code changes. This is
+  # OFF by default — the autostart no longer launches the test zone on its own.
+  # Opt in with PC_TEST_ZONE_AUTORUN=1 (it stays available as a manual action in
+  # the monitor regardless). PC_TEST_ZONE_LIMIT still controls how many records.
+  TEST_AUTORUN="${PC_TEST_ZONE_AUTORUN:-0}"
   TEST_LIMIT="${PC_TEST_ZONE_LIMIT:-5}"
-  if printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
+  if [ "$TEST_AUTORUN" = "1" ] && printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""
-      echo "----------------- STEP 4: TEST ZONE (idle, last $TEST_LIMIT) ----"
+      echo "----------------- STEP 5: TEST ZONE (idle, last $TEST_LIMIT) ----"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       echo "Command: ${PYTHON_BIN} -u ./pc_test_zone.py --limit $TEST_LIMIT --apply"
     } >> "$CURRENT_LOG"

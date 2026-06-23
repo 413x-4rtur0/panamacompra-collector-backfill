@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
+ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
@@ -113,6 +115,48 @@ def tail(path: Path, lines: int) -> str:
     return "\n".join(content[-lines:])
 
 
+def load_record_index(limit: int = 500) -> list[dict[str, str]]:
+    """Read collected records (NUMERO + description + folder/link) from the
+    archive DB for the record-index selector. Newest first; never raises."""
+    if not ARCHIVE_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT numero, "
+            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
+            "COALESCE(record_folder, '') AS record_folder, "
+            "COALESCE(link, '') AS link, "
+            "COALESCE(detail_status, '') AS detail_status, "
+            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "FROM opportunities "
+            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    return [
+        {
+            "numero": str(row["numero"] or ""),
+            "descripcion": str(row["descripcion"] or ""),
+            "record_folder": str(row["record_folder"] or ""),
+            "link": str(row["link"] or ""),
+            "detail_status": str(row["detail_status"] or ""),
+            "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or ""),
+        }
+        for row in rows
+    ]
+
+
 def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
@@ -127,6 +171,7 @@ def process_snapshot() -> dict[str, bool]:
         "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        "messaging": running("[p]c_notify_new_records.py"),
         "request": REQUEST_FLAG.exists(),
     }
 
@@ -203,16 +248,40 @@ table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ text-align: left; border-bottom: 1px solid #334155; padding: 7px 10px; vertical-align: top; }}
 th {{ width: 220px; color: #93c5fd; }}
 pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 12px; max-height: 360px; overflow: auto; }}
-.pill {{ display: inline-block; margin: 4px 8px 4px 0; padding: 6px 10px; border-radius: 999px; font-weight: 700; }}
-.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #374151; color: #d1d5db; }}
+/* Process status is a tidy flex grid of small chips instead of one crowded
+   wrapped line: green = RUNNING, gray = off, even gaps. */
+.proc-wrap {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
+.pill {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-weight: 700; font-size: .8rem; }}
+.on {{ background: #14532d; color: #bbf7d0; }} .off {{ background: #1f2937; color: #9ca3af; }}
 .message {{ font-size: 1.15rem; color: #fef3c7; }}
 .small {{ color: #94a3b8; }}
 .done {{ color: #bbf7d0; font-weight: 700; }}
-button {{ background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; margin-right: 8px; }}
+button {{ background: #334155; color: #e5e7eb; border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 700; cursor: pointer; margin: 0 8px 8px 0; transition: background .15s ease, transform .05s ease; }}
+button:hover {{ background: #475569; }}
+button:active {{ transform: translateY(1px); }}
+button:disabled {{ background: #1f2937; color: #6b7280; cursor: not-allowed; transform: none; }}
+button.primary {{ background: #2563eb; color: #fff; }}
+button.primary:hover {{ background: #1d4ed8; }}
+button.primary:disabled {{ background: #1e293b; color: #6b7280; }}
 .zone {{ margin-top: 14px; padding-top: 8px; border-top: 1px solid #334155; }}
 .zone h3 {{ margin: 0 0 8px; color: #fef3c7; }}
-.danger {{ background: #dc2626; }}
+.danger {{ background: #dc2626; color: #fff; }} .danger:hover {{ background: #b91c1c; }}
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
+select, input {{ border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: 1rem; }}
+input:disabled {{ opacity: .5; cursor: not-allowed; }}
+/* Run mode as radio toggles. */
+.mode-group {{ display: inline-flex; gap: 4px; vertical-align: middle; }}
+.mode-group label {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #475569; border-radius: 8px; background: #020617; cursor: pointer; font-weight: 700; color: #cbd5e1; }}
+.mode-group input {{ accent-color: #2563eb; margin: 0; }}
+.mode-group label:has(input:checked) {{ border-color: #2563eb; color: #93c5fd; background: #0b1220; }}
+.mode-group input:disabled + span, .mode-group label:has(input:disabled) {{ opacity: .5; cursor: not-allowed; }}
+select#record-index {{ min-width: 60%; max-width: 100%; }}
+#diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
+/* Slim dark scrollbars for the log panes. */
+pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+pre::-webkit-scrollbar-track {{ background: #0f172a; border-radius: 8px; }}
+pre::-webkit-scrollbar-thumb {{ background: #334155; border-radius: 8px; }}
+pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 </style>
 </head>
 <body>
@@ -222,10 +291,11 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
   <p id="done-note" class="done" hidden></p>
-  <div id="processes"></div>
+  <div id="processes" class="proc-wrap"></div>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="live" checked><span>live collector</span></label><label><input type="radio" name="run-mode" value="test"><span>test zone</span></label></span> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. The mode toggle and Request button lock while a run is active (including webhook-triggered runs).</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -233,8 +303,8 @@ let doneSince = null;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Step', 'STEP'], ['Item', 'ITEM'],
-  ['Detail limit', 'DETAIL_LIMIT'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
   ['Pending details', 'RECORDS_PENDING'], ['Test records', 'RECORDS_TEST'], ['Extra', 'EXTRA']
@@ -261,6 +331,7 @@ function render(data) {{
   document.getElementById('processes').innerHTML = Object.entries(data.processes || {{}}).map(([name, value]) =>
     `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
   ).join('');
+  updateRunControls(data);
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
@@ -288,8 +359,21 @@ async function postForm(path, body) {{
   document.getElementById('button-status').textContent = text.trim();
   poll();
 }}
+// Keys that mean real collection work is happening. A webhook-triggered run
+// shows up here, so the mode toggle + Request button lock while any is active.
+const RUN_WORK_KEYS = ['worker', 'index', 'detail', 'calendar', 'messaging', 'test_run', 'request'];
+function updateRunControls(data) {{
+  const procs = data.processes || {{}};
+  const busy = RUN_WORK_KEYS.some(k => procs[k]);
+  document.querySelectorAll('input[name="run-mode"]').forEach(el => {{ el.disabled = busy; }});
+  const limit = document.getElementById('run-limit');
+  if (limit) limit.disabled = busy;
+  const runBtn = document.getElementById('run-button');
+  if (runBtn) {{ runBtn.disabled = busy; runBtn.textContent = busy ? 'Run in progress…' : 'Request selected run'; }}
+}}
 function requestRun() {{
-  const mode = encodeURIComponent(document.getElementById('run-mode').value);
+  const checked = document.querySelector('input[name="run-mode"]:checked');
+  const mode = encodeURIComponent(checked ? checked.value : 'live');
   const limit = encodeURIComponent(document.getElementById('run-limit').value || '99');
   postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{limit}}`);
 }}
@@ -302,6 +386,79 @@ function renderActionZones() {{
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+let recordIndex = [];
+let recordFiltered = [];
+const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
+const STATUS_COLOR = {{expired: '#fca5a5', soon: '#fcd34d', upcoming: '#86efac', unknown: '#94a3b8'}};
+const STATUS_TAG = {{expired: 'EXPIRED', soon: 'SOON', upcoming: 'ok', unknown: 'no date'}};
+function parseDeadline(rec) {{
+  const raw = (rec.finish_date_guess || '').trim().replace('_', ' ');
+  const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 12), Number(m[5] || 0));
+}}
+function expiryStatus(rec) {{
+  const dt = parseDeadline(rec);
+  if (!dt) return 'unknown';
+  const now = new Date();
+  if (dt < now) return 'expired';
+  if (dt <= new Date(now.getTime() + RECORD_SOON_DAYS * 86400000)) return 'soon';
+  return 'upcoming';
+}}
+function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
+function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
+const FAR_FUTURE = new Date(8640000000000000);
+function selectedRecord() {{
+  const sel = document.getElementById('record-index');
+  const idx = sel ? Number(sel.value) : -1;
+  return (idx >= 0 && idx < recordFiltered.length) ? recordFiltered[idx] : null;
+}}
+function renderRecordDetail() {{
+  const rec = selectedRecord();
+  const node = document.getElementById('record-detail');
+  if (!rec) {{ node.textContent = recordIndex.length ? 'No records match the filter.' : 'No records collected yet. Run the collector, then Refresh list.'; return; }}
+  const st = expiryStatus(rec);
+  const detail = rec.detail_status ? '   ·   detail: ' + esc(rec.detail_status) : '';
+  node.innerHTML = '<span style="color:' + STATUS_COLOR[st] + ';font-weight:700">' + st.toUpperCase() + '</span>  ·  NUMERO: ' + esc(rec.numero) + detail
+    + '<br>' + esc(rec.descripcion || '-')
+    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
+}}
+function applyRecordFilter() {{
+  const status = (document.getElementById('record-status') || {{}}).value || 'all';
+  const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
+  const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
+  recordFiltered = recordIndex.filter(r => {{
+    if (status !== 'all' && expiryStatus(r) !== status) return false;
+    if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
+    return true;
+  }});
+  recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
+  const sel = document.getElementById('record-index');
+  sel.innerHTML = recordFiltered.map((r, i) => {{
+    const st = expiryStatus(r);
+    const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
+    const label = '[' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
+  }}).join('');
+  renderRecordDetail();
+}}
+async function refreshRecordIndex() {{
+  try {{
+    const response = await fetch('/api/record-index', {{cache: 'no-store'}});
+    recordIndex = await response.json();
+  }} catch (err) {{ recordIndex = []; }}
+  applyRecordFilter();
+}}
+function openRecordFolder() {{
+  const rec = selectedRecord();
+  if (!rec) {{ document.getElementById('button-status').textContent = 'Select a record first.'; return; }}
+  postForm('/api/open-record-folder', 'numero=' + encodeURIComponent(rec.numero));
+}}
+function openRecordPortal() {{
+  const rec = selectedRecord();
+  if (!rec || !rec.link) {{ document.getElementById('button-status').textContent = 'No portal link for the selected record.'; return; }}
+  window.open(rec.link, '_blank', 'noopener');
+}}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -315,6 +472,10 @@ async function poll() {{
 }}
 window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
 renderActionZones();
+document.getElementById('record-index').addEventListener('change', renderRecordDetail);
+document.getElementById('record-status').addEventListener('change', applyRecordFilter);
+document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
+refreshRecordIndex();
 poll();
 </script>
 </body>
@@ -363,6 +524,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
             run_manual_action(action)
             self.send_text(202, "Calendar import started. Output: data/logs/manual_actions.log\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/open-record-folder":
+            numero = form.get("numero", [""])[0].strip()
+            for record in load_record_index():
+                if record["numero"] == numero:
+                    folder = record["record_folder"]
+                    if not folder or not Path(folder).exists():
+                        self.send_text(404, f"Record folder not found on disk for {numero}.\n", "text/plain; charset=utf-8")
+                        return
+                    opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+                    subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self.send_text(202, f"Opened record folder for {numero}.\n", "text/plain; charset=utf-8")
+                    return
+            self.send_text(404, f"Unknown record: {numero}\n", "text/plain; charset=utf-8")
+            return
         if path in {"/api/waha-destination", "/api/waha-message"}:
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
@@ -378,6 +553,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/record-index":
+            self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")

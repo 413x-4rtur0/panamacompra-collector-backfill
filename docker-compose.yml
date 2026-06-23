@@ -1,0 +1,90 @@
+# PanamaCompra Collector — change-detection + webhook + WAHA stack.
+#
+# This brings the parts that genuinely belong in containers into the repo so the
+# trigger path is reproducible with a single `docker compose up -d`:
+#
+#   changedetection.io  watches the PanamaCompra table (rendered by sockpuppetbrowser)
+#   sockpuppetbrowser   headless Chromium used by changedetection for JS pages
+#   waha                self-hosted WhatsApp HTTP API for the alerts
+#   webhook             webhook_listener.py in ENQUEUE-ONLY mode
+#
+# IMPORTANT — why "enqueue only": the actual collector (Playwright Firefox writing
+# to the host ./records and ./data) runs on the HOST, not in a container. So the
+# containerized listener only *records the request* into the shared ./data/queue
+# volume; a tiny host service (./pc_run_all_flag_watcher.sh, or the existing
+# systemd webhook unit) then launches the real run. See the README "Run the stack
+# with Docker Compose" section.
+#
+# Copy .env.example to .env first and set the values.
+
+services:
+  sockpuppetbrowser:
+    image: dgtlmoon/sockpuppetbrowser:latest
+    restart: unless-stopped
+    # Chromium needs extra shared memory and a larger fd cap to stay stable.
+    shm_size: 2gb
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      - pc
+
+  changedetection:
+    image: dgtlmoon/changedetection.io:latest
+    restart: unless-stopped
+    depends_on:
+      - sockpuppetbrowser
+    ports:
+      - "5000:5000"
+    environment:
+      # changedetection renders JS watches through the sockpuppet browser.
+      - PLAYWRIGHT_DRIVER_URL=ws://sockpuppetbrowser:3000
+      # Public URL it advertises in its own UI/notification links.
+      - BASE_URL=${CHANGEDETECTION_BASE_URL:-http://localhost:5000}
+    volumes:
+      - ./docker/changedetection-data:/datastore
+    # Lets watches/notifications reach the host too if you ever point them there.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - pc
+
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Optional API key; when set, pass the same value as PC_WAHA_API_KEY to the
+      # collector so it can authenticate to /api/sendText.
+      - WAHA_API_KEY=${WAHA_API_KEY:-}
+      - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
+    volumes:
+      - ./docker/waha-sessions:/app/.sessions
+    networks:
+      - pc
+
+  webhook:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.webhook
+    restart: unless-stopped
+    ports:
+      - "${PC_WEBHOOK_PORT:-8765}:8765"
+    environment:
+      - PC_WEBHOOK_HOST=0.0.0.0
+      - PC_WEBHOOK_PORT=8765
+      # Containerized listener cannot launch the host browser pipeline, so it only
+      # writes the run request into the shared ./data/queue volume. The host runner
+      # (pc_run_all_flag_watcher.sh / systemd) performs the actual collection.
+      - PC_WEBHOOK_ENQUEUE_ONLY=1
+    volumes:
+      # Bind-mount the checkout so the listener writes the request flag and reads
+      # .webhook_token from the same files the host collector uses.
+      - .:/app
+    working_dir: /app
+    networks:
+      - pc
+
+networks:
+  pc:
+    driver: bridge

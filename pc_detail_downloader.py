@@ -568,9 +568,9 @@ def main():
             "DETAIL",
             "DONE",
             100,
-            "Step 2/4 complete. No pending detail rows.",
+            "Step 2/5 complete. No pending detail rows.",
             step_current=2,
-            step_total=4,
+            step_total=5,
             item_current=0,
             item_total=0,
             records_pending=0,
@@ -603,9 +603,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 percent,
-                f"Step 2/4: downloading detail {index}/{total_rows}: {row['numero']}",
+                f"Step 2/5: downloading detail {index}/{total_rows}: {row['numero']}",
                 step_current=2,
-                step_total=4,
+                step_total=5,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -618,7 +618,10 @@ def main():
                 saved += 1
                 # Real-time WhatsApp: announce this brand-new record right after
                 # its detail (and all fields) are saved, then continue to the next.
-                if pc_notify is not None:
+                # Disabled (PC_WAHA_REALTIME_PER_DETAIL=0, the worker default) when
+                # the run-all worker sends the messages in its own visible MESSAGING
+                # step instead, so progress is shown one message at a time.
+                if pc_notify is not None and os.environ.get("PC_WAHA_REALTIME_PER_DETAIL", "1").strip().lower() in {"1", "true", "yes", "on"}:
                     pc_notify.notify_saved_record(conn, row["numero"])
             elif result in ("skipped_complete", "refreshed_links"):
                 skipped += 1
@@ -629,9 +632,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 55 + int(40 * index / max(total_rows, 1)),
-                f"Step 2/4: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
+                f"Step 2/5: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
                 step_current=2,
-                step_total=4,
+                step_total=5,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -647,9 +650,9 @@ def main():
         "DETAIL",
         "DONE",
         98,
-        f"Step 2/4 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
+        f"Step 2/5 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
         step_current=2,
-        step_total=4,
+        step_total=5,
         item_current=len(rows),
         item_total=len(rows),
         records_saved=saved + skipped,
