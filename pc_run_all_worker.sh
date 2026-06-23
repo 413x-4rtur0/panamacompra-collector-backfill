@@ -281,8 +281,36 @@ PY
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
     } >> "$CURRENT_LOG"
     notify_new_records --announce
+    FINISHED="$(date '+%Y-%m-%d %H:%M:%S')"
+    SUMMARY_COUNTS="$($PYTHON_BIN - <<'PY'
+from pc_common import init_db
+conn = init_db()
+row = conn.execute(
+    "SELECT COUNT(*) total, "
+    "COALESCE(SUM(CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END), 0) saved, "
+    "COALESCE(SUM(CASE WHEN detail_status = 'failed' THEN 1 ELSE 0 END), 0) failed, "
+    "COALESCE(SUM(CASE WHEN detail_status != 'saved' THEN 1 ELSE 0 END), 0) pending, "
+    "COALESCE(SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END), 0) notified, "
+    "COALESCE(SUM(CASE WHEN last_calendar_export_path IS NOT NULL THEN 1 ELSE 0 END), 0) calendar_exports "
+    "FROM opportunities"
+).fetchone()
+print(
+    f"Total registros: {row['total']}\n"
+    f"Detalles guardados: {row['saved']}\n"
+    f"Fallidos: {row['failed']}\n"
+    f"Pendientes: {row['pending']}\n"
+    f"Notificados: {row['notified']}\n"
+    f"Archivos .ics por registro: {row['calendar_exports']}"
+)
+PY
+)"
+    notify_waha "done" "DONE" "📊 Resumen de Ejecución - Panama Compra
+Inicio: $STARTED
+Fin: $FINISHED
+Iteración: $ITERATION
+$SUMMARY_COUNTS"
     {
-      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"
   fi
 

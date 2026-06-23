@@ -459,26 +459,28 @@ publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 4/5`,
 `Item i/N`, and a one-line preview of the message in the **Extra** field — so you
 can watch each opportunity go out. The detail downloader does not send WhatsApp
 messages mid-download; notifications are emitted only after detail and calendar
-processing complete for the run. The message uses this template:
+processing complete for the run. New-record messages use the full 9-field record
+template (status, number, description, location, date range, up to 10 items,
+link, created time, and downloaded time):
 
 ```text
-🟢 NUEVA OPORTUNIDAD DETECTADA
+🔔 *Nueva Oportunidad - Panama Compra*
 
-📌 Fuente: Panamá Compra
-🏷️ Título: {descripcion}
-🏢 Entidad: {entidad}
-📍 Provincia: {provincia_de_entrega}
-📅 Publicado: {fecha}
-⏰ Cierre: {finish_date_guess}
-💰 Monto estimado: {precio_estimado}
+📊 *Estado:* {estado}
+🔢 *Número:* {numero}
+📝 *Descripción:* {descripcion}
+📍 *Ubicación:* {provincia/lugar}
+📅 *Rango Fechas:* {fecha_publicacion} al {fecha_cierre}
 
-🔎 Coincidencia: {matched_keywords}
+📦 *Items ({items_count}):*
+• Item 1: {descripcion_item} - Qty: {cantidad} - Unit: {unidad}
+... [+ {remaining} más]
 
-🔗 Ver oportunidad:
-{link}
+🔎 *Coincidencia:* {matched_keywords}
 
-🕒 Detectado: {detail_saved_at}
-🆔 ID: {numero}
+🔗 *Enlace:* {link}
+🕒 *Creado:* {first_seen}
+⬇️ *Descargado:* {detail_saved_at}
 ```
 
 When a run completes with no new records, the worker sends a single status
@@ -493,45 +495,47 @@ message instead (`pc_notify_new_records.py --idle`):
 ✅ Monitor activo
 ```
 
-The MESSAGING step also announces **status changes**. When a record that was
-already announced as *Programada* later appears in the *Abiertas* list, the index
-step flags it (`pending_status_change`) and the MESSAGING step sends an update
-message (then clears the flag). *Cancelada* is a planned future transition.
+The MESSAGING step also announces **status changes**, **cancellations**, and
+**item-only changes**. Status changes are flagged by the index step
+(`pending_status_change`); item changes are detected by comparing the current
+detail item hash to the last successfully notified snapshot. After any successful
+record notification, the script writes a per-record `.ics` export under
+`data/calendar_exports/YYYY/MM/{numero}.ics`.
 
 ```text
-🔄 OPORTUNIDAD ACTUALIZADA
+⚠️ *Cambio de Estado - Panama Compra*
+📊 *Estado:* [ANTERIOR: {estado_anterior}] ➡️ [ACTUAL: {estado_actual}]
+...
 
-📌 Fuente: Panamá Compra
-🏷️ Título: {descripcion}
-🏢 Entidad: {entidad}
-🔁 Estado: Programada → Abierta
-⏰ Cierre: {finish_date_guess}
-
-🔗 Ver oportunidad:
-{link}
-
-🕒 Actualizado: {updated_at}
-🆔 ID: {numero}
+🔄 *Actualización de Items - Panama Compra*
+📊 *Estado:* {estado} (Sin cambios)
+...
 ```
 
 Behavior notes:
 
-- **One message per new record and per status change, one at a time.** After the
-  detail step, the MESSAGING step sends each new opportunity and each status
-  change individually, publishing per-message monitor progress; if there is
-  nothing to send it posts the single `⚪ Sin nuevas entradas` status.
+- **One message per changed record, one at a time.** After the detail step, the
+  MESSAGING step sends each new opportunity, status/cancellation change, and
+  item-only change individually, publishing per-message monitor progress; if
+  there is nothing to send it posts the single `⚪ Sin nuevas entradas` status.
 - **No backlog flood.** On first use (before any new detail is downloaded)
   `ensure_baseline` marks every existing saved record as already-announced via
   the `notified_at` column and writes `data/config/waha_notify_initialized`, so
   only records saved afterwards are announced.
-- **Sent at most once.** Announcing is guarded by `notified_at`; a record is
-  never re-sent, even if its detail is later rebuilt/re-downloaded.
+- **Change snapshot.** New-record announcing is guarded by `notified_at`; after a
+  successful send the notifier stores `last_notified_status`,
+  `last_notified_items_hash`, and `last_notified_signature` so later status or
+  item changes can be detected without re-sending unchanged records.
 - **Optional keyword filter.** Put one keyword per line in
   `data/config/waha_keywords.txt`. When present, only records whose
   title/description/entity match a keyword are announced and the matched
   keywords are listed in `🔎 Coincidencia`. When the file is missing or empty,
   every new record is announced and the line reads
   `Sin filtro (todas las entradas)`.
+- **Calendar and summary outputs.** After a successful record notification, a
+  per-record `.ics` file is exported below `data/calendar_exports/YYYY/MM/`.
+  After the MESSAGING step, the worker sends one final run summary with start/end
+  time and aggregate archive counts.
 - **Never blocks a run.** Any notifier or network failure is caught and logged;
   records whose send failed keep `notified_at` empty and are retried by the
   end-of-run flush (`pc_notify_new_records.py --flush`) or the next run.
@@ -827,7 +831,9 @@ SQLite database at `data/panamacompra_archive.db`, table `opportunities`
 | `detail_status` | `pending`, `saved`, or `failed`. |
 | `detail_attempts`, `detail_saved_at`, `detail_json_path` | Detail tracking. |
 | `finish_date_guess` | Closing date guessed from detail text. |
-| `notified_at` | Timestamp of the WAHA “nueva oportunidad” WhatsApp message for this record, set by `pc_notify_new_records.py` so each record is announced at most once (empty = not yet announced). |
+| `notified_at` | Timestamp of the first WAHA “nueva oportunidad” WhatsApp message for this record (empty = not yet announced). |
+| `last_notified_status`, `last_notified_items_hash`, `last_notified_signature` | Last successfully notified record snapshot, used to suppress unchanged records and detect status/item updates. |
+| `last_calendar_export_path` | Per-record `.ics` path written after a successful WhatsApp notification. |
 
 Useful queries:
 

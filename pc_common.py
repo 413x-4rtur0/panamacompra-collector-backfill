@@ -930,6 +930,10 @@ def ensure_db_schema(conn):
         # announced as Programada moves to the Abiertas list). Cleared once the
         # MESSAGING step sends the update message.
         "pending_status_change": "ALTER TABLE opportunities ADD COLUMN pending_status_change TEXT",
+        "last_notified_status": "ALTER TABLE opportunities ADD COLUMN last_notified_status TEXT",
+        "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
+        "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",
+        "last_calendar_export_path": "ALTER TABLE opportunities ADD COLUMN last_calendar_export_path TEXT",
     }
 
     for column, statement in migrations.items():
