@@ -80,6 +80,38 @@ records_test/…                                isolated testing sandbox (shown 
 data/calendar/YY-MM-DD/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics  normal-run import packages
 ```
 
+### Simple user flow graphic
+
+```text
+Example: changedetection sees a new PanamaCompra row OC-2026-000123
+
+[1 Detect] changedetection.io notices the table changed
+      │
+      ▼
+[2 Queue] webhook_listener.py accepts /panamacompra/<token> and queues one run
+      │
+      ▼
+[3 Index] pc_index_collector.py records the index row in SQLite
+      │
+      ▼
+[4 Download] pc_detail_downloader.py downloads ALL detail fields + items first
+      │
+      ▼
+[5 Compare] pc_notify_new_records.py compares against the last notified snapshot
+      │
+      ├─ No change ───────────────► no WhatsApp message
+      │
+      └─ New/status/items changed ─► one complete WhatsApp message for OC-2026-000123
+                                      + data/calendar_exports/YYYY/MM/OC-2026-000123.ics
+      │
+      ▼
+[6 Summary] worker sends one final run summary after messaging finishes
+```
+
+Key point: the webhook only starts/queues the run. WhatsApp is not sent from the
+webhook and is not sent while detail rows are still downloading; messages are sent
+after the collector has a complete record and can compare it safely.
+
 ### Process diagram and test visibility
 
 ```mermaid

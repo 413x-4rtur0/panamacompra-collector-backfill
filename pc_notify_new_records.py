@@ -166,6 +166,8 @@ def format_items(items: list[dict], *, limit: int = 10) -> str:
         return f"📦 *Items (0):*\n• {DASH}"
     lines = [f"📦 *Items ({len(items)}):*"]
     for index, item in enumerate(items[:limit], start=1):
+        if not isinstance(item, dict):
+            item = {"descripcion": item}
         desc = clean_field(item.get("descripcion") or item.get("description") or item.get("detalle") or item.get("clasificacion"))
         qty = clean_field(item.get("cantidad") or item.get("qty"))
         unit = clean_field(item.get("unidad") or item.get("unidad_medida") or item.get("unit"))
@@ -441,6 +443,37 @@ def notify_status_change(conn, numero: str) -> bool:
         return False
 
 
+def notify_detected_status_change(conn, numero: str) -> bool:
+    """Announce a status/cancellation change detected from the saved snapshot.
+
+    This catches transitions that were not explicitly flagged by the index step.
+    """
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or row["detail_status"] != "saved" or not row["notified_at"]:
+            return False
+        current_status, _items_hash, current_signature = signature_for(row)
+        if row["last_notified_signature"] == current_signature or row["last_notified_status"] == current_status:
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        if match_line_for(row, summary, load_keywords()) is None:
+            mark_snapshot(conn, numero)
+            return False
+        sent = send_text("update", build_record_message(
+            row,
+            summary,
+            variant="cancelled" if is_cancelled_status(current_status) else "status",
+            previous_status=row["last_notified_status"],
+        ))
+        if sent:
+            export_record_calendar(conn, row)
+            mark_snapshot(conn, numero)
+        return sent
+    except Exception as exc:  # noqa: BLE001 - never break a run
+        print(f"WAHA detected-status notify error for {numero}: {exc}", file=sys.stderr)
+        return False
 
 def notify_items_change(conn, numero: str) -> bool:
     """Announce item-list/content changes after a record was previously sent."""
@@ -522,6 +555,7 @@ def announce_with_progress(conn) -> int:
         "ORDER BY last_seen, first_seen"
     ).fetchall()
     update_numbers = {r["numero"] for r in update_rows}
+    detected_status_rows = []
     changed_rows = []
     for row in conn.execute(
         "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NOT NULL "
@@ -533,11 +567,16 @@ def announce_with_progress(conn) -> int:
         if full is None:
             continue
         status, items_hash, signature = signature_for(full)
-        if full["last_notified_signature"] != signature and full["last_notified_status"] == status and full["last_notified_items_hash"] != items_hash:
+        if full["last_notified_signature"] == signature:
+            continue
+        if full["last_notified_status"] != status:
+            detected_status_rows.append(row)
+        elif full["last_notified_items_hash"] != items_hash:
             changed_rows.append(row)
     queue = (
         [("new", r["numero"]) for r in new_rows]
         + [("update", r["numero"]) for r in update_rows]
+        + [("status", r["numero"]) for r in detected_status_rows]
         + [("items", r["numero"]) for r in changed_rows]
     )
     total = len(queue)
@@ -563,6 +602,8 @@ def announce_with_progress(conn) -> int:
             change = full_row["pending_status_change"] if full_row is not None else ""
             verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
             preview = f"🔄 {label} ({verb})"
+        elif kind == "status":
+            preview = f"🟡 {label} (estado cambiado)"
         elif kind == "items":
             preview = f"🔵 {label} (items modificados)"
         else:
@@ -583,6 +624,8 @@ def announce_with_progress(conn) -> int:
         )
         if kind == "update":
             ok = notify_status_change(conn, numero)
+        elif kind == "status":
+            ok = notify_detected_status_change(conn, numero)
         elif kind == "items":
             ok = notify_items_change(conn, numero)
         else:
@@ -594,7 +637,7 @@ def announce_with_progress(conn) -> int:
 
     pc_common.write_run_progress(
         "MESSAGING", "RUNNING", 99,
-        f"Step 4/5: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows)} updates, {len(changed_rows)} item changes).",
+        f"Step 4/5: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
         step_current=step_current, step_total=step_total,
         item_current=total, item_total=total,
         records_new=len(new_rows), records_saved=sent,
