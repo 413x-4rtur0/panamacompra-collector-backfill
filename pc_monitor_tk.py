@@ -257,6 +257,8 @@ def process_snapshot() -> dict[str, bool]:
         "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
         "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        # WhatsApp MESSAGING step: visible while the notifier sends messages.
+        "messaging": running("[p]c_notify_new_records.py"),
         "request": REQUEST_FLAG.exists(),
         # Additional runners that should be stopped by pc_stop_run_all.sh
         "updater": updater,
@@ -280,7 +282,7 @@ def percent_value(progress: dict[str, str]) -> int:
 # the passive webhook listener must NOT count — otherwise the monitor detects
 # ITSELF as running and "done" is never reached, so the finish countdown never
 # appears.
-WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request")
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "messaging", "test_run", "updater", "request")
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -438,11 +440,21 @@ def run_tk() -> int:
         # Windows/macOS deliver <MouseWheel> with a signed event.delta instead.
         num = getattr(event, "num", 0)
         if num == 4:
-            canvas.yview_scroll(-3, "units")
+            step = -3
         elif num == 5:
-            canvas.yview_scroll(3, "units")
+            step = 3
         elif event.delta:
-            canvas.yview_scroll(int(-1 * (event.delta / 120)) * 3, "units")
+            step = int(-1 * (event.delta / 120)) * 3
+        else:
+            return
+        # If the pointer is over an inner Listbox (the record browser), scroll
+        # that list itself and stop — otherwise the list scroll and the whole-page
+        # scroll fight each other and are impossible to separate.
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Listbox):
+            widget.yview_scroll(step, "units")
+            return "break"
+        canvas.yview_scroll(step, "units")
 
     content.bind("<Configure>", update_scroll_region)
     canvas.bind("<Configure>", resize_content)
@@ -512,11 +524,14 @@ def run_tk() -> int:
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit.")
 
     # ========================================================================
-    # SECTION 2: SETTINGS - editable fields with defaults; leave as-is to keep
+    # SECTION 3: SETTINGS - editable fields with defaults; leave as-is to keep
     # the defaults. Saved to data/config/monitor_settings.env and applied live.
+    # (Rendered at grid row 3, below the Live diagnostics section.)
     # ========================================================================
     settings = ttk.Frame(content, style="Card.TFrame", padding=14)
-    settings.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    # Live diagnostics sits at row 2 (directly under Run controls); Settings moves
+    # to row 3, so the live run status is visible without scrolling past Settings.
+    settings.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
     settings.columnconfigure(1, weight=1)
     settings.columnconfigure(3, weight=1)
 
@@ -606,11 +621,12 @@ def run_tk() -> int:
     ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
-    # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
-    # This section shows real-time status of the collector process
+    # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
+    # Rendered at grid row 2 (directly under Run controls) so the live run status
+    # is the third section on screen, above Settings.
     # ========================================================================
     diag = ttk.Frame(content, style="Card.TFrame", padding=14)
-    diag.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
+    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
     # Keep the two label columns narrow and let the two value columns absorb the
     # remaining width, so large counters and long descriptions stay readable.
     diag.columnconfigure(0, weight=0, minsize=130)
@@ -657,21 +673,37 @@ def run_tk() -> int:
     record_index.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
-    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
+    # The folder selector is a type-to-filter box plus a dedicated, self-scrolling
+    # list (with its own scrollbar) instead of a dropdown. A dropdown's popup
+    # scroll fought the whole-page scroll and the long "NUMERO — description"
+    # entries were impossible to separate; this list scrolls on its own (see the
+    # Listbox branch in on_mousewheel) and the filter box narrows it instantly.
     index_records: list[dict[str, str]] = []
-    index_choice_var = tk.StringVar(value="")
+    index_filtered: list[dict[str, str]] = []
+    index_filter_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
-    ttk.Label(record_index, text="Record:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
-    # A wide selector listing "NUMERO — description", newest first. The field
-    # itself is broad and the full number/description are echoed below so long
-    # values stay fully readable even when the dropdown truncates them.
-    index_box = ttk.Combobox(record_index, textvariable=index_choice_var, state="readonly", width=60)
-    index_box.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(index_box, "Collected records as 'NUMERO — description', newest first. Pick one to open its archive folder or the portal page.")
+    ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    index_filter_entry = ttk.Entry(record_index, textvariable=index_filter_var)
+    index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
+    add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
 
-    ttk.Label(record_index, textvariable=index_detail_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 4))
+    list_frame = ttk.Frame(record_index, style="Card.TFrame")
+    list_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+    list_frame.columnconfigure(0, weight=1)
+    index_listbox = tk.Listbox(
+        list_frame, height=8, activestyle="none", exportselection=False,
+        bg="#020617", fg="#e5e7eb", selectbackground="#2563eb", selectforeground="#ffffff",
+        highlightthickness=0, borderwidth=0,
+    )
+    index_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=index_listbox.yview)
+    index_listbox.configure(yscrollcommand=index_scroll.set)
+    index_listbox.grid(row=0, column=0, sticky="ew")
+    index_scroll.grid(row=0, column=1, sticky="ns")
+
+    ttk.Label(record_index, textvariable=index_detail_var, style="Card.TLabel", wraplength=940, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 4))
 
     def index_label(rec: dict[str, str]) -> str:
         numero = rec["numero"] or "(sin número)"
@@ -679,37 +711,53 @@ def run_tk() -> int:
         return f"{numero} — {desc}"
 
     def selected_record() -> dict[str, str] | None:
-        choice = index_choice_var.get()
-        for rec in index_records:
-            if index_label(rec) == choice:
-                return rec
-        return None
+        selection = index_listbox.curselection()
+        if not selection:
+            return None
+        idx = selection[0]
+        return index_filtered[idx] if 0 <= idx < len(index_filtered) else None
 
-    def on_index_selected(_event: object = None) -> None:
+    def show_selected_detail(_event: object = None) -> None:
         rec = selected_record()
         if not rec:
             return
         status = f"   ·   status: {rec['detail_status']}" if rec["detail_status"] else ""
         index_detail_var.set(f"NUMERO: {rec['numero']}\nDescripción: {rec['descripcion'] or '-'}{status}")
 
+    def populate_listbox(records: list[dict[str, str]]) -> None:
+        nonlocal index_filtered
+        index_filtered = records
+        index_listbox.delete(0, "end")
+        for rec in records:
+            index_listbox.insert("end", index_label(rec))
+        if records:
+            index_listbox.selection_clear(0, "end")
+            index_listbox.selection_set(0)
+            index_listbox.see(0)
+            show_selected_detail()
+
+    def apply_filter(*_args: object) -> None:
+        needle = index_filter_var.get().strip().lower()
+        if needle:
+            records = [r for r in index_records if needle in index_label(r).lower()]
+        else:
+            records = list(index_records)
+        populate_listbox(records)
+        if not records:
+            index_detail_var.set("No records match the filter." if index_records else
+                                 "No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then Refresh list.")
+
     def refresh_index_list() -> None:
         nonlocal index_records
         index_records = load_record_index()
-        values = [index_label(rec) for rec in index_records]
-        index_box.configure(values=values)
-        if values:
-            if index_choice_var.get() not in values:
-                index_choice_var.set(values[0])
-            on_index_selected()
-            button_status_var.set(f"Loaded {len(values)} record(s) into the index selector.")
-        else:
-            index_choice_var.set("")
-            index_detail_var.set("No records collected yet (data/panamacompra_archive.db is missing or empty). Run the collector, then click Refresh list.")
+        apply_filter()
+        if index_records:
+            button_status_var.set(f"Loaded {len(index_records)} record(s) into the index list.")
 
     def open_selected_folder() -> None:
         rec = selected_record()
         if not rec:
-            button_status_var.set("Select a record first.")
+            button_status_var.set("Select a record from the list first.")
             return
         folder = rec["record_folder"]
         if not folder or not Path(folder).exists():
@@ -722,7 +770,7 @@ def run_tk() -> int:
     def open_selected_portal() -> None:
         rec = selected_record()
         if not rec:
-            button_status_var.set("Select a record first.")
+            button_status_var.set("Select a record from the list first.")
             return
         if not rec["link"]:
             button_status_var.set(f"No portal link stored for {rec['numero'] or 'the selection'}.")
@@ -730,10 +778,12 @@ def run_tk() -> int:
         subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Opening portal page for {rec['numero']}.")
 
-    index_box.bind("<<ComboboxSelected>>", on_index_selected)
+    index_listbox.bind("<<ListboxSelect>>", show_selected_detail)
+    index_listbox.bind("<Double-Button-1>", lambda _e: open_selected_folder())
+    index_filter_var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
-    index_buttons.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    index_buttons.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
     refresh_index_button = ttk.Button(index_buttons, text="Refresh list", command=refresh_index_list)
     refresh_index_button.grid(row=0, column=0, padx=(0, 8))
     open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
@@ -741,7 +791,7 @@ def run_tk() -> int:
     open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
     open_portal_button.grid(row=0, column=2, padx=(0, 8))
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
-    add_tooltip(open_folder_button, "Open the selected record's archive folder in the file manager.")
+    add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
 
     refresh_index_list()

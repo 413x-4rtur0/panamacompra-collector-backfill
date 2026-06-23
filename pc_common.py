@@ -921,6 +921,10 @@ def ensure_db_schema(conn):
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
         # pc_notify_new_records.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
+        # Pending status-change announcement (e.g. "abierta" when a record already
+        # announced as Programada moves to the Abiertas list). Cleared once the
+        # MESSAGING step sends the update message.
+        "pending_status_change": "ALTER TABLE opportunities ADD COLUMN pending_status_change TEXT",
     }
 
     for column, statement in migrations.items():
@@ -1084,6 +1088,17 @@ def insert_or_update_index(conn, row):
     existing = find_existing_opportunity(conn, row["numero"])
 
     if existing:
+        # Detect a status transition worth announcing: a record that was already
+        # announced (notified_at set) and moves from the Programadas list to the
+        # Abiertas list. (Cancelada is a planned future transition.) The flag is
+        # consumed by the MESSAGING step. COALESCE keeps any flag still pending.
+        old_grupo = (existing["grupo"] or "").strip().lower()
+        new_grupo = (row["grupo"] or "").strip().lower()
+        already_announced = bool(existing["notified_at"]) if "notified_at" in existing.keys() else False
+        status_change = None
+        if already_announced and old_grupo.startswith("programad") and new_grupo.startswith("abiert"):
+            status_change = "abierta"
+
         # Do not rewrite files. Only update lightweight DB tracking.
         conn.execute("""
         UPDATE opportunities
@@ -1097,7 +1112,8 @@ def insert_or_update_index(conn, row):
             modalidad = ?,
             link = ?,
             last_seen = ?,
-            tipo_url = ?
+            tipo_url = ?,
+            pending_status_change = COALESCE(?, pending_status_change)
         WHERE numero = ?
         """, (
             row["grupo"],
@@ -1111,6 +1127,7 @@ def insert_or_update_index(conn, row):
             row["link"],
             row["last_seen"],
             row["tipo_url"],
+            status_change,
             row["numero"],
         ))
         conn.commit()

@@ -279,23 +279,20 @@ PY
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
   fi
 
-  # STEP 4: MESSAGING — send the rich WhatsApp opportunity messages one by one.
-  # This is a visible step: pc_notify_new_records.py --announce publishes per
-  # message progress (current/total + a preview), so the monitor shows each new
-  # index entry being sent. When the run found nothing new, it sends the single
-  # "Sin nuevas entradas" status instead.
+  # STEP 4: MESSAGING — send the rich WhatsApp messages one by one. This is a
+  # visible step: pc_notify_new_records.py --announce publishes per-message
+  # progress (current/total + a preview), so the monitor shows each message going
+  # out. It announces new opportunities AND status changes (e.g. Programada →
+  # Abierta), or sends the single "Sin nuevas entradas" status when there is
+  # nothing to send.
   if [ "$DETAIL_EXIT" -eq 0 ]; then
-    write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages for new opportunities..." "$STARTED"
+    write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
     {
       echo ""
       echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
     } >> "$CURRENT_LOG"
-    if [ "$PENDING_BEFORE" = "0" ]; then
-      notify_new_records --idle
-    else
-      notify_new_records --announce
-    fi
+    notify_new_records --announce
     {
       echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
     } >> "$CURRENT_LOG"

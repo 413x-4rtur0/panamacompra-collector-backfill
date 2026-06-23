@@ -407,13 +407,13 @@ The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. T
 The native Tk monitor is organized top-to-bottom into clear sections:
 
 1. **Run controls** — a wide `live`/`test` mode selector comes first, followed by the detail/sandbox limit entry and the **Request selected run** button, all on one row.
-2. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
+2. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row. Placed directly under Run controls so the live run status is visible without scrolling. While the WhatsApp MESSAGING step runs, a `messaging` process pill lights up and the Phase/Step/Item fields track each message being sent.
+3. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
    - WhatsApp source label, destination chat id, and keyword filter.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
-3. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row.
-4. **Record index** — a wide selector listing every collected record as `NUMERO — description` (newest first), read straight from `data/panamacompra_archive.db`. Because the number and description are long, the full values of the current selection are echoed on their own wide line, and buttons let you **Open record folder** (the archived `records/…` folder) or **Open in portal** (the PanamaCompra page). Use **Refresh list** after a new collection. The list is empty until the collector has run at least once.
+4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling list** of every collected record as `NUMERO — description` (newest first), read straight from `data/panamacompra_archive.db`. This replaces the old dropdown, whose popup scroll fought the whole-page scroll and made the long entries impossible to separate; the list now scrolls on its own (its own scrollbar/wheel) and the filter narrows it instantly. The full number/description of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
 5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
 
@@ -493,10 +493,33 @@ message instead (`pc_notify_new_records.py --idle`):
 ✅ Monitor activo
 ```
 
+The MESSAGING step also announces **status changes**. When a record that was
+already announced as *Programada* later appears in the *Abiertas* list, the index
+step flags it (`pending_status_change`) and the MESSAGING step sends an update
+message (then clears the flag). *Cancelada* is a planned future transition.
+
+```text
+🔄 OPORTUNIDAD ACTUALIZADA
+
+📌 Fuente: Panamá Compra
+🏷️ Título: {descripcion}
+🏢 Entidad: {entidad}
+🔁 Estado: Programada → Abierta
+⏰ Cierre: {finish_date_guess}
+
+🔗 Ver oportunidad:
+{link}
+
+🕒 Actualizado: {updated_at}
+🆔 ID: {numero}
+```
+
 Behavior notes:
 
-- **One message per new record, as it arrives.** Each record is announced once,
-  right after its detail saves, and the worker then moves on to the next entry.
+- **One message per new record and per status change, one at a time.** After the
+  detail step, the MESSAGING step sends each new opportunity and each status
+  change individually, publishing per-message monitor progress; if there is
+  nothing to send it posts the single `⚪ Sin nuevas entradas` status.
 - **No backlog flood.** On first use (before any new detail is downloaded)
   `ensure_baseline` marks every existing saved record as already-announced via
   the `notified_at` column and writes `data/config/waha_notify_initialized`, so
