@@ -298,12 +298,15 @@ PY
     } >> "$CURRENT_LOG"
   fi
 
-  # STEP 5: when this run had no new records to process, exercise the current
-  # code on the last N records in an isolated sandbox (records_test/) so a
-  # "nothing new" run still verifies code changes. The script publishes its own
-  # MODE=TEST progress. Disable with PC_TEST_ZONE_LIMIT=0.
+  # STEP 5: OPTIONAL test zone. When this run had no new records to process, it
+  # can exercise the current code on the last N records in an isolated sandbox
+  # (records_test/) so a "nothing new" run still verifies code changes. This is
+  # OFF by default — the autostart no longer launches the test zone on its own.
+  # Opt in with PC_TEST_ZONE_AUTORUN=1 (it stays available as a manual action in
+  # the monitor regardless). PC_TEST_ZONE_LIMIT still controls how many records.
+  TEST_AUTORUN="${PC_TEST_ZONE_AUTORUN:-0}"
   TEST_LIMIT="${PC_TEST_ZONE_LIMIT:-5}"
-  if printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
+  if [ "$TEST_AUTORUN" = "1" ] && printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""

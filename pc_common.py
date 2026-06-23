@@ -786,6 +786,11 @@ def _calendar_window_datetimes(fields):
     if not times:
         times = ["12:00"]
 
+    # Sort so DTSTART is always the earliest and DTEND the latest clock time on
+    # the same close date, regardless of the order they appear in the source
+    # window. This keeps every event's DTSTART/DTEND coherent (DTEND never lands
+    # before DTSTART) inside the .ics packages, real and isolated/test alike.
+    times = sorted(times)
     dtstart = f"{date}T{times[0]}:00"
     dtend = f"{date}T{times[-1]}:00"
     return window, dtstart, dtend

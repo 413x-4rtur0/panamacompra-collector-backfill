@@ -23,10 +23,11 @@ INTERVAL_MINUTES = max(1, int(os.environ.get("PC_NEXT_RUN_INTERVAL_MINUTES", "30
 # Fixed window size. Bigger by default than the old timer because it now carries
 # the branch, latest records and last-run summary; still pinned (resizable off).
 WINDOW_WIDTH = int(os.environ.get("PC_NEXT_RUN_TIMER_WIDTH", "340"))
-WINDOW_HEIGHT = int(os.environ.get("PC_NEXT_RUN_TIMER_HEIGHT", "258"))
+WINDOW_HEIGHT = int(os.environ.get("PC_NEXT_RUN_TIMER_HEIGHT", "300"))
 WINDOW_TOP = int(os.environ.get("PC_NEXT_RUN_TIMER_TOP", "30"))
-# How many of the most recent records to list.
-RECORDS_SHOWN = max(1, int(os.environ.get("PC_NEXT_RUN_TIMER_RECORDS", "3")))
+# How many of the most recent records to list. The "Latest records" field is
+# scrollable, so this can comfortably be larger than the few rows that fit.
+RECORDS_SHOWN = max(1, int(os.environ.get("PC_NEXT_RUN_TIMER_RECORDS", "15")))
 # Refresh the cheap countdown every second; the heavier git/DB reads less often.
 DATA_REFRESH_TICKS = max(1, int(os.environ.get("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10")))
 
@@ -179,14 +180,47 @@ def main() -> int:
     tk.Label(root, textvariable=lastrun_var, font=("Sans", 8), bg="#1e293b", fg="#94a3b8").pack(pady=0)
 
     tk.Label(root, text="Latest records", font=("Sans", 8, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(4, 0))
-    latest_var = tk.StringVar(value="…")
-    tk.Label(
-        root, textvariable=latest_var, font=("Mono", 8), bg="#1e293b", fg="#bbf7d0",
-        justify="left", anchor="w",
-    ).pack(fill="x", padx=12)
 
     status_var = tk.StringVar(value="")
     tk.Label(root, textvariable=status_var, font=("Sans", 8), bg="#1e293b", fg="#94a3b8").pack(side="bottom", pady=(0, 6))
+
+    # The latest-record list lives in a scrollable, read-only Text so the window
+    # can stay fixed-size yet show many recent entries — the operator scrolls the
+    # field (wheel or scrollbar) to walk through the newest collected records.
+    latest_frame = tk.Frame(root, bg="#1e293b")
+    latest_frame.pack(fill="both", expand=True, padx=12, pady=(0, 2))
+    latest_scroll = tk.Scrollbar(latest_frame, orient="vertical")
+    latest_scroll.pack(side="right", fill="y")
+    latest_text = tk.Text(
+        latest_frame, font=("Mono", 8), bg="#1e293b", fg="#bbf7d0",
+        bd=0, highlightthickness=0, wrap="none", cursor="arrow",
+        yscrollcommand=latest_scroll.set,
+    )
+    latest_text.pack(side="left", fill="both", expand=True)
+    latest_scroll.config(command=latest_text.yview)
+    latest_text.insert("1.0", "…")
+    latest_text.configure(state="disabled")
+
+    def set_latest(text: str) -> None:
+        latest_text.configure(state="normal")
+        latest_text.delete("1.0", "end")
+        latest_text.insert("1.0", text)
+        latest_text.configure(state="disabled")
+
+    def on_latest_wheel(event: tk.Event) -> str:
+        # X11 delivers wheel as Button-4/5 (no delta); other platforms use delta.
+        if getattr(event, "num", None) == 4:
+            step = -1
+        elif getattr(event, "num", None) == 5:
+            step = 1
+        else:
+            step = -1 if event.delta > 0 else 1
+        latest_text.yview_scroll(step, "units")
+        return "break"
+
+    latest_text.bind("<MouseWheel>", on_latest_wheel)
+    latest_text.bind("<Button-4>", on_latest_wheel)
+    latest_text.bind("<Button-5>", on_latest_wheel)
 
     state = {"was_active": False, "tick": 0, "branch": "-"}
 
@@ -202,9 +236,9 @@ def main() -> int:
         last_status = values.get("STATUS", "") or "—"
         lastrun_var.set(f"Last run: {last_start}  ·  {last_status}")
         if latest:
-            latest_var.set("\n".join(f"{num}\n  {_truncate(desc, 40) or '(sin descripción)'}" for num, desc in latest))
+            set_latest("\n".join(f"{num}\n  {_truncate(desc, 40) or '(sin descripción)'}" for num, desc in latest))
         else:
-            latest_var.set("(sin registros todavía)")
+            set_latest("(sin registros todavía)")
 
     def refresh() -> None:
         active = is_live_run_active()
