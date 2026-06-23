@@ -38,9 +38,37 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "data" / "config"
 KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 BASELINE_MARKER = CONFIG_DIR / "waha_notify_initialized"
+SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
 
-SOURCE_NAME = os.environ.get("PC_WAHA_SOURCE", "Panamá Compra")
 DASH = "—"
+
+
+def _load_settings_file() -> dict[str, str]:
+    data: dict[str, str] = {}
+    if not SETTINGS_PATH.exists():
+        return data
+    for line in SETTINGS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip().strip('"').strip("'")
+    return data
+
+
+_SETTINGS_FILE = _load_settings_file()
+
+
+def cfg(name: str, default: str) -> str:
+    """Resolve a value: environment variable first, then the monitor settings
+    file (data/config/monitor_settings.env), then the default. This lets the
+    monitor's Settings panel control the notifier without env changes."""
+    if name in os.environ:
+        return os.environ[name]
+    return _SETTINGS_FILE.get(name, default)
+
+
+SOURCE_NAME = cfg("PC_WAHA_SOURCE", "Panamá Compra")
 
 
 def now_str() -> str:
@@ -177,7 +205,10 @@ def main() -> int:
     ).fetchall()
 
     keywords = load_keywords()
-    max_messages = max(1, int(os.environ.get("PC_WAHA_MAX_NEW_MESSAGES", "12")))
+    try:
+        max_messages = max(1, int(cfg("PC_WAHA_MAX_NEW_MESSAGES", "12")))
+    except ValueError:
+        max_messages = 12
 
     sent = 0
     truncated_extra = 0
