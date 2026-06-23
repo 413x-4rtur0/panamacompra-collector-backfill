@@ -36,6 +36,14 @@ notify_waha() {
   fi
 }
 
+# Send the rich "new opportunity" / "no new entries" WhatsApp messages for the
+# records this iteration just saved. Never allowed to break the run.
+notify_new_records() {
+  if [ -x ./pc_notify_new_records.py ]; then
+    "$PYTHON_BIN" ./pc_notify_new_records.py >> "$WORKER_LOG" 2>&1 || true
+  fi
+}
+
 quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
@@ -262,6 +270,12 @@ PY
     write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
     notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT."
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+  fi
+
+  # Announce newly saved opportunities (or "no new entries") on WhatsApp whenever
+  # the detail step finished cleanly, regardless of the calendar build outcome.
+  if [ "$DETAIL_EXIT" -eq 0 ]; then
+    notify_new_records
   fi
 
   # STEP 4: when this run had no new records to process, exercise the current

@@ -25,10 +25,12 @@ WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 REFRESH_SECONDS = max(2, int(os.environ.get("PC_MONITOR_TK_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_TK_IDLE_REFRESH_SECONDS", "15")))
-# Default 0 = never auto-close. The monitor is opened manually, so it stays open
-# for manual work until the user closes it. Set PC_MONITOR_TK_AUTO_CLOSE_SECONDS
-# to a positive number for unattended/automated contexts that should self-close.
-AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "0")))
+# After a LIVE run finishes the monitor shows a centered countdown and then
+# closes itself. Default is 20 seconds; set PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0 to
+# keep the window open until you close it manually. The countdown only applies to
+# completed LIVE runs — test-zone runs and idle/manual states never auto-close
+# (see auto_close_enabled in status_snapshot).
+AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", "20")))
 
 class ManualAction(NamedTuple):
     zone: str
@@ -174,8 +176,17 @@ def percent_value(progress: dict[str, str]) -> int:
         return 0
 
 
+# Processes that represent actual collection/maintenance WORK. The "done" state
+# (and the auto-close countdown) must only depend on these. The monitor window
+# itself (monitor_tk), the optional web monitor, the always-on next-run timer and
+# the passive webhook listener must NOT count — otherwise the monitor detects
+# ITSELF as running and "done" is never reached, so the finish countdown never
+# appears.
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "test_run", "updater", "request")
+
+
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
-    if any(processes.values()):
+    if any(processes.get(key) for key in WORK_PROCESS_KEYS):
         return False
     return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
@@ -418,7 +429,32 @@ def run_tk() -> int:
     worker_text.grid(row=1, column=0, sticky="nsew", padx=(0, 7))
     current_text.grid(row=1, column=1, sticky="nsew", padx=(7, 0))
 
+    # Centered auto-close countdown overlay. It is placed in the exact middle of
+    # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
+    # counting down, and removed otherwise. Using place() keeps it on top of the
+    # gridded canvas without disturbing the scrollable layout.
+    overlay_var = tk.StringVar(value="")
+    overlay = tk.Label(
+        root,
+        textvariable=overlay_var,
+        bg="#020617",
+        fg="#bbf7d0",
+        font=("Sans", 26, "bold"),
+        justify="center",
+        padx=44,
+        pady=30,
+        bd=2,
+        relief="solid",
+        highlightbackground="#22c55e",
+        highlightthickness=2,
+    )
+
     done_since: float | None = None
+    # Only auto-close after this monitor session has actually watched a run go
+    # from active to finished. Opening the monitor straight into a pre-existing
+    # idle/done state (e.g. right after an update with no run queued) must NOT
+    # start the countdown, otherwise the window would close before any work runs.
+    saw_active = False
 
     def set_text(widget: tk.Text, value: str) -> None:
         widget.configure(state="normal")
@@ -427,7 +463,7 @@ def run_tk() -> int:
         widget.configure(state="disabled")
 
     def refresh() -> None:
-        nonlocal done_since
+        nonlocal done_since, saw_active
         snap = status_snapshot()
         progress = snap["progress"]
         percent = int(snap["percent"])
@@ -450,23 +486,40 @@ def run_tk() -> int:
         set_text(worker_text, str(snap["worker_log"]))
         set_text(current_text, str(snap["current_log"]))
 
-        if snap["done"]:
+        counting_down = False
+        if not snap["done"]:
+            # A run is active (or starting): remember it so the countdown is
+            # allowed once it finishes, and clear any previous countdown state.
+            saw_active = True
+            done_since = None
+            done_var.set("")
+            overlay.place_forget()
+        elif not saw_active:
+            # Opened into a pre-existing idle/done state: show status, no countdown.
+            done_since = None
+            done_var.set("Idle. Auto-close starts only after a live run finishes while the monitor is open.")
+            overlay.place_forget()
+        else:
             if done_since is None:
                 done_since = time.monotonic()
             wait = int(snap["auto_close_seconds"]) if snap.get("auto_close_enabled") else 0
             remaining = max(0, wait - int(time.monotonic() - done_since))
             if wait:
+                counting_down = True
                 done_var.set(f"Live run finished. This window will close in {remaining} seconds.")
+                overlay_var.set(f"✅ Run finished\n\nClosing in {remaining} s")
+                overlay.place(relx=0.5, rely=0.5, anchor="center")
             else:
                 done_var.set("Run finished. Auto-close is disabled for test zone and manual desktop actions.")
+                overlay.place_forget()
             if wait and remaining <= 0:
                 root.destroy()
                 return
-        else:
-            done_since = None
-            done_var.set("")
 
-        root.after(int(snap["refresh_seconds"]) * 1000, refresh)
+        # Tick once per second while the countdown is visible so it updates
+        # smoothly; otherwise use the normal (slower, low-power) refresh cadence.
+        next_delay_ms = 1000 if counting_down else int(snap["refresh_seconds"]) * 1000
+        root.after(next_delay_ms, refresh)
 
     refresh()
     root.mainloop()

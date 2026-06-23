@@ -89,15 +89,31 @@ echo "Branch: $BRANCH"
 echo "Log: $LOG_FILE"
 echo ""
 
-echo "1) Stop any active collector worker before updating"
-if [ -x ./pc_stop_run_all.sh ]; then
-  ./pc_stop_run_all.sh || true
-else
-  rm -f data/queue/run_all_requested.flag
-  pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
-  pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
-  pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
-fi
+echo "1) Stop the active collector pipeline before updating"
+# IMPORTANT: do NOT call ./pc_stop_run_all.sh from here. That broad stopper also
+# runs `pkill update_local_copy.sh`, `pkill pc_update_loader.py` and
+# `pkill pc_monitor_tk.py` — i.e. it would terminate THIS update process, the
+# loader window, and the monitor the user is watching. That self-kill is what
+# made the updater appear to "freeze" or close right after step 1, and it also
+# added a fixed 5s wait. Instead stop only the collector pipeline plus the
+# webhook trigger so a new run cannot start mid-update, and never touch the
+# updater/loader/monitor processes.
+rm -f data/queue/run_all_requested.flag
+pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_build_calendar.py" 2>/dev/null || true
+pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
+
+# Wait briefly (max ~3s) for a graceful exit, then force any straggler so the
+# update never blocks for long.
+for _ in 1 2 3; do
+  pgrep -f "[p]c_run_all_worker.sh|[p]ython3? -u ./pc_index_collector.py|[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1 || break
+  sleep 1
+done
+pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"

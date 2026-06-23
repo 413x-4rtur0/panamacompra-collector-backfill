@@ -918,6 +918,9 @@ def ensure_db_schema(conn):
         "detail_saved_at": "ALTER TABLE opportunities ADD COLUMN detail_saved_at TEXT",
         "detail_json_path": "ALTER TABLE opportunities ADD COLUMN detail_json_path TEXT",
         "finish_date_guess": "ALTER TABLE opportunities ADD COLUMN finish_date_guess TEXT",
+        # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
+        # pc_notify_new_records.py so each record is announced at most once.
+        "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
     }
 
     for column, statement in migrations.items():

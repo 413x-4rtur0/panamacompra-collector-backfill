@@ -297,7 +297,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
 | `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
-| `pc_waha_notify.py` | Optional dependency-free WAHA notifier for private WhatsApp group text alerts. Enabled only when WAHA environment variables are configured. |
+| `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
+| `pc_notify_new_records.py` | Sends rich “🟢 NUEVA OPORTUNIDAD DETECTADA” messages for each newly saved record (or one “⚪ Sin nuevas entradas” status) after every successful run. Supports an optional keyword filter and a first-run baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
@@ -316,7 +317,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
-| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop workers, auto-stash local tracked edits (kept for recovery), fast-forward Git (reset to remote if diverged), refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. |
+| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), fast-forward Git (reset to remote if diverged), refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. |
 | `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
 
 ---
@@ -350,7 +351,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
-| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `0` | native monitor | Seconds to wait after completion before closing the native monitor window. Default `0` keeps the manually-opened monitor open until you close it; set a positive number for unattended contexts that should self-close. |
+| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.60` | native monitor | Native monitor opacity/transparency. `0.60` means 60% opaque. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
@@ -370,8 +371,12 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
 | `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. If unset, `data/config/waha_chat_id.txt` saved from the monitor is used. Group ids usually end in `@g.us`. |
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
-| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update` | WAHA notifier | Comma-separated event names to send. Use `all` to send every supported event. |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
+| `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
+| `PC_WAHA_MAX_NEW_MESSAGES` | `12` | new-record notifier | Maximum individual “nueva oportunidad” messages per run; extra new records are summarized in one follow-up line. |
+| keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
+| notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA destination | `data/config/waha_chat_id.txt` | WAHA notifier / monitor | Destination group/channel chat id saved from the monitor; used when `PC_WAHA_CHAT_ID` is not set. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
@@ -404,6 +409,64 @@ Test the notifier without running the collector:
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
 bridge, not the official WhatsApp Business Cloud API, so the safest use is a
 private alert group controlled by you.
+
+#### Rich “what is new” opportunity messages
+
+In addition to the short operational alerts above (`start`/`done`/`failed`/…),
+the worker calls `pc_notify_new_records.py` after every successful index+detail
+step. It reads the archive database for records that were just saved and never
+announced, then sends one message per new opportunity using this template:
+
+```text
+🟢 NUEVA OPORTUNIDAD DETECTADA
+
+📌 Fuente: Panamá Compra
+🏷️ Título: {descripcion}
+🏢 Entidad: {entidad}
+📍 Provincia: {provincia_de_entrega}
+📅 Publicado: {fecha}
+⏰ Cierre: {finish_date_guess}
+💰 Monto estimado: {precio_estimado}
+
+🔎 Coincidencia: {matched_keywords}
+
+🔗 Ver oportunidad:
+{link}
+
+🕒 Detectado: {detail_saved_at}
+🆔 ID: {numero}
+```
+
+When a run completes with no new records, a single status message is sent
+instead:
+
+```text
+⚪ Sin nuevas entradas
+
+📌 Fuente: Panamá Compra
+🕒 Revisión: {checked_at}
+📊 Registros revisados: {total_records}
+✅ Monitor activo
+```
+
+Behavior notes:
+
+- **No backlog flood.** The first time the notifier runs it records a baseline
+  (marks every existing saved record as already-announced via the new
+  `notified_at` column and writes `data/config/waha_notify_initialized`) and
+  sends nothing, so only genuinely new records are announced from then on.
+- **Optional keyword filter.** Put one keyword per line in
+  `data/config/waha_keywords.txt`. When present, only records whose
+  title/description/entity match a keyword are announced and the matched
+  keywords are listed in `🔎 Coincidencia`. When the file is missing or empty,
+  every new record is announced and the line reads
+  `Sin filtro (todas las entradas)`.
+- **Burst cap.** At most `PC_WAHA_MAX_NEW_MESSAGES` (default `12`) individual
+  opportunity messages are sent per run; any extra new records are summarized in
+  one follow-up line.
+- **Never blocks a run.** Any notifier or network failure is caught and logged;
+  records that could not be sent keep `notified_at` empty and are retried on the
+  next run.
 
 ---
 
@@ -689,6 +752,7 @@ SQLite database at `data/panamacompra_archive.db`, table `opportunities`
 | `detail_status` | `pending`, `saved`, or `failed`. |
 | `detail_attempts`, `detail_saved_at`, `detail_json_path` | Detail tracking. |
 | `finish_date_guess` | Closing date guessed from detail text. |
+| `notified_at` | Timestamp of the WAHA “nueva oportunidad” WhatsApp message for this record, set by `pc_notify_new_records.py` so each record is announced at most once (empty = not yet announced). |
 
 Useful queries:
 
