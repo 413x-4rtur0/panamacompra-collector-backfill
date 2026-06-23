@@ -1224,6 +1224,27 @@ tail -80 data/logs/run_all_requests.log
 ./pc_queue_status.sh
 ```
 
+**Fast recovery sequence for the current Docker setup** — when the compose run
+shows `Bind for 0.0.0.0:3000 failed`, `changedetection` is not running, or the
+host health check answers from the old `panamacompra-webhook-receiver`, use this
+order so each failure is isolated:
+
+```bash
+cd ~/Apps/panamacompra-collector
+
+# 1) Start the webhook and changedetection first; do not let WAHA port 3000 block them.
+docker compose up -d webhook changedetection
+
+# 2) If you need the compose WAHA service and port 3000 is busy, move only WAHA.
+WAHA_PORT=3001 docker compose up -d waha
+
+# 3) Use the compose-network notification URL inside changedetection.
+printf 'json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "$(cat .webhook_token)"
+
+# 4) Check whether the enqueue flag/runner/logs are moving.
+./pc_queue_status.sh
+```
+
 If local curl returns `202` but the Docker test fails, add
 `extra_hosts: ["host.docker.internal:host-gateway"]` to the changedetection.io
 compose service or use the workstation LAN IP in the notification URL. If the error
