@@ -273,8 +273,11 @@ All commands assume you are in the project directory.
 # Follow the logs live
 ./pc_follow_run_all.sh
 
-# Emergency stop (use only if a browser step is frozen)
+# Emergency stop collector processes only; webhook stays alive for changedetection autorun
 ./pc_stop_run_all.sh
+
+# Stop the webhook too only when intentionally disabling autorun
+PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh
 ```
 
 You can also run a single phase manually:
@@ -350,6 +353,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor. Set to `0` to skip. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
+| `PC_STOP_WEBHOOK` | `0` | stop script | By default `pc_stop_run_all.sh` preserves `webhook_listener.py` so changedetection.io autorun keeps working. Set `PC_STOP_WEBHOOK=1` only when you intentionally want to stop the webhook receiver too. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_LAUNCH_CONTEXT` | `manual` | monitor opener | Internal/manual override for auto-close behavior. `pc_request_run_all.sh` sets `auto` so normal or scheduled live runs close after all tasks are done; direct manual monitor launches stay open. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
@@ -922,10 +926,11 @@ PC_MONITOR_MODE=web ./pc_open_monitor.sh  # optional browser monitor
 ./pc_follow_run_all.sh
 ```
 
-**Webhook does not trigger the collector** — check the logs and confirm `.webhook_token`
-exists and matches the URL:
+**Webhook does not trigger the collector** — first confirm the listener is still running. `./pc_stop_run_all.sh` preserves it by default, but older stops or `PC_STOP_WEBHOOK=1` may have stopped it. Check the health endpoint/logs and confirm `.webhook_token` exists and matches the changedetection.io URL:
 
 ```bash
+pgrep -af webhook_listener.py || python3 webhook_listener.py
+curl -fsS http://127.0.0.1:8765/health
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
 ```

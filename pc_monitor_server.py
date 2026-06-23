@@ -48,7 +48,7 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 MANUAL_ACTIONS = [
     ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99"), "Queues a normal live run and opens/reuses this monitor."),
     ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
-    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
+    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops collector processes and clears the queued run flag; keeps webhook listener alive for changedetection autorun."),
     ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),

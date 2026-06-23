@@ -114,7 +114,7 @@ MANUAL_ACTIONS = [
     ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99"), "Queues a normal live run (up to 99 detail pages) for the background worker. Safe default action."),
     ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Collector Runners", "STOP collector runners", ("./pc_stop_run_all.sh",), "Stops worker/index/detail/test/calendar/updater/monitor processes but keeps the webhook listener alive for changedetection autorun. Use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to stop the webhook too."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
     ManualAction("Updater & Migration", "Update local copy", ("./pc_update_loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
@@ -127,7 +127,7 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
     ManualAction("Data Tools", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds all calendar packages and opens each .ics using Thunderbird profile a2gutierrezmora."),
-    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use PC_STOP_WEBHOOK=1 ./pc_stop_run_all.sh to halt it."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
     # --- 4. Testing & Validation: sandbox runs and health checks -------------

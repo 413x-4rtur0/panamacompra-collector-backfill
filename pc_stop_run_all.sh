@@ -5,7 +5,9 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 mkdir -p data/logs data/queue
 
-echo "Stopping all PanamaCompra runners and background processes..."
+STOP_WEBHOOK="${PC_STOP_WEBHOOK:-0}"
+
+echo "Stopping PanamaCompra collector runners and background processes..."
 
 # Clear request flags first to prevent restarts
 rm -f data/queue/run_all_requested.flag
@@ -54,11 +56,17 @@ pkill -TERM -f "[p]c_next_run_timer.py" 2>/dev/null || true
 pkill -TERM -f "[p]c_follow_run_all.sh" 2>/dev/null || true
 
 # ============================================================================
-# STEP 6: Stop webhook listener (background HTTP receiver)
+# STEP 6: Keep webhook listener alive by default so changedetection.io autorun
+# remains connected after a manual STOP. Set PC_STOP_WEBHOOK=1 only when you
+# intentionally want to stop the HTTP receiver too.
 # ============================================================================
-echo "6) Stopping webhook listener..."
-pkill -TERM -f "[p]ython3? -u ./webhook_listener.py" 2>/dev/null || true
-pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
+if [ "$STOP_WEBHOOK" = "1" ]; then
+  echo "6) Stopping webhook listener (PC_STOP_WEBHOOK=1)..."
+  pkill -TERM -f "[p]ython3? -u ./webhook_listener.py" 2>/dev/null || true
+  pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
+else
+  echo "6) Keeping webhook listener running (set PC_STOP_WEBHOOK=1 to stop it)."
+fi
 
 # Give processes a short window to terminate gracefully. Keep this snappy so the
 # STOP action (and update_local_copy.sh, which relies on a fast stop) does not
@@ -74,7 +82,9 @@ pkill -9 -f "[p]c_test_zone.py" 2>/dev/null || true
 pkill -9 -f "[p]c_build_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate_local_copy.sh" 2>/dev/null || true
 pkill -9 -f "[p]c_monitor_tk.py" 2>/dev/null || true
-pkill -9 -f "[w]ebhook_listener.py" 2>/dev/null || true
+if [ "$STOP_WEBHOOK" = "1" ]; then
+  pkill -9 -f "[w]ebhook_listener.py" 2>/dev/null || true
+fi
 
 sleep 1
 
@@ -86,7 +96,13 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') | All runners stopped manually." >> data/logs
 
 echo ""
 echo "============================================================"
-echo "All PanamaCompra processes stopped."
+if [ "$STOP_WEBHOOK" = "1" ]; then
+  echo "All PanamaCompra processes stopped, including webhook listener."
+else
+  echo "Collector processes stopped. Webhook listener was preserved for changedetection.io autorun."
+fi
 echo "============================================================"
 echo "Remaining related processes (should be empty):"
-pgrep -af "pc_run_all|pc_test_zone|pc_build_calendar|pc_monitor|webhook_listener|update_local" || echo "  None found - all stopped successfully."
+pgrep -af "pc_run_all|pc_test_zone|pc_build_calendar|pc_monitor|update_local" || echo "  None found - collector processes stopped successfully."
+echo "Webhook listener status:"
+pgrep -af "webhook_listener" || echo "  Not running (start from monitor Data Tools / Settings or run: python3 webhook_listener.py)"

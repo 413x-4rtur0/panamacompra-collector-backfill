@@ -51,9 +51,17 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_trigger()
 
     def handle_trigger(self):
+        request_path = self.path.split("?")[0]
+        if request_path in {"/health", "/healthz"}:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok\n")
+            self.log_line("Health check ok")
+            return
+
         expected_path = f"/panamacompra/{TOKEN}"
 
-        if not hmac.compare_digest(self.path.split("?")[0], expected_path):
+        if not hmac.compare_digest(request_path, expected_path):
             self.send_response(403)
             self.end_headers()
             self.wfile.write(b"Forbidden\n")
