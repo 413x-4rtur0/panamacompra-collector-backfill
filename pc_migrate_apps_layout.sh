@@ -14,9 +14,11 @@ usage() {
 Usage: $0 [--apply] [--link-legacy] [--apps-root /Apps] [--collector /Apps/panamacompra-collector]
 
 Consolidates legacy folders:
-  /Apps/panamacompra-monitor          -> collector/docker/changedetection-data
-  /Apps/panamacompra-webhook-receiver -> collector/.webhook_token (if present) and optional symlink
-  /Apps/waha                          -> collector/docker/waha-sessions
+  /Apps/panamacompra-monitor          -> collector/integrations/changedetection
+  /Apps/panamacompra-webhook-receiver -> collector/integrations/webhook-receiver
+  /Apps/waha                          -> collector/integrations/waha
+
+It also copies .webhook_token into the collector root if one is found.
 
 Default is dry-run. --apply performs copies. --link-legacy also renames legacy
 folders to *.bak-<timestamp> and creates compatibility symlinks.
@@ -107,20 +109,26 @@ if [ "$CURRENT_DIR" != "$COLLECTOR_DIR" ]; then
   say "It will still consolidate data into $COLLECTOR_DIR. Run from the target checkout for normal updates."
 fi
 
-do_cmd mkdir -p "$COLLECTOR_DIR/docker/changedetection-data" "$COLLECTOR_DIR/docker/waha-sessions" "$COLLECTOR_DIR/data/queue" "$COLLECTOR_DIR/data/logs"
+do_cmd mkdir -p "$COLLECTOR_DIR/integrations/changedetection" "$COLLECTOR_DIR/integrations/webhook-receiver" "$COLLECTOR_DIR/integrations/waha" "$COLLECTOR_DIR/data/queue" "$COLLECTOR_DIR/data/logs"
 
 MONITOR_DIR="$APPS_ROOT/panamacompra-monitor"
 WEBHOOK_DIR="$APPS_ROOT/panamacompra-webhook-receiver"
 WAHA_DIR="$APPS_ROOT/waha"
 
-copy_dir_contents "$MONITOR_DIR" "$COLLECTOR_DIR/docker/changedetection-data"
-copy_dir_contents "$WAHA_DIR" "$COLLECTOR_DIR/docker/waha-sessions"
+copy_dir_contents "$COLLECTOR_DIR/docker/changedetection-data" "$COLLECTOR_DIR/integrations/changedetection"
+copy_dir_contents "$COLLECTOR_DIR/docker/waha-sessions" "$COLLECTOR_DIR/integrations/waha"
+copy_dir_contents "$MONITOR_DIR" "$COLLECTOR_DIR/integrations/changedetection"
+copy_dir_contents "$WEBHOOK_DIR" "$COLLECTOR_DIR/integrations/webhook-receiver"
+copy_dir_contents "$WAHA_DIR" "$COLLECTOR_DIR/integrations/waha"
 copy_file_if_missing "$WEBHOOK_DIR/.webhook_token" "$COLLECTOR_DIR/.webhook_token"
+copy_file_if_missing "$COLLECTOR_DIR/integrations/webhook-receiver/.webhook_token" "$COLLECTOR_DIR/.webhook_token"
 copy_file_if_missing "$CURRENT_DIR/.webhook_token" "$COLLECTOR_DIR/.webhook_token"
 
-link_legacy_dir "$MONITOR_DIR" "$COLLECTOR_DIR/docker/changedetection-data"
-link_legacy_dir "$WAHA_DIR" "$COLLECTOR_DIR/docker/waha-sessions"
-link_legacy_dir "$WEBHOOK_DIR" "$COLLECTOR_DIR"
+link_legacy_dir "$MONITOR_DIR" "$COLLECTOR_DIR/integrations/changedetection"
+link_legacy_dir "$WAHA_DIR" "$COLLECTOR_DIR/integrations/waha"
+link_legacy_dir "$WEBHOOK_DIR" "$COLLECTOR_DIR/integrations/webhook-receiver"
+link_legacy_dir "$COLLECTOR_DIR/docker/changedetection-data" "$COLLECTOR_DIR/integrations/changedetection"
+link_legacy_dir "$COLLECTOR_DIR/docker/waha-sessions" "$COLLECTOR_DIR/integrations/waha"
 
 say ""
 say "Next recommended checks:"
@@ -130,5 +138,5 @@ say "  ./pc_start_webhook_listener.sh   # only for all-host / host.docker.intern
 say "  ./pc_webhook_diagnostic.sh"
 say ""
 say "changedetection URL guidance:"
-say "  Docker Compose path: json://webhook:8765/panamacompra/<TOKEN>?method=POST"
-say "  Host listener path:  json://host.docker.internal:8765/panamacompra/<TOKEN>?method=POST"
+say "  Docker Compose path: json://webhook:8765/panamacompra/<TOKEN>?method=POST&format=text&overflow=truncate&rto=15&cto=10"
+say "  Host listener path:  json://host.docker.internal:8765/panamacompra/<TOKEN>?method=POST&format=text&overflow=truncate&rto=15&cto=10"

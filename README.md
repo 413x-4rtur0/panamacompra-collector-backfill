@@ -351,7 +351,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_flag_watcher.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`pc_request_run_all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
-| `pc_migrate_apps_layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector`, with optional compatibility symlinks. |
+| `pc_migrate_apps_layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Collector Runners, Updater & Migration, Data Tools, Testing & Validation, and Folder Management zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
 | `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **latest collected records** (newest NUMERO + short description, read from `data/panamacompra_archive.db`), and a **last-run summary** (New/Saved counts + total archive size). Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same restart/test run request and stop controls plus its own grouped action buttons, and auto-closes only after completed collector runs. |
@@ -914,6 +914,7 @@ into one reproducible stack:
 cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
 printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
 docker compose up -d            # changedetection + browser + waha + webhook
+# Runtime volumes live under ./integrations/changedetection and ./integrations/waha
 ```
 
 **Why the webhook container only “enqueues”.** The real collector (Playwright
@@ -931,7 +932,7 @@ In the changedetection.io UI, set the watch **notification URL** to reach the
 webhook container on the compose network (no `host.docker.internal` needed):
 
 ```text
-json://webhook:8765/panamacompra/YOUR_SECRET_TOKEN?method=POST
+json://webhook:8765/panamacompra/YOUR_SECRET_TOKEN?method=POST&format=text&overflow=truncate&rto=15&cto=10
 ```
 
 If changedetection is running in Docker Compose, prefer `webhook:8765`. Using
@@ -942,9 +943,9 @@ short changedetection read timeouts should not block the notification request.
 
 If you previously split the stack into separate folders such as
 `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and
-`/Apps/waha`, consolidate them into `/Apps/panamacompra-collector` so Docker
+`/Apps/waha`, consolidate them into `/Apps/panamacompra-collector/integrations/` so Docker
 volumes, `.webhook_token`, queue files, and the updated listener all refer to the
-same checkout:
+same checkout. The helper also supports compatibility symlinks for the old paths:
 
 ```bash
 # Review first; no files are changed.
@@ -1013,7 +1014,7 @@ python webhook_listener.py
 
 The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
 202 immediately, before queueing/starting collector work. For Docker Compose use
-`json://webhook:8765/...`; use `host.docker.internal:8765` only when you are
+`json://webhook:8765/...` with `format=text&overflow=truncate&rto=15&cto=10`; use `host.docker.internal:8765` only when you are
 intentionally targeting a listener running on the host.
 
 ```text
@@ -1059,7 +1060,7 @@ As an alternative on the local LAN, point changedetection.io at the workstation'
 LAN address instead of Docker's host alias, for example:
 
 ```text
-json://192.168.10.20:8765/panamacompra/YOUR_TOKEN?method=POST&format=html&overflow=upstream
+json://192.168.10.20:8765/panamacompra/YOUR_TOKEN?method=POST&format=text&overflow=truncate&rto=15&cto=10
 ```
 
 Before using the LAN URL, test it from inside the changedetection.io container.

@@ -41,7 +41,7 @@ services:
       # Public URL it advertises in its own UI/notification links.
       - BASE_URL=${CHANGEDETECTION_BASE_URL:-http://localhost:5000}
     volumes:
-      - ./docker/changedetection-data:/datastore
+      - ./integrations/changedetection:/datastore
     # Lets watches/notifications reach the host too if you ever point them there.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -59,7 +59,7 @@ services:
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
     volumes:
-      - ./docker/waha-sessions:/app/.sessions
+      - ./integrations/waha:/app/.sessions
     networks:
       - pc
 
