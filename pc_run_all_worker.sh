@@ -36,6 +36,16 @@ notify_waha() {
   fi
 }
 
+# Send the rich "new opportunity" / "no new entries" WhatsApp messages. New
+# records are announced in real time by pc_detail_downloader.py as each detail
+# saves; here we only send the "Sin nuevas entradas" status when a run found
+# nothing new, or flush any record whose real-time send failed.
+notify_new_records() {
+  if [ -x ./pc_notify_new_records.py ]; then
+    "$PYTHON_BIN" ./pc_notify_new_records.py "$@" >> "$WORKER_LOG" 2>&1 || true
+  fi
+}
+
 quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
@@ -262,6 +272,17 @@ PY
     write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
     notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT."
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+  fi
+
+  # WhatsApp summary after a clean detail step. New records were already announced
+  # in real time during the download; here we either report "no new entries"
+  # (nothing was pending) or flush any record whose live send failed.
+  if [ "$DETAIL_EXIT" -eq 0 ]; then
+    if [ "$PENDING_BEFORE" = "0" ]; then
+      notify_new_records --idle
+    else
+      notify_new_records --flush
+    fi
   fi
 
   # STEP 4: when this run had no new records to process, exercise the current

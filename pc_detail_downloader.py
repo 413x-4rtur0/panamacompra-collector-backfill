@@ -2,9 +2,17 @@
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from pc_common import *
+
+# Optional real-time WhatsApp (WAHA) notifier. Imported defensively so the
+# downloader still runs if the module or its config is missing.
+try:
+    import pc_notify_new_records as pc_notify
+except Exception:  # noqa: BLE001 - notifications are strictly optional
+    pc_notify = None
 
 DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
@@ -539,6 +547,15 @@ def process_detail(browser, conn, row, force=False):
 
 def main():
     conn = init_db()
+
+    # Establish the WAHA baseline once (before any new detail is saved) so only
+    # records downloaded from now on are announced, never the existing archive.
+    if pc_notify is not None:
+        try:
+            pc_notify.ensure_baseline(conn)
+        except Exception as exc:  # noqa: BLE001 - notifications never block a run
+            print(f"WAHA baseline check failed: {exc}", file=sys.stderr)
+
     rows = detail_pending_rows(conn, DETAIL_LIMIT, MAX_DETAIL_ATTEMPTS)
 
     run_started = now_iso()
@@ -599,6 +616,10 @@ def main():
             result = process_detail(browser, conn, row)
             if result == "saved":
                 saved += 1
+                # Real-time WhatsApp: announce this brand-new record right after
+                # its detail (and all fields) are saved, then continue to the next.
+                if pc_notify is not None:
+                    pc_notify.notify_saved_record(conn, row["numero"])
             elif result in ("skipped_complete", "refreshed_links"):
                 skipped += 1
             else:

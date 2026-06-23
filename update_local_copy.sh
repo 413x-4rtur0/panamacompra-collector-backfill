@@ -10,8 +10,13 @@ BASE_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 cd "$BASE_DIR" || exit 1
 
 REMOTE="${PC_UPDATE_REMOTE:-origin}"
-BRANCH="${PC_UPDATE_BRANCH:-$(git branch --show-current)}"
+# PC_UPDATE_BRANCH is now an OPTIONAL hard override. When empty (default), the
+# updater auto-selects the branch: it tracks main if the most recently updated
+# remote branch is already merged into main, otherwise it switches to that
+# latest branch. Set PC_UPDATE_BRANCH to pin an exact branch instead.
+BRANCH="${PC_UPDATE_BRANCH:-}"
 DETAIL_LIMIT="${PC_UPDATE_TEST_DETAIL_LIMIT:-0}"
+CHECKED_OUT_BRANCH=""
 
 install_desktop_shortcut() {
   if [ "${PC_UPDATE_INSTALL_MONITOR_SHORTCUT:-1}" = "0" ]; then
@@ -65,11 +70,6 @@ DESKTOP
   fi
 }
 
-if [ -z "$BRANCH" ]; then
-  echo "ERROR: Could not detect the current git branch. Set PC_UPDATE_BRANCH explicitly." >&2
-  exit 1
-fi
-
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: $BASE_DIR is not a git checkout." >&2
   exit 1
@@ -85,19 +85,35 @@ echo "============================================================"
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "Directory: $BASE_DIR"
 echo "Remote: $REMOTE"
-echo "Branch: $BRANCH"
+echo "Branch: ${BRANCH:-<auto-detect latest vs main>}"
 echo "Log: $LOG_FILE"
 echo ""
 
-echo "1) Stop any active collector worker before updating"
-if [ -x ./pc_stop_run_all.sh ]; then
-  ./pc_stop_run_all.sh || true
-else
-  rm -f data/queue/run_all_requested.flag
-  pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
-  pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
-  pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
-fi
+echo "1) Stop the active collector pipeline before updating"
+# IMPORTANT: do NOT call ./pc_stop_run_all.sh from here. That broad stopper also
+# runs `pkill update_local_copy.sh`, `pkill pc_update_loader.py` and
+# `pkill pc_monitor_tk.py` — i.e. it would terminate THIS update process, the
+# loader window, and the monitor the user is watching. That self-kill is what
+# made the updater appear to "freeze" or close right after step 1, and it also
+# added a fixed 5s wait. Instead stop only the collector pipeline plus the
+# webhook trigger so a new run cannot start mid-update, and never touch the
+# updater/loader/monitor processes.
+rm -f data/queue/run_all_requested.flag
+pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u ./pc_build_calendar.py" 2>/dev/null || true
+pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
+
+# Wait briefly (max ~3s) for a graceful exit, then force any straggler so the
+# update never blocks for long.
+for _ in 1 2 3; do
+  pgrep -f "[p]c_run_all_worker.sh|[p]ython3? -u ./pc_index_collector.py|[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1 || break
+  sleep 1
+done
+pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"
@@ -120,16 +136,74 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 echo ""
-echo "3) Fetch and update the current branch to match the remote"
-git fetch --prune "$REMOTE"
-git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH" "$REMOTE/$BRANCH"
-if git pull --ff-only "$REMOTE" "$BRANCH"; then
-  echo "Fast-forwarded $BRANCH to $REMOTE/$BRANCH."
+echo "3) Fetch all remotes and select the branch to update to"
+git fetch --all --prune
+
+update_main() {
+  git checkout main 2>/dev/null || git checkout -B main "$REMOTE/main"
+  if git pull --ff-only "$REMOTE" main; then
+    echo "Fast-forwarded main to $REMOTE/main."
+  else
+    echo "Fast-forward of main not possible (diverged). Resetting main to $REMOTE/main."
+    echo "Any diverging local commits remain reachable via the reflog (git reflog main)."
+    git reset --hard "$REMOTE/main"
+  fi
+  CHECKED_OUT_BRANCH="main"
+}
+
+switch_to_branch() {
+  local target="$1"
+  git checkout "$target" 2>/dev/null || git checkout -B "$target" "$REMOTE/$target"
+  git reset --hard "$REMOTE/$target"
+  # Drop stray untracked files left by the previous branch, but NEVER the runtime
+  # archive/db/venv. `git clean` already respects .gitignore (so data/, records/,
+  # .venv, .webhook_token are kept); the explicit excludes below are a safety net
+  # in case .gitignore is ever stale on the host. We deliberately do NOT pass -x.
+  git clean -fd \
+    -e data -e records -e records_test \
+    -e .venv -e ".venv.broken.*" -e .webhook_token || true
+  CHECKED_OUT_BRANCH="$target"
+}
+
+if [ -n "$BRANCH" ]; then
+  # Hard override: pin the exact branch requested via PC_UPDATE_BRANCH.
+  echo "PC_UPDATE_BRANCH override active; tracking $REMOTE/$BRANCH."
+  switch_to_branch "$BRANCH"
 else
-  echo "Fast-forward not possible (local branch diverged). Resetting $BRANCH to $REMOTE/$BRANCH."
-  echo "Any diverging local commits remain reachable via the reflog (git reflog $BRANCH)."
-  git reset --hard "$REMOTE/$BRANCH"
+  # Auto mode. Pick the most recently updated remote branch (ignoring HEAD).
+  # `|| true` keeps `set -o pipefail` from aborting when grep filters everything
+  # (e.g. a remote that only has origin/HEAD).
+  LATEST_BRANCH="$(git for-each-ref --sort=-committerdate \
+      --format='%(refname:short)' "refs/remotes/$REMOTE" \
+    | grep -v "^$REMOTE/HEAD$" \
+    | sed "s|^$REMOTE/||" \
+    | head -n1 || true)"
+  echo "Latest remote branch: ${LATEST_BRANCH:-<none detected>}"
+
+  HAS_MAIN=0
+  git rev-parse --verify --quiet "$REMOTE/main" >/dev/null 2>&1 && HAS_MAIN=1
+
+  if [ "$HAS_MAIN" -eq 0 ]; then
+    # No main to compare against: track the latest branch directly.
+    echo "No $REMOTE/main found; tracking the latest branch directly."
+    switch_to_branch "${LATEST_BRANCH:?No remote branches found to update to}"
+  elif [ -z "$LATEST_BRANCH" ] || [ "$LATEST_BRANCH" = "main" ]; then
+    echo "Latest remote branch is main — staying on main."
+    update_main
+  elif git merge-base --is-ancestor "$REMOTE/$LATEST_BRANCH" "$REMOTE/main"; then
+    # The latest branch is already merged into main (its tip is an ancestor of
+    # main), so the newest code lives on main: track main.
+    echo "Latest branch '$LATEST_BRANCH' is already merged into main — staying on main."
+    update_main
+  else
+    # The latest branch is NOT merged into main yet, so it holds the newest code:
+    # switch to it.
+    echo "Latest branch '$LATEST_BRANCH' is not merged into main — switching to it."
+    switch_to_branch "$LATEST_BRANCH"
+  fi
 fi
+
+echo "Now on branch: $CHECKED_OUT_BRANCH"
 
 if [ -n "$STASH_REF" ]; then
   echo "Your previous local edits are preserved in the stash ($STASH_REF). They were"

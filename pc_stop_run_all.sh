@@ -60,8 +60,10 @@ echo "6) Stopping webhook listener..."
 pkill -TERM -f "[p]ython3? -u ./webhook_listener.py" 2>/dev/null || true
 pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
 
-# Give processes time to terminate gracefully
-sleep 3
+# Give processes a short window to terminate gracefully. Keep this snappy so the
+# STOP action (and update_local_copy.sh, which relies on a fast stop) does not
+# appear to hang; stubborn processes are force-killed right after.
+sleep 2
 
 # Force kill any remaining processes that didn't respond to TERM
 echo "Force-killing any remaining stubborn processes..."
@@ -74,7 +76,7 @@ pkill -9 -f "[u]pdate_local_copy.sh" 2>/dev/null || true
 pkill -9 -f "[p]c_monitor_tk.py" 2>/dev/null || true
 pkill -9 -f "[w]ebhook_listener.py" 2>/dev/null || true
 
-sleep 2
+sleep 1
 
 # Clear in-progress flag after all workers have had time to exit
 # Manual stops are intentional, not resumable abrupt exits

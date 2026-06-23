@@ -297,7 +297,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
 | `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
-| `pc_waha_notify.py` | Optional dependency-free WAHA notifier for private WhatsApp group text alerts. Enabled only when WAHA environment variables are configured. |
+| `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
+| `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers. `pc_detail_downloader.py` calls them to announce each new record in real time as its detail saves (“🟢 NUEVA OPORTUNIDAD DETECTADA”); the worker calls it with `--idle` (“⚪ Sin nuevas entradas”) or `--flush` (retry failed sends). Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. |
@@ -316,7 +317,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. Runs automatically as STEP 4 when a run finds no new records; the monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
-| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop workers, auto-stash local tracked edits (kept for recovery), fast-forward Git (reset to remote if diverged), refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. |
+| `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
 | `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
 
 ---
@@ -341,7 +342,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 4) re-runs in the sandbox. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
-| `PC_UPDATE_BRANCH` | current branch | update scripts | Git branch to fast-forward before local/update or pre-run update. |
+| `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update_local_copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `pc_update_before_run.sh` uses it (or the current branch) for its lightweight refresh. |
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request after a successful local update. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update_local_copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor. Set to `0` to skip. |
@@ -350,9 +351,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
-| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `0` | native monitor | Seconds to wait after completion before closing the native monitor window. Default `0` keeps the manually-opened monitor open until you close it; set a positive number for unattended contexts that should self-close. |
+| `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
-| `PC_MONITOR_TK_ALPHA` | `0.60` | native monitor | Native monitor opacity/transparency. `0.60` means 60% opaque. |
+| `PC_MONITOR_TK_ALPHA` | `0.85` | native monitor | Native monitor whole-window opacity (text shares it; Tk has no per-widget transparency). `0.85` is lightly translucent but readable; lower toward `0.30` for a more see-through window (clamped to 0.30–1.00). Editable live from the monitor's Settings panel; re-applied after the window is visible so it works on X11 WMs. |
+| settings file | `data/config/monitor_settings.env` | native monitor / WAHA notifier | `KEY=VALUE` file written by the monitor's Settings panel (transparency, auto-close/refresh seconds, WAHA source label). Read at startup and by the notifier. Precedence: environment variable > this file > built-in default. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
 | `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the tiny timer window. |
@@ -370,12 +372,31 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
 | `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. If unset, `data/config/waha_chat_id.txt` saved from the monitor is used. Group ids usually end in `@g.us`. |
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
-| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update` | WAHA notifier | Comma-separated event names to send. Use `all` to send every supported event. |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
+| `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
+| keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
+| notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA destination | `data/config/waha_chat_id.txt` | WAHA notifier / monitor | Destination group/channel chat id saved from the monitor; used when `PC_WAHA_CHAT_ID` is not set. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
 The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs.
+
+#### Native monitor layout
+
+The native Tk monitor is organized top-to-bottom into clear sections:
+
+1. **Run controls** — choose `live`/`test` mode and the detail/sandbox limit, then request the run.
+2. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
+   - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
+   - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
+   - WhatsApp source label, max new messages per run, destination chat id, and keyword filter.
+   - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
+3. **Diagnostic fields** — live phase/status/record counters.
+4. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
+5. **Recent worker / current action logs**.
+
+Transparency, refresh cadence and the auto-close countdown can all be changed from the Settings panel without restarting the monitor.
 
 ### Optional WAHA private WhatsApp group alerts
 
@@ -404,6 +425,69 @@ Test the notifier without running the collector:
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
 bridge, not the official WhatsApp Business Cloud API, so the safest use is a
 private alert group controlled by you.
+
+#### Rich “what is new” opportunity messages
+
+In addition to the short operational alerts above (`start`/`done`/`failed`/…),
+new opportunities are announced **in real time**: `pc_detail_downloader.py` sends
+one WhatsApp message for each brand-new record **immediately after its detail page
+finishes downloading** (so every field is populated), then continues to the next
+new entry and repeats. The message uses this template:
+
+```text
+🟢 NUEVA OPORTUNIDAD DETECTADA
+
+📌 Fuente: Panamá Compra
+🏷️ Título: {descripcion}
+🏢 Entidad: {entidad}
+📍 Provincia: {provincia_de_entrega}
+📅 Publicado: {fecha}
+⏰ Cierre: {finish_date_guess}
+💰 Monto estimado: {precio_estimado}
+
+🔎 Coincidencia: {matched_keywords}
+
+🔗 Ver oportunidad:
+{link}
+
+🕒 Detectado: {detail_saved_at}
+🆔 ID: {numero}
+```
+
+When a run completes with no new records, the worker sends a single status
+message instead (`pc_notify_new_records.py --idle`):
+
+```text
+⚪ Sin nuevas entradas
+
+📌 Fuente: Panamá Compra
+🕒 Revisión: {checked_at}
+📊 Registros revisados: {total_records}
+✅ Monitor activo
+```
+
+Behavior notes:
+
+- **One message per new record, as it arrives.** Each record is announced once,
+  right after its detail saves, and the worker then moves on to the next entry.
+- **No backlog flood.** On first use (before any new detail is downloaded)
+  `ensure_baseline` marks every existing saved record as already-announced via
+  the `notified_at` column and writes `data/config/waha_notify_initialized`, so
+  only records saved afterwards are announced.
+- **Sent at most once.** Announcing is guarded by `notified_at`; a record is
+  never re-sent, even if its detail is later rebuilt/re-downloaded.
+- **Optional keyword filter.** Put one keyword per line in
+  `data/config/waha_keywords.txt`. When present, only records whose
+  title/description/entity match a keyword are announced and the matched
+  keywords are listed in `🔎 Coincidencia`. When the file is missing or empty,
+  every new record is announced and the line reads
+  `Sin filtro (todas las entradas)`.
+- **Never blocks a run.** Any notifier or network failure is caught and logged;
+  records whose live send failed keep `notified_at` empty and are retried by the
+  end-of-run flush (`pc_notify_new_records.py --flush`) or the next run.
+- **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
+  `http://127.0.0.1:3000`) and a destination chat id (`PC_WAHA_CHAT_ID` or the
+  monitor's Settings panel, e.g. a group id ending in `@g.us`).
 
 ---
 
@@ -689,6 +773,7 @@ SQLite database at `data/panamacompra_archive.db`, table `opportunities`
 | `detail_status` | `pending`, `saved`, or `failed`. |
 | `detail_attempts`, `detail_saved_at`, `detail_json_path` | Detail tracking. |
 | `finish_date_guess` | Closing date guessed from detail text. |
+| `notified_at` | Timestamp of the WAHA “nueva oportunidad” WhatsApp message for this record, set by `pc_notify_new_records.py` so each record is announced at most once (empty = not yet announced). |
 
 Useful queries:
 

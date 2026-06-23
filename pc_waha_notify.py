@@ -31,7 +31,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def enabled_for_event(event: str) -> bool:
-    configured_events = os.environ.get("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update")
+    configured_events = os.environ.get("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update,new,none")
     wanted = {part.strip().lower() for part in configured_events.split(",") if part.strip()}
     return "all" in wanted or event.lower() in wanted
 
