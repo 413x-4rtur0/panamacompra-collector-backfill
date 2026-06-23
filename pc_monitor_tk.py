@@ -83,9 +83,11 @@ IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, setting_int("PC_MONITOR_TK_IDLE_REFR
 # completed LIVE runs — test-zone runs and idle/manual states never auto-close
 # (see auto_close_enabled in status_snapshot).
 AUTO_CLOSE_SECONDS = setting_int("PC_MONITOR_TK_AUTO_CLOSE_SECONDS", 20, minimum=0)
-# Window transparency. 0.50 = 50% transparent. Clamped to a usable range so the
-# window can never become fully invisible.
-ALPHA = setting_float("PC_MONITOR_TK_ALPHA", 0.50, 0.10, 1.0)
+# Window transparency. Tk only supports whole-window opacity, so text/buttons
+# share it; 0.85 keeps the window clearly translucent while staying readable.
+# Lower it (e.g. 0.50) from the Settings panel for a more see-through look.
+# Clamped so the window can never become unreadable/invisible.
+ALPHA = setting_float("PC_MONITOR_TK_ALPHA", 0.85, 0.30, 1.0)
 
 class ManualAction(NamedTuple):
     zone: str
@@ -487,7 +489,7 @@ def run_tk() -> int:
         add_tooltip(entry, tip)
 
     ttk.Label(settings, text="Settings (editable — leave a field unchanged to keep its default)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-    field(1, 0, "Transparency 0.10–1.00:", alpha_var, 8, "Window opacity. 0.50 = 50% transparent (default). 1.00 = fully opaque. Applied live when you click Apply.")
+    field(1, 0, "Transparency 0.30–1.00:", alpha_var, 8, "Whole-window opacity (text shares it). Default 0.85 = lightly translucent and readable. Lower it toward 0.30 for a more see-through window; 1.00 = fully opaque. Applied live when you click Apply.")
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
@@ -509,7 +511,7 @@ def run_tk() -> int:
                 return fallback
 
         try:
-            alpha = min(1.0, max(0.10, float(alpha_var.get())))
+            alpha = min(1.0, max(0.30, float(alpha_var.get())))
         except (TypeError, ValueError):
             alpha = runtime["alpha"]
         runtime["alpha"] = alpha
@@ -731,6 +733,19 @@ def run_tk() -> int:
         # smoothly; otherwise use the normal (slower, low-power) refresh cadence.
         next_delay_ms = 1000 if counting_down else active_delay * 1000
         root.after(next_delay_ms, refresh)
+
+    # Re-apply transparency once the window is actually mapped. On many X11
+    # window managers `-alpha` set before the window is visible is silently
+    # ignored, so the early apply_alpha() above is not enough on its own. Wait for
+    # visibility, then re-apply, and re-apply again shortly after in case a
+    # compositor finishes initializing late.
+    root.update_idletasks()
+    try:
+        root.wait_visibility(root)
+    except tk.TclError:
+        pass
+    apply_alpha(runtime["alpha"])
+    root.after(300, lambda: apply_alpha(runtime["alpha"]))
 
     refresh()
     root.mainloop()
