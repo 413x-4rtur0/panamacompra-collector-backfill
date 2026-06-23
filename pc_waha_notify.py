@@ -21,6 +21,7 @@ DEFAULT_SESSION = "default"
 CONFIG_DIR = Path(__file__).resolve().parent / "data" / "config"
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 SAVED_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+SAVED_API_KEY_PATH = CONFIG_DIR / "waha_api_key.txt"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -50,6 +51,10 @@ def saved_chat_id() -> str:
     return read_saved_text(SAVED_CHAT_ID_PATH)
 
 
+def saved_api_key() -> str:
+    return read_saved_text(SAVED_API_KEY_PATH)
+
+
 def save_message(message: str) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SAVED_MESSAGE_PATH.write_text(message.strip() + "\n", encoding="utf-8")
@@ -66,10 +71,21 @@ def build_message(event: str, status: str, message: str) -> str:
 
 
 def send_text(text: str) -> None:
-    base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
-    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip() or saved_chat_id()
-    api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
+    base_url = os.environ.get("WAHA_BASE_URL") or os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL)
+    base_url = base_url.rstrip("/")
+    session = os.environ.get("WAHA_SESSION") or os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
+    chat_id = (
+        os.environ.get("WAHA_GROUP_CHAT_ID", "").strip()
+        or os.environ.get("WAHA_CHAT_ID", "").strip()
+        or os.environ.get("PC_WAHA_CHAT_ID", "").strip()
+        or saved_chat_id()
+    )
+    api_key = (
+        os.environ.get("WAHA_API_KEY_PLAIN", "").strip()
+        or os.environ.get("WAHA_API_KEY", "").strip()
+        or os.environ.get("PC_WAHA_API_KEY", "").strip()
+        or saved_api_key()
+    )
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "10"))
 
     if not chat_id:
@@ -99,8 +115,8 @@ def main() -> int:
         save_message(args.message)
         print(f"Saved reusable WAHA message to {SAVED_MESSAGE_PATH}.")
 
-    if not env_bool("PC_WAHA_ENABLED", False):
-        print("WAHA notification skipped: set PC_WAHA_ENABLED=1 and PC_WAHA_CHAT_ID to enable.")
+    if not (env_bool("WAHA_ENABLED", False) or env_bool("PC_WAHA_ENABLED", False)):
+        print("WAHA notification skipped: set WAHA_ENABLED=true (or PC_WAHA_ENABLED=1) and a chat id to enable.")
         return 0
 
     if not enabled_for_event(args.event):

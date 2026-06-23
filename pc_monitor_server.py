@@ -22,6 +22,7 @@ WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
+WAHA_API_KEY_PATH = BASE_DIR / "data" / "config" / "waha_api_key.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
@@ -57,8 +58,14 @@ MANUAL_ACTIONS = [
     ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
     ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages."),
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
+    ManualAction("Settings", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds generated ICS files and opens them using Thunderbird profile a2gutierrezmora."),
     ManualAction("Settings", "Webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener."),
     ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the browser monitor."),
+    ManualAction("Folder Management", "Open index folder", ("bash", "-c", "xdg-open \"$(pwd)/data/index\""), "Opens the main index folder where collected records are stored."),
+    ManualAction("Folder Management", "Open records folder", ("bash", "-c", "xdg-open \"$(pwd)/records\""), "Opens the records archive folder containing organized record subfolders."),
+    ManualAction("Folder Management", "Open logs folder", ("bash", "-c", "xdg-open \"$(pwd)/data/logs\""), "Opens the logs folder containing worker and action logs."),
+    ManualAction("Folder Management", "Open data root", ("bash", "-c", "xdg-open \"$(pwd)/data\""), "Opens the current data directory containing index, logs, queue and config."),
+    ManualAction("Folder Management", "Open index parent folder", ("bash", "-c", "xdg-open \"$(dirname \"$(pwd)/data/index\")\""), "Opens the parent directory that contains the index folder."),
 ]
 
 DEFAULT_PROGRESS = {
@@ -180,6 +187,7 @@ def status_payload() -> dict[str, object]:
         "current_log": tail(CURRENT_LOG, 35),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
+        "waha_api_key_set": WAHA_API_KEY_PATH.exists() and bool(WAHA_API_KEY_PATH.read_text(encoding="utf-8", errors="replace").strip()),
     }
 
 ACTIONS_JSON = json.dumps([
@@ -224,7 +232,7 @@ textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid
   <p id="done-note" class="done" hidden></p>
   <div id="processes"></div>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><label class="small">Run selector <select id="run-mode"><option value="live">live collector</option><option value="test">test zone</option></select></label> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp settings</button><span id="button-status" class="small"></span></p><p class="small"><strong>Run selector:</strong> live starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. Test runs open the records_test parent folder after finishing.</p><label class="small">WhatsApp group chat ID</label><textarea id="waha-message" placeholder="120363175324031424@g.us"></textarea><label class="small">WAHA API key (saved locally, not committed)</label><input id="waha-api-key" type="password" placeholder="Leave blank to keep previous key" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid #475569;background:#020617;color:#e5e7eb;padding:10px;"><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
@@ -301,7 +309,7 @@ function renderActionZones() {{
   const zones = [...new Set(actionZones.map(a => a.zone))];
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
-function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value) + '&api_key=' + encodeURIComponent(document.getElementById('waha-api-key').value)); }}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -367,7 +375,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
             WAHA_CHAT_ID_PATH.write_text(chat_id + "\n", encoding="utf-8")
-            self.send_text(200, "WhatsApp destination saved.\n", "text/plain; charset=utf-8")
+            api_key = form.get("api_key", [""])[0].strip()
+            if api_key:
+                WAHA_API_KEY_PATH.write_text(api_key + "\n", encoding="utf-8")
+            self.send_text(200, "WhatsApp settings saved.\n", "text/plain; charset=utf-8")
             return
         self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 

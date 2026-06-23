@@ -92,9 +92,25 @@ def write_packages(calendars: list[dict], out_dir: Path, package_size: int, pref
 
 
 def default_auto_import_command() -> str:
-    """Return a desktop opener command when simple calendar auto-import is enabled."""
+    """Return a desktop opener/import command when auto-import is enabled.
+
+    If PC_CALENDAR_THUNDERBIRD_PROFILE is set, prefer Thunderbird with that
+    profile (for example ``a2gutierrezmora``) so generated ICS packages open in
+    the intended Thunderbird calendar profile. Otherwise fall back to the
+    desktop's normal calendar/file opener.
+    """
     if os.environ.get("PC_CALENDAR_AUTO_IMPORT", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return ""
+
+    profile = os.environ.get("PC_CALENDAR_THUNDERBIRD_PROFILE", "").strip()
+    if profile:
+        thunderbird_cmd = os.environ.get("PC_CALENDAR_THUNDERBIRD_CMD", "thunderbird").strip() or "thunderbird"
+        thunderbird_bin = shlex.split(thunderbird_cmd)[0]
+        if shutil.which(thunderbird_bin):
+            parts = shlex.split(thunderbird_cmd) + ["-P", profile]
+            return " ".join(shlex.quote(part) for part in parts)
+        print(f"Thunderbird auto-import requested, but command not found: {thunderbird_bin}")
+
     for candidate in (("xdg-open",), ("gio", "open"), ("open",)):
         if shutil.which(candidate[0]):
             return " ".join(shlex.quote(part) for part in candidate)

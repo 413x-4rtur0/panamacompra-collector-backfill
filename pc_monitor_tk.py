@@ -24,6 +24,7 @@ WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+WAHA_API_KEY_PATH = CONFIG_DIR / "waha_api_key.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 # Editable settings the user can change from the monitor's Settings panel. Saved
@@ -122,6 +123,7 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
+    ManualAction("Data Tools", "Import to Thunderbird a2gutierrezmora", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 PC_CALENDAR_THUNDERBIRD_PROFILE=a2gutierrezmora ./pc_build_calendar.py --all"), "Rebuilds all calendar packages and opens each .ics using Thunderbird profile a2gutierrezmora."),
     ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use STOP all runners to halt it."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
@@ -476,7 +478,8 @@ def run_tk() -> int:
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
     idle_var = tk.StringVar(value=str(runtime["idle_refresh"]))
     source_var = tk.StringVar(value=setting("PC_WAHA_SOURCE", "Panamá Compra"))
-    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else ""))
+    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "120363175324031424@g.us"))
+    waha_api_key_var = tk.StringVar(value="")
     existing_keywords = []
     if WAHA_KEYWORDS_PATH.exists():
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
@@ -497,10 +500,14 @@ def run_tk() -> int:
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for NEW and UPDATED alerts. Saved to data/config/waha_chat_id.txt.")
+    ttk.Label(settings, text="WAHA API key (plain; blank keeps previous):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    key_entry = ttk.Entry(settings, textvariable=waha_api_key_var, show="*")
+    key_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(key_entry, "Optional X-Api-Key for WAHA. Saved locally to data/config/waha_api_key.txt; data/ is ignored by git.")
+    ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
-    kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
+    kw_entry.grid(row=6, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
 
     def apply_settings() -> None:
@@ -527,7 +534,9 @@ def run_tk() -> int:
         idle_var.set(str(runtime["idle_refresh"]))
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_PATH.write_text((waha_var.get().strip() or "120363175324031424@g.us") + "\n", encoding="utf-8")
+        if waha_api_key_var.get().strip():
+            WAHA_API_KEY_PATH.write_text(waha_api_key_var.get().strip() + "\n", encoding="utf-8")
         keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
         WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
 
@@ -552,9 +561,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings)
-    apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=7, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires WAHA_ENABLED=true (or PC_WAHA_ENABLED=1) and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
     # SECTION 3: DIAGNOSTIC FIELDS - Phase, Mode, Item, Started, etc.
