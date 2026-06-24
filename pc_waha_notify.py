@@ -20,7 +20,6 @@ DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 DEFAULT_SESSION = "default"
 CONFIG_DIR = Path(__file__).resolve().parent / "data" / "config"
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
-SAVED_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -46,9 +45,6 @@ def saved_message() -> str:
     return read_saved_text(SAVED_MESSAGE_PATH)
 
 
-def saved_chat_id() -> str:
-    return read_saved_text(SAVED_CHAT_ID_PATH)
-
 
 def save_message(message: str) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -68,7 +64,7 @@ def build_message(event: str, status: str, message: str) -> str:
 def send_text(text: str) -> None:
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
-    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip() or saved_chat_id()
+    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
     api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "10"))
 

@@ -6,6 +6,7 @@ import hmac
 import os
 import subprocess
 import sys
+import threading
 
 BASE = Path(__file__).resolve().parent
 RUNNER = str(BASE / "run_collector.sh")
@@ -53,43 +54,54 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_trigger(0)
 
     def do_POST(self):
+        # changedetection can send a large rendered-page JSON body and commonly
+        # uses a short read timeout. We do not need the payload; acknowledge first
+        # and trigger work asynchronously so the notifier never waits for disk, git,
+        # browser, or queue operations. The connection is HTTP/1.0/close, so the
+        # unread request body is discarded when the response closes.
         length = int(self.headers.get("Content-Length", "0") or 0)
-        if length:
-            self.rfile.read(length)
         self.handle_trigger(length)
+
+    def send_plain(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
+    def trigger_async(self, body_length: int) -> None:
+        try:
+            if ENQUEUE_ONLY:
+                # Record the request into the shared queue volume; the host runner
+                # picks it up and performs the actual collection.
+                REQUEST_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                REQUEST_FLAG.touch()
+                self.log_line(f"Run request enqueued by webhook ({body_length} byte body); waiting for host runner")
+                return
+
+            subprocess.Popen(
+                ["bash", RUNNER],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.log_line(f"Collector triggered by webhook ({body_length} byte body)")
+        except Exception as exc:  # noqa: BLE001 - response was already sent; log failure
+            self.log_line(f"ERROR: failed to process accepted webhook: {exc}")
 
     def handle_trigger(self, body_length):
         expected_path = f"/panamacompra/{TOKEN}"
 
         if not hmac.compare_digest(self.path.split("?")[0], expected_path):
-            self.send_response(403)
-            self.end_headers()
-            self.wfile.write(b"Forbidden\n")
+            self.send_plain(403, b"Forbidden\n")
             self.log_line(f"Rejected path: {self.path}")
             return
 
-        if ENQUEUE_ONLY:
-            # Record the request into the shared queue volume; the host runner
-            # picks it up and performs the actual collection.
-            REQUEST_FLAG.parent.mkdir(parents=True, exist_ok=True)
-            REQUEST_FLAG.touch()
-            self.send_response(202)
-            self.end_headers()
-            self.wfile.write(b"Collector run request enqueued\n")
-            self.log_line(f"Run request enqueued by webhook ({body_length} byte body); waiting for host runner")
-            return
-
-        subprocess.Popen(
-            ["bash", RUNNER],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-        self.send_response(202)
-        self.end_headers()
-        self.wfile.write(b"Collector triggered\n")
-        self.log_line(f"Collector triggered by webhook ({body_length} byte body)")
+        body = b"Collector run request enqueued\n" if ENQUEUE_ONLY else b"Collector trigger accepted\n"
+        self.send_plain(202, body)
+        threading.Thread(target=self.trigger_async, args=(body_length,), daemon=True).start()
 
     def log_message(self, format, *args):
         return

@@ -12,6 +12,14 @@ fi
 
 mkdir -p data/logs data/queue
 
+MONITOR_SETTINGS="data/config/monitor_settings.env"
+if [ -f "$MONITOR_SETTINGS" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MONITOR_SETTINGS"
+  set +a
+fi
+
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
@@ -21,6 +29,7 @@ HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
 DETAIL_LIMIT="${1:-99}"
+INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
 RUN_COMPLETED=0
 
 log() {
@@ -36,10 +45,9 @@ notify_waha() {
   fi
 }
 
-# Send the rich "new opportunity" / "no new entries" WhatsApp messages. New
-# records are announced in real time by pc_detail_downloader.py as each detail
-# saves; here we only send the "Sin nuevas entradas" status when a run found
-# nothing new, or flush any record whose real-time send failed.
+# Send rich WhatsApp messages after detail and calendar processing. This keeps
+# downloads free of mid-stream notification side effects and lets the monitor
+# show each outbound message in the dedicated MESSAGING step.
 notify_new_records() {
   if [ -x ./pc_notify_new_records.py ]; then
     "$PYTHON_BIN" ./pc_notify_new_records.py "$@" >> "$WORKER_LOG" 2>&1 || true
@@ -50,6 +58,22 @@ quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
+format_eta() {
+  local seconds="$1"
+  if [ -z "$seconds" ] || [ "$seconds" -lt 0 ] 2>/dev/null; then
+    echo "-"
+    return
+  fi
+  local hours=$((seconds / 3600))
+  local minutes=$(((seconds % 3600) / 60))
+  local secs=$((seconds % 60))
+  if [ "$hours" -gt 0 ]; then
+    printf "%dh %02dm" "$hours" "$minutes"
+  else
+    printf "%dm %02ds" "$minutes" "$secs"
+  fi
+}
+
 write_progress() {
   local phase="$1"
   local status="$2"
@@ -57,17 +81,29 @@ write_progress() {
   local message="$4"
   local started_at="${5:-}"
   local tmp="${PROGRESS_FILE}.tmp"
+  local eta="-"
+  if [ "$status" = "RUNNING" ] && printf '%s' "$percent" | grep -qE '^[0-9]+$' && [ "$percent" -gt 0 ] && [ "$percent" -lt 100 ] && [ -n "$started_at" ]; then
+    start_epoch="$(date -d "$started_at" '+%s' 2>/dev/null || true)"
+    now_epoch="$(date '+%s')"
+    if [ -n "$start_epoch" ] && [ "$now_epoch" -gt "$start_epoch" ]; then
+      elapsed=$((now_epoch - start_epoch))
+      total_est=$((elapsed * 100 / percent))
+      eta="$(format_eta $((total_est - elapsed)))"
+    fi
+  fi
 
   {
     echo "PHASE='$(quote_value "$phase")'"
     echo "STATUS='$(quote_value "$status")'"
     echo "PERCENT='$(quote_value "$percent")'"
     echo "MESSAGE='$(quote_value "$message")'"
+    echo "INDEX_LIMIT='$(quote_value "$INDEX_LIMIT")'"
+    echo "ETA='$(quote_value "$eta")'"
     echo "DETAIL_LIMIT='$(quote_value "$DETAIL_LIMIT")'"
     echo "STARTED_AT='$(quote_value "$started_at")'"
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
     echo "WORKER_PID='$$'"
-    echo "MODE='LIVE'"
+    echo "MODE='$(quote_value "${PC_RUN_MODE:-RESTART}")'"
     echo "STEP_CURRENT='-'"
     echo "STEP_TOTAL='-'"
     echo "ITEM_CURRENT='-'"
@@ -118,7 +154,7 @@ fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
 touch "$IN_PROGRESS_FLAG"
-log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT"
+log "RUN-ALL WORKER STARTED index_limit=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
 
 ITERATION=0
 
@@ -146,10 +182,8 @@ while true; do
       # untracked files or no network) made the worker "do nothing". Warn and keep
       # going with the code already on disk so the run still collects data.
       write_progress "UPDATE" "RUNNING" "5" "Pre-run update failed with exit=$UPDATE_EXIT; continuing this run with the current local code." "$(date '+%Y-%m-%d %H:%M:%S')"
-      notify_waha "update" "FAILED" "Pre-run local update failed with exit=$UPDATE_EXIT. Continuing the run with the current local code."
       log "ITERATION $ITERATION pre-run local update failed with exit=$UPDATE_EXIT; continuing with current code."
     else
-      notify_waha "update" "DONE" "Pre-run local update completed for iteration $ITERATION."
       log "ITERATION $ITERATION pre-run local update completed."
     fi
   fi
@@ -157,34 +191,29 @@ while true; do
   STARTED="$(date '+%Y-%m-%d %H:%M:%S')"
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
+  export PC_INDEX_LIMIT="$INDEX_LIMIT"
+  export PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
-  # Send the WhatsApp opportunity messages in the dedicated, monitor-visible
-  # MESSAGING step (below) instead of silently during the detail download, so the
-  # monitor shows them going out one by one. Set PC_WAHA_REALTIME_PER_DETAIL=1 to
-  # restore the old real-time-per-detail behaviour.
-  export PC_WAHA_REALTIME_PER_DETAIL="${PC_WAHA_REALTIME_PER_DETAIL:-0}"
-
   {
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION STARTED: $STARTED"
+    echo "INDEX_LIMIT: $INDEX_LIMIT"
     echo "DETAIL_LIMIT: $DETAIL_LIMIT"
     echo "PID: $$"
     echo "============================================================"
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  notify_waha "start" "RUNNING" "Run-all iteration $ITERATION started with detail_limit=$DETAIL_LIMIT."
-
-  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables, index_limit=$INDEX_LIMIT..." "$STARTED"
 
   {
     echo ""
     echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
+    echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
   } >> "$CURRENT_LOG"
 
-  timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
+  PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
   INDEX_EXIT=$?
 
   {
@@ -235,70 +264,139 @@ PY
     echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
   } >> "$CURRENT_LOG"
 
-  # STEP 3: build timestamped Thunderbird/ICS import packages from new events.
-  write_progress "CALENDAR" "RUNNING" "94" "Step 3/5: building timestamped calendar import packages (.ics)..." "$STARTED"
-  {
-    echo ""
-    echo "-------------------- STEP 3: CALENDAR PACKAGES -----------------"
-    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
-  } >> "$CURRENT_LOG"
+  VIEW_EXIT=0
+  CALENDAR_EXIT=0
 
-  "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
-  CALENDAR_EXIT=$?
+  if [ "$DETAIL_EXIT" -eq 0 ]; then
+    # STEP 3: normalize detail outputs after all detail downloads finish. This
+    # rebuilds the structured summary/items/calendar views in each detail JSON
+    # and rewrites per-record .calendar.ics files before packages or WAHA.
+    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x ./pc_build_detail_views.py ]; then
+      write_progress "CALENDAR" "RUNNING" "76" "Step 3/5: creating per-record calendar/detail views from saved detail.json files..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 3: DETAIL VIEWS + RECORD ICS --------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Command: ${PYTHON_BIN} -u ./pc_build_detail_views.py --apply --since $STARTED"
+      } >> "$CURRENT_LOG"
+      "$PYTHON_BIN" -u ./pc_build_detail_views.py --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
+      VIEW_EXIT=$?
+      {
+        echo "Detail views exit code: $VIEW_EXIT"
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+    else
+      write_progress "CALENDAR" "RUNNING" "76" "Step 3/5: per-record calendar/detail view rebuild disabled; continuing to package calendars." "$STARTED"
+      log "ITERATION $ITERATION detail view rebuild skipped by PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL=0."
+    fi
+
+    # STEP 4: build timestamped Thunderbird/ICS import packages from the
+    # per-record calendars after detail views have been created/refreshed.
+    if [ "$VIEW_EXIT" -eq 0 ]; then
+      write_progress "CALENDAR" "RUNNING" "90" "Step 4/5: creating timestamped calendar import packages (.ics)..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 4: CALENDAR PACKAGES -----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
+      } >> "$CURRENT_LOG"
+
+      "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
+      CALENDAR_EXIT=$?
+
+      {
+        echo "Calendar package exit code: $CALENDAR_EXIT"
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+    fi
+  fi
+
+  if [ "$DETAIL_EXIT" -eq 124 ]; then
+    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out. Calendar/package/WhatsApp steps skipped." "$STARTED"
+    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out. Calendar/package/WhatsApp steps skipped."
+    log "ITERATION $ITERATION detail step timed out."
+  elif [ "$DETAIL_EXIT" -ne 0 ]; then
+    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped."
+    log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+  elif [ "$VIEW_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "88" "Detail finished but per-record calendar/detail view build failed with exit=$VIEW_EXIT. Packages/WhatsApp skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail view/calendar build failed with exit=$VIEW_EXIT."
+    log "ITERATION $ITERATION detail view/calendar step failed with exit=$VIEW_EXIT."
+  elif [ "$CALENDAR_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "94" "Per-record calendars finished but calendar package build failed with exit=$CALENDAR_EXIT. WhatsApp skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION calendar package build failed with exit=$CALENDAR_EXIT."
+    log "ITERATION $ITERATION calendar package step failed with exit=$CALENDAR_EXIT."
+  fi
+
+  # STEP 5: MESSAGING — send the rich WhatsApp messages one by one. This is a
+  # visible step: pc_notify_new_records.py --announce publishes per-message
+  # progress (current/total + a preview), so the monitor shows each message going
+  # out. It announces new opportunities AND status changes (e.g. Programada →
+  # Abierta), or sends the single "Sin nuevas entradas" status when there is
+  # nothing to send. It runs only after index, all details, per-record calendars,
+  # and calendar packages succeed.
+  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$VIEW_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
+    if [ "${PC_NOTIFY_WHATSAPP:-1}" != "0" ]; then
+      write_progress "MESSAGING" "RUNNING" "96" "Step 5/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 5: WHATSAPP MESSAGING ----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+      notify_new_records --announce
+    else
+      write_progress "MESSAGING" "DONE" "96" "Step 5/5: WhatsApp notifications disabled by monitor setting." "$STARTED"
+      log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
+    fi
+    FINISHED="$(date '+%Y-%m-%d %H:%M:%S')"
+    SUMMARY_COUNTS="$($PYTHON_BIN - <<'PY'
+from pc_common import init_db
+conn = init_db()
+row = conn.execute(
+    "SELECT COUNT(*) total, "
+    "COALESCE(SUM(CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END), 0) saved, "
+    "COALESCE(SUM(CASE WHEN detail_status = 'failed' THEN 1 ELSE 0 END), 0) failed, "
+    "COALESCE(SUM(CASE WHEN detail_status != 'saved' THEN 1 ELSE 0 END), 0) pending, "
+    "COALESCE(SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END), 0) notified, "
+    "COALESCE(SUM(CASE WHEN last_calendar_export_path IS NOT NULL THEN 1 ELSE 0 END), 0) calendar_exports "
+    "FROM opportunities"
+).fetchone()
+print(
+    f"Total registros: {row['total']}\n"
+    f"Detalles guardados: {row['saved']}\n"
+    f"Fallidos: {row['failed']}\n"
+    f"Pendientes: {row['pending']}\n"
+    f"Notificados: {row['notified']}\n"
+    f"Archivos .ics por registro: {row['calendar_exports']}"
+)
+PY
+)"
+    notify_waha "done" "DONE" "📊 Resumen de Ejecución - Panama Compra
+Inicio: $STARTED
+Fin: $FINISHED
+Iteración: $ITERATION
+$SUMMARY_COUNTS"
+    {
+      echo "Finished: $FINISHED"
+    } >> "$CURRENT_LOG"
+    write_progress "DONE" "DONE" "100" "Index, details, per-record calendars, calendar packages and WhatsApp messaging completed." "$STARTED"
+    log "ITERATION $ITERATION finished successfully."
+  fi
 
   {
-    echo "Calendar exit code: $CALENDAR_EXIT"
-    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION FINISHED: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "INDEX_EXIT=$INDEX_EXIT"
     echo "DETAIL_EXIT=$DETAIL_EXIT"
+    echo "VIEW_EXIT=$VIEW_EXIT"
     echo "CALENDAR_EXIT=$CALENDAR_EXIT"
     echo "============================================================"
   } >> "$CURRENT_LOG"
-
   cat "$CURRENT_LOG" >> "$HISTORY_LOG"
 
-  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    write_progress "DONE" "DONE" "100" "Index, detail and calendar packages completed successfully." "$STARTED"
-    notify_waha "done" "DONE" "Iteration $ITERATION completed successfully."
-    log "ITERATION $ITERATION finished successfully."
-  elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
-    write_progress "CALENDAR" "FAILED" "98" "Detail finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
-    notify_waha "failed" "FAILED" "Iteration $ITERATION detail finished but calendar build failed with exit=$CALENDAR_EXIT."
-    log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
-  elif [ "$DETAIL_EXIT" -eq 124 ]; then
-    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"
-    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out."
-    log "ITERATION $ITERATION detail step timed out."
-  else
-    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
-    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT."
-    log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
-  fi
-
-  # STEP 4: MESSAGING — send the rich WhatsApp messages one by one. This is a
-  # visible step: pc_notify_new_records.py --announce publishes per-message
-  # progress (current/total + a preview), so the monitor shows each message going
-  # out. It announces new opportunities AND status changes (e.g. Programada →
-  # Abierta), or sends the single "Sin nuevas entradas" status when there is
-  # nothing to send.
-  if [ "$DETAIL_EXIT" -eq 0 ]; then
-    write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
-    {
-      echo ""
-      echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
-      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    } >> "$CURRENT_LOG"
-    notify_new_records --announce
-    {
-      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
-    } >> "$CURRENT_LOG"
-  fi
-
-  # STEP 5: OPTIONAL test zone. When this run had no new records to process, it
+  # STEP 6: OPTIONAL test zone. When this run had no new records to process, it
   # can exercise the current code on the last N records in an isolated sandbox
   # (records_test/) so a "nothing new" run still verifies code changes. This is
   # OFF by default — the autostart no longer launches the test zone on its own.
@@ -310,7 +408,7 @@ PY
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""
-      echo "----------------- STEP 5: TEST ZONE (idle, last $TEST_LIMIT) ----"
+      echo "----------------- STEP 6: TEST ZONE (idle, last $TEST_LIMIT) ----"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       echo "Command: ${PYTHON_BIN} -u ./pc_test_zone.py --limit $TEST_LIMIT --apply"
     } >> "$CURRENT_LOG"

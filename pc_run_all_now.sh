@@ -4,16 +4,20 @@ set -euo pipefail
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 DETAIL_LIMIT="${1:-99}"
+INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
+RUN_MODE="${3:-${PC_RUN_MODE:-MANUAL}}"
 
 mkdir -p data/queue data/logs
 
 touch data/queue/run_all_requested.flag
 
 echo "Starting run-all worker in this terminal..."
+echo "Mode: $RUN_MODE"
+echo "Index limit: $INDEX_LIMIT"
 echo "Detail limit: $DETAIL_LIMIT"
 echo ""
 
-./pc_run_all_worker.sh "$DETAIL_LIMIT"
+PC_RUN_MODE="$RUN_MODE" PC_INDEX_LIMIT="$INDEX_LIMIT" ./pc_run_all_worker.sh "$DETAIL_LIMIT" "$INDEX_LIMIT"
 
 echo ""
 echo "Finished. Last current log:"

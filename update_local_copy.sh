@@ -38,6 +38,11 @@ restart_webhook_listener() {
   local should_restart=0
   if [ "${PC_UPDATE_RESTART_WEBHOOK:-auto}" = "1" ]; then
     should_restart=1
+  elif [ "${PC_UPDATE_RESTART_WEBHOOK:-auto}" = "auto" ]; then
+    # The monitor depends on the webhook being available after Update + Monitor.
+    # In auto mode, restore/start it even if it was already off before update;
+    # PC_UPDATE_RESTART_WEBHOOK=0 remains the explicit opt-out.
+    should_restart=1
   elif [ "$WEBHOOK_WAS_RUNNING" = "1" ]; then
     should_restart=1
   elif systemctl --user is-enabled panamacompra-webhook.service >/dev/null 2>&1; then
@@ -45,8 +50,7 @@ restart_webhook_listener() {
   fi
 
   if [ "$should_restart" != "1" ]; then
-    echo "Webhook listener was not running before the update and no user service is enabled; not starting it automatically."
-    echo "Start it manually with: PC_UPDATE_RESTART_WEBHOOK=1 ./update_local_copy.sh"
+    echo "Webhook listener restart not requested."
     return 0
   fi
 
@@ -64,21 +68,10 @@ restart_webhook_listener() {
     return 0
   fi
 
-  local webhook_python="python3"
-  if [ -x .venv/bin/python ]; then
-    webhook_python=".venv/bin/python"
-  fi
-
-  mkdir -p data/logs
-  nohup env PC_WEBHOOK_HOST="${PC_WEBHOOK_HOST:-0.0.0.0}" PC_WEBHOOK_PORT="${PC_WEBHOOK_PORT:-8765}" \
-    "$webhook_python" ./webhook_listener.py \
-    >> data/logs/webhook_listener.out.log 2>&1 &
-  sleep 1
-
-  if webhook_listener_running; then
-    echo "Webhook listener restarted on ${PC_WEBHOOK_HOST:-0.0.0.0}:${PC_WEBHOOK_PORT:-8765}."
+  if ./pc_start_webhook_listener.sh --replace-port-owner; then
+    echo "Webhook listener is available after update."
   else
-    echo "WARNING: webhook listener did not stay running; check data/logs/webhook_listener.out.log."
+    echo "WARNING: webhook listener did not start; check data/logs/webhook_listener.out.log."
   fi
 }
 

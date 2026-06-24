@@ -41,7 +41,7 @@ services:
       # Public URL it advertises in its own UI/notification links.
       - BASE_URL=${CHANGEDETECTION_BASE_URL:-http://localhost:5000}
     volumes:
-      - ./docker/changedetection-data:/datastore
+      - ./integrations/changedetection:/datastore
     # Lets watches/notifications reach the host too if you ever point them there.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -52,14 +52,14 @@ services:
     image: devlikeapro/waha:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${WAHA_PORT:-3000}:3000"
     environment:
       # Optional API key; when set, pass the same value as PC_WAHA_API_KEY to the
       # collector so it can authenticate to /api/sendText.
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
     volumes:
-      - ./docker/waha-sessions:/app/.sessions
+      - ./integrations/waha:/app/.sessions
     networks:
       - pc
 

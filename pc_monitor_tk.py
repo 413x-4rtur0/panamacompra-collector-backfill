@@ -62,6 +62,12 @@ def setting(name: str, default: str) -> str:
     return _SETTINGS_FILE.get(name, default)
 
 
+def monitor_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(load_settings_file())
+    return env
+
+
 def setting_int(name: str, default: int, minimum: int | None = None) -> int:
     try:
         value = int(float(setting(name, str(default))))
@@ -112,8 +118,8 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99"), "Queues a normal live run (up to 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run (up to 20 index pages per group and 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
@@ -127,7 +133,8 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
-    ManualAction("Data Tools", "Start webhook listener", ("./webhook_listener.py",), "Starts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Start webhook listener", ("./pc_start_webhook_listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Install webhook service", ("./pc_install_webhook_service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./pc_open_monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
     # --- 4. Testing & Validation: sandbox runs and health checks -------------
@@ -148,6 +155,8 @@ DEFAULT_PROGRESS = {
     "STATUS": "DONE",
     "PERCENT": "100",
     "MESSAGE": "No active process.",
+    "INDEX_LIMIT": "-",
+    "ETA": "-",
     "DETAIL_LIMIT": "-",
     "STARTED_AT": "",
     "UPDATED_AT": "-",
@@ -273,6 +282,19 @@ def downloaded_text(rec: dict[str, str]) -> str:
     raw = (rec.get("detail_saved_at") or "").strip()
     return raw[:16].replace("T", " ") if raw else "—"
 
+def parse_downloaded(rec: dict[str, str]) -> datetime | None:
+    raw = (rec.get("detail_saved_at") or "").strip().replace("T", " ")
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[ _T](\d{2}):(\d{2}))?", raw)
+    if not match:
+        return None
+    return datetime(
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+        int(match.group(4) or 0),
+        int(match.group(5) or 0),
+    )
+
 
 def expiry_status(rec: dict[str, str], now: datetime | None = None) -> str:
     dt = parse_deadline(rec)
@@ -290,12 +312,21 @@ def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def webhook_running() -> bool:
+    if running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py"):
+        return True
+    try:
+        result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
+        return "webhook" in result.stdout.lower()
+    except Exception:
+        return False
+
 def process_snapshot() -> dict[str, bool]:
     """Detect all running PanamaCompra processes for the monitor display."""
     worker = running("[p]c_run_all_worker.sh")
     test = running("[p]ython(3)? -u ./pc_test_zone.py")
     updater = running("[u]pdate_local_copy.sh") or running("[p]c_update_loader.py")
-    webhook = running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py")
+    webhook = webhook_running()
     monitor_tk = running("[p]c_monitor_tk.py") or running("[p]ython3? -u ./pc_monitor_tk.py")
     monitor_server = running("[p]c_monitor_server.py") or running("[p]ython3? -u ./pc_monitor_server.py")
     timer = running("[p]c_next_run_timer.py")
@@ -306,7 +337,7 @@ def process_snapshot() -> dict[str, bool]:
         "worker": worker,
         "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
-        "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        "calendar": running("[p]ython(3)? -u ./pc_build_(detail_views|calendar).py"),
         # WhatsApp MESSAGING step: visible while the notifier sends messages.
         "messaging": running("[p]c_notify_new_records.py"),
         "request": REQUEST_FLAG.exists(),
@@ -335,15 +366,31 @@ def percent_value(progress: dict[str, str]) -> int:
 WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "messaging", "test_run", "updater", "request")
 
 
+def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool:
+    if any(processes.get(key) for key in WORK_PROCESS_KEYS):
+        return False
+    if progress.get("STATUS") != "RUNNING":
+        return False
+    try:
+        updated = datetime.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return True
+    return (datetime.now() - updated).total_seconds() > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+
+
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
     if any(processes.get(key) for key in WORK_PROCESS_KEYS):
         return False
-    return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
+    return progress_stale(processes, progress) or progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT", "STALE"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
 
 def status_snapshot() -> dict[str, object]:
     progress = parse_progress_file()
     processes = process_snapshot()
+    if progress_stale(processes, progress):
+        progress = progress.copy()
+        progress["STATUS"] = "STALE"
+        progress["MESSAGE"] = "Previous run appears stopped abruptly; controls are unlocked. Request restart/manual/test to continue."
     done = is_done(processes, progress)
     return {
         "progress": progress,
@@ -483,7 +530,11 @@ def run_tk() -> int:
                     arrowcolor="#94a3b8", borderwidth=0, relief="flat")
     style.map("Vertical.TScrollbar", background=[("active", "#475569")])
     style.configure("Card.TRadiobutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
+    style.configure("Card.TCheckbutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
     style.map("Card.TRadiobutton",
+              background=[("active", "#111827")],
+              foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
+    style.map("Card.TCheckbutton",
               background=[("active", "#111827")],
               foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
     style.configure("TEntry", fieldbackground="#020617", foreground="#e5e7eb",
@@ -561,7 +612,7 @@ def run_tk() -> int:
     # Process status used to be one long wrapped line ("normal_run: off  test_run:
     # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
     # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
-    ttk.Label(header, text="Processes", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 2)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
     process_frame = ttk.Frame(header, style="Card.TFrame")
     process_frame.grid(row=6, column=0, sticky="ew")
     process_chips: dict[str, tk.Label] = {}
@@ -585,54 +636,102 @@ def run_tk() -> int:
                 fg="#bbf7d0" if value else "#9ca3af",
             )
 
+    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0) -> None:
+        """Add a hide/show button that keeps the section header visible."""
+        hidden = tk.BooleanVar(value=False)
+
+        def toggle() -> None:
+            next_hidden = not hidden.get()
+            hidden.set(next_hidden)
+            for child in frame.winfo_children():
+                if child is button:
+                    continue
+                info = child.grid_info()
+                if not info:
+                    continue
+                try:
+                    row = int(info.get("row", 0))
+                except (TypeError, ValueError):
+                    row = 0
+                if row <= title_row:
+                    continue
+                if next_hidden:
+                    child.grid_remove()
+                else:
+                    child.grid()
+            button.configure(text="Show" if next_hidden else "Hide")
+
+        button = ttk.Button(frame, text="Hide", width=7, command=toggle)
+        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
+        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
+
     # ========================================================================
-    # SECTION 1: RUN CONTROLS - request a live or test-zone run
+    # SECTION 1: RUN CONTROLS - request a restart or test-zone run
     # ========================================================================
     controls = ttk.Frame(content, style="Card.TFrame", padding=14)
     controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
-    run_mode_var = tk.StringVar(value="live")
-    run_limit_var = tk.StringVar(value="99")
+    run_mode_var = tk.StringVar(value="restart")
+    index_limit_var = tk.StringVar(value="20")
+    detail_limit_var = tk.StringVar(value="99")
 
-    def selected_limit(default: str = "99") -> str:
-        value = run_limit_var.get().strip() or default
+    def selected_limit(var: tk.StringVar, default: str) -> str:
+        value = var.get().strip() or default
         return value if value.isdigit() and int(value) > 0 else default
 
     def request_run_now() -> None:
-        limit = selected_limit()
-        if run_mode_var.get() == "test":
-            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Test-zone run requested with limit {limit}.")
+        index_limit = selected_limit(index_limit_var, "20")
+        detail_limit = selected_limit(detail_limit_var, "99")
+        mode = run_mode_var.get()
+        if mode == "test":
+            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Live run requested with detail limit {limit}.")
+        if mode == "manual":
+            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
-    # Mode is a pair of radio toggles (live = real pipeline, test = sandbox) and
-    # the Limit entry is wide enough for large counts. The whole row is disabled
+    # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
+    # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
+    # The Limit entry is wide enough for large counts. The whole row is disabled
     # while a collection is active (e.g. a webhook-triggered run) so you cannot
     # change mode or queue a conflicting run mid-flight; it re-enables when idle.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    live_radio = ttk.Radiobutton(controls, text="live", value="live", variable=run_mode_var, style="Card.TRadiobutton")
-    live_radio.grid(row=1, column=1, sticky="w")
-    test_radio = ttk.Radiobutton(controls, text="test", value="test", variable=run_mode_var, style="Card.TRadiobutton")
-    test_radio.grid(row=1, column=2, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=3, sticky="e")
-    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=10)
-    limit_entry.grid(row=1, column=4, sticky="w", padx=(6, 16))
+    auto_radio = ttk.Radiobutton(controls, text="automatic", value="auto", variable=run_mode_var, style="Card.TRadiobutton", state="disabled")
+    auto_radio.grid(row=1, column=1, sticky="w")
+    live_radio = ttk.Radiobutton(controls, text="restart pending", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio.grid(row=1, column=2, sticky="w")
+    manual_radio = ttk.Radiobutton(controls, text="manual run", value="manual", variable=run_mode_var, style="Card.TRadiobutton")
+    manual_radio.grid(row=1, column=3, sticky="w")
+    test_radio = ttk.Radiobutton(controls, text="test run", value="test", variable=run_mode_var, style="Card.TRadiobutton")
+    test_radio.grid(row=1, column=4, sticky="w", padx=(0, 16))
+    ttk.Label(controls, text="Index limit:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
+    index_limit_entry = ttk.Entry(controls, textvariable=index_limit_var, width=8)
+    index_limit_entry.grid(row=2, column=1, sticky="w", padx=(6, 12))
+    ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
+    detail_limit_entry = ttk.Entry(controls, textvariable=detail_limit_var, width=8)
+    detail_limit_entry.grid(row=2, column=3, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
-    run_button.grid(row=1, column=5, sticky="w")
-    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-    add_tooltip(live_radio, "live = the normal collector pipeline (real archive).")
-    add_tooltip(test_radio, "test = the isolated test zone (records_test/), real archive untouched.")
-    add_tooltip(limit_entry, "Maximum detail pages (live) or sandbox records (test) to process this run.")
+    run_button.grid(row=2, column=4, sticky="w")
+    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+    add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
+    add_tooltip(live_radio, "restart pending = queue the normal collector pipeline (real archive).")
+    add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
+    add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
+    add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
+    add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
+    add_section_toggle(controls, button_column=5)
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
     # shows up here (worker/index/detail/...), so the run controls lock while any
     # of them are active and unlock once the run is fully idle.
-    run_control_widgets = (live_radio, test_radio, limit_entry, run_button)
+    run_control_widgets = (live_radio, manual_radio, test_radio, index_limit_entry, detail_limit_entry, run_button)
 
     def update_run_controls(snap: dict[str, object]) -> None:
         processes = snap.get("processes", {}) or {}
@@ -643,9 +742,20 @@ def run_tk() -> int:
                 widget.configure(state=target_state)
             except tk.TclError:
                 pass
+        current_mode = str(snap.get("MODE", "")).strip().upper()
         if busy:
+            if current_mode == "AUTO":
+                run_mode_var.set("auto")
+            elif current_mode == "MANUAL":
+                run_mode_var.set("manual")
+            elif current_mode == "TEST":
+                run_mode_var.set("test")
+            else:
+                run_mode_var.set("restart")
             run_button.configure(text="Run in progress…")
         else:
+            if run_mode_var.get() == "auto":
+                run_mode_var.set("restart")
             run_button.configure(text="Request selected run")
 
     # ========================================================================
@@ -670,6 +780,11 @@ def run_tk() -> int:
     if WAHA_KEYWORDS_PATH.exists():
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
     keywords_var = tk.StringVar(value=", ".join(existing_keywords))
+    notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
+    import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
+    records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(BASE_DIR / "records")))
+    calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(BASE_DIR / "data" / "calendar")))
+    records_test_dir_var = tk.StringVar(value=setting("PC_RECORDS_TEST_DIR", str(BASE_DIR / "records_test")))
 
     def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
         ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
@@ -682,7 +797,7 @@ def run_tk() -> int:
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Every new record is announced in real time as its detail downloads.")
+    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic announcements are sent later in the post-detail MESSAGING step when enabled.")
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
@@ -691,6 +806,15 @@ def run_tk() -> int:
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
+    field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
+    field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
+    field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
+    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
+    calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
+    calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
+    add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -726,6 +850,11 @@ def run_tk() -> int:
             "PC_MONITOR_TK_REFRESH_SECONDS": str(runtime["refresh"]),
             "PC_MONITOR_TK_IDLE_REFRESH_SECONDS": str(runtime["idle_refresh"]),
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
+            "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
+            "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
+            "PC_RECORDS_DIR": records_dir_var.get().strip() or str(BASE_DIR / "records"),
+            "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(BASE_DIR / "data" / "calendar"),
+            "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -741,9 +870,10 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=10, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=11, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    add_section_toggle(settings, button_column=3)
 
     # ========================================================================
     # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
@@ -766,7 +896,7 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("ETA", "ETA"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),
@@ -791,6 +921,7 @@ def run_tk() -> int:
     extra_var = tk.StringVar(value="-")
     diag_vars["EXTRA"] = extra_var
     ttk.Entry(diag, textvariable=extra_var, state="readonly").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=1, padx=(0, 8))
+    add_section_toggle(diag, button_column=3)
 
     # ========================================================================
     # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
@@ -813,6 +944,7 @@ def run_tk() -> int:
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
+    index_downloaded_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
     ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
@@ -829,19 +961,23 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
     index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
     index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
-    ttk.Label(dates_row, text="DTEND on/after (YYYY-MM-DD):", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
-    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=14)
-    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 8))
+    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
+    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
+    index_downloaded_entry.grid(row=0, column=5, sticky="w", padx=(0, 8))
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
+    add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
 
     list_frame = ttk.Frame(record_index, style="Card.TFrame")
     list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
     list_frame.columnconfigure(0, weight=1)
     index_listbox = tk.Listbox(
-        list_frame, height=8, activestyle="none", exportselection=False,
+        list_frame, height=10, activestyle="none", exportselection=False, selectmode="extended",
         bg="#020617", fg="#e5e7eb", selectbackground="#2563eb", selectforeground="#ffffff",
-        highlightthickness=0, borderwidth=0,
+        highlightthickness=0, borderwidth=0, font=("Sans", 9),
     )
     index_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=index_listbox.yview)
     index_listbox.configure(yscrollcommand=index_scroll.set)
@@ -870,18 +1006,24 @@ def run_tk() -> int:
         return f"{numero} — {desc}"
 
     def index_row_text(rec: dict[str, str]) -> str:
-        """List row prefixed with the DTEND deadline and a status tag."""
+        """List row prefixed with local download timestamp, DTEND and status."""
+        downloaded = parse_downloaded(rec)
+        downloaded_part = downloaded.strftime("%y-%m-%d %H:%M") if downloaded else "not local"
         dt = parse_deadline(rec)
-        dtend = dt.strftime("%y-%m-%d") if dt else "  no date"
+        dtend = dt.strftime("%y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
-        return f"[{dtend} {tag:>7}]  {index_label(rec)}"
+        return f"[DL {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
+
+    def selected_records() -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for idx in index_listbox.curselection():
+            if 0 <= idx < len(index_filtered):
+                records.append(index_filtered[idx])
+        return records
 
     def selected_record() -> dict[str, str] | None:
-        selection = index_listbox.curselection()
-        if not selection:
-            return None
-        idx = selection[0]
-        return index_filtered[idx] if 0 <= idx < len(index_filtered) else None
+        records = selected_records()
+        return records[0] if records else None
 
     def show_selected_detail(_event: object = None) -> None:
         rec = selected_record()
@@ -917,6 +1059,13 @@ def run_tk() -> int:
                 min_date = datetime.strptime(raw_min, "%Y-%m-%d")
             except ValueError:
                 min_date = None
+        downloaded_min = None
+        raw_downloaded_min = index_downloaded_mindate_var.get().strip()
+        if raw_downloaded_min:
+            try:
+                downloaded_min = datetime.strptime(raw_downloaded_min, "%Y-%m-%d")
+            except ValueError:
+                downloaded_min = None
 
         records = []
         for rec in index_records:
@@ -927,6 +1076,10 @@ def run_tk() -> int:
             if min_date is not None:
                 dt = parse_deadline(rec)
                 if dt is None or dt < min_date:
+                    continue
+            if downloaded_min is not None:
+                downloaded = parse_downloaded(rec)
+                if downloaded is None or downloaded < downloaded_min:
                     continue
             records.append(rec)
 
@@ -958,6 +1111,29 @@ def run_tk() -> int:
         subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Opened record folder for {rec['numero']}.")
 
+
+    def selected_numeros() -> list[str]:
+        return [rec["numero"] for rec in selected_records() if rec.get("numero")]
+
+    def notify_selected_records() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
+        for numero in numeros:
+            cmd.extend(["--record", numero])
+        subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected record(s).")
+
+    def import_selected_calendars() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
+
     def open_selected_portal() -> None:
         rec = selected_record()
         if not rec:
@@ -974,6 +1150,7 @@ def run_tk() -> int:
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
+    index_downloaded_mindate_var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
     index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -983,11 +1160,18 @@ def run_tk() -> int:
     open_folder_button.grid(row=0, column=1, padx=(0, 8))
     open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
     open_portal_button.grid(row=0, column=2, padx=(0, 8))
+    notify_selected_button = ttk.Button(index_buttons, text="Notify selected WhatsApp", command=notify_selected_records)
+    notify_selected_button.grid(row=0, column=3, padx=(0, 8))
+    import_selected_button = ttk.Button(index_buttons, text="Import selected calendars", command=import_selected_calendars)
+    import_selected_button.grid(row=0, column=4, padx=(0, 8))
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
     add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
+    add_tooltip(notify_selected_button, "Send WhatsApp notifications for all selected records (Ctrl/Shift-click to select several).")
+    add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
 
     refresh_index_list()
+    add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
@@ -1011,7 +1195,7 @@ def run_tk() -> int:
         with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.zone} / {action.label} =====\n")
             log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
-            proc = subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(action.command, cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT)
 
         if action.open_after is not None:
             def wait_then_open() -> None:
@@ -1035,6 +1219,7 @@ def run_tk() -> int:
             button.grid(row=grid_row, column=col, sticky="ew", padx=4, pady=4)
             add_tooltip(button, action.comment)
         grid_row += 1
+    add_section_toggle(actions, button_column=button_columns - 1)
 
     logs = ttk.Frame(content, style="TFrame")
     logs.grid(row=6, column=0, sticky="nsew", padx=14, pady=(8, 14))
@@ -1060,6 +1245,7 @@ def run_tk() -> int:
 
     worker_text = make_log_pane(logs, 0, (0, 7))
     current_text = make_log_pane(logs, 1, (7, 0))
+    add_section_toggle(logs, button_column=2)
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
