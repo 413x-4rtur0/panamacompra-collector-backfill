@@ -339,7 +339,9 @@ input:disabled {{ opacity: .5; cursor: not-allowed; }}
 .mode-group input {{ accent-color: #2563eb; margin: 0; }}
 .mode-group label:has(input:checked) {{ border-color: #2563eb; color: #93c5fd; background: #0b1220; }}
 .mode-group input:disabled + span, .mode-group label:has(input:disabled) {{ opacity: .5; cursor: not-allowed; }}
-select#record-index {{ min-width: 60%; max-width: 100%; min-height: 12rem; }}
+select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; line-height: 1.35; }}
+.section-toggle {{ float: right; margin-left: 12px; padding: 5px 10px; font-size: .8rem; }}
+.card.collapsed > *:not(h1):not(h2) {{ display: none; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
 /* Slim dark scrollbars for the log panes. */
 pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
@@ -359,7 +361,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 </div>
 <div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="8"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -488,6 +490,12 @@ function expiryStatus(rec) {{
 }}
 function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
 function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
+function parseDownloaded(rec) {{
+  const raw = (rec.detail_saved_at || '').trim().replace('T', ' ');
+  const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
+}}
 const FAR_FUTURE = new Date(8640000000000000);
 function selectedRecord() {{
   const sel = document.getElementById('record-index');
@@ -513,9 +521,12 @@ function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
   const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
   const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
+  const downloadedRaw = (document.getElementById('record-downloaded-mindate') || {{}}).value || '';
+  const downloadedMinDate = downloadedRaw ? new Date(downloadedRaw + 'T00:00') : null;
   recordFiltered = recordIndex.filter(r => {{
     if (status !== 'all' && expiryStatus(r) !== status) return false;
     if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
+    if (downloadedMinDate) {{ const dl = parseDownloaded(r); if (!dl || dl < downloadedMinDate) return false; }}
     return true;
   }});
   recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
@@ -523,7 +534,9 @@ function applyRecordFilter() {{
   sel.innerHTML = recordFiltered.map((r, i) => {{
     const st = expiryStatus(r);
     const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
-    const label = '[' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    const dl = parseDownloaded(r);
+    const downloaded = dl ? downloadedText(r) : 'not local';
+    const label = '[DL ' + downloaded + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
     return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
   }}).join('');
   renderRecordDetail();
@@ -555,6 +568,24 @@ function importSelectedCalendars() {{
   if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
   postForm('/api/selected-record-action', 'action=calendar&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
+
+function initCollapsibleSections() {{
+  document.querySelectorAll('.card').forEach((card, idx) => {{
+    if (idx === 0) return;
+    const heading = card.querySelector('h1, h2');
+    if (!heading || heading.querySelector('.section-toggle')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'section-toggle';
+    btn.textContent = 'Hide';
+    btn.title = 'Hide/show this monitor section without stopping the run.';
+    btn.addEventListener('click', () => {{
+      card.classList.toggle('collapsed');
+      btn.textContent = card.classList.contains('collapsed') ? 'Show' : 'Hide';
+    }});
+    heading.appendChild(btn);
+  }});
+}}
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -571,6 +602,8 @@ renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
 document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
+document.getElementById('record-downloaded-mindate').addEventListener('change', applyRecordFilter);
+initCollapsibleSections();
 refreshRecordIndex();
 poll();
 </script>

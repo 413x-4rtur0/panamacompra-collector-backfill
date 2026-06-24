@@ -276,6 +276,19 @@ def downloaded_text(rec: dict[str, str]) -> str:
     raw = (rec.get("detail_saved_at") or "").strip()
     return raw[:16].replace("T", " ") if raw else "—"
 
+def parse_downloaded(rec: dict[str, str]) -> datetime | None:
+    raw = (rec.get("detail_saved_at") or "").strip().replace("T", " ")
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[ _T](\d{2}):(\d{2}))?", raw)
+    if not match:
+        return None
+    return datetime(
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+        int(match.group(4) or 0),
+        int(match.group(5) or 0),
+    )
+
 
 def expiry_status(rec: dict[str, str], now: datetime | None = None) -> str:
     dt = parse_deadline(rec)
@@ -601,6 +614,35 @@ def run_tk() -> int:
                 fg="#bbf7d0" if value else "#9ca3af",
             )
 
+    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0) -> None:
+        """Add a hide/show button that keeps the section header visible."""
+        hidden = tk.BooleanVar(value=False)
+
+        def toggle() -> None:
+            next_hidden = not hidden.get()
+            hidden.set(next_hidden)
+            for child in frame.winfo_children():
+                if child is button:
+                    continue
+                info = child.grid_info()
+                if not info:
+                    continue
+                try:
+                    row = int(info.get("row", 0))
+                except (TypeError, ValueError):
+                    row = 0
+                if row <= title_row:
+                    continue
+                if next_hidden:
+                    child.grid_remove()
+                else:
+                    child.grid()
+            button.configure(text="Show" if next_hidden else "Hide")
+
+        button = ttk.Button(frame, text="Hide", width=7, command=toggle)
+        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
+        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
+
     # ========================================================================
     # SECTION 1: RUN CONTROLS - request a restart or test-zone run
     # ========================================================================
@@ -662,6 +704,7 @@ def run_tk() -> int:
     add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
     add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
+    add_section_toggle(controls, button_column=5)
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
     # shows up here (worker/index/detail/...), so the run controls lock while any
@@ -799,6 +842,7 @@ def run_tk() -> int:
     apply_button.grid(row=7, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
     ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    add_section_toggle(settings, button_column=3)
 
     # ========================================================================
     # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
@@ -846,6 +890,7 @@ def run_tk() -> int:
     extra_var = tk.StringVar(value="-")
     diag_vars["EXTRA"] = extra_var
     ttk.Entry(diag, textvariable=extra_var, state="readonly").grid(row=extra_row, column=1, columnspan=3, sticky="ew", pady=1, padx=(0, 8))
+    add_section_toggle(diag, button_column=3)
 
     # ========================================================================
     # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
@@ -868,6 +913,7 @@ def run_tk() -> int:
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
+    index_downloaded_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
     ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
@@ -884,19 +930,23 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
     index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
     index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
-    ttk.Label(dates_row, text="DTEND on/after (YYYY-MM-DD):", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
-    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=14)
-    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 8))
+    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
+    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
+    index_downloaded_entry.grid(row=0, column=5, sticky="w", padx=(0, 8))
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
+    add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
 
     list_frame = ttk.Frame(record_index, style="Card.TFrame")
     list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
     list_frame.columnconfigure(0, weight=1)
     index_listbox = tk.Listbox(
-        list_frame, height=8, activestyle="none", exportselection=False, selectmode="extended",
+        list_frame, height=10, activestyle="none", exportselection=False, selectmode="extended",
         bg="#020617", fg="#e5e7eb", selectbackground="#2563eb", selectforeground="#ffffff",
-        highlightthickness=0, borderwidth=0,
+        highlightthickness=0, borderwidth=0, font=("Sans", 9),
     )
     index_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=index_listbox.yview)
     index_listbox.configure(yscrollcommand=index_scroll.set)
@@ -925,11 +975,13 @@ def run_tk() -> int:
         return f"{numero} — {desc}"
 
     def index_row_text(rec: dict[str, str]) -> str:
-        """List row prefixed with the DTEND deadline and a status tag."""
+        """List row prefixed with local download timestamp, DTEND and status."""
+        downloaded = parse_downloaded(rec)
+        downloaded_part = downloaded.strftime("%y-%m-%d %H:%M") if downloaded else "not local"
         dt = parse_deadline(rec)
-        dtend = dt.strftime("%y-%m-%d") if dt else "  no date"
+        dtend = dt.strftime("%y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
-        return f"[{dtend} {tag:>7}]  {index_label(rec)}"
+        return f"[DL {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
 
     def selected_records() -> list[dict[str, str]]:
         records: list[dict[str, str]] = []
@@ -976,6 +1028,13 @@ def run_tk() -> int:
                 min_date = datetime.strptime(raw_min, "%Y-%m-%d")
             except ValueError:
                 min_date = None
+        downloaded_min = None
+        raw_downloaded_min = index_downloaded_mindate_var.get().strip()
+        if raw_downloaded_min:
+            try:
+                downloaded_min = datetime.strptime(raw_downloaded_min, "%Y-%m-%d")
+            except ValueError:
+                downloaded_min = None
 
         records = []
         for rec in index_records:
@@ -986,6 +1045,10 @@ def run_tk() -> int:
             if min_date is not None:
                 dt = parse_deadline(rec)
                 if dt is None or dt < min_date:
+                    continue
+            if downloaded_min is not None:
+                downloaded = parse_downloaded(rec)
+                if downloaded is None or downloaded < downloaded_min:
                     continue
             records.append(rec)
 
@@ -1056,6 +1119,7 @@ def run_tk() -> int:
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
+    index_downloaded_mindate_var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
     index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -1076,6 +1140,7 @@ def run_tk() -> int:
     add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
 
     refresh_index_list()
+    add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
@@ -1123,6 +1188,7 @@ def run_tk() -> int:
             button.grid(row=grid_row, column=col, sticky="ew", padx=4, pady=4)
             add_tooltip(button, action.comment)
         grid_row += 1
+    add_section_toggle(actions, button_column=button_columns - 1)
 
     logs = ttk.Frame(content, style="TFrame")
     logs.grid(row=6, column=0, sticky="nsew", padx=14, pady=(8, 14))
@@ -1148,6 +1214,7 @@ def run_tk() -> int:
 
     worker_text = make_log_pane(logs, 0, (0, 7))
     current_text = make_log_pane(logs, 1, (7, 0))
+    add_section_toggle(logs, button_column=2)
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
