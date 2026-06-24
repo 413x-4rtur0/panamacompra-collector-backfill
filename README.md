@@ -347,7 +347,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. Runs `run_collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
-| `pc_start_webhook_listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, starts it with `nohup`, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
+| `pc_start_webhook_listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup`, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
 | `pc_run_all_flag_watcher.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`pc_request_run_all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
@@ -400,6 +400,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update_local_copy.sh` | Controls whether the updater restores `webhook_listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
+| `PC_WEBHOOK_REPLACE_PORT_OWNER` | `0` | `pc_start_webhook_listener.sh` | Set to `1` (or pass `--replace-port-owner`) to stop an old process that is still listening on the webhook port before starting the current listener. |
 | `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `run_collector.sh`, so a host runner performs the actual collection. |
 | `PC_RUNNER_POLL_SECONDS` | `5` | `pc_run_all_flag_watcher.sh` | How often the host runner polls for an enqueued run request. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -449,7 +450,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - WhatsApp source label, destination chat id, and keyword filter.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the notifier.
 4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling list** of every collected record as `NUMERO — description` (newest first), read straight from `data/panamacompra_archive.db`. This replaces the old dropdown, whose popup scroll fought the whole-page scroll and made the long entries impossible to separate; the list now scrolls on its own (its own scrollbar/wheel) and the filter narrows it instantly. The full number/description of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
-5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `pc_start_webhook_listener.sh`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
+5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `pc_start_webhook_listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
 
 Transparency, refresh cadence and the auto-close countdown can all be changed from the Settings panel without restarting the monitor. The web monitor (`pc_monitor_server.py`) exposes the same record-index selector, backed by the `/api/record-index` endpoint.
@@ -1030,8 +1031,9 @@ The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
 intentionally targeting a listener running on the host. If
 `curl http://127.0.0.1:8765/health` returns JSON naming the old
 `panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
-host listener; stop that service/container or choose a free `PC_WEBHOOK_PORT`
-before starting the new listener.
+host listener. Run `./pc_start_webhook_listener.sh --replace-port-owner` to stop
+the process on that port and start the current listener, or choose a free
+`PC_WEBHOOK_PORT` before starting the new listener.
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
@@ -1241,7 +1243,10 @@ WAHA_PORT=3001 docker compose up -d waha
 # 3) Use the compose-network notification URL inside changedetection.
 printf 'json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "$(cat .webhook_token)"
 
-# 4) Check whether the enqueue flag/runner/logs are moving.
+# 4) If host port 8765 is held by the old receiver, replace it with this checkout.
+./pc_start_webhook_listener.sh --replace-port-owner
+
+# 5) Check whether the enqueue flag/runner/logs are moving.
 ./pc_queue_status.sh
 ```
 

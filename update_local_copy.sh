@@ -68,7 +68,7 @@ restart_webhook_listener() {
     return 0
   fi
 
-  if ./pc_start_webhook_listener.sh; then
+  if ./pc_start_webhook_listener.sh --replace-port-owner; then
     echo "Webhook listener is available after update."
   else
     echo "WARNING: webhook listener did not start; check data/logs/webhook_listener.out.log."

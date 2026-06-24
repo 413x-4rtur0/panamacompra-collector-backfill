@@ -8,6 +8,32 @@ HOST="${PC_WEBHOOK_HOST:-0.0.0.0}"
 PORT="${PC_WEBHOOK_PORT:-8765}"
 TOKEN_FILE=".webhook_token"
 LOG_FILE="data/logs/webhook_listener.out.log"
+REPLACE_PORT_OWNER="${PC_WEBHOOK_REPLACE_PORT_OWNER:-0}"
+
+usage() {
+  cat <<USAGE
+Usage: $0 [--replace-port-owner] [--no-replace-port-owner]
+
+Starts webhook_listener.py in the background.
+  --replace-port-owner     Stop the current process listening on PC_WEBHOOK_PORT first.
+  --no-replace-port-owner  Never stop a non-webhook process; print diagnostics only.
+
+Environment:
+  PC_WEBHOOK_HOST              Bind host (default: 0.0.0.0)
+  PC_WEBHOOK_PORT              Bind port (default: 8765)
+  PC_WEBHOOK_REPLACE_PORT_OWNER=1  Same as --replace-port-owner
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --replace-port-owner|--replace) REPLACE_PORT_OWNER=1 ;;
+    --no-replace-port-owner|--no-replace) REPLACE_PORT_OWNER=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
 
 webhook_listener_running() {
   pgrep -f "[w]ebhook_listener.py" >/dev/null 2>&1
@@ -27,6 +53,53 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
+port_owner_pids() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u
+    return 0
+  fi
+  python3 - "$PORT" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+port_hex = f"{int(sys.argv[1]):04X}"
+inodes = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        lines = Path(table).read_text().splitlines()[1:]
+    except OSError:
+        continue
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 10 and parts[3] == "0A" and parts[1].rsplit(":", 1)[-1].upper() == port_hex:
+            inodes.add(parts[9])
+
+pids = set()
+for proc in Path("/proc").iterdir():
+    if not proc.name.isdigit():
+        continue
+    try:
+        for fd in (proc / "fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                pids.add(proc.name)
+                break
+    except OSError:
+        continue
+
+for pid in sorted(pids, key=int):
+    print(pid)
+PY
+}
+
 print_port_owner_hint() {
   echo "Port $PORT is already in use, but no local webhook_listener.py process was detected." >&2
   echo "This often means an old panamacompra-webhook-receiver service/container is still bound to the port." >&2
@@ -35,7 +108,37 @@ print_port_owner_hint() {
   elif command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 || true
   fi
-  echo "Stop the old service or set PC_WEBHOOK_PORT to a free port before starting this listener." >&2
+  echo "Run '$0 --replace-port-owner' to stop the process on this port and start the current listener, or set PC_WEBHOOK_PORT to a free port." >&2
+}
+
+replace_port_owner() {
+  local pids
+  pids="$(port_owner_pids || true)"
+  if [ -z "$pids" ]; then
+    echo "No owning PID could be parsed for port $PORT." >&2
+    return 1
+  fi
+
+  echo "Replacing process(es) currently listening on port $PORT:" >&2
+  for pid in $pids; do
+    ps -p "$pid" -o pid=,ppid=,comm=,args= >&2 || true
+  done
+
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 2
+
+  if port_available; then
+    echo "Port $PORT is now free." >&2
+    return 0
+  fi
+
+  echo "Port $PORT is still busy after SIGTERM; sending SIGKILL to the same PID(s)." >&2
+  for pid in $pids; do
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  sleep 1
 }
 
 if [ ! -s "$TOKEN_FILE" ]; then
@@ -50,8 +153,13 @@ if webhook_listener_running; then
 fi
 
 if ! port_available; then
-  print_port_owner_hint
-  exit 1
+  if [ "$REPLACE_PORT_OWNER" = "1" ]; then
+    replace_port_owner || true
+  fi
+  if ! port_available; then
+    print_port_owner_hint
+    exit 1
+  fi
 fi
 
 PYTHON_BIN="python3"
