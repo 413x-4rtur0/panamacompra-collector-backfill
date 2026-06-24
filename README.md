@@ -401,6 +401,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_WEBHOOK_REPLACE_PORT_OWNER` | `0` | `pc_start_webhook_listener.sh` | Set to `1` (or pass `--replace-port-owner`) to stop an old process that is still listening on the webhook port before starting the current listener. |
+| `PC_WEBHOOK_PUBLIC_HOST` | `host.docker.internal` | `pc_start_webhook_listener.sh` | Hostname printed in the changedetection `json://` notification URL for a host-run listener. |
 | `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `run_collector.sh`, so a host runner performs the actual collection. |
 | `PC_RUNNER_POLL_SECONDS` | `5` | `pc_run_all_flag_watcher.sh` | How often the host runner polls for an enqueued run request. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
@@ -1032,8 +1033,9 @@ intentionally targeting a listener running on the host. If
 `curl http://127.0.0.1:8765/health` returns JSON naming the old
 `panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
 host listener. Run `./pc_start_webhook_listener.sh --replace-port-owner` to stop
-the process on that port and start the current listener, or choose a free
-`PC_WEBHOOK_PORT` before starting the new listener.
+the process on that port and start the current listener, then copy the printed
+`json://...` URL into changedetection. Choose a free `PC_WEBHOOK_PORT` only when
+you intentionally want the listener on a different port.
 
 ```text
 Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
@@ -1244,6 +1246,7 @@ WAHA_PORT=3001 docker compose up -d waha
 printf 'json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "$(cat .webhook_token)"
 
 # 4) If host port 8765 is held by the old receiver, replace it with this checkout.
+#    Copy the json:// URL printed by this command into changedetection.
 ./pc_start_webhook_listener.sh --replace-port-owner
 
 # 5) Check whether the enqueue flag/runner/logs are moving.

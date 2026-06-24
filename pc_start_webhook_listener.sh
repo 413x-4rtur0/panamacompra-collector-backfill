@@ -22,6 +22,7 @@ Environment:
   PC_WEBHOOK_HOST              Bind host (default: 0.0.0.0)
   PC_WEBHOOK_PORT              Bind port (default: 8765)
   PC_WEBHOOK_REPLACE_PORT_OWNER=1  Same as --replace-port-owner
+  PC_WEBHOOK_PUBLIC_HOST              Hostname to print in the json:// URL (default: host.docker.internal)
 USAGE
 }
 
@@ -111,6 +112,20 @@ print_port_owner_hint() {
   echo "Run '$0 --replace-port-owner' to stop the process on this port and start the current listener, or set PC_WEBHOOK_PORT to a free port." >&2
 }
 
+print_notification_urls() {
+  local token public_host query
+  token="$(tr -d '\n\r' < "$TOKEN_FILE")"
+  public_host="${PC_WEBHOOK_PUBLIC_HOST:-host.docker.internal}"
+  query="method=POST&format=text&overflow=truncate&rto=15&cto=10"
+
+  echo ""
+  echo "Changedetection notification URL for this host listener:"
+  echo "json://${public_host}:${PORT}/panamacompra/${token}?${query}"
+  echo ""
+  echo "If changedetection and the compose webhook service run in the same docker-compose network, use this instead:"
+  echo "json://webhook:8765/panamacompra/${token}?${query}"
+}
+
 replace_port_owner() {
   local pids
   pids="$(port_owner_pids || true)"
@@ -149,6 +164,7 @@ fi
 if webhook_listener_running; then
   echo "Webhook listener is already running."
   pgrep -af "[w]ebhook_listener.py" || true
+  print_notification_urls
   exit 0
 fi
 
@@ -174,6 +190,7 @@ sleep 1
 if webhook_listener_running; then
   echo "Webhook listener started on $HOST:$PORT. Log: $LOG_FILE"
   pgrep -af "[w]ebhook_listener.py" || true
+  print_notification_urls
   exit 0
 fi
 
