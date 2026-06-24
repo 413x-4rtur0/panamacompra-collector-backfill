@@ -112,8 +112,8 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART"), "Queues a manual restart run (up to 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run (up to 20 index pages per group and 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
@@ -148,6 +148,7 @@ DEFAULT_PROGRESS = {
     "STATUS": "DONE",
     "PERCENT": "100",
     "MESSAGE": "No active process.",
+    "INDEX_LIMIT": "-",
     "DETAIL_LIMIT": "-",
     "STARTED_AT": "",
     "UPDATED_AT": "-",
@@ -290,12 +291,21 @@ def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def webhook_running() -> bool:
+    if running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py"):
+        return True
+    try:
+        result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
+        return "webhook" in result.stdout.lower()
+    except Exception:
+        return False
+
 def process_snapshot() -> dict[str, bool]:
     """Detect all running PanamaCompra processes for the monitor display."""
     worker = running("[p]c_run_all_worker.sh")
     test = running("[p]ython(3)? -u ./pc_test_zone.py")
     updater = running("[u]pdate_local_copy.sh") or running("[p]c_update_loader.py")
-    webhook = running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py")
+    webhook = webhook_running()
     monitor_tk = running("[p]c_monitor_tk.py") or running("[p]ython3? -u ./pc_monitor_tk.py")
     monitor_server = running("[p]c_monitor_server.py") or running("[p]ython3? -u ./pc_monitor_server.py")
     timer = running("[p]c_next_run_timer.py")
@@ -593,20 +603,27 @@ def run_tk() -> int:
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
     run_mode_var = tk.StringVar(value="restart")
-    run_limit_var = tk.StringVar(value="99")
+    index_limit_var = tk.StringVar(value="20")
+    detail_limit_var = tk.StringVar(value="99")
 
-    def selected_limit(default: str = "99") -> str:
-        value = run_limit_var.get().strip() or default
+    def selected_limit(var: tk.StringVar, default: str) -> str:
+        value = var.get().strip() or default
         return value if value.isdigit() and int(value) > 0 else default
 
     def request_run_now() -> None:
-        limit = selected_limit()
-        if run_mode_var.get() == "test":
-            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Test-zone run requested with limit {limit}.")
+        index_limit = selected_limit(index_limit_var, "20")
+        detail_limit = selected_limit(detail_limit_var, "99")
+        mode = run_mode_var.get()
+        if mode == "test":
+            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit, "RESTART"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Manual restart run requested with detail limit {limit}.")
+        if mode == "manual":
+            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
@@ -615,25 +632,35 @@ def run_tk() -> int:
     # while a collection is active (e.g. a webhook-triggered run) so you cannot
     # change mode or queue a conflicting run mid-flight; it re-enables when idle.
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
-    live_radio = ttk.Radiobutton(controls, text="restart", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
-    live_radio.grid(row=1, column=1, sticky="w")
-    test_radio = ttk.Radiobutton(controls, text="test", value="test", variable=run_mode_var, style="Card.TRadiobutton")
-    test_radio.grid(row=1, column=2, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Limit:", style="Card.TLabel").grid(row=1, column=3, sticky="e")
-    limit_entry = ttk.Entry(controls, textvariable=run_limit_var, width=10)
-    limit_entry.grid(row=1, column=4, sticky="w", padx=(6, 16))
+    auto_radio = ttk.Radiobutton(controls, text="automatic", value="auto", variable=run_mode_var, style="Card.TRadiobutton", state="disabled")
+    auto_radio.grid(row=1, column=1, sticky="w")
+    live_radio = ttk.Radiobutton(controls, text="restart pending", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio.grid(row=1, column=2, sticky="w")
+    manual_radio = ttk.Radiobutton(controls, text="manual run", value="manual", variable=run_mode_var, style="Card.TRadiobutton")
+    manual_radio.grid(row=1, column=3, sticky="w")
+    test_radio = ttk.Radiobutton(controls, text="test run", value="test", variable=run_mode_var, style="Card.TRadiobutton")
+    test_radio.grid(row=1, column=4, sticky="w", padx=(0, 16))
+    ttk.Label(controls, text="Index limit:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
+    index_limit_entry = ttk.Entry(controls, textvariable=index_limit_var, width=8)
+    index_limit_entry.grid(row=2, column=1, sticky="w", padx=(6, 12))
+    ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
+    detail_limit_entry = ttk.Entry(controls, textvariable=detail_limit_var, width=8)
+    detail_limit_entry.grid(row=2, column=3, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
-    run_button.grid(row=1, column=5, sticky="w")
-    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-    add_tooltip(live_radio, "restart = manually start/restart the normal collector pipeline (real archive). AUTO mode is used only when changedetection fires the webhook.")
-    add_tooltip(test_radio, "test = the isolated test zone (records_test/), real archive untouched.")
-    add_tooltip(limit_entry, "Maximum detail pages (restart) or sandbox records (test) to process this run.")
+    run_button.grid(row=2, column=4, sticky="w")
+    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+    add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
+    add_tooltip(live_radio, "restart pending = queue the normal collector pipeline (real archive).")
+    add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
+    add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
+    add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
+    add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
     # shows up here (worker/index/detail/...), so the run controls lock while any
     # of them are active and unlock once the run is fully idle.
-    run_control_widgets = (live_radio, test_radio, limit_entry, run_button)
+    run_control_widgets = (live_radio, manual_radio, test_radio, index_limit_entry, detail_limit_entry, run_button)
 
     def update_run_controls(snap: dict[str, object]) -> None:
         processes = snap.get("processes", {}) or {}
@@ -644,9 +671,20 @@ def run_tk() -> int:
                 widget.configure(state=target_state)
             except tk.TclError:
                 pass
+        current_mode = str(snap.get("MODE", "")).strip().upper()
         if busy:
+            if current_mode == "AUTO":
+                run_mode_var.set("auto")
+            elif current_mode == "MANUAL":
+                run_mode_var.set("manual")
+            elif current_mode == "TEST":
+                run_mode_var.set("test")
+            else:
+                run_mode_var.set("restart")
             run_button.configure(text="Run in progress…")
         else:
+            if run_mode_var.get() == "auto":
+                run_mode_var.set("restart")
             run_button.configure(text="Request selected run")
 
     # ========================================================================
@@ -767,7 +805,7 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),

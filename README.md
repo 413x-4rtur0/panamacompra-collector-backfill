@@ -378,7 +378,8 @@ Behavior is controlled with environment variables (all optional):
 
 | Variable | Default | Used by | Meaning |
 |----------|---------|---------|---------|
-| `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Max pages crawled per status group. |
+| `PC_INDEX_LIMIT` | `PC_MAX_PAGES_PER_GROUP` / `20` | worker/index collector | Max index pages crawled per status group for a run. Monitor run controls pass this separately from detail limit. |
+| `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Legacy/default max pages crawled per status group when `PC_INDEX_LIMIT` is not set. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
 | `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `[description]` token in the record-folder name. |
@@ -388,7 +389,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
 | `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
 | `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
-| `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered run (also the default for the run-all worker / `pc_request_run_all.sh`). |
+| `PC_WEBHOOK_INDEX_LIMIT` | `PC_INDEX_LIMIT` / `20` | `run_collector.sh` | Index pages per status group for webhook-triggered AUTO runs. |
+| `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered AUTO run. |
 | `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 5) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 5) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
@@ -443,7 +445,7 @@ The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. T
 
 The native Tk monitor is organized top-to-bottom into clear sections:
 
-1. **Run controls** — a wide `restart`/`test` mode selector comes first (`auto` is reserved for changedetection/webhook-triggered runs), followed by the detail/sandbox limit entry and the **Request selected run** button, all on one row.
+1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `restart pending` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index limit and Detail limit are separate: index controls pages per status group; detail controls saved detail pages or sandbox records.
 2. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row. Placed directly under Run controls so the live run status is visible without scrolling. While the WhatsApp MESSAGING step runs, a `messaging` process pill lights up and the Phase/Step/Item fields track each message being sent.
 3. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.

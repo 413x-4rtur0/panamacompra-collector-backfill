@@ -21,6 +21,7 @@ HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 
 DETAIL_LIMIT="${1:-99}"
+INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
 RUN_COMPLETED=0
 
 log() {
@@ -62,6 +63,7 @@ write_progress() {
     echo "STATUS='$(quote_value "$status")'"
     echo "PERCENT='$(quote_value "$percent")'"
     echo "MESSAGE='$(quote_value "$message")'"
+    echo "INDEX_LIMIT='$(quote_value "$INDEX_LIMIT")'"
     echo "DETAIL_LIMIT='$(quote_value "$DETAIL_LIMIT")'"
     echo "STARTED_AT='$(quote_value "$started_at")'"
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
@@ -117,7 +119,7 @@ fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
 touch "$IN_PROGRESS_FLAG"
-log "RUN-ALL WORKER STARTED detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
+log "RUN-ALL WORKER STARTED index_limit=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
 
 ITERATION=0
 
@@ -154,26 +156,29 @@ while true; do
   STARTED="$(date '+%Y-%m-%d %H:%M:%S')"
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
+  export PC_INDEX_LIMIT="$INDEX_LIMIT"
+  export PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
   {
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION STARTED: $STARTED"
+    echo "INDEX_LIMIT: $INDEX_LIMIT"
     echo "DETAIL_LIMIT: $DETAIL_LIMIT"
     echo "PID: $$"
     echo "============================================================"
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables, index_limit=$INDEX_LIMIT..." "$STARTED"
 
   {
     echo ""
     echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
+    echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
   } >> "$CURRENT_LOG"
 
-  timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
+  PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
   INDEX_EXIT=$?
 
   {

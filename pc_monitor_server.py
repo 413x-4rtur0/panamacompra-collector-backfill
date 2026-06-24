@@ -46,8 +46,8 @@ class ManualAction(tuple):
 
 RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 MANUAL_ACTIONS = [
-    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99", "RESTART"), "Queues a manual restart run and opens/reuses this monitor."),
-    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99"), "Starts the run-all worker immediately for up to 99 detail pages."),
+    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages."),
     ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
     ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
@@ -68,6 +68,7 @@ DEFAULT_PROGRESS = {
     "STATUS": "DONE",
     "PERCENT": "100",
     "MESSAGE": "No active process.",
+    "INDEX_LIMIT": "-",
     "DETAIL_LIMIT": "-",
     "STARTED_AT": "",
     "UPDATED_AT": "-",
@@ -161,10 +162,19 @@ def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def webhook_running() -> bool:
+    if running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py"):
+        return True
+    try:
+        result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
+        return "webhook" in result.stdout.lower()
+    except Exception:
+        return False
+
 def process_snapshot() -> dict[str, bool]:
     worker = running("[p]c_run_all_worker.sh")
     test = running("[p]ython(3)? -u ./pc_test_zone.py")
-    webhook = running("[w]ebhook_listener.py") or running("[p]ython3? -u ./webhook_listener.py")
+    webhook = webhook_running()
     return {
         "normal_run": worker and not test,
         "test_run": test,
@@ -295,7 +305,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="restart" checked><span>restart collector</span></label><label><input type="radio" name="run-mode" value="test"><span>test zone</span></label></span> <label class="small">Limit <input id="run-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> auto is used by changedetection/webhook runs; restart manually starts the normal collector; test runs the isolated test-zone script. Limit controls detail/test records. The mode toggle and Request button lock while a run is active.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -305,7 +315,7 @@ let doneSince = null;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Index limit', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
   ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
@@ -368,8 +378,18 @@ function updateRunControls(data) {{
   const procs = data.processes || {{}};
   const busy = RUN_WORK_KEYS.some(k => procs[k]);
   document.querySelectorAll('input[name="run-mode"]').forEach(el => {{ el.disabled = busy; }});
-  const limit = document.getElementById('run-limit');
-  if (limit) limit.disabled = busy;
+  ['index-limit', 'detail-limit'].forEach(id => {{ const el = document.getElementById(id); if (el) el.disabled = busy; }});
+  const mode = String(data.MODE || '').toUpperCase();
+  if (busy) {{
+    const modeValue = mode === 'AUTO' ? 'auto' : mode === 'MANUAL' ? 'manual' : mode === 'TEST' ? 'test' : 'restart';
+    const modeInput = document.querySelector(`input[name="run-mode"][value="${{modeValue}}"]`);
+    if (modeInput) modeInput.checked = true;
+  }} else {{
+    const autoInput = document.querySelector('input[name="run-mode"][value="auto"]');
+    const restartInput = document.querySelector('input[name="run-mode"][value="restart"]');
+    if (autoInput && autoInput.checked && restartInput) restartInput.checked = true;
+  }}
+  document.querySelector('input[name="run-mode"][value="auto"]').disabled = true;
   const runBtn = document.getElementById('run-button');
   if (runBtn) {{ runBtn.disabled = busy; runBtn.textContent = busy ? 'Run in progress…' : 'Request selected run'; }}
 }}
@@ -502,15 +522,21 @@ class MonitorHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         if path == "/api/request-run":
-            raw_limit = form.get("detail_limit", ["99"])[0].strip()
-            limit = raw_limit if raw_limit.isdigit() and int(raw_limit) > 0 else "99"
+            raw_detail = form.get("detail_limit", ["99"])[0].strip()
+            raw_index = form.get("index_limit", ["20"])[0].strip()
+            detail_limit = raw_detail if raw_detail.isdigit() and int(raw_detail) > 0 else "99"
+            index_limit = raw_index if raw_index.isdigit() and int(raw_index) > 0 else "20"
             mode = form.get("mode", ["restart"])[0].strip().lower()
             if mode == "test":
-                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_text(202, f"Test-zone run requested with limit {limit}.\n", "text/plain; charset=utf-8")
+                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), limit, "RESTART"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.send_text(202, f"Manual restart run requested with detail limit {limit}.\n", "text/plain; charset=utf-8")
+            if mode == "manual":
+                subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+                return
+            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.send_text(202, f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
             label = form.get("label", [""])[0].strip()
