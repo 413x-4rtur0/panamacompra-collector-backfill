@@ -31,6 +31,16 @@ PORT = int(os.environ.get("PC_MONITOR_PORT", "8766"))
 REFRESH_SECONDS = max(3, int(os.environ.get("PC_MONITOR_WEB_REFRESH_SECONDS", "3")))
 IDLE_REFRESH_SECONDS = max(REFRESH_SECONDS, int(os.environ.get("PC_MONITOR_WEB_IDLE_REFRESH_SECONDS", "30")))
 AUTO_CLOSE_SECONDS = max(0, int(os.environ.get("PC_MONITOR_WEB_AUTO_CLOSE_SECONDS", "20")))
+PATH_SETTING_DEFAULTS = {
+    "PC_RECORDS_DIR": str(BASE_DIR / "records"),
+    "PC_CALENDAR_DIR": str(BASE_DIR / "data" / "calendar"),
+    "PC_RECORDS_TEST_DIR": str(BASE_DIR / "records_test"),
+}
+BOOLEAN_SETTING_DEFAULTS = {
+    "PC_NOTIFY_WHATSAPP": "1",
+    "PC_CALENDAR_AUTO_IMPORT": "0",
+}
+ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS)
 
 
 class ManualAction(tuple):
@@ -133,10 +143,8 @@ def parse_settings_file() -> dict[str, str]:
 
 
 def load_monitor_settings() -> dict[str, str]:
-    settings = {
-        "PC_NOTIFY_WHATSAPP": os.environ.get("PC_NOTIFY_WHATSAPP", "1"),
-        "PC_CALENDAR_AUTO_IMPORT": os.environ.get("PC_CALENDAR_AUTO_IMPORT", "0"),
-    }
+    settings = {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}
+    settings.update({key: os.environ.get(key, default) for key, default in settings.items() if key in os.environ})
     file_settings = parse_settings_file()
     for key in settings:
         if key in file_settings:
@@ -144,13 +152,22 @@ def load_monitor_settings() -> dict[str, str]:
     return settings
 
 
+def monitor_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(parse_settings_file())
+    return env
+
+
 def save_monitor_setting(key: str, value: str) -> None:
-    if key not in {"PC_NOTIFY_WHATSAPP", "PC_CALENDAR_AUTO_IMPORT"}:
+    if key not in ALLOWED_MONITOR_SETTINGS:
         raise ValueError(f"unsupported setting: {key}")
     settings = parse_settings_file()
-    settings.setdefault("PC_NOTIFY_WHATSAPP", os.environ.get("PC_NOTIFY_WHATSAPP", "1"))
-    settings.setdefault("PC_CALENDAR_AUTO_IMPORT", os.environ.get("PC_CALENDAR_AUTO_IMPORT", "0"))
-    settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
+    for default_key, default_value in {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}.items():
+        settings.setdefault(default_key, os.environ.get(default_key, default_value))
+    if key in BOOLEAN_SETTING_DEFAULTS:
+        settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
+    else:
+        settings[key] = value.strip() or PATH_SETTING_DEFAULTS[key]
     MONITOR_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     MONITOR_SETTINGS_PATH.write_text(
         "# PanamaCompra monitor settings (KEY=VALUE).\n"
@@ -239,6 +256,9 @@ def process_snapshot() -> dict[str, bool]:
     }
 
 
+WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "messaging", "test_run", "request")
+
+
 def percent_value(progress: dict[str, str]) -> int:
     try:
         return max(0, min(100, int(progress.get("PERCENT", "0"))))
@@ -246,10 +266,22 @@ def percent_value(progress: dict[str, str]) -> int:
         return 0
 
 
-def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
-    if any(processes.values()):
+def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool:
+    if any(processes.get(key) for key in WORK_PROCESS_KEYS):
         return False
-    return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
+    if progress.get("STATUS") != "RUNNING":
+        return False
+    try:
+        updated = time.mktime(time.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError):
+        return True
+    return (time.time() - updated) > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+
+
+def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
+    if any(processes.get(key) for key in WORK_PROCESS_KEYS):
+        return False
+    return progress_stale(processes, progress) or progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT", "STALE"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
 
 
@@ -264,7 +296,7 @@ def run_manual_action(action: ManualAction) -> None:
     with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
         log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.zone} / {action.label} =====\n")
         log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
-        proc = subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(action.command, cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT)
 
     if action.open_after is not None:
         def wait_then_open() -> None:
@@ -275,6 +307,10 @@ def run_manual_action(action: ManualAction) -> None:
 def status_payload() -> dict[str, object]:
     progress = parse_progress_file()
     processes = process_snapshot()
+    if progress_stale(processes, progress):
+        progress = progress.copy()
+        progress["STATUS"] = "STALE"
+        progress["MESSAGE"] = "Previous run appears stopped abruptly; controls are unlocked. Request restart/manual/test to continue."
     done = is_done(processes, progress)
     return {
         "progress": progress,
@@ -359,7 +395,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -407,6 +443,10 @@ function render(data) {{
   if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
   const calendarToggle = document.getElementById('calendar-auto-import');
   if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
+  [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = settings[key] || '';
+  }});
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
@@ -469,6 +509,9 @@ function renderActionZones() {{
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
+function savePathSettings() {{
+  [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
+}}
 let recordIndex = [];
 let recordFiltered = [];
 const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
@@ -635,14 +678,14 @@ class MonitorHandler(BaseHTTPRequestHandler):
             index_limit = raw_index if raw_index.isdigit() and int(raw_index) > 0 else "20"
             mode = form.get("mode", ["restart"])[0].strip().lower()
             if mode == "test":
-                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
             if mode == "manual":
-                subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_text(202, f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
@@ -668,7 +711,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                         self.send_text(404, f"Record folder not found on disk for {numero}.\n", "text/plain; charset=utf-8")
                         return
                     opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
-                    subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen([opener, folder], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     self.send_text(202, f"Opened record folder for {numero}.\n", "text/plain; charset=utf-8")
                     return
             self.send_text(404, f"Unknown record: {numero}\n", "text/plain; charset=utf-8")
@@ -695,12 +738,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
                 for numero in selected:
                     cmd.extend(["--record", numero])
-                subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"WhatsApp notification requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
             if action_name == "calendar":
                 cmd = [str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *selected]
-                subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Calendar import requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
             self.send_text(400, "Unknown selected-record action.\n", "text/plain; charset=utf-8")

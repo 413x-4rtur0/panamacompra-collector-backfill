@@ -9,18 +9,26 @@ from pathlib import Path
 from datetime import datetime
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-RECORDS_DIR = BASE_DIR / "records"
+
+def env_path(name: str, default: Path) -> Path:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
+
+DATA_DIR = env_path("PC_DATA_DIR", BASE_DIR / "data")
+RECORDS_DIR = env_path("PC_RECORDS_DIR", BASE_DIR / "records")
 LOG_DIR = DATA_DIR / "logs"
-DB_PATH = DATA_DIR / "panamacompra_archive.db"
-CSV_PATH = DATA_DIR / "panamacompra_index.csv"
+DB_PATH = env_path("PC_ARCHIVE_DB_PATH", DATA_DIR / "panamacompra_archive.db")
+CSV_PATH = env_path("PC_INDEX_CSV_PATH", DATA_DIR / "panamacompra_index.csv")
 # Combined ICS calendar (every event) for a single Thunderbird subscription.
-CALENDAR_DIR = DATA_DIR / "calendar"
-COMBINED_CALENDAR_PATH = CALENDAR_DIR / "panamacompra.ics"
+CALENDAR_DIR = env_path("PC_CALENDAR_DIR", DATA_DIR / "calendar")
+COMBINED_CALENDAR_PATH = env_path("PC_COMBINED_CALENDAR_PATH", CALENDAR_DIR / "panamacompra.ics")
 # Testing zone: an isolated sandbox so the last N records can be re-run with the
 # current code without touching the real archive (records/) or DB.
-RECORDS_TEST_DIR = BASE_DIR / "records_test"
-TEST_CALENDAR_PATH = CALENDAR_DIR / "panamacompra_test.ics"
+RECORDS_TEST_DIR = env_path("PC_RECORDS_TEST_DIR", BASE_DIR / "records_test")
+TEST_CALENDAR_PATH = env_path("PC_TEST_CALENDAR_PATH", CALENDAR_DIR / "panamacompra_test.ics")
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
@@ -908,6 +916,8 @@ def browser_executable():
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     RECORDS_DIR.mkdir(parents=True, exist_ok=True)
+    CALENDAR_DIR.mkdir(parents=True, exist_ok=True)
+    RECORDS_TEST_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 

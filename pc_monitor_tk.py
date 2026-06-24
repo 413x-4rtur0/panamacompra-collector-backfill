@@ -62,6 +62,12 @@ def setting(name: str, default: str) -> str:
     return _SETTINGS_FILE.get(name, default)
 
 
+def monitor_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(load_settings_file())
+    return env
+
+
 def setting_int(name: str, default: int, minimum: int | None = None) -> int:
     try:
         value = int(float(setting(name, str(default))))
@@ -360,15 +366,31 @@ def percent_value(progress: dict[str, str]) -> int:
 WORK_PROCESS_KEYS = ("worker", "index", "detail", "calendar", "messaging", "test_run", "updater", "request")
 
 
+def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool:
+    if any(processes.get(key) for key in WORK_PROCESS_KEYS):
+        return False
+    if progress.get("STATUS") != "RUNNING":
+        return False
+    try:
+        updated = datetime.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return True
+    return (datetime.now() - updated).total_seconds() > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+
+
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
     if any(processes.get(key) for key in WORK_PROCESS_KEYS):
         return False
-    return progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT"} or progress.get("PHASE") in {"DONE", "IDLE"}
+    return progress_stale(processes, progress) or progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT", "STALE"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
 
 def status_snapshot() -> dict[str, object]:
     progress = parse_progress_file()
     processes = process_snapshot()
+    if progress_stale(processes, progress):
+        progress = progress.copy()
+        progress["STATUS"] = "STALE"
+        progress["MESSAGE"] = "Previous run appears stopped abruptly; controls are unlocked. Request restart/manual/test to continue."
     done = is_done(processes, progress)
     return {
         "progress": progress,
@@ -663,14 +685,14 @@ def run_tk() -> int:
         detail_limit = selected_limit(detail_limit_var, "99")
         mode = run_mode_var.get()
         if mode == "test":
-            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
         if mode == "manual":
-            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
@@ -760,6 +782,9 @@ def run_tk() -> int:
     keywords_var = tk.StringVar(value=", ".join(existing_keywords))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
     import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
+    records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(BASE_DIR / "records")))
+    calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(BASE_DIR / "data" / "calendar")))
+    records_test_dir_var = tk.StringVar(value=setting("PC_RECORDS_TEST_DIR", str(BASE_DIR / "records_test")))
 
     def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
         ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
@@ -781,10 +806,13 @@ def run_tk() -> int:
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
+    field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
+    field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
+    field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
     notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
-    notify_check.grid(row=6, column=0, columnspan=2, sticky="w", pady=3)
+    notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
-    calendar_check.grid(row=6, column=2, columnspan=2, sticky="w", pady=3)
+    calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
 
@@ -824,6 +852,9 @@ def run_tk() -> int:
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
             "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
             "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
+            "PC_RECORDS_DIR": records_dir_var.get().strip() or str(BASE_DIR / "records"),
+            "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(BASE_DIR / "data" / "calendar"),
+            "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -839,9 +870,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=7, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=10, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=11, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1092,7 +1123,7 @@ def run_tk() -> int:
         cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
         for numero in numeros:
             cmd.extend(["--record", numero])
-        subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected record(s).")
 
     def import_selected_calendars() -> None:
@@ -1100,7 +1131,7 @@ def run_tk() -> int:
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
 
     def open_selected_portal() -> None:
@@ -1164,7 +1195,7 @@ def run_tk() -> int:
         with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | {action.zone} / {action.label} =====\n")
             log_file.write("Command: " + " ".join(shlex.quote(part) for part in action.command) + "\n")
-            proc = subprocess.Popen(action.command, cwd=BASE_DIR, stdout=log_file, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(action.command, cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT)
 
         if action.open_after is not None:
             def wait_then_open() -> None:
