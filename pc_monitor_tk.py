@@ -250,6 +250,52 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
+def db_review_stats() -> dict[str, object]:
+    """Aggregate counts for the Database review panel (totals, detail-queue state,
+    notification state, and a per-group breakdown). Never raises; a missing/locked
+    DB yields zeros so the panel renders before the collector has ever run."""
+    empty = {
+        "total": 0, "saved": 0, "pending": 0, "failed": 0,
+        "notified": 0, "with_detail_json": 0, "groups": [], "db_exists": ARCHIVE_DB.exists(),
+    }
+    if not ARCHIVE_DB.exists():
+        return empty
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return empty
+    try:
+        conn.row_factory = sqlite3.Row
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        has_notified = "notified_at" in columns
+
+        def count(where: str = "") -> int:
+            sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
+            return int(conn.execute(sql).fetchone()[0])
+
+        stats = {
+            "db_exists": True,
+            "total": count(),
+            "saved": count("detail_status = 'saved'"),
+            "pending": count("detail_status = 'pending'"),
+            "failed": count("detail_status = 'failed'"),
+            "notified": count("notified_at IS NOT NULL") if has_notified else 0,
+            "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "groups": [
+                (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
+                for r in conn.execute(
+                    "SELECT grupo, COUNT(*) AS c FROM opportunities "
+                    "GROUP BY grupo ORDER BY c DESC"
+                ).fetchall()
+            ],
+        }
+    except sqlite3.Error:
+        return empty
+    finally:
+        conn.close()
+    return stats
+
+
 # How many days ahead still counts as "next to expire" (amber) instead of a calm
 # "upcoming" (green). Records past their DTEND are "expired" (red).
 SOON_DAYS = setting_int("PC_MONITOR_DEADLINE_SOON_DAYS", 7, minimum=1)
@@ -410,7 +456,7 @@ def status_snapshot() -> dict[str, object]:
 def run_tk() -> int:
     try:
         import tkinter as tk
-        from tkinter import ttk
+        from tkinter import messagebox, ttk
     except Exception as exc:  # pragma: no cover - depends on host packages
         print(f"ERROR: Tkinter is not available: {exc}", file=sys.stderr)
         return 2
@@ -553,7 +599,9 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    content.rowconfigure(6, weight=1)
+    # The logs pane (now row 8, after the Database review and Reset sections) is
+    # the one that should absorb extra vertical space.
+    content.rowconfigure(8, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -636,34 +684,52 @@ def run_tk() -> int:
                 fg="#bbf7d0" if value else "#9ca3af",
             )
 
-    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0) -> None:
-        """Add a hide/show button that keeps the section header visible."""
+    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
+                           start_hidden: bool = True) -> None:
+        """Add a hide/show button that keeps the section header visible.
+
+        The set of content widgets to collapse is captured ONCE, now, while every
+        widget is still gridded. The previous version re-read ``grid_info`` inside
+        the toggle, but ``grid_remove`` makes ``grid_info`` return ``{}`` for a
+        hidden widget, so after the first Hide the Show pass skipped every
+        (now-empty-info) child and nothing ever came back — the button looked
+        dead. Capturing up front fixes that and lets sections start collapsed.
+        """
         hidden = tk.BooleanVar(value=False)
 
-        def toggle() -> None:
-            next_hidden = not hidden.get()
-            hidden.set(next_hidden)
-            for child in frame.winfo_children():
-                if child is button:
-                    continue
-                info = child.grid_info()
-                if not info:
-                    continue
-                try:
-                    row = int(info.get("row", 0))
-                except (TypeError, ValueError):
-                    row = 0
-                if row <= title_row:
-                    continue
-                if next_hidden:
+        button = ttk.Button(frame, text="Hide", width=7)
+        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
+        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
+
+        content_children = []
+        for child in frame.winfo_children():
+            if child is button:
+                continue
+            info = child.grid_info()
+            if not info:
+                continue
+            try:
+                row = int(info.get("row", 0))
+            except (TypeError, ValueError):
+                row = 0
+            if row <= title_row:
+                continue
+            content_children.append(child)
+
+        def apply_hidden(is_hidden: bool) -> None:
+            hidden.set(is_hidden)
+            for child in content_children:
+                if is_hidden:
                     child.grid_remove()
                 else:
                     child.grid()
-            button.configure(text="Show" if next_hidden else "Hide")
+            button.configure(text="Show" if is_hidden else "Hide")
 
-        button = ttk.Button(frame, text="Hide", width=7, command=toggle)
-        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
-        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
+        button.configure(command=lambda: apply_hidden(not hidden.get()))
+        # Sections start collapsed by default so the monitor opens compact; the
+        # operator expands only the panels they need.
+        if start_hidden:
+            apply_hidden(True)
 
     # ========================================================================
     # SECTION 1: RUN CONTROLS - request a restart or test-zone run
@@ -1221,8 +1287,87 @@ def run_tk() -> int:
         grid_row += 1
     add_section_toggle(actions, button_column=button_columns - 1)
 
+    # ========================================================================
+    # SECTION 6: DATABASE REVIEW - read-only aggregate snapshot of the archive DB
+    # (totals, detail-queue state, notification state, per-group breakdown) so the
+    # operator can review the database state at a glance without opening sqlite.
+    # ========================================================================
+    db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
+    db_review.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    db_review.columnconfigure(0, weight=1)
+    ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    db_review_var = tk.StringVar(value="Loading database snapshot…")
+    ttk.Label(db_review, textvariable=db_review_var, style="Card.TLabel", justify="left").grid(row=1, column=0, sticky="w")
+
+    def refresh_db_review() -> None:
+        s = db_review_stats()
+        if not s.get("db_exists"):
+            db_review_var.set("No database yet (data/panamacompra_archive.db). Run the collector first.")
+            return
+        groups = "   ·   ".join(f"{name}: {qty}" for name, qty in s["groups"]) or "—"
+        db_review_var.set(
+            f"Total records: {s['total']}\n"
+            f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
+            f"Detail JSON on record: {s['with_detail_json']}   ·   Notified (WAHA): {s['notified']}\n"
+            f"By group   ·   {groups}"
+        )
+
+    refresh_db_review()
+    db_review_refresh_button = ttk.Button(db_review, text="Refresh DB snapshot", command=refresh_db_review)
+    db_review_refresh_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
+    add_tooltip(db_review_refresh_button, "Re-read the archive database and refresh these review counts.")
+    add_section_toggle(db_review, button_column=1)
+
+    # ========================================================================
+    # SECTION 7: RESET / REVIEW FROM ZERO - separate buttons (per the operator's
+    # request) for each reset depth, from a soft detail re-queue to a full wipe.
+    # The two destructive wipes pop a confirmation dialog and pass --yes only when
+    # confirmed, so a stray click cannot erase the archive. All call pc_reset.py.
+    # ========================================================================
+    reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
+    reset_zone.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    for col in range(2):
+        reset_zone.columnconfigure(col, weight=1, uniform="reset")
+    ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    reset_status_var = tk.StringVar(value="")
+    ttk.Label(reset_zone, textvariable=reset_status_var, style="Card.TLabel", wraplength=620).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def run_reset(action: str, *, destructive: bool, confirm_text: str) -> None:
+        if destructive:
+            if not messagebox.askyesno("Confirm reset", confirm_text, icon="warning", default="no"):
+                reset_status_var.set(f"{action}: cancelled.")
+                return
+        command = [str(BASE_DIR / "pc_reset.py"), action]
+        if destructive:
+            command.append("--yes")
+        MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | Reset / {action} =====\n")
+            subprocess.Popen(command, cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT)
+        reset_status_var.set(f"Started reset '{action}'. See {MANUAL_ACTION_LOG.relative_to(BASE_DIR)}; refresh the DB snapshot above to verify.")
+
+    requeue_btn = ttk.Button(reset_zone, text="Re-queue all details",
+                             command=lambda: run_reset("requeue-details", destructive=False, confirm_text=""))
+    requeue_btn.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+    notify_btn = ttk.Button(reset_zone, text="Reset notify / review flags",
+                            command=lambda: run_reset("reset-notify", destructive=False, confirm_text=""))
+    notify_btn.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+    wipe_db_btn = ttk.Button(reset_zone, text="Wipe database only", style="Danger.TButton",
+                             command=lambda: run_reset("wipe-db", destructive=True,
+                                                       confirm_text="Delete the tracking database (data/panamacompra_archive.db) and index CSV?\n\nDownloaded record folders are kept and re-linked on the next run."))
+    wipe_db_btn.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
+    wipe_all_btn = ttk.Button(reset_zone, text="Wipe EVERYTHING", style="Danger.TButton",
+                              command=lambda: run_reset("wipe-all", destructive=True,
+                                                        confirm_text="Delete the database AND every downloaded record folder and calendar?\n\nThis is irreversible — the local archive is lost. The test zone is kept."))
+    wipe_all_btn.grid(row=2, column=1, sticky="ew", padx=4, pady=4)
+    add_tooltip(requeue_btn, "Set every record's detail back to pending (attempts=0) so the next run re-downloads all detail pages. Keeps all data.")
+    add_tooltip(notify_btn, "Clear WAHA notification/review flags so every record can be announced again from zero. Keeps all data.")
+    add_tooltip(wipe_db_btn, "Delete the tracking DB + index CSV (keeps record files on disk). Destructive — asks for confirmation.")
+    add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
+    add_section_toggle(reset_zone, button_column=1)
+
     logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=6, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=8, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)

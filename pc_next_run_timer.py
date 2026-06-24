@@ -121,9 +121,11 @@ def git_branch() -> str:
         return "-"
 
 
-def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, list[tuple[str, str]]]:
-    """Return (total_records, [(numero, short_description), ...]) newest first.
+def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, list[tuple[str, str, str]]]:
+    """Return (total_records, [(date, numero, short_description), ...]) newest first.
 
+    ``date`` is the local download date (``first_seen``) shown as ``YY-MM-DD`` so
+    the operator can see, latest to oldest, when each record entered the archive.
     Read-only and defensive: a missing/locked/empty DB yields (0, [])."""
     if not ARCHIVE_DB.exists():
         return 0, []
@@ -135,7 +137,8 @@ def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, list[tuple[str, s
         conn.row_factory = sqlite3.Row
         total = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
         rows = conn.execute(
-            "SELECT numero, COALESCE(NULLIF(short_description, ''), descripcion, '') AS d "
+            "SELECT numero, first_seen, "
+            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS d "
             "FROM opportunities ORDER BY first_seen DESC, numero DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -143,7 +146,22 @@ def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, list[tuple[str, s
         return 0, []
     finally:
         conn.close()
-    return total, [(str(r["numero"] or ""), str(r["d"] or "")) for r in rows]
+    return total, [
+        (_short_date(r["first_seen"]), str(r["numero"] or ""), str(r["d"] or ""))
+        for r in rows
+    ]
+
+
+def _short_date(first_seen: str) -> str:
+    """'YY-MM-DD' from an ISO ``first_seen`` value, or '------' when unknown."""
+    text = (first_seen or "").strip()
+    if not text:
+        return "------"
+    datepart = text[:10]  # leading YYYY-MM-DD of an ISO timestamp or bare date
+    try:
+        return datetime.strptime(datepart, "%Y-%m-%d").strftime("%y-%m-%d")
+    except ValueError:
+        return datepart
 
 
 def _truncate(text: str, width: int) -> str:
@@ -236,7 +254,12 @@ def main() -> int:
         last_status = values.get("STATUS", "") or "—"
         lastrun_var.set(f"Last run: {last_start}  ·  {last_status}")
         if latest:
-            set_latest("\n".join(f"{num}\n  {_truncate(desc, 40) or '(sin descripción)'}" for num, desc in latest))
+            # Newest first: each entry leads with its download date (YY-MM-DD) so
+            # the list reads latest -> oldest at a glance.
+            set_latest("\n".join(
+                f"{date}  {num}\n        {_truncate(desc, 38) or '(sin descripción)'}"
+                for date, num, desc in latest
+            ))
         else:
             set_latest("(sin registros todavía)")
 

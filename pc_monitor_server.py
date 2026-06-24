@@ -226,6 +226,62 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
+def db_review_stats() -> dict[str, object]:
+    """Aggregate counts for the web Database-review card (mirror of the Tk
+    monitor's panel): totals, detail-queue state, notification state, and a
+    per-group breakdown. Never raises; a missing/locked DB yields zeros."""
+    empty = {
+        "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
+        "failed": 0, "notified": 0, "with_detail_json": 0, "groups": [],
+    }
+    if not ARCHIVE_DB.exists():
+        return empty
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return empty
+    try:
+        conn.row_factory = sqlite3.Row
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        has_notified = "notified_at" in columns
+
+        def count(where: str = "") -> int:
+            sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
+            return int(conn.execute(sql).fetchone()[0])
+
+        return {
+            "db_exists": True,
+            "total": count(),
+            "saved": count("detail_status = 'saved'"),
+            "pending": count("detail_status = 'pending'"),
+            "failed": count("detail_status = 'failed'"),
+            "notified": count("notified_at IS NOT NULL") if has_notified else 0,
+            "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "groups": [
+                {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT grupo, COUNT(*) AS c FROM opportunities "
+                    "GROUP BY grupo ORDER BY c DESC"
+                ).fetchall()
+            ],
+        }
+    except sqlite3.Error:
+        return empty
+    finally:
+        conn.close()
+
+
+# Reset actions exposed as separate buttons (per operator request). Maps the
+# button action to (pc_reset.py subcommand, is_destructive). The destructive
+# wipes are confirmed in the browser and run with --yes.
+RESET_ACTIONS = {
+    "requeue-details": False,
+    "reset-notify": False,
+    "wipe-db": True,
+    "wipe-all": True,
+}
+
+
 def running(pattern: str) -> bool:
     return subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
@@ -398,6 +454,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Database review</h2><p class="small">Read-only snapshot of data/panamacompra_archive.db. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
+<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -613,14 +671,18 @@ function importSelectedCalendars() {{
 }}
 
 function initCollapsibleSections() {{
+  // Every card except the live-progress header starts COLLAPSED so the monitor
+  // opens compact; the operator expands only the panels they need (matches the
+  // Tk monitor's default-hidden sections).
   document.querySelectorAll('.card').forEach((card, idx) => {{
     if (idx === 0) return;
     const heading = card.querySelector('h1, h2');
     if (!heading || heading.querySelector('.section-toggle')) return;
+    card.classList.add('collapsed');
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'section-toggle';
-    btn.textContent = 'Hide';
+    btn.textContent = 'Show';
     btn.title = 'Hide/show this monitor section without stopping the run.';
     btn.addEventListener('click', () => {{
       card.classList.toggle('collapsed');
@@ -628,6 +690,35 @@ function initCollapsibleSections() {{
     }});
     heading.appendChild(btn);
   }});
+}}
+
+async function refreshDbReview() {{
+  const node = document.getElementById('db-review');
+  try {{
+    const response = await fetch('/api/db-stats', {{cache: 'no-store'}});
+    const s = await response.json();
+    if (!s.db_exists) {{ node.textContent = 'No database yet (data/panamacompra_archive.db). Run the collector first.'; return; }}
+    const groups = (s.groups || []).map(g => `${{esc(g.grupo)}}: ${{g.count}}`).join('   ·   ') || '—';
+    node.textContent =
+      `Total records: ${{s.total}}\n` +
+      `Detail status   ·   saved: ${{s.saved}}   ·   pending: ${{s.pending}}   ·   failed: ${{s.failed}}\n` +
+      `Detail JSON on record: ${{s.with_detail_json}}   ·   Notified (WAHA): ${{s.notified}}\n` +
+      `By group   ·   ${{groups}}`;
+  }} catch (err) {{ node.textContent = 'Could not read database snapshot: ' + err; }}
+}}
+
+const RESET_CONFIRM = {{
+  'wipe-db': 'Delete the tracking database (data/panamacompra_archive.db) and index CSV?\\n\\nDownloaded record folders are kept and re-linked on the next run.',
+  'wipe-all': 'Delete the database AND every downloaded record folder and calendar?\\n\\nThis is irreversible — the local archive is lost. The test zone is kept.',
+}};
+async function runReset(action) {{
+  const status = document.getElementById('reset-status');
+  if (RESET_CONFIRM[action] && !window.confirm(RESET_CONFIRM[action])) {{ status.textContent = action + ': cancelled.'; return; }}
+  try {{
+    const response = await fetch('/api/reset', {{method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'action=' + encodeURIComponent(action)}});
+    status.textContent = (await response.text()).trim();
+  }} catch (err) {{ status.textContent = 'Reset failed: ' + err; }}
+  setTimeout(refreshDbReview, 1500);
 }}
 async function poll() {{
   try {{
@@ -648,6 +739,7 @@ document.getElementById('record-mindate').addEventListener('change', applyRecord
 document.getElementById('record-downloaded-mindate').addEventListener('change', applyRecordFilter);
 initCollapsibleSections();
 refreshRecordIndex();
+refreshDbReview();
 poll();
 </script>
 </body>
@@ -748,6 +840,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 return
             self.send_text(400, "Unknown selected-record action.\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/reset":
+            action = form.get("action", [""])[0].strip()
+            if action not in RESET_ACTIONS:
+                self.send_text(400, "Unknown reset action.\n", "text/plain; charset=utf-8")
+                return
+            command = [str(BASE_DIR / "pc_reset.py"), action]
+            if RESET_ACTIONS[action]:  # destructive -> confirmed in the browser
+                command.append("--yes")
+            MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | Reset / {action} =====\n")
+                subprocess.Popen(command, cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT)
+            self.send_text(202, f"Started reset '{action}'. See data/logs/manual_actions.log; refresh the DB snapshot to verify.\n", "text/plain; charset=utf-8")
+            return
         if path in {"/api/waha-destination", "/api/waha-message"}:
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
@@ -766,6 +872,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/record-index":
             self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/db-stats":
+            self.send_text(200, json.dumps(db_review_stats(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")
