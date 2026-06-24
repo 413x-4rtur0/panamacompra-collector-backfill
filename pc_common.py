@@ -199,11 +199,6 @@ def _parse_times_24h(text):
         out.append(f"{hh % 24:02d}:{mm % 60:02d}")
     return out
 
-def _parse_end_time_24h(text):
-    """Return the LAST clock time in ``text`` as 24h HH:MM, or '' if none."""
-    times = _parse_times_24h(text)
-    return times[-1] if times else ""
-
 def find_kv(key_values, *needles):
     """First value whose accent-insensitive lowercased key contains all needles."""
     for key, value in (key_values or {}).items():
@@ -212,58 +207,48 @@ def find_kv(key_values, *needles):
             return str(value)
     return ""
 
-def compute_finish_stamp(key_values, text):
-    """Return 'YYYY-MM-DD_HH:MM' for when proposals stop being accepted, or ''.
+def _resolve_close_datetimes(key_values, text):
+    """Single source of truth for a record's close window.
 
-    Priority:
-      1) A 'presentación de cotizaciones' / 'cierre' / 'límite' field: use its
-         date and the END time of its window in 24h. No time -> 12:00.
-      2) Otherwise the delivery ('entrega') date, or any date in the text, with
-         a default time of 12:00.
+    Returns ``(window_text, dtstart, dtend)`` where ``dtstart`` / ``dtend`` are
+    ``'YYYY-MM-DDTHH:MM:SS'`` (or ``''`` when no usable date exists).
+
+    This is shared by BOTH the folder-name finish stamp (``compute_finish_stamp``)
+    and the calendar DTSTART/DTEND (``_calendar_window_datetimes``) so the date
+    encoded in ``[finish]-[numero]-[desc]`` can never diverge from the ``.ics``
+    DTEND for the same record.
+
+    Priority (close-before-delivery, structured-before-text):
+      1) 'presentación de cotizaciones' / 'cierre' / 'límite' field in key_values
+      2) delivery ('entrega') field in key_values
+      3) the same close field parsed from the saved detail text
+      4) the delivery ('día y hora de entrega') field from the text
+      5) an 'entrega ... DD-MM-YYYY' phrase in the text   (date only, noon)
+      6) any DD-MM-YYYY date anywhere in the text          (date only, noon)
+    For 1-4 the window's own clock times are used (earliest -> DTSTART, latest ->
+    DTEND); when a window has no time, or for the date-only fallbacks, noon is used.
     """
     key_values = key_values or {}
     text = str(text or "")
-
-    for key, value in key_values.items():
-        kl = strip_accents(str(key)).lower()
-        is_close = (
-            ("presentaci" in kl and ("cotiza" in kl or "propuesta" in kl))
-            or "cierre" in kl
-            or "limite" in kl
-        )
-        if is_close and value:
-            date = _parse_ddmmyyyy(value)
-            if date:
-                return f"{date}_{_parse_end_time_24h(value) or '12:00'}"
-
-    entrega = find_kv(key_values, "entrega")
-    if entrega:
-        date = _parse_ddmmyyyy(entrega)
-        if date:
-            return f"{date}_12:00"
-
-    # Text fallbacks (no usable key_values): apply the same close-before-entrega
-    # priority to fields parsed straight from the saved detail text, so a
-    # "presentación de cotizaciones" / cierre / límite deadline in the text is
-    # not overtaken by a later delivery date.
     text_fields = parse_detail_fields(text)
-    for key, value in text_fields.items():
-        kl = strip_accents(str(key)).lower()
-        is_close = (
-            ("presentaci" in kl and ("cotiza" in kl or "propuesta" in kl))
-            or "cierre" in kl
-            or "limite" in kl
-        )
-        if is_close and value:
-            date = _parse_ddmmyyyy(value)
-            if date:
-                return f"{date}_{_parse_end_time_24h(value) or '12:00'}"
 
-    entrega_text = find_kv(text_fields, "dia", "hora", "entrega")
-    if entrega_text:
-        date = _parse_ddmmyyyy(entrega_text)
-        if date:
-            return f"{date}_12:00"
+    def from_window(window):
+        date = _parse_ddmmyyyy(window)
+        if not date:
+            return None
+        times = sorted(_parse_times_24h(window)) or ["12:00"]
+        return window, f"{date}T{times[0]}:00", f"{date}T{times[-1]}:00"
+
+    for window in (
+        _close_window_value(key_values),
+        find_kv(key_values, "entrega"),
+        _close_window_value(text_fields),
+        find_kv(text_fields, "dia", "hora", "entrega"),
+    ):
+        if window:
+            resolved = from_window(window)
+            if resolved:
+                return resolved
 
     m = re.search(
         r"entrega[^0-9]{0,40}(\d{1,2}[-/]\d{1,2}[-/]\d{4})",
@@ -273,10 +258,22 @@ def compute_finish_stamp(key_values, text):
     if m:
         date = _parse_ddmmyyyy(m.group(1))
         if date:
-            return f"{date}_12:00"
+            return m.group(1), f"{date}T12:00:00", f"{date}T12:00:00"
 
     date = _parse_ddmmyyyy(text)
-    return f"{date}_12:00" if date else ""
+    if date:
+        return text, f"{date}T12:00:00", f"{date}T12:00:00"
+    return "", "", ""
+
+def compute_finish_stamp(key_values, text):
+    """Return 'YYYY-MM-DD_HH:MM' for when proposals stop being accepted, or ''.
+
+    Derived from the shared ``_resolve_close_datetimes`` close window (DTEND), so
+    the folder-name finish stamp is always the same instant as the calendar's
+    DTEND for that record.
+    """
+    _, _, dtend = _resolve_close_datetimes(key_values, text)
+    return f"{dtend[:10]}_{dtend[11:16]}" if dtend else ""
 
 def build_record_folder_leaf(finish_stamp, numero, desc):
     """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
@@ -766,45 +763,18 @@ def _calendar_description(fields, items, link=""):
                 lines.append(item_line)
     return "\n".join(lines)
 
-def _calendar_window_datetimes(fields):
+def _calendar_window_datetimes(key_values, text=""):
     """Return (source text, dtstart, dtend) for calendar import.
 
-    Calendar clients need a DTSTART to place the event. Prefer the formal
-    presentation/cierre/límite window; if that has only a date, default it to
-    noon. Fall back to the delivery window and finally compute_finish_stamp so
-    records that still have any recognizable date keep importable ICS dates.
+    Thin wrapper over the shared ``_resolve_close_datetimes`` so the calendar's
+    DTSTART/DTEND are computed from exactly the same close window (and the same
+    inputs) as the folder-name finish stamp.
     """
-    window = _close_window_value(fields) or find_kv(fields, "dia", "hora", "entrega")
-    date = _parse_ddmmyyyy(window)
-    times = _parse_times_24h(window)
-
-    if not date:
-        finish_stamp = compute_finish_stamp(fields, "")
-        if finish_stamp:
-            stamp_date, _, stamp_time = finish_stamp.partition("_")
-            date = stamp_date
-            if not times and stamp_time:
-                times = [stamp_time]
-            if not window:
-                window = finish_stamp
-
-    if not date:
-        return window, "", ""
-
-    if not times:
-        times = ["12:00"]
-
-    # Sort so DTSTART is always the earliest and DTEND the latest clock time on
-    # the same close date, regardless of the order they appear in the source
-    # window. This keeps every event's DTSTART/DTEND coherent (DTEND never lands
-    # before DTSTART) inside the .ics packages, real and isolated/test alike.
-    times = sorted(times)
-    dtstart = f"{date}T{times[0]}:00"
-    dtend = f"{date}T{times[-1]}:00"
-    return window, dtstart, dtend
+    return _resolve_close_datetimes(key_values, text)
 
 
-def build_calendar(fields, items, numero="", dtstamp=None, link=""):
+def build_calendar(fields, items, numero="", dtstamp=None, link="",
+                   window_key_values=None, window_text=""):
     """An ICS VEVENT for the record, expressed as JSON.
 
     DTSTART/DTEND come from the 'Fecha y hora presentación de cotizaciones' /
@@ -814,7 +784,12 @@ def build_calendar(fields, items, numero="", dtstamp=None, link=""):
     """
     numero = find_kv(fields, "numero") or numero
     descripcion = find_kv(fields, "descripcion")
-    window, dtstart, dtend = _calendar_window_datetimes(fields)
+    # Resolve the close window from the table key_values + detail text (the same
+    # inputs compute_finish_stamp uses for the folder name) when supplied, so the
+    # DTEND here matches the folder's finish stamp. Fall back to the text fields
+    # alone for callers that do not pass table key_values.
+    kv_for_window = window_key_values if window_key_values is not None else fields
+    window, dtstart, dtend = _calendar_window_datetimes(kv_for_window, window_text)
     summary = " / ".join(p for p in [descripcion, f"({numero})" if numero else ""] if p)
     return {
         "uid": f"{numero}@panamacompra" if numero else "",
@@ -846,7 +821,16 @@ def build_detail_views(text, tables=None, numero="", dtstamp=None, link=""):
     fields = parse_detail_fields(text)
     items = parse_detail_items(text, tables)
     summary = build_summary(fields, numero)
-    calendar = build_calendar(fields, items, numero, dtstamp=dtstamp, link=link)
+    # Aggregate the per-table key/values the same way the folder-naming path does
+    # (naming_fields / pc_rename_record_folders), so the calendar DTEND is derived
+    # from the same close window as the folder's finish stamp.
+    agg_kv = {}
+    for table in tables or []:
+        agg_kv.update(table.get("key_values", {}))
+    calendar = build_calendar(
+        fields, items, numero, dtstamp=dtstamp, link=link,
+        window_key_values=agg_kv, window_text=text,
+    )
     return summary, items, calendar, fields
 
 def rename_record_folder(conn, numero, current_folder, new_leaf):
@@ -1201,17 +1185,28 @@ def guess_finish_date_from_text(text):
 
     return ""
 
-def update_detail_status(conn, numero, status, detail_json_path=None, finish_date_guess=None):
+def update_detail_status(conn, numero, status, detail_json_path=None,
+                         finish_date_guess=None, increment_attempts=True):
+    """Update a record's detail status.
+
+    ``detail_attempts`` counts genuine download attempts so a permanently broken
+    URL is eventually abandoned (``MAX_DETAIL_ATTEMPTS``). Pass
+    ``increment_attempts=False`` for no-op transitions (re-completing an
+    already-saved archive, or refreshing views from saved HTML) so those do not
+    burn the retry budget — that was previously starving records that only needed
+    a missing ``.ics`` / view regenerated and left them stuck incomplete.
+    """
     conn.execute("""
     UPDATE opportunities
     SET detail_status = ?,
-        detail_attempts = detail_attempts + 1,
+        detail_attempts = detail_attempts + ?,
         detail_saved_at = ?,
         detail_json_path = COALESCE(?, detail_json_path),
         finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess)
     WHERE numero = ?
     """, (
         status,
+        1 if increment_attempts else 0,
         now_iso() if status == "saved" else None,
         str(detail_json_path) if detail_json_path else None,
         finish_date_guess or "",
