@@ -61,20 +61,15 @@ pgrep -af "webhook_listener.py" || echo "No webhook_listener.py process found."
 section "4) Check if port $PORT is listening"
 ss -ltnp | grep ":$PORT" || echo "Port $PORT is not listening."
 
-section "5) Stop old webhook listener if any"
+section "5) Stop broken direct systemd webhook service and old listener if any"
+# A direct ExecStart=python webhook_listener.py service will restart-loop when an
+# older receiver owns the port. Stop it before replacing the port owner.
+systemctl --user stop panamacompra-webhook.service 2>/dev/null || true
 pkill -f "[p]ython.*webhook_listener.py" 2>/dev/null || true
 sleep 1
 
 section "6) Start webhook listener bound to $HOST:$PORT"
-if [ -f "$ROOT/.venv/bin/activate" ]; then
-  # shellcheck disable=SC1091
-  source "$ROOT/.venv/bin/activate"
-fi
-
-nohup env PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" \
-  python "$ROOT/webhook_listener.py" \
-  >> "$LOG_DIR/webhook_listener.out.log" 2>&1 &
-
+PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" "$ROOT/pc_start_webhook_listener.sh" --replace-port-owner
 sleep 2
 
 section "7) Confirm listener process"
@@ -136,4 +131,5 @@ echo
 echo "============================================================"
 echo " Done."
 echo " If step 11 passed with HTTP 202, changedetection.io can reach the webhook."
+echo " To install a persistent user service, run: ./pc_install_webhook_service.sh"
 echo "============================================================"

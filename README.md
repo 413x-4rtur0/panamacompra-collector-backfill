@@ -347,7 +347,8 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_run_all_now.sh` | Runs the worker in the foreground for interactive use. |
 | `run_collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `webhook_listener.py` | Local HTTP listener for changedetection.io notifications. Runs `run_collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
-| `pc_start_webhook_listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup`, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
+| `pc_start_webhook_listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup` or `--foreground` for systemd, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
+| `pc_install_webhook_service.sh` | Installs/repairs the persistent user `panamacompra-webhook.service` with the safe foreground starter, so stale port owners are replaced before binding. |
 | `pc_run_all_flag_watcher.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`pc_request_run_all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
@@ -1095,26 +1096,7 @@ closures and restarts automatically:
 ```bash
 mkdir -p ~/.config/systemd/user
 
-cat > ~/.config/systemd/user/panamacompra-webhook.service <<'EOF'
-[Unit]
-Description=PanamaCompra webhook listener
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=%h/Apps/panamacompra-collector
-Environment=PC_WEBHOOK_HOST=0.0.0.0
-Environment=PC_WEBHOOK_PORT=8765
-ExecStart=%h/Apps/panamacompra-collector/.venv/bin/python %h/Apps/panamacompra-collector/webhook_listener.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable --now panamacompra-webhook.service
+./pc_install_webhook_service.sh
 systemctl --user status panamacompra-webhook.service --no-pager
 ```
 
@@ -1129,6 +1111,9 @@ Check or restart the service with:
 ```bash
 journalctl --user -u panamacompra-webhook.service -n 80 --no-pager
 systemctl --user restart panamacompra-webhook.service
+# If you previously created a direct ExecStart=python service and it restart-loops
+# with "Address already in use", repair it with:
+./pc_install_webhook_service.sh
 ```
 
 ---

@@ -9,14 +9,16 @@ PORT="${PC_WEBHOOK_PORT:-8765}"
 TOKEN_FILE=".webhook_token"
 LOG_FILE="data/logs/webhook_listener.out.log"
 REPLACE_PORT_OWNER="${PC_WEBHOOK_REPLACE_PORT_OWNER:-0}"
+FOREGROUND=0
 
 usage() {
   cat <<USAGE
-Usage: $0 [--replace-port-owner] [--no-replace-port-owner]
+Usage: $0 [--replace-port-owner] [--no-replace-port-owner] [--foreground]
 
 Starts webhook_listener.py in the background.
   --replace-port-owner     Stop the current process listening on PC_WEBHOOK_PORT first.
   --no-replace-port-owner  Never stop a non-webhook process; print diagnostics only.
+  --foreground             Run listener in the foreground (for systemd services).
 
 Environment:
   PC_WEBHOOK_HOST              Bind host (default: 0.0.0.0)
@@ -30,6 +32,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --replace-port-owner|--replace) REPLACE_PORT_OWNER=1 ;;
     --no-replace-port-owner|--no-replace) REPLACE_PORT_OWNER=0 ;;
+    --foreground) FOREGROUND=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -181,6 +184,12 @@ fi
 PYTHON_BIN="python3"
 if [ -x .venv/bin/python ]; then
   PYTHON_BIN=".venv/bin/python"
+fi
+
+if [ "$FOREGROUND" = "1" ]; then
+  echo "Webhook listener starting in foreground on $HOST:$PORT."
+  print_notification_urls
+  exec env PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" "$PYTHON_BIN" ./webhook_listener.py
 fi
 
 nohup env PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" \
