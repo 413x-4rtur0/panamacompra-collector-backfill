@@ -232,7 +232,7 @@ def process_snapshot() -> dict[str, bool]:
         "worker": worker,
         "index": running("[p]ython(3)? -u ./pc_index_collector.py"),
         "detail": running("[p]ython(3)? -u ./pc_detail_downloader.py"),
-        "calendar": running("[p]ython(3)? -u ./pc_build_calendar.py"),
+        "calendar": running("[p]ython(3)? -u ./pc_build_(detail_views|calendar).py"),
         "messaging": running("[p]c_notify_new_records.py"),
         "webhook": webhook,
         "request": REQUEST_FLAG.exists(),

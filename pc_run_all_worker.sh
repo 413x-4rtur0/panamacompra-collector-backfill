@@ -264,66 +264,89 @@ PY
     echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
   } >> "$CURRENT_LOG"
 
-  # STEP 3: build timestamped Thunderbird/ICS import packages from new events.
-  write_progress "CALENDAR" "RUNNING" "94" "Step 3/5: building timestamped calendar import packages (.ics)..." "$STARTED"
-  {
-    echo ""
-    echo "-------------------- STEP 3: CALENDAR PACKAGES -----------------"
-    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
-  } >> "$CURRENT_LOG"
+  VIEW_EXIT=0
+  CALENDAR_EXIT=0
 
-  "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
-  CALENDAR_EXIT=$?
+  if [ "$DETAIL_EXIT" -eq 0 ]; then
+    # STEP 3: normalize detail outputs after all detail downloads finish. This
+    # rebuilds the structured summary/items/calendar views in each detail JSON
+    # and rewrites per-record .calendar.ics files before packages or WAHA.
+    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x ./pc_build_detail_views.py ]; then
+      write_progress "CALENDAR" "RUNNING" "76" "Step 3/5: creating per-record calendar/detail views from saved detail.json files..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 3: DETAIL VIEWS + RECORD ICS --------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Command: ${PYTHON_BIN} -u ./pc_build_detail_views.py --apply --since $STARTED"
+      } >> "$CURRENT_LOG"
+      "$PYTHON_BIN" -u ./pc_build_detail_views.py --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
+      VIEW_EXIT=$?
+      {
+        echo "Detail views exit code: $VIEW_EXIT"
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+    else
+      write_progress "CALENDAR" "RUNNING" "76" "Step 3/5: per-record calendar/detail view rebuild disabled; continuing to package calendars." "$STARTED"
+      log "ITERATION $ITERATION detail view rebuild skipped by PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL=0."
+    fi
 
-  {
-    echo "Calendar exit code: $CALENDAR_EXIT"
-    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo ""
-    echo "============================================================"
-    echo "RUN-ALL ITERATION $ITERATION FINISHED: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "INDEX_EXIT=$INDEX_EXIT"
-    echo "DETAIL_EXIT=$DETAIL_EXIT"
-    echo "CALENDAR_EXIT=$CALENDAR_EXIT"
-    echo "============================================================"
-  } >> "$CURRENT_LOG"
+    # STEP 4: build timestamped Thunderbird/ICS import packages from the
+    # per-record calendars after detail views have been created/refreshed.
+    if [ "$VIEW_EXIT" -eq 0 ]; then
+      write_progress "CALENDAR" "RUNNING" "90" "Step 4/5: creating timestamped calendar import packages (.ics)..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 4: CALENDAR PACKAGES -----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
+      } >> "$CURRENT_LOG"
 
-  cat "$CURRENT_LOG" >> "$HISTORY_LOG"
+      "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
+      CALENDAR_EXIT=$?
 
-  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    write_progress "DONE" "DONE" "100" "Index, detail and calendar packages completed successfully." "$STARTED"
-    log "ITERATION $ITERATION finished successfully."
-  elif [ "$DETAIL_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -ne 0 ]; then
-    write_progress "CALENDAR" "FAILED" "98" "Detail finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
-    notify_waha "failed" "FAILED" "Iteration $ITERATION detail finished but calendar build failed with exit=$CALENDAR_EXIT."
-    log "ITERATION $ITERATION calendar step failed with exit=$CALENDAR_EXIT."
-  elif [ "$DETAIL_EXIT" -eq 124 ]; then
-    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out." "$STARTED"
-    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out."
-    log "ITERATION $ITERATION detail step timed out."
-  else
-    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT." "$STARTED"
-    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT."
-    log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+      {
+        echo "Calendar package exit code: $CALENDAR_EXIT"
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+    fi
   fi
 
-  # STEP 4: MESSAGING — send the rich WhatsApp messages one by one. This is a
+  if [ "$DETAIL_EXIT" -eq 124 ]; then
+    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out. Calendar/package/WhatsApp steps skipped." "$STARTED"
+    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out. Calendar/package/WhatsApp steps skipped."
+    log "ITERATION $ITERATION detail step timed out."
+  elif [ "$DETAIL_EXIT" -ne 0 ]; then
+    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped."
+    log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
+  elif [ "$VIEW_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "88" "Detail finished but per-record calendar/detail view build failed with exit=$VIEW_EXIT. Packages/WhatsApp skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail view/calendar build failed with exit=$VIEW_EXIT."
+    log "ITERATION $ITERATION detail view/calendar step failed with exit=$VIEW_EXIT."
+  elif [ "$CALENDAR_EXIT" -ne 0 ]; then
+    write_progress "CALENDAR" "FAILED" "94" "Per-record calendars finished but calendar package build failed with exit=$CALENDAR_EXIT. WhatsApp skipped." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION calendar package build failed with exit=$CALENDAR_EXIT."
+    log "ITERATION $ITERATION calendar package step failed with exit=$CALENDAR_EXIT."
+  fi
+
+  # STEP 5: MESSAGING — send the rich WhatsApp messages one by one. This is a
   # visible step: pc_notify_new_records.py --announce publishes per-message
   # progress (current/total + a preview), so the monitor shows each message going
   # out. It announces new opportunities AND status changes (e.g. Programada →
   # Abierta), or sends the single "Sin nuevas entradas" status when there is
-  # nothing to send.
-  if [ "$DETAIL_EXIT" -eq 0 ]; then
+  # nothing to send. It runs only after index, all details, per-record calendars,
+  # and calendar packages succeed.
+  if [ "$DETAIL_EXIT" -eq 0 ] && [ "$VIEW_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
     if [ "${PC_NOTIFY_WHATSAPP:-1}" != "0" ]; then
-      write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
+      write_progress "MESSAGING" "RUNNING" "96" "Step 5/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
       {
         echo ""
-        echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
+        echo "-------------------- STEP 5: WHATSAPP MESSAGING ----------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
       notify_new_records --announce
     else
-      write_progress "MESSAGING" "DONE" "96" "Step 4/5: WhatsApp notifications disabled by monitor setting." "$STARTED"
+      write_progress "MESSAGING" "DONE" "96" "Step 5/5: WhatsApp notifications disabled by monitor setting." "$STARTED"
       log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
     fi
     FINISHED="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -357,9 +380,23 @@ $SUMMARY_COUNTS"
     {
       echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"
+    write_progress "DONE" "DONE" "100" "Index, details, per-record calendars, calendar packages and WhatsApp messaging completed." "$STARTED"
+    log "ITERATION $ITERATION finished successfully."
   fi
 
-  # STEP 5: OPTIONAL test zone. When this run had no new records to process, it
+  {
+    echo ""
+    echo "============================================================"
+    echo "RUN-ALL ITERATION $ITERATION FINISHED: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "INDEX_EXIT=$INDEX_EXIT"
+    echo "DETAIL_EXIT=$DETAIL_EXIT"
+    echo "VIEW_EXIT=$VIEW_EXIT"
+    echo "CALENDAR_EXIT=$CALENDAR_EXIT"
+    echo "============================================================"
+  } >> "$CURRENT_LOG"
+  cat "$CURRENT_LOG" >> "$HISTORY_LOG"
+
+  # STEP 6: OPTIONAL test zone. When this run had no new records to process, it
   # can exercise the current code on the last N records in an isolated sandbox
   # (records_test/) so a "nothing new" run still verifies code changes. This is
   # OFF by default — the autostart no longer launches the test zone on its own.
@@ -371,7 +408,7 @@ $SUMMARY_COUNTS"
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""
-      echo "----------------- STEP 5: TEST ZONE (idle, last $TEST_LIMIT) ----"
+      echo "----------------- STEP 6: TEST ZONE (idle, last $TEST_LIMIT) ----"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       echo "Command: ${PYTHON_BIN} -u ./pc_test_zone.py --limit $TEST_LIMIT --apply"
     } >> "$CURRENT_LOG"

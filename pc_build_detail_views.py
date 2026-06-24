@@ -16,6 +16,7 @@ views for new records; this tool is for archives already on disk.
 import argparse
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pc_common import (
@@ -57,10 +58,29 @@ def load_tables(detail_json_path):
                 table[key] = doc[key]
     return [merged[k] for k in sorted(merged)]
 
-def iter_detail_jsons(records_dir):
+def parse_since(value: str | None):
+    if not value:
+        return None
+    value = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def iter_detail_jsons(records_dir, *, since=None):
+    threshold = (since - timedelta(seconds=1)).timestamp() if since else None
     for path in sorted(Path(records_dir).rglob(f"*{DETAIL_SUFFIX}")):
-        if path.is_file():
-            yield path
+        if not path.is_file():
+            continue
+        if threshold is not None and path.stat().st_mtime < threshold:
+            continue
+        yield path
 
 def rebuild_one(detail_json_path):
     """Return (data, items_count, tables) with rebuilt views, or (None, 0, []) on error."""
@@ -93,14 +113,17 @@ def main():
     parser = argparse.ArgumentParser(description="Backfill detail.json summary/items/calendar views.")
     parser.add_argument("--records-dir", default=str(RECORDS_DIR), help="records tree to scan")
     parser.add_argument("--apply", action="store_true", help="write changes (default: dry-run preview)")
+    parser.add_argument("--since", default="", help="only process detail JSON files modified since this timestamp")
     args = parser.parse_args()
 
+    since = parse_since(args.since)
     mode = "APPLY" if args.apply else "DRY-RUN"
-    print(f"{mode} | scanning {args.records_dir}")
+    since_note = f" | since {args.since}" if since else ""
+    print(f"{mode} | scanning {args.records_dir}{since_note}")
     print("-" * 80)
 
     counts = {"scanned": 0, "updated": 0, "no_text": 0, "errors": 0}
-    for detail_json_path in iter_detail_jsons(args.records_dir):
+    for detail_json_path in iter_detail_jsons(args.records_dir, since=since):
         counts["scanned"] += 1
         data, n_items, tables = rebuild_one(detail_json_path)
         if data is None:

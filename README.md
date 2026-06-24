@@ -69,10 +69,11 @@ pc_run_all_worker.sh        single locked worker
         │
         ├─ STEP 0  pc_update_before_run.sh fast-forwards local checkout before each run
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
-        ├─ STEP 2  pc_detail_downloader.py downloads pending detail pages
-        ├─ STEP 3  pc_build_calendar.py     writes timestamped .ics packages for new events
-        ├─ STEP 4  pc_notify_new_records.py --announce  sends the WhatsApp messages one by one (visible MESSAGING step)
-        └─ STEP 5  pc_test_zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
+        ├─ STEP 2  pc_detail_downloader.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
+        ├─ STEP 3  pc_build_detail_views.py --apply  refreshes summary/items/calendar sections + per-record .ics
+        ├─ STEP 4  pc_build_calendar.py     writes timestamped .ics import packages for new events
+        ├─ STEP 5  pc_notify_new_records.py --announce  sends WhatsApp only after index/detail/calendar/package steps
+        └─ STEP 6  pc_test_zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
         │
         ▼
 records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
@@ -124,12 +125,13 @@ flowchart TD
     E --> F[SQLite + records/YY-MM-DD/NUMERO index JSON]
     F --> G[STEP 2: pc_detail_downloader.py]
     G --> H[detail JSON, HTML, text, tables, per-record ICS]
-    H --> I[STEP 3: pc_build_calendar.py]
-    I --> J[data/calendar/YY-MM-DD timestamped ICS packages]
-    J --> P[STEP 4: pc_notify_new_records.py --announce]
+    H --> I[STEP 3: pc_build_detail_views.py --apply]
+    I --> V[summary/items/calendar views + per-record .ics]
+    V --> J[STEP 4: pc_build_calendar.py creates data/calendar/YY-MM-DD packages]
+    J --> P[STEP 5: pc_notify_new_records.py --announce]
     P --> Q[WhatsApp messages sent one by one via WAHA, PHASE=MESSAGING]
     D --> K{No pending new details AND PC_TEST_ZONE_AUTORUN=1?}
-    K -- yes --> L[STEP 5: pc_test_zone.py]
+    K -- yes --> L[STEP 6: pc_test_zone.py]
     L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
     D --> N[data/logs/run_all_progress.env]
     N --> O[pc_monitor_tk.py / pc_monitor_server.py]
@@ -340,7 +342,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_index_collector.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `pc_detail_downloader.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, index, detail, calendar packaging, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
+| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, **index → details → per-record calendars/detail views → calendar packages → WhatsApp**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
 | `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step to send one “🟢 NUEVA OPORTUNIDAD DETECTADA” message per new record with per-message monitor progress; `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
@@ -363,10 +365,10 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
 | `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `[finish]-[NUMERO]-[desc]`. |
 | `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
-| `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. |
+| `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 3 after each detail step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
-| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 5 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
+| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 4 after the per-record detail view/calendar rebuild; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
+| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 6 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
 | `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
@@ -391,10 +393,11 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
 | `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
 | `PC_NOTIFY_WHATSAPP` | `1` | run-all worker / monitor | Set to `0` (or uncheck **Notify by WhatsApp**) to skip automatic post-detail WhatsApp announcements while still collecting data and building calendars. |
+| `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before calendar packages and WhatsApp. Set `0` only for troubleshooting. |
 | `PC_WEBHOOK_INDEX_LIMIT` | `PC_INDEX_LIMIT` / `20` | `run_collector.sh` | Index pages per status group for webhook-triggered AUTO runs. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered AUTO run. |
-| `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 5) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
-| `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 5) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
+| `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 6) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
+| `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 6) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
 | `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update_local_copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `pc_update_before_run.sh` uses it (or the current branch) for its lightweight refresh. |
@@ -494,10 +497,10 @@ private alert group controlled by you.
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
 new opportunities are announced one message per record. By default the run-all
-worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 4):
-after the detail and calendar steps it runs `pc_notify_new_records.py --announce`,
+worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 5):
+after index, all details, per-record calendar/detail-view rebuilds, and calendar packages it runs `pc_notify_new_records.py --announce`,
 which sends one WhatsApp message per new index entry **one at a time** and
-publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 4/5`,
+publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 5/5`,
 `Item i/N`, and a one-line preview of the message in the **Extra** field — so you
 can watch each opportunity go out. The detail downloader does not send WhatsApp
 messages mid-download; notifications are emitted only after detail and calendar
@@ -760,7 +763,7 @@ and `DESCRIPTION` is a `LINK :` line, a `DESCR:` line, then an `ITEMS:` list
 Thunderbird renders as a clickable link. (Commas in ICS text are written `\,` per
 the spec and display unescaped in calendar apps.)
 
-**Calendar import packages.** After each run, `pc_build_calendar.py` (STEP 3)
+**Calendar import packages.** After each run, `pc_build_detail_views.py --apply` refreshes the structured detail sections/per-record `.ics`, then `pc_build_calendar.py` (STEP 4)
 exports only the new/changed record calendars from that run into timestamped files:
 
 ```text
@@ -842,7 +845,7 @@ them.
   shows `LIVE` vs `TEST`), with a *Test records* count, so it is clearly distinct from
   new (live) records.
 - The run-all worker does **not** launch it automatically by default. Set
-  `PC_TEST_ZONE_AUTORUN=1` to have it run as **STEP 5** when a run had no new records
+  `PC_TEST_ZONE_AUTORUN=1` to have it run as **STEP 6** when a run had no new records
   to process; `PC_TEST_ZONE_LIMIT` then controls how many records are re-run (`0`
   disables it). With the default `PC_TEST_ZONE_AUTORUN=0` the autostart never runs it.
 
