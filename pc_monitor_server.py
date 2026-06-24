@@ -23,6 +23,7 @@ WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
+MONITOR_SETTINGS_PATH = BASE_DIR / "data" / "config" / "monitor_settings.env"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
 ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 HOST = os.environ.get("PC_MONITOR_HOST", "127.0.0.1")
@@ -70,6 +71,7 @@ DEFAULT_PROGRESS = {
     "PERCENT": "100",
     "MESSAGE": "No active process.",
     "INDEX_LIMIT": "-",
+    "ETA": "-",
     "DETAIL_LIMIT": "-",
     "STARTED_AT": "",
     "UPDATED_AT": "-",
@@ -109,6 +111,54 @@ def parse_progress_file() -> dict[str, str]:
             data[key] = raw_value.strip().strip("'").strip('"')
     return data
 
+
+
+def parse_settings_file() -> dict[str, str]:
+    settings: dict[str, str] = {}
+    if not MONITOR_SETTINGS_PATH.exists():
+        return settings
+    for line in MONITOR_SETTINGS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        try:
+            parsed = shlex.split(raw_value, posix=True)
+            settings[key] = parsed[0] if parsed else ""
+        except ValueError:
+            settings[key] = raw_value.strip().strip("'").strip('"')
+    return settings
+
+
+def load_monitor_settings() -> dict[str, str]:
+    settings = {
+        "PC_NOTIFY_WHATSAPP": os.environ.get("PC_NOTIFY_WHATSAPP", "1"),
+        "PC_CALENDAR_AUTO_IMPORT": os.environ.get("PC_CALENDAR_AUTO_IMPORT", "0"),
+    }
+    file_settings = parse_settings_file()
+    for key in settings:
+        if key in file_settings:
+            settings[key] = file_settings[key]
+    return settings
+
+
+def save_monitor_setting(key: str, value: str) -> None:
+    if key not in {"PC_NOTIFY_WHATSAPP", "PC_CALENDAR_AUTO_IMPORT"}:
+        raise ValueError(f"unsupported setting: {key}")
+    settings = parse_settings_file()
+    settings.setdefault("PC_NOTIFY_WHATSAPP", os.environ.get("PC_NOTIFY_WHATSAPP", "1"))
+    settings.setdefault("PC_CALENDAR_AUTO_IMPORT", os.environ.get("PC_CALENDAR_AUTO_IMPORT", "0"))
+    settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
+    MONITOR_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MONITOR_SETTINGS_PATH.write_text(
+        "# PanamaCompra monitor settings (KEY=VALUE).\n"
+        + "# Edited from the web/native monitor; same-named environment variables override these at startup.\n"
+        + "\n".join(f"{name}={shlex.quote(settings[name])}" for name in sorted(settings))
+        + "\n",
+        encoding="utf-8",
+    )
 
 def tail(path: Path, lines: int) -> str:
     if not path.exists():
@@ -238,6 +288,7 @@ def status_payload() -> dict[str, object]:
         "current_log": tail(CURRENT_LOG, 35),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
+        "settings": load_monitor_settings(),
     }
 
 ACTIONS_JSON = json.dumps([
@@ -288,7 +339,7 @@ input:disabled {{ opacity: .5; cursor: not-allowed; }}
 .mode-group input {{ accent-color: #2563eb; margin: 0; }}
 .mode-group label:has(input:checked) {{ border-color: #2563eb; color: #93c5fd; background: #0b1220; }}
 .mode-group input:disabled + span, .mode-group label:has(input:disabled) {{ opacity: .5; cursor: not-allowed; }}
-select#record-index {{ min-width: 60%; max-width: 100%; }}
+select#record-index {{ min-width: 60%; max-width: 100%; min-height: 12rem; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
 /* Slim dark scrollbars for the log panes. */
 pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
@@ -306,9 +357,9 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “[DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Pick one to open its archive folder (on the monitor host) or its portal page.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="8"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -316,7 +367,7 @@ let doneSince = null;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Index limit', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['ETA', 'ETA'], ['Index limit', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
   ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
@@ -349,6 +400,11 @@ function render(data) {{
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
   if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
+  const settings = data.settings || {{}};
+  const notifyToggle = document.getElementById('notify-whatsapp');
+  if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
+  const calendarToggle = document.getElementById('calendar-auto-import');
+  if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
@@ -380,7 +436,7 @@ function updateRunControls(data) {{
   const busy = RUN_WORK_KEYS.some(k => procs[k]);
   document.querySelectorAll('input[name="run-mode"]').forEach(el => {{ el.disabled = busy; }});
   ['index-limit', 'detail-limit'].forEach(id => {{ const el = document.getElementById(id); if (el) el.disabled = busy; }});
-  const mode = String(data.MODE || '').toUpperCase();
+  const mode = String((data.progress || {{}}).MODE || '').toUpperCase();
   if (busy) {{
     const modeValue = mode === 'AUTO' ? 'auto' : mode === 'MANUAL' ? 'manual' : mode === 'TEST' ? 'test' : 'restart';
     const modeInput = document.querySelector(`input[name="run-mode"][value="${{modeValue}}"]`);
@@ -397,8 +453,9 @@ function updateRunControls(data) {{
 function requestRun() {{
   const checked = document.querySelector('input[name="run-mode"]:checked');
   const mode = encodeURIComponent(checked ? checked.value : 'restart');
-  const limit = encodeURIComponent(document.getElementById('run-limit').value || '99');
-  postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{limit}}`);
+  const detailLimit = encodeURIComponent(document.getElementById('detail-limit').value || '99');
+  const indexLimit = encodeURIComponent(document.getElementById('index-limit').value || '20');
+  postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{detailLimit}}&index_limit=${{indexLimit}}`);
 }}
 function importCalendars() {{ postForm('/api/import-calendars', ''); }}
 function stopRun() {{ postForm('/api/manual-action', 'label=' + encodeURIComponent('Stop active run')); }}
@@ -409,6 +466,7 @@ function renderActionZones() {{
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
 function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
 let recordIndex = [];
 let recordFiltered = [];
 const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
@@ -433,8 +491,13 @@ function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); 
 const FAR_FUTURE = new Date(8640000000000000);
 function selectedRecord() {{
   const sel = document.getElementById('record-index');
-  const idx = sel ? Number(sel.value) : -1;
+  const idx = sel && sel.selectedOptions.length ? Number(sel.selectedOptions[0].value) : -1;
   return (idx >= 0 && idx < recordFiltered.length) ? recordFiltered[idx] : null;
+}}
+function selectedRecordNumeros() {{
+  const sel = document.getElementById('record-index');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(opt => recordFiltered[Number(opt.value)]).filter(Boolean).map(rec => rec.numero).filter(Boolean);
 }}
 function renderRecordDetail() {{
   const rec = selectedRecord();
@@ -481,6 +544,16 @@ function openRecordPortal() {{
   const rec = selectedRecord();
   if (!rec || !rec.link) {{ document.getElementById('button-status').textContent = 'No portal link for the selected record.'; return; }}
   window.open(rec.link, '_blank', 'noopener');
+}}
+function notifySelectedRecords() {{
+  const numeros = selectedRecordNumeros();
+  if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
+  postForm('/api/selected-record-action', 'action=notify&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
+}}
+function importSelectedCalendars() {{
+  const numeros = selectedRecordNumeros();
+  if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
+  postForm('/api/selected-record-action', 'action=calendar&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
 async function poll() {{
   try {{
@@ -566,6 +639,38 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     self.send_text(202, f"Opened record folder for {numero}.\n", "text/plain; charset=utf-8")
                     return
             self.send_text(404, f"Unknown record: {numero}\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/monitor-setting":
+            key = form.get("key", [""])[0].strip()
+            value = form.get("value", [""])[0].strip()
+            try:
+                save_monitor_setting(key, value)
+            except ValueError as exc:
+                self.send_text(400, f"{exc}\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, f"Setting saved: {key}={load_monitor_settings().get(key, '')}\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/selected-record-action":
+            action_name = form.get("action", [""])[0].strip().lower()
+            numeros = [n.strip() for n in form.get("numero", []) if n.strip()]
+            known = {record["numero"] for record in load_record_index(limit=2000)}
+            selected = [n for n in numeros if n in known]
+            if not selected:
+                self.send_text(400, "Select one or more known records first.\n", "text/plain; charset=utf-8")
+                return
+            if action_name == "notify":
+                cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
+                for numero in selected:
+                    cmd.extend(["--record", numero])
+                subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"WhatsApp notification requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
+                return
+            if action_name == "calendar":
+                cmd = [str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *selected]
+                subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Calendar import requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(400, "Unknown selected-record action.\n", "text/plain; charset=utf-8")
             return
         if path in {"/api/waha-destination", "/api/waha-message"}:
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)

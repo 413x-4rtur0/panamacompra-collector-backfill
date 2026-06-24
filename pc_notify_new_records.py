@@ -381,6 +381,29 @@ def ensure_baseline(conn) -> bool:
     return True
 
 
+def notify_manual_record(conn, numero: str, *, force: bool = False) -> bool:
+    """Send a user-requested WhatsApp notification for one record."""
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or row["detail_status"] != "saved":
+            print(f"WAHA manual notify skipped for {numero}: record missing or detail not saved.")
+            return False
+        if row["notified_at"] and not force:
+            print(f"WAHA manual notify skipped for {numero}: already notified (use --force).")
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        text = build_record_message(row, summary, variant="manual", match_line="Enviado manualmente desde el monitor")
+        if not send_text("new", text):
+            return False
+        export_record_calendar(conn, row)
+        mark_notified(conn, numero)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"WAHA manual notify error for {numero}: {exc}", file=sys.stderr)
+        return False
+
 def notify_saved_record(conn, numero: str) -> bool:
     """Announce a single saved record. Idempotent: a record is sent at most
     once (guarded by notified_at). Returns True if a message was sent. Never
@@ -651,6 +674,8 @@ def main(argv=None) -> int:
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
     parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent (safety net)")
     parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
+    parser.add_argument("--record", action="append", default=[], help="manually send notification for a specific record NUMERO; repeat for several records")
+    parser.add_argument("--force", action="store_true", help="with --record, send even if the record was already notified")
     args = parser.parse_args(argv)
 
     if not waha_enabled():
@@ -662,6 +687,14 @@ def main(argv=None) -> int:
 
     conn = pc_common.init_db()
     just_baselined = ensure_baseline(conn)
+
+    if args.record:
+        sent = 0
+        for numero in args.record:
+            if notify_manual_record(conn, numero, force=args.force):
+                sent += 1
+        print(f"WAHA manual record notification complete: {sent} record(s) sent.")
+        return 0
 
     if args.idle:
         if just_baselined:

@@ -12,6 +12,14 @@ fi
 
 mkdir -p data/logs data/queue
 
+MONITOR_SETTINGS="data/config/monitor_settings.env"
+if [ -f "$MONITOR_SETTINGS" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MONITOR_SETTINGS"
+  set +a
+fi
+
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
@@ -50,6 +58,22 @@ quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
+format_eta() {
+  local seconds="$1"
+  if [ -z "$seconds" ] || [ "$seconds" -lt 0 ] 2>/dev/null; then
+    echo "-"
+    return
+  fi
+  local hours=$((seconds / 3600))
+  local minutes=$(((seconds % 3600) / 60))
+  local secs=$((seconds % 60))
+  if [ "$hours" -gt 0 ]; then
+    printf "%dh %02dm" "$hours" "$minutes"
+  else
+    printf "%dm %02ds" "$minutes" "$secs"
+  fi
+}
+
 write_progress() {
   local phase="$1"
   local status="$2"
@@ -57,6 +81,16 @@ write_progress() {
   local message="$4"
   local started_at="${5:-}"
   local tmp="${PROGRESS_FILE}.tmp"
+  local eta="-"
+  if [ "$status" = "RUNNING" ] && printf '%s' "$percent" | grep -qE '^[0-9]+$' && [ "$percent" -gt 0 ] && [ "$percent" -lt 100 ] && [ -n "$started_at" ]; then
+    start_epoch="$(date -d "$started_at" '+%s' 2>/dev/null || true)"
+    now_epoch="$(date '+%s')"
+    if [ -n "$start_epoch" ] && [ "$now_epoch" -gt "$start_epoch" ]; then
+      elapsed=$((now_epoch - start_epoch))
+      total_est=$((elapsed * 100 / percent))
+      eta="$(format_eta $((total_est - elapsed)))"
+    fi
+  fi
 
   {
     echo "PHASE='$(quote_value "$phase")'"
@@ -64,6 +98,7 @@ write_progress() {
     echo "PERCENT='$(quote_value "$percent")'"
     echo "MESSAGE='$(quote_value "$message")'"
     echo "INDEX_LIMIT='$(quote_value "$INDEX_LIMIT")'"
+    echo "ETA='$(quote_value "$eta")'"
     echo "DETAIL_LIMIT='$(quote_value "$DETAIL_LIMIT")'"
     echo "STARTED_AT='$(quote_value "$started_at")'"
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
@@ -279,13 +314,18 @@ PY
   # Abierta), or sends the single "Sin nuevas entradas" status when there is
   # nothing to send.
   if [ "$DETAIL_EXIT" -eq 0 ]; then
-    write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
-    {
-      echo ""
-      echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
-      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    } >> "$CURRENT_LOG"
-    notify_new_records --announce
+    if [ "${PC_NOTIFY_WHATSAPP:-1}" != "0" ]; then
+      write_progress "MESSAGING" "RUNNING" "96" "Step 4/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 4: WHATSAPP MESSAGING ----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+      notify_new_records --announce
+    else
+      write_progress "MESSAGING" "DONE" "96" "Step 4/5: WhatsApp notifications disabled by monitor setting." "$STARTED"
+      log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
+    fi
     FINISHED="$(date '+%Y-%m-%d %H:%M:%S')"
     SUMMARY_COUNTS="$($PYTHON_BIN - <<'PY'
 from pc_common import init_db

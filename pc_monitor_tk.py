@@ -150,6 +150,7 @@ DEFAULT_PROGRESS = {
     "PERCENT": "100",
     "MESSAGE": "No active process.",
     "INDEX_LIMIT": "-",
+    "ETA": "-",
     "DETAIL_LIMIT": "-",
     "STARTED_AT": "",
     "UPDATED_AT": "-",
@@ -494,7 +495,11 @@ def run_tk() -> int:
                     arrowcolor="#94a3b8", borderwidth=0, relief="flat")
     style.map("Vertical.TScrollbar", background=[("active", "#475569")])
     style.configure("Card.TRadiobutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
+    style.configure("Card.TCheckbutton", background="#111827", foreground="#e5e7eb", font=("Sans", 10))
     style.map("Card.TRadiobutton",
+              background=[("active", "#111827")],
+              foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
+    style.map("Card.TCheckbutton",
               background=[("active", "#111827")],
               foreground=[("disabled", "#6b7280"), ("selected", "#93c5fd")])
     style.configure("TEntry", fieldbackground="#020617", foreground="#e5e7eb",
@@ -710,6 +715,8 @@ def run_tk() -> int:
     if WAHA_KEYWORDS_PATH.exists():
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
     keywords_var = tk.StringVar(value=", ".join(existing_keywords))
+    notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
+    import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
 
     def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
         ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
@@ -722,7 +729,7 @@ def run_tk() -> int:
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Every new record is announced in real time as its detail downloads.")
+    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic announcements are sent later in the post-detail MESSAGING step when enabled.")
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
@@ -731,6 +738,12 @@ def run_tk() -> int:
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
+    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check.grid(row=6, column=0, columnspan=2, sticky="w", pady=3)
+    calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
+    calendar_check.grid(row=6, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
+    add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -766,6 +779,8 @@ def run_tk() -> int:
             "PC_MONITOR_TK_REFRESH_SECONDS": str(runtime["refresh"]),
             "PC_MONITOR_TK_IDLE_REFRESH_SECONDS": str(runtime["idle_refresh"]),
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
+            "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
+            "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -781,9 +796,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=6, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=7, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; every new record is sent in real time as its detail downloads.", style="Card.TLabel", wraplength=820).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ========================================================================
     # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
@@ -806,7 +821,7 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("ETA", "ETA"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),
@@ -879,7 +894,7 @@ def run_tk() -> int:
     list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
     list_frame.columnconfigure(0, weight=1)
     index_listbox = tk.Listbox(
-        list_frame, height=8, activestyle="none", exportselection=False,
+        list_frame, height=8, activestyle="none", exportselection=False, selectmode="extended",
         bg="#020617", fg="#e5e7eb", selectbackground="#2563eb", selectforeground="#ffffff",
         highlightthickness=0, borderwidth=0,
     )
@@ -916,12 +931,16 @@ def run_tk() -> int:
         tag = STATUS_TAGS[expiry_status(rec)]
         return f"[{dtend} {tag:>7}]  {index_label(rec)}"
 
+    def selected_records() -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for idx in index_listbox.curselection():
+            if 0 <= idx < len(index_filtered):
+                records.append(index_filtered[idx])
+        return records
+
     def selected_record() -> dict[str, str] | None:
-        selection = index_listbox.curselection()
-        if not selection:
-            return None
-        idx = selection[0]
-        return index_filtered[idx] if 0 <= idx < len(index_filtered) else None
+        records = selected_records()
+        return records[0] if records else None
 
     def show_selected_detail(_event: object = None) -> None:
         rec = selected_record()
@@ -998,6 +1017,29 @@ def run_tk() -> int:
         subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Opened record folder for {rec['numero']}.")
 
+
+    def selected_numeros() -> list[str]:
+        return [rec["numero"] for rec in selected_records() if rec.get("numero")]
+
+    def notify_selected_records() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
+        for numero in numeros:
+            cmd.extend(["--record", numero])
+        subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected record(s).")
+
+    def import_selected_calendars() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
+
     def open_selected_portal() -> None:
         rec = selected_record()
         if not rec:
@@ -1023,9 +1065,15 @@ def run_tk() -> int:
     open_folder_button.grid(row=0, column=1, padx=(0, 8))
     open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
     open_portal_button.grid(row=0, column=2, padx=(0, 8))
+    notify_selected_button = ttk.Button(index_buttons, text="Notify selected WhatsApp", command=notify_selected_records)
+    notify_selected_button.grid(row=0, column=3, padx=(0, 8))
+    import_selected_button = ttk.Button(index_buttons, text="Import selected calendars", command=import_selected_calendars)
+    import_selected_button.grid(row=0, column=4, padx=(0, 8))
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
     add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
+    add_tooltip(notify_selected_button, "Send WhatsApp notifications for all selected records (Ctrl/Shift-click to select several).")
+    add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
 
     refresh_index_list()
 
