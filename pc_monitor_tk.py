@@ -1090,10 +1090,10 @@ def run_tk() -> int:
     # data/panamacompra_archive.db; empty until the collector has run.
     # ========================================================================
     record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    record_index.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
-    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
     # The folder selector is a type-to-filter box plus a dedicated, self-scrolling
     # list (with its own scrollbar) instead of a dropdown. A dropdown's popup
@@ -1108,7 +1108,7 @@ def run_tk() -> int:
     index_downloaded_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
-    ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    ttk.Label(record_index, text="Search NUMERO / description:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
     index_filter_entry = ttk.Entry(record_index, textvariable=index_filter_var)
     index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
     add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
@@ -1332,7 +1332,7 @@ def run_tk() -> int:
     add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
 
     refresh_index_list()
-    add_section_toggle(record_index, button_column=2)
+    add_section_toggle(record_index, button_column=2, start_hidden=False)
 
     # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
@@ -1340,7 +1340,7 @@ def run_tk() -> int:
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1388,7 +1388,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -1411,7 +1411,7 @@ def run_tk() -> int:
     db_review_refresh_button = ttk.Button(db_review, text="Refresh DB snapshot", command=refresh_db_review)
     db_review_refresh_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
     add_tooltip(db_review_refresh_button, "Re-read the archive database and refresh these review counts.")
-    add_section_toggle(db_review, button_column=1)
+    add_section_toggle(db_review, button_column=1, start_hidden=False)
 
     # ========================================================================
     # SECTION 7: RESET / REVIEW FROM ZERO - separate buttons (per the operator's
@@ -1461,18 +1461,18 @@ def run_tk() -> int:
     add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
     add_section_toggle(reset_zone, button_column=1)
 
-    logs = ttk.Frame(content, style="TFrame")
+    logs = ttk.Frame(content, style="Card.TFrame", padding=14)
     logs.grid(row=9, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
-    ttk.Label(logs, text="Recent worker log").grid(row=0, column=0, sticky="w")
-    ttk.Label(logs, text="Current action log").grid(row=0, column=1, sticky="w")
+    ttk.Label(logs, text="Recent worker log", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+    ttk.Label(logs, text="Current action log", style="Title.TLabel").grid(row=0, column=1, sticky="w", pady=(0, 8))
 
     # Each log is a fixed-height box WITH its own scrollbar, so the pane scrolls
     # the log itself (wheel or scrollbar) instead of moving the whole page.
     def make_log_pane(parent: tk.Widget, grid_col: int, pad: tuple[int, int]) -> tk.Text:
-        frame = ttk.Frame(parent, style="TFrame")
+        frame = ttk.Frame(parent, style="Card.TFrame")
         frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
@@ -1485,7 +1485,7 @@ def run_tk() -> int:
 
     worker_text = make_log_pane(logs, 0, (0, 7))
     current_text = make_log_pane(logs, 1, (7, 0))
-    add_section_toggle(logs, button_column=2)
+    add_section_toggle(logs, button_column=2, start_hidden=False)
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
