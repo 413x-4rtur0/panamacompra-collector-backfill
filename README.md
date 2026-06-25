@@ -616,28 +616,27 @@ panamacompra-collector/
 │   └── queue/                                 # run_all_requested.flag
 └── records/                                   # archive (gitignored)
     └── YY-MM-DD/
-        └── [<finish>]-[<numero>]-[<desc>]/     # created as NUMERO, then renamed (see Record folder naming)
+        └── <finish>--<numero>--<desc>/         # network-friendly, created as NUMERO then renamed
             ├── NUMERO.json                     # index record
             ├── NUMERO.detail.json              # detail metadata
             ├── NUMERO.detail.html              # full page HTML
             ├── NUMERO.detail.txt               # visible text
             ├── NUMERO.calendar.ics             # importable calendar event
             ├── detail_sections/                # major detail.json logical sections split out
-            │   ├── NUMERO.summary.json
-            │   ├── NUMERO.items.json
-            │   ├── NUMERO.calendar.json
-            │   ├── NUMERO.fields_detected.json
-            │   └── NUMERO.links_detected.json
-            └── tables/                         # one detail-page section -> three files:
-                ├── NUMERO.table.<section>.001.json         # clean: headers/rows/key_values/links
-                ├── NUMERO.table.<section>.001.raw.json     # raw rows
-                └── NUMERO.table.<section>.001.raw_wL.json  # raw rows with links
+            │   ├── NUMERO-DETAIL-000-ALL.json
+            │   ├── NUMERO-DETAIL-001-SUMMARY.json
+            │   ├── NUMERO-DETAIL-002-ITEMS.json
+            │   └── NUMERO-DETAIL-###-SECTION.json
+            └── tables/                         # tables split into all + one file per section
+                ├── NUMERO-TABLE-000-ALL.json
+                ├── NUMERO-TABLE-001-INFORMACION-GENERAL.json
+                └── NUMERO-TABLE-###-SECTION.json
 ```
 
-`<section>` is a short identifier derived from the detail-page section heading
-(e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
-per-table index — section, identifier and the three filenames — is also listed in
-`detail.json` under `tables`. Major logical views are also written under `detail_sections/` and indexed in `detail.json` under `detail_sections`, so large sections can be inspected or regenerated independently. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive. To auto-open/import generated packages on a desktop machine, set `PC_CALENDAR_AUTO_IMPORT=1` or provide a custom `PC_CALENDAR_AUTO_IMPORT_CMD`.
+`<SECTION>` is a short uppercase network-friendly identifier derived from the detail-page section heading
+(e.g. `INFORMACION-GENERAL`, `CONTACTO-UNIDAD-COMPRA`, `ITEMS-COTIZACION`). The
+per-table index — section, identifier, the `000-ALL` file and the numbered section file — is also listed in
+`detail.json` under `tables`. Major logical views are also written under `detail_sections/` as `NUMERO-DETAIL-000-ALL.json` plus numbered section files and indexed in `detail.json` under `detail_sections`, so large sections can be inspected or regenerated independently. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive. To auto-open/import generated packages on a desktop machine, set `PC_CALENDAR_AUTO_IMPORT=1` or provide a custom `PC_CALENDAR_AUTO_IMPORT_CMD`.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -649,15 +648,16 @@ Folders are created as `NUMERO` during the index scan, then renamed to encode th
 key facts once detail data is available:
 
 ```text
-records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
-              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
+records/YY-MM-DD/<finish>--<numero>--<desc>/
+              e.g. 2022-10-11_12_00--2022-0-12-214-12-CL-008498--FRS-126-CMPRS-D-CJ-PLSTC
 ```
 
 - **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
   time of the *"Fecha y hora presentación de cotizaciones"* window (24-hour). For older
-  records without that field, the delivery (*entrega*) date at `12:00` is used. Empty `[]`
-  if no date can be found.
-- **`<numero>`** = the PanamaCompra `NUMERO`, unchanged.
+  records without that field, the delivery (*entrega*) date at `12:00` is used.
+  `NO-DATE` is used if no date can be found. The folder token is passed through
+  `safe_name`, so colons become underscores for network/share compatibility.
+- **`<numero>`** = the PanamaCompra `NUMERO`, sanitized with the same network-friendly filename rules.
 - **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
   removed**, each run of non-alphanumerics collapsed to one `-`, truncated to `PC_DESC_SLUG_MAX` chars.
 

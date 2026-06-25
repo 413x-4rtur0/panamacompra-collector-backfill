@@ -47,8 +47,22 @@ def load_tables(detail_json_path):
             doc = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        if isinstance(doc.get("tables"), list):
+            for table_doc in doc["tables"]:
+                idx = table_doc.get("table_index")
+                if idx is None:
+                    continue
+                table = merged.setdefault(int(idx), {"table_index": int(idx)})
+                for key in ("section", "identifier", "headers", "rows", "key_values",
+                            "links", "links_count", "raw_rows", "rows_with_links",
+                            "raw_rows_with_links"):
+                    if key in table_doc and not table.get(key):
+                        table[key] = table_doc[key]
+            continue
         idx = doc.get("table_index")
         if idx is None:
+            if "-TABLE-000-ALL" in path.name:
+                continue
             m = re.search(r"(\d+)\.json$", path.name)
             idx = int(m.group(1)) if m else len(merged) + 1
         table = merged.setdefault(int(idx), {"table_index": int(idx)})

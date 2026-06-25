@@ -131,9 +131,12 @@ def load_split_detail_section(detail_data: dict, detail_json_path: str | None, s
         base = BASE_DIR / base
     path = base.parent / "detail_sections" / str(descriptor["file"])
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if isinstance(doc, dict) and "data" in doc:
+        return doc.get("data")
+    return doc
 
 
 def load_detail_summary(detail_json_path: str | None) -> dict:

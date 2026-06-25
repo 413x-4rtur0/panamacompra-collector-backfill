@@ -276,8 +276,16 @@ def compute_finish_stamp(key_values, text):
     return f"{dtend[:10]}_{dtend[11:16]}" if dtend else ""
 
 def build_record_folder_leaf(finish_stamp, numero, desc):
-    """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
-    return "[" + (finish_stamp or "") + "]-[" + str(numero) + "]-[" + (desc or "") + "]"
+    """Compose a readable, network-friendly record folder leaf.
+
+    Avoid brackets, colons, slashes and other characters that are awkward on
+    shared/network filesystems while keeping the three human-scannable parts:
+    close date, NUMERO and short description.
+    """
+    stamp = safe_name(finish_stamp or "NO-DATE")
+    number = safe_name(numero or "NO-NUMERO")
+    label = safe_name(desc or "NO-DESC")
+    return f"{stamp}--{number}--{label}"
 
 # Words dropped when turning a section heading into a short file identifier.
 _SECTION_STOPWORDS = {"de", "la", "del", "el", "los", "las", "y", "en", "a", "para"}
@@ -298,27 +306,44 @@ def section_identifier(section, index=0):
 
 
 
-def save_detail_section_jsons(record_folder, numero, sections, overwrite=False):
-    """Write major detail.json views as separate JSON files.
+def split_file_label(value):
+    """Uppercase filename token used by split table/detail section files."""
+    return safe_name(strip_accents(str(value or "SECTION")).replace("_", "-")).upper()
 
-    The downloader keeps a compact index in ``detail.json`` while also storing
-    the larger logical views next to the record under ``detail_sections/``. This
-    mirrors the split table-file layout and makes summary/items/calendar/fields
-    easier to inspect or regenerate independently.
+
+def save_detail_section_jsons(record_folder, numero, sections, overwrite=False):
+    """Write major detail views as network-friendly split JSON files.
+
+    Files follow the requested pattern::
+
+      <NUMERO>-DETAIL-000-ALL.json
+      <NUMERO>-DETAIL-###-<SECTION>.json
+
+    The ``000-ALL`` file carries every logical section together, while numbered
+    section files make summary/items/calendar/fields/links easy to inspect.
     """
     sections_dir = Path(record_folder) / "detail_sections"
     sections_dir.mkdir(parents=True, exist_ok=True)
     n = safe_name(numero)
     if overwrite:
-        for old_path in sections_dir.glob(f"{n}.*.json"):
+        for old_path in list(sections_dir.glob(f"{n}.*.json")) + list(sections_dir.glob(f"{n}-DETAIL-*.json")):
             old_path.unlink()
-    descriptors = {}
+
     written = 0
-    for name, payload in sections.items():
-        safe_section = safe_name(str(name)).lower()
-        path = sections_dir / f"{n}.{safe_section}.json"
+    descriptors = {}
+    all_path = sections_dir / f"{n}-DETAIL-000-ALL.json"
+    all_doc = {"numero": str(numero or ""), "kind": "DETAIL", "sections": sections}
+    if overwrite or not all_path.exists():
+        all_path.write_text(json.dumps(all_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        written += 1
+    descriptors["_all"] = {"file": all_path.name, "index": 0, "label": "ALL", "count": len(sections)}
+
+    for idx, (name, payload) in enumerate(sections.items(), start=1):
+        label = split_file_label(name)
+        path = sections_dir / f"{n}-DETAIL-{idx:03d}-{label}.json"
+        doc = {"numero": str(numero or ""), "kind": "DETAIL", "section": name, "section_index": idx, "data": payload}
         if overwrite or not path.exists():
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
             written += 1
         if isinstance(payload, list):
             count = len(payload)
@@ -326,69 +351,70 @@ def save_detail_section_jsons(record_folder, numero, sections, overwrite=False):
             count = len(payload)
         else:
             count = 1 if payload not in (None, "") else 0
-        descriptors[name] = {"file": path.name, "count": count}
+        descriptors[name] = {"file": path.name, "index": idx, "label": label, "count": count}
     return written, descriptors
 
 def save_table_jsons(record_folder, numero, tables, overwrite=False):
-    """Write three JSON files per table and return ``(written, descriptors)``.
+    """Write table JSON files using the requested readable split layout.
 
-    Each table is split into:
-      * ``<n>.table.<ident>.NNN.json``        — clean view (headers/rows/key_values/links)
-      * ``<n>.table.<ident>.NNN.raw.json``     — raw_rows
-      * ``<n>.table.<ident>.NNN.raw_wL.json``  — raw rows with links
-    where ``<ident>`` is the table's section identifier and ``NNN`` its index.
-    ``descriptors`` is the per-table index recorded in detail.json's ``tables``.
+    Files follow::
+
+      <NUMERO>-TABLE-000-ALL.json
+      <NUMERO>-TABLE-###-<SECTION>.json
+
+    The all file stores the complete list. Each numbered section file stores one
+    full table (clean rows, raw rows and rows-with-links together).
     """
     tables_dir = Path(record_folder) / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     n = safe_name(numero)
     if overwrite:
-        # Remove both the legacy single-file and the split-file layouts.
-        for old_path in tables_dir.glob(f"{n}.table*.json"):
+        for old_path in list(tables_dir.glob(f"{n}.table*.json")) + list(tables_dir.glob(f"{n}-TABLE-*.json")):
             old_path.unlink()
 
-    written = 0
+    normalized_tables = []
     descriptors = []
-    for position, table in enumerate(tables, start=1):
+    for position, table in enumerate(tables or [], start=1):
         idx = int(table.get("table_index") or position)
         section = table.get("section") or ""
         ident = section_identifier(section, idx)
-        base = f"{n}.table.{ident}.{idx:03d}"
-        clean_path = tables_dir / f"{base}.json"
-        raw_path = tables_dir / f"{base}.raw.json"
-        rawwl_path = tables_dir / f"{base}.raw_wL.json"
-        docs = [
-            (clean_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "headers": table.get("headers", []),
-                "rows": table.get("rows", []),
-                "key_values": table.get("key_values", {}),
-                "links_count": table.get("links_count", 0),
-                "links": table.get("links", []),
-            }),
-            (raw_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "raw_rows": table.get("raw_rows", []),
-            }),
-            (rawwl_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "rows_with_links": table.get("rows_with_links", []),
-                "raw_rows_with_links": table.get("raw_rows_with_links", []),
-            }),
-        ]
-        for path, doc in docs:
-            if overwrite or not path.exists():
-                path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-                written += 1
-        descriptors.append({
+        label = split_file_label(ident)
+        doc = {
+            "numero": str(numero or ""),
+            "kind": "TABLE",
             "table_index": idx,
             "section": section,
             "identifier": ident,
-            "files": {
-                "clean": clean_path.name,
-                "raw": raw_path.name,
-                "raw_with_links": rawwl_path.name,
-            },
+            "headers": table.get("headers", []),
+            "rows": table.get("rows", []),
+            "key_values": table.get("key_values", {}),
+            "links_count": table.get("links_count", 0),
+            "links": table.get("links", []),
+            "raw_rows": table.get("raw_rows", []),
+            "rows_with_links": table.get("rows_with_links", []),
+            "raw_rows_with_links": table.get("raw_rows_with_links", []),
+        }
+        normalized_tables.append(doc)
+
+    written = 0
+    all_path = tables_dir / f"{n}-TABLE-000-ALL.json"
+    all_doc = {"numero": str(numero or ""), "kind": "TABLE", "tables_count": len(normalized_tables), "tables": normalized_tables}
+    if overwrite or not all_path.exists():
+        all_path.write_text(json.dumps(all_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        written += 1
+
+    for doc in normalized_tables:
+        idx = int(doc["table_index"])
+        label = split_file_label(doc["identifier"])
+        path = tables_dir / f"{n}-TABLE-{idx:03d}-{label}.json"
+        if overwrite or not path.exists():
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            written += 1
+        descriptors.append({
+            "table_index": idx,
+            "section": doc["section"],
+            "identifier": doc["identifier"],
+            "files": {"all": all_path.name, "section": path.name},
         })
     return written, descriptors
 

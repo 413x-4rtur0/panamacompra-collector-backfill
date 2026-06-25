@@ -257,7 +257,7 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "with_detail_json": 0,
-        "groups": [], "recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
+        "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -305,6 +305,13 @@ def db_review_stats() -> dict[str, object]:
                 for r in conn.execute(
                     "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
                     "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8"
+                ).fetchall()
+            ],
+            "completed_recent": [
+                (str(r["numero"] or ""), str(r["finish_date_guess"] or ""), str(r["descripcion"] or r["short_description"] or ""))
+                for r in conn.execute(
+                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
             "columns": column_details,
@@ -1054,8 +1061,12 @@ def run_tk() -> int:
         new = progress.get("RECORDS_NEW", "-")
         existing = progress.get("RECORDS_EXISTING", "-")
         pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
-        completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}")
         s = db_review_stats()
+        end_dates = "; ".join(
+            f"{num} ends {finish or 'no date'}"
+            for num, finish, _desc in s.get("completed_recent", [])[:3]
+        ) or "No completed end dates yet"
+        completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
         if not s.get("db_exists"):
             set_previous_db_text("Previous database data: no archive database yet.")
             return

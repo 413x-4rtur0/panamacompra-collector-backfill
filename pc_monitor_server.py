@@ -233,7 +233,7 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
         "failed": 0, "notified": 0, "with_detail_json": 0, "groups": [],
-        "recent": [], "columns": [], "status_breakdown": [],
+        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [],
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -276,6 +276,13 @@ def db_review_stats() -> dict[str, object]:
                 for r in conn.execute(
                     "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
                     "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 12"
+                ).fetchall()
+            ],
+            "completed_recent": [
+                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
+                for r in conn.execute(
+                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
             "columns": column_details,
@@ -726,8 +733,14 @@ function renderRecordSummary(data) {{
   const pending = document.getElementById('records-pending');
   const completed = document.getElementById('records-completed');
   if (pending) pending.textContent = `Records Pendings\n${{p.RECORDS_PENDING ?? '-'}} waiting for detail/download\nFound: ${{p.RECORDS_FOUND ?? '-'}} · New: ${{p.RECORDS_NEW ?? '-'}} · Existing: ${{p.RECORDS_EXISTING ?? '-'}}`;
-  if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}`;
   refreshDbReview('records-db-summary');
+  fetch('/api/db-stats', {{cache: 'no-store'}})
+    .then(r => r.json())
+    .then(s => {{
+      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{r.finish_date_guess || 'no date'}}`).join('; ') || 'No completed end dates yet';
+      if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}\nOpportunity ends: ${{endDates}}`;
+    }})
+    .catch(() => {{ if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}`; }});
 }}
 
 async function refreshDbReview(targetId = 'db-review') {{
