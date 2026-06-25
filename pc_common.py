@@ -136,7 +136,8 @@ def clean(text):
 
 def safe_name(text):
     text = clean(text)
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = re.sub(r"[^A-Za-z0-9._() -]+", "_", text)
+    text = re.sub(r"\s+", "_", text).strip("._- ")
     return text[:160] or "unknown"
 
 def short_description(text, max_len=80):
@@ -145,10 +146,10 @@ def short_description(text, max_len=80):
     return text[:max_len].strip()
 
 # --------------------------------------------------------------------------
-# Folder-naming helpers: [finish_stamp]-[numero]-[desc_slug]
+# Folder-naming helpers: (finish_stamp)-(numero)-(desc_slug)
 #
 # Example leaf:
-#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
+#   (2022-10-11_12_00)-(2022-0-12-214-12-CL-008498)-(FRS-126-CMPRS-D-CJ-PLSTC)
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)
@@ -215,7 +216,7 @@ def _resolve_close_datetimes(key_values, text):
 
     This is shared by BOTH the folder-name finish stamp (``compute_finish_stamp``)
     and the calendar DTSTART/DTEND (``_calendar_window_datetimes``) so the date
-    encoded in ``[finish]-[numero]-[desc]`` can never diverge from the ``.ics``
+    encoded in ``(finish)-(numero)-(desc)`` can never diverge from the ``.ics``
     DTEND for the same record.
 
     Priority (close-before-delivery, structured-before-text):
@@ -278,14 +279,15 @@ def compute_finish_stamp(key_values, text):
 def build_record_folder_leaf(finish_stamp, numero, desc):
     """Compose a readable, network-friendly record folder leaf.
 
-    Avoid brackets, colons, slashes and other characters that are awkward on
-    shared/network filesystems while keeping the three human-scannable parts:
-    close date, NUMERO and short description.
+    Use parenthesized tokens instead of square brackets: parentheses remain
+    readable on network shares without colliding with shell/glob bracket syntax.
+    The three human-scannable parts stay explicit: close date, NUMERO and short
+    description.
     """
-    stamp = safe_name(finish_stamp or "NO-DATE")
+    stamp = safe_name(str(finish_stamp or "NO-DATE").replace(":", "_"))
     number = safe_name(numero or "NO-NUMERO")
     label = safe_name(desc or "NO-DESC")
-    return f"{stamp}--{number}--{label}"
+    return f"({stamp})-({number})-({label})"
 
 # Words dropped when turning a section heading into a short file identifier.
 _SECTION_STOPWORDS = {"de", "la", "del", "el", "los", "las", "y", "en", "a", "para"}
@@ -976,6 +978,7 @@ def ensure_db_schema(conn):
         "detail_saved_at": "ALTER TABLE opportunities ADD COLUMN detail_saved_at TEXT",
         "detail_json_path": "ALTER TABLE opportunities ADD COLUMN detail_json_path TEXT",
         "finish_date_guess": "ALTER TABLE opportunities ADD COLUMN finish_date_guess TEXT",
+        "start_date_guess": "ALTER TABLE opportunities ADD COLUMN start_date_guess TEXT",
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
         # pc_notify_new_records.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
@@ -1014,6 +1017,10 @@ def ensure_db_schema(conn):
     ON opportunities(finish_date_guess)
     """)
     conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_start_date
+    ON opportunities(start_date_guess)
+    """)
+    conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_opportunities_layout_version
     ON opportunities(files_layout_version)
     """)
@@ -1048,7 +1055,8 @@ def init_db(db_path=None):
         detail_attempts INTEGER DEFAULT 0,
         detail_saved_at TEXT,
         detail_json_path TEXT,
-        finish_date_guess TEXT
+        finish_date_guess TEXT,
+        start_date_guess TEXT
     )
     """)
 
@@ -1078,7 +1086,7 @@ def find_existing_record_archive(numero, records_dir=RECORDS_DIR, date_folder=No
 
     The immutable index JSON keeps the stable ``<NUMERO>.json`` filename inside
     both old ``records/YY-MM-DD/NUMERO/`` leaves and renamed
-    ``records/YY-MM-DD/[finish]-[numero]-[desc]/`` leaves.  Use that file as
+    ``records/YY-MM-DD/(finish)-(numero)-(desc)/`` leaves.  Use that file as
     the source of truth so a rebuilt/empty DB does not create a duplicate
     ``NUMERO`` folder just because the original leaf was renamed.
     """
@@ -1102,7 +1110,7 @@ def archive_complete(record_folder, numero):
     Older migrated records may have just the index JSON, or detail HTML/text
     without the newer summary/calendar views and ``.ics`` companion file. Treat
     those as incomplete so update/backfill tools re-download or rebuild them
-    instead of leaving folders like ``[]-[NUMERO]-[DESC]`` stuck forever.
+    instead of leaving old/incomplete folders stuck forever.
     """
     n = safe_name(numero)
     detail_json = record_folder / f"{n}.detail.json"
@@ -1261,7 +1269,8 @@ def guess_finish_date_from_text(text):
     return ""
 
 def update_detail_status(conn, numero, status, detail_json_path=None,
-                         finish_date_guess=None, increment_attempts=True):
+                         finish_date_guess=None, start_date_guess=None,
+                         increment_attempts=True):
     """Update a record's detail status.
 
     ``detail_attempts`` counts genuine download attempts so a permanently broken
@@ -1277,7 +1286,8 @@ def update_detail_status(conn, numero, status, detail_json_path=None,
         detail_attempts = detail_attempts + ?,
         detail_saved_at = ?,
         detail_json_path = COALESCE(?, detail_json_path),
-        finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess)
+        finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess),
+        start_date_guess = COALESCE(NULLIF(?, ''), start_date_guess)
     WHERE numero = ?
     """, (
         status,
@@ -1285,6 +1295,7 @@ def update_detail_status(conn, numero, status, detail_json_path=None,
         now_iso() if status == "saved" else None,
         str(detail_json_path) if detail_json_path else None,
         finish_date_guess or "",
+        start_date_guess or "",
         numero,
     ))
     conn.commit()

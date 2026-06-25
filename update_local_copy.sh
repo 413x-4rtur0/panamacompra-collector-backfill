@@ -168,7 +168,11 @@ trap restore_webhook_on_exit EXIT
 # made the updater appear to "freeze" or close right after step 1, and it also
 # added a fixed 5s wait. Instead stop only the collector pipeline plus the
 # webhook trigger so a new run cannot start mid-update, and never touch the
-# updater/loader/monitor processes.
+# updater/loader/monitor processes. The no-resume marker tells a worker that is
+# being stopped by the updater NOT to recreate run_all_requested.flag from its
+# abrupt-exit trap; local updates/manual launchers must not restart/recover a
+# pending/failed collector task unless the operator explicitly requests it.
+touch data/queue/run_all_stop_no_resume.flag
 rm -f data/queue/run_all_requested.flag
 pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
@@ -185,6 +189,7 @@ done
 pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
+rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag data/queue/run_all_stop_no_resume.flag
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"

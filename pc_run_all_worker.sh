@@ -23,6 +23,7 @@ fi
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
+STOP_NO_RESUME_FLAG="data/queue/run_all_stop_no_resume.flag"
 WORKER_LOG="data/logs/run_all_worker.log"
 CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
@@ -146,6 +147,12 @@ write_progress() {
 
 mark_abrupt_exit_for_resume() {
   local exit_code="$?"
+  if [ -f "$STOP_NO_RESUME_FLAG" ]; then
+    rm -f "$REQUEST_FLAG" "$IN_PROGRESS_FLAG" "$STOP_NO_RESUME_FLAG"
+    log "Worker stopped by updater/manual stop with no-resume marker. Pending/recover request was NOT restored."
+    write_progress "STOPPED" "DONE" "100" "Worker stopped intentionally by updater/manual launcher; no pending/recover restart was queued." "$(date '+%Y-%m-%d %H:%M:%S')" || true
+    return
+  fi
   if [ "$RUN_COMPLETED" -eq 0 ]; then
     touch "$REQUEST_FLAG"
     rm -f "$IN_PROGRESS_FLAG"

@@ -8,6 +8,7 @@ mkdir -p data/logs data/queue
 echo "Stopping all PanamaCompra runners and background processes..."
 
 # Clear request flags first to prevent restarts
+touch data/queue/run_all_stop_no_resume.flag
 rm -f data/queue/run_all_requested.flag
 
 # ============================================================================
@@ -80,7 +81,7 @@ sleep 1
 
 # Clear in-progress flag after all workers have had time to exit
 # Manual stops are intentional, not resumable abrupt exits
-rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag
+rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag data/queue/run_all_stop_no_resume.flag
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') | All runners stopped manually." >> data/logs/run_all_worker.log
 

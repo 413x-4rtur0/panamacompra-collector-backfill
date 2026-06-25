@@ -487,6 +487,12 @@ def process_detail(browser, conn, row, force=False):
         summary, items, calendar, fields_detected = build_detail_views(
             text, tables, numero, dtstamp=saved_at, link=row["link"]
         )
+        start_date_guess = calendar.get("dtstart") or ""
+        finish_date_guess = finish_date_guess or calendar.get("dtend") or finish_stamp
+        summary["date_start_opportunity"] = start_date_guess
+        summary["date_end_opportunity"] = calendar.get("dtend") or finish_date_guess
+        summary["date_downloaded_local"] = saved_at
+        summary["date_name_finish_stamp"] = finish_stamp
 
         if force:
             html_path.write_text(html, encoding="utf-8", errors="ignore")
@@ -516,6 +522,11 @@ def process_detail(browser, conn, row, force=False):
             "source": "PanamaCompra",
             "saved_at": saved_at,
             "finish_date_guess": finish_date_guess,
+            "start_date_guess": start_date_guess,
+            "date_start_opportunity": start_date_guess,
+            "date_end_opportunity": calendar.get("dtend") or finish_date_guess,
+            "date_downloaded_local": saved_at,
+            "date_name_finish_stamp": finish_stamp,
             "short_description": row["short_description"],
             "descripcion_index": row["descripcion"],
             "entidad_index": row["entidad"],
@@ -557,7 +568,7 @@ def process_detail(browser, conn, row, force=False):
             write_json_once(detail_json_path, detail_data)
         if force or not (record_folder / f"{n}.calendar.ics").exists():
             write_calendar_ics(record_folder / f"{n}.calendar.ics", calendar)
-        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
+        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess, start_date_guess=start_date_guess)
         conn.execute(
             """
             UPDATE opportunities

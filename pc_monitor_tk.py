@@ -219,6 +219,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         return []
     try:
         conn.row_factory = sqlite3.Row
+        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
         rows = conn.execute(
             "SELECT numero, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
@@ -226,7 +228,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
+            f"{start_expr} AS start_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -245,6 +248,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
     ]
@@ -359,6 +363,11 @@ def parse_deadline(rec: dict[str, str]) -> datetime | None:
 def deadline_text(rec: dict[str, str]) -> str:
     dt = parse_deadline(rec)
     return dt.strftime("%Y-%m-%d %H:%M") if dt else "—"
+
+
+def start_text(rec: dict[str, str]) -> str:
+    raw = (rec.get("start_date_guess") or "").strip().replace("T", " ").replace("_", " ")
+    return raw[:16] if raw else "—"
 
 
 def downloaded_text(rec: dict[str, str]) -> str:
@@ -807,7 +816,7 @@ def run_tk() -> int:
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
     auto_radio = ttk.Radiobutton(controls, text="automatic", value="auto", variable=run_mode_var, style="Card.TRadiobutton", state="disabled")
     auto_radio.grid(row=1, column=1, sticky="w")
-    live_radio = ttk.Radiobutton(controls, text="restart pending", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio = ttk.Radiobutton(controls, text="run pending only", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
     live_radio.grid(row=1, column=2, sticky="w")
     manual_radio = ttk.Radiobutton(controls, text="manual run", value="manual", variable=run_mode_var, style="Card.TRadiobutton")
     manual_radio.grid(row=1, column=3, sticky="w")
@@ -823,7 +832,7 @@ def run_tk() -> int:
     run_button.grid(row=2, column=4, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
     add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
-    add_tooltip(live_radio, "restart pending = queue the normal collector pipeline (real archive).")
+    add_tooltip(live_radio, "run pending only = queue the normal collector pipeline (real archive).")
     add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
     add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
     add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
@@ -1104,7 +1113,7 @@ def run_tk() -> int:
         records: list[dict[str, str]] = []
 
         def label(rec: dict[str, str]) -> str:
-            return f"{rec.get('numero') or '(sin número)'} — ends {deadline_text(rec)} — {rec.get('descripcion') or '(sin descripción)'}"
+            return f"{rec.get('numero') or '(sin número)'} — starts {start_text(rec)} — ends {deadline_text(rec)} — {rec.get('descripcion') or '(sin descripción)'}"
 
         def selected() -> dict[str, str] | None:
             sel = listbox.curselection()
@@ -1251,7 +1260,7 @@ def run_tk() -> int:
         dt = parse_deadline(rec)
         dtend = dt.strftime("%y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
-        return f"[DL {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
+        return f"(DL {downloaded_part} | DTSTART {start_text(rec)} | DTEND {dtend} {tag:>7})  {index_label(rec)}"
 
     def selected_records() -> list[dict[str, str]]:
         records: list[dict[str, str]] = []
@@ -1272,7 +1281,7 @@ def run_tk() -> int:
         set_index_detail(
             f"NUMERO: {rec['numero']}   ·   {expiry_status(rec).upper()}{status}\n"
             f"Descripción: {rec['descripcion'] or '-'}\n"
-            f"Downloaded: {downloaded_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
+            f"Downloaded: {downloaded_text(rec)}   ·   DTSTART: {start_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
         )
 
     def populate_listbox(records: list[dict[str, str]]) -> None:

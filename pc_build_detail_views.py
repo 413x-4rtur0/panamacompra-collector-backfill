@@ -155,6 +155,20 @@ def main():
         print(f"VIEWS      {detail_json_path.name}  items={n_items}  finish={data['calendar'].get('dtend') or '-'}")
         if args.apply:
             numero = data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)]
+            calendar = data.get("calendar", {}) if isinstance(data.get("calendar"), dict) else {}
+            summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+            start_date_guess = calendar.get("dtstart") or data.get("start_date_guess") or ""
+            finish_date_guess = calendar.get("dtend") or data.get("finish_date_guess") or ""
+            if isinstance(summary, dict):
+                summary["date_start_opportunity"] = start_date_guess
+                summary["date_end_opportunity"] = finish_date_guess
+                summary.setdefault("date_downloaded_local", data.get("saved_at") or "")
+                data["summary"] = summary
+            data["start_date_guess"] = start_date_guess
+            data["finish_date_guess"] = finish_date_guess
+            data["date_start_opportunity"] = start_date_guess
+            data["date_end_opportunity"] = finish_date_guess
+            data["date_downloaded_local"] = data.get("saved_at") or ""
             # Migrate table files to the split layout and record the tables index.
             _, descriptors = save_table_jsons(detail_json_path.parent, numero, tables, overwrite=True)
             section_written, section_descriptors = save_detail_section_jsons(

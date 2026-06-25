@@ -195,6 +195,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         return []
     try:
         conn.row_factory = sqlite3.Row
+        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
         rows = conn.execute(
             "SELECT numero, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
@@ -202,7 +204,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
+            f"{start_expr} AS start_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -221,6 +224,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
     ]
@@ -485,7 +489,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
@@ -628,6 +632,7 @@ function expiryStatus(rec) {{
   return 'upcoming';
 }}
 function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
+function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ').replace('_', ' ') : '—'; }}
 function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
 function parseDownloaded(rec) {{
   const raw = (rec.detail_saved_at || '').trim().replace('T', ' ');
@@ -654,7 +659,7 @@ function renderRecordDetail() {{
   const detail = rec.detail_status ? '   ·   detail: ' + esc(rec.detail_status) : '';
   node.innerHTML = '<span style="color:' + STATUS_COLOR[st] + ';font-weight:700">' + st.toUpperCase() + '</span>  ·  NUMERO: ' + esc(rec.numero) + detail
     + '<br>' + esc(rec.descripcion || '-')
-    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
+    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTSTART: ' + esc(startText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
 }}
 function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
@@ -677,7 +682,7 @@ function applyRecordFilter() {{
     const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
     const dl = parseDownloaded(r);
     const downloaded = dl ? downloadedText(r) : 'not local';
-    const label = '[DL ' + downloaded + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    const label = '(DL ' + downloaded + ' | DTSTART ' + startText(r) + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + ') ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
     return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
   }}).join('');
   renderRecordDetail();

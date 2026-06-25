@@ -36,6 +36,20 @@ def _layout_version(record_folder: Path, detail_data: dict) -> int:
     return int(detail_data.get("files_layout_version") or 1)
 
 
+def _date_from_detail(detail_data: dict, *names: str) -> str:
+    for name in names:
+        value = detail_data.get(name)
+        if value:
+            return str(value)
+    summary = detail_data.get("summary") if isinstance(detail_data.get("summary"), dict) else {}
+    calendar = detail_data.get("calendar") if isinstance(detail_data.get("calendar"), dict) else {}
+    for name in names:
+        value = summary.get(name) or calendar.get(name)
+        if value:
+            return str(value)
+    return ""
+
+
 def refresh_row(conn, row, *, apply: bool) -> bool:
     record_folder = Path(row["record_folder"] or "")
     detail_json_path = Path(row["detail_json_path"] or "")
@@ -54,12 +68,16 @@ def refresh_row(conn, row, *, apply: bool) -> bool:
     tables_count = int(detail_data.get("tables_count") or _count_mapping(detail_data.get("tables")))
     layout_version = _layout_version(record_folder, detail_data) if record_folder else 1
     folder_leaf = record_folder.name if str(record_folder) else ""
+    start_date_guess = _date_from_detail(detail_data, "start_date_guess", "date_start_opportunity", "dtstart")
+    finish_date_guess = _date_from_detail(detail_data, "finish_date_guess", "date_end_opportunity", "dtend")
 
     changed = (
         (row["record_folder_leaf"] or "") != folder_leaf
         or int(row["files_layout_version"] or 0) != layout_version
         or int(row["detail_sections_count"] or 0) != detail_sections_count
         or int(row["tables_count"] or 0) != tables_count
+        or (start_date_guess and (row["start_date_guess"] or "") != start_date_guess)
+        or (finish_date_guess and (row["finish_date_guess"] or "") != finish_date_guess)
     )
     if apply and changed:
         conn.execute(
@@ -69,6 +87,8 @@ def refresh_row(conn, row, *, apply: bool) -> bool:
                 files_layout_version = ?,
                 detail_sections_count = ?,
                 tables_count = ?,
+                start_date_guess = COALESCE(NULLIF(?, ''), start_date_guess),
+                finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess),
                 db_reviewed_at = ?
             WHERE numero = ?
             """,
@@ -77,6 +97,8 @@ def refresh_row(conn, row, *, apply: bool) -> bool:
                 layout_version,
                 detail_sections_count,
                 tables_count,
+                start_date_guess,
+                finish_date_guess,
                 pc_common.now_iso(),
                 row["numero"],
             ),
