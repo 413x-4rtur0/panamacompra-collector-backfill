@@ -42,7 +42,15 @@ BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
     "PC_CALENDAR_AUTO_IMPORT": "0",
 }
-TEXT_SETTING_DEFAULTS = {"PC_DETAIL_ORDER": "oldest"}
+TEXT_SETTING_DEFAULTS = {
+    "PC_DETAIL_ORDER": "oldest",
+    "PC_WAHA_SOURCE": "Panamá Compra",
+    "PC_MONITOR_DEADLINE_SOON_DAYS": "7",
+    "PC_MAX_DETAIL_ATTEMPTS": "5",
+    "PC_MONITOR_WEB_REFRESH_SECONDS": str(REFRESH_SECONDS),
+    "PC_MONITOR_WEB_IDLE_REFRESH_SECONDS": str(IDLE_REFRESH_SECONDS),
+    "PC_MONITOR_WEB_AUTO_CLOSE_SECONDS": str(AUTO_CLOSE_SECONDS),
+}
 ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS) | set(TEXT_SETTING_DEFAULTS)
 
 
@@ -171,6 +179,8 @@ def save_monitor_setting(key: str, value: str) -> None:
         settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
     elif key == "PC_DETAIL_ORDER":
         settings[key] = "newest" if value.lower().startswith("new") else "oldest"
+    elif key in TEXT_SETTING_DEFAULTS:
+        settings[key] = value.strip() or TEXT_SETTING_DEFAULTS[key]
     else:
         settings[key] = value.strip() or PATH_SETTING_DEFAULTS[key]
     MONITOR_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -471,13 +481,12 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <label class="small">Start from <select id="detail-order"><option value="newest">newest DB record</option><option value="oldest" selected>oldest DB record</option></select></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Automatic/restart pending use normal defaults. Index/detail limits and newest/oldest start order are only enabled for manual and test runs.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label> <label class="small">Default order <select id="setting-detail-order" onchange="saveMonitorSetting('PC_DETAIL_ORDER', this.value)"><option value="oldest">oldest pending first</option><option value="newest">newest pending first</option></select></label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button> <button onclick="openSettingFolder('PC_RECORDS_DIR')">Open records</button><button onclick="openSettingFolder('PC_CALENDAR_DIR')">Open calendar</button><button onclick="openSettingFolder('PC_RECORDS_TEST_DIR')">Open test</button><button onclick="openSettingFolder('PC_INDEX_DIR')">Open index</button><button onclick="openSettingFolder('PC_CONFIG_DIR')">Open config</button></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <label class="small">Start from <select id="detail-order"><option value="newest">newest DB record</option><option value="oldest" selected>oldest DB record</option></select></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Automatic/restart pending use normal defaults. Index/detail limits and newest/oldest start order are only enabled for manual and test runs.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label> <label class="small">Default order <select id="setting-detail-order" onchange="saveMonitorSetting('PC_DETAIL_ORDER', this.value)"><option value="oldest">oldest pending first</option><option value="newest">newest pending first</option></select></label></p><p><label class="small">WAHA source <input id="waha-source" size="16"></label> <label class="small">Soon days <input id="soon-days" size="4"></label> <label class="small">Max detail attempts <input id="max-detail-attempts" size="4"></label> <label class="small">Active refresh <input id="web-refresh" size="4"></label> <label class="small">Idle refresh <input id="web-idle-refresh" size="4"></label> <label class="small">Auto-close <input id="web-auto-close" size="4"></label> <button onclick="saveAdvancedSettings()">Save advanced</button></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button> <button onclick="openSettingFolder('PC_RECORDS_DIR')">Open records</button><button onclick="openSettingFolder('PC_CALENDAR_DIR')">Open calendar</button><button onclick="openSettingFolder('PC_RECORDS_TEST_DIR')">Open test</button><button onclick="openSettingFolder('PC_INDEX_DIR')">Open index</button><button onclick="openSettingFolder('PC_CONFIG_DIR')">Open config</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Detail saved on/after <input type="date" id="record-downloaded-mindate"></label> <label class="small">Index inserted on/after <input type="date" id="record-indexed-mindate"></label> <label class="small">Last seen on/after <input type="date" id="record-lastseen-mindate"></label> <label class="small">Status changed on/after <input type="date" id="record-statuschanged-mindate"></label> <label class="small">Folder renamed on/after <input type="date" id="record-renamed-mindate"></label> <label class="small">Notified on/after <input type="date" id="record-notified-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Read-only snapshot of data/panamacompra_archive.db. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
-<div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
-<div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
+<div class="card"><h2>Logs</h2><div class="zone"><h3>Recent worker log</h3><pre id="worker-log"></pre></div><div class="zone"><h3>Current action log</h3><pre id="current-log"></pre></div></div>
 <script>
 let doneSince = null;
 let timer = null;
@@ -523,7 +532,7 @@ function render(data) {{
   if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
   const orderSetting = document.getElementById('setting-detail-order');
   if (orderSetting && document.activeElement !== orderSetting) orderSetting.value = String(settings.PC_DETAIL_ORDER ?? 'oldest');
-  [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
+  [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR'], ['waha-source', 'PC_WAHA_SOURCE'], ['soon-days', 'PC_MONITOR_DEADLINE_SOON_DAYS'], ['max-detail-attempts', 'PC_MAX_DETAIL_ATTEMPTS'], ['web-refresh', 'PC_MONITOR_WEB_REFRESH_SECONDS'], ['web-idle-refresh', 'PC_MONITOR_WEB_IDLE_REFRESH_SECONDS'], ['web-auto-close', 'PC_MONITOR_WEB_AUTO_CLOSE_SECONDS']].forEach(([id, key]) => {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
@@ -595,6 +604,9 @@ function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
+function saveAdvancedSettings() {{
+  [['PC_WAHA_SOURCE', 'waha-source'], ['PC_MONITOR_DEADLINE_SOON_DAYS', 'soon-days'], ['PC_MAX_DETAIL_ATTEMPTS', 'max-detail-attempts'], ['PC_MONITOR_WEB_REFRESH_SECONDS', 'web-refresh'], ['PC_MONITOR_WEB_IDLE_REFRESH_SECONDS', 'web-idle-refresh'], ['PC_MONITOR_WEB_AUTO_CLOSE_SECONDS', 'web-auto-close']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
+}}
 function openSettingFolder(key) {{ postForm('/api/open-setting-folder', 'key=' + encodeURIComponent(key)); }}
 let recordIndex = [];
 let recordFiltered = [];
@@ -617,12 +629,13 @@ function expiryStatus(rec) {{
 }}
 function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
 function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
-function parseDownloaded(rec) {{
-  const raw = (rec.detail_saved_at || '').trim().replace('T', ' ');
+function parseRecordDate(rec, key) {{
+  const raw = (rec[key] || '').trim().replace('T', ' ');
   const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
 }}
+function parseDownloaded(rec) {{ return parseRecordDate(rec, 'detail_saved_at'); }}
 const FAR_FUTURE = new Date(8640000000000000);
 function selectedRecord() {{
   const sel = document.getElementById('record-index');
@@ -642,18 +655,26 @@ function renderRecordDetail() {{
   const detail = rec.detail_status ? '   ·   detail: ' + esc(rec.detail_status) : '';
   node.innerHTML = '<span style="color:' + STATUS_COLOR[st] + ';font-weight:700">' + st.toUpperCase() + '</span>  ·  NUMERO: ' + esc(rec.numero) + detail
     + '<br>' + esc(rec.descripcion || '-')
-    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
+    + '<br>Detail saved: ' + esc(downloadedText(rec)) + '   ·   Index inserted: ' + esc((rec.index_downloaded_at || '—').slice(0,16).replace('T', ' ')) + '   ·   Last seen: ' + esc((rec.last_seen || '—').slice(0,16).replace('T', ' '))
+    + '<br>Status changed: ' + esc((rec.status_changed_at || '—').slice(0,16).replace('T', ' ')) + '   ·   Folder renamed: ' + esc((rec.folder_renamed_at || '—').slice(0,16).replace('T', ' ')) + '   ·   Notified: ' + esc((rec.notified_at || '—').slice(0,16).replace('T', ' '))
+    + '<br>DTEND (deadline): ' + esc(deadlineText(rec));
 }}
 function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
   const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
   const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
-  const downloadedRaw = (document.getElementById('record-downloaded-mindate') || {{}}).value || '';
-  const downloadedMinDate = downloadedRaw ? new Date(downloadedRaw + 'T00:00') : null;
+  const dateFilters = [
+    ['detail_saved_at', 'record-downloaded-mindate'],
+    ['index_downloaded_at', 'record-indexed-mindate'],
+    ['last_seen', 'record-lastseen-mindate'],
+    ['status_changed_at', 'record-statuschanged-mindate'],
+    ['folder_renamed_at', 'record-renamed-mindate'],
+    ['notified_at', 'record-notified-mindate'],
+  ].map(([key, id]) => [key, (document.getElementById(id) || {{}}).value || '']).filter(([, raw]) => raw).map(([key, raw]) => [key, new Date(raw + 'T00:00')]);
   recordFiltered = recordIndex.filter(r => {{
     if (status !== 'all' && expiryStatus(r) !== status) return false;
     if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
-    if (downloadedMinDate) {{ const dl = parseDownloaded(r); if (!dl || dl < downloadedMinDate) return false; }}
+    for (const [key, minDt] of dateFilters) {{ const dt = parseRecordDate(r, key); if (!dt || dt < minDt) return false; }}
     return true;
   }});
   recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
@@ -762,7 +783,7 @@ renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
 document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
-document.getElementById('record-downloaded-mindate').addEventListener('change', applyRecordFilter);
+['record-downloaded-mindate', 'record-indexed-mindate', 'record-lastseen-mindate', 'record-statuschanged-mindate', 'record-renamed-mindate', 'record-notified-mindate'].forEach(id => document.getElementById(id).addEventListener('change', applyRecordFilter));
 initCollapsibleSections();
 refreshRecordIndex();
 refreshDbReview();

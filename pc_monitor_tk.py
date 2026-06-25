@@ -880,6 +880,10 @@ def run_tk() -> int:
     records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(BASE_DIR / "records")))
     calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(BASE_DIR / "data" / "calendar")))
     records_test_dir_var = tk.StringVar(value=setting("PC_RECORDS_TEST_DIR", str(BASE_DIR / "records_test")))
+    index_dir_var = tk.StringVar(value=setting("PC_INDEX_DIR", str(BASE_DIR / "data" / "index")))
+    config_dir_var = tk.StringVar(value=setting("PC_CONFIG_DIR", str(CONFIG_DIR)))
+    soon_days_var = tk.StringVar(value=setting("PC_MONITOR_DEADLINE_SOON_DAYS", str(SOON_DAYS)))
+    max_attempts_var = tk.StringVar(value=setting("PC_MAX_DETAIL_ATTEMPTS", "5"))
 
     def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
         ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
@@ -904,12 +908,36 @@ def run_tk() -> int:
     field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
     field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
     field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
+    field(9, 0, "Index folder:", index_dir_var, 36, "Operator-facing index/data folder. Environment key: PC_INDEX_DIR.")
+    field(10, 0, "Config folder:", config_dir_var, 36, "Monitor/notifier config folder. Environment key: PC_CONFIG_DIR.")
+    field(11, 0, "Soon days:", soon_days_var, 8, "Deadline filter threshold for next-to-expire records. Environment key: PC_MONITOR_DEADLINE_SOON_DAYS.")
+    field(11, 2, "Max detail attempts:", max_attempts_var, 8, "Retry attempts before detail rows stop retrying. Environment key: PC_MAX_DETAIL_ATTEMPTS.")
     notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
-    notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
+    notify_check.grid(row=12, column=0, columnspan=2, sticky="w", pady=3)
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
-    calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
+    calendar_check.grid(row=12, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
+
+    def open_configured_folder(var: tk.StringVar, fallback: str) -> None:
+        path = Path(var.get().strip() or fallback).expanduser()
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        path.mkdir(parents=True, exist_ok=True)
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, str(path)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened folder: {path}")
+
+    folder_buttons = ttk.Frame(settings, style="Card.TFrame")
+    folder_buttons.grid(row=13, column=1, columnspan=3, sticky="w", pady=(10, 0))
+    for idx, (label, var, fallback) in enumerate((
+        ("Open records", records_dir_var, str(BASE_DIR / "records")),
+        ("Open calendar", calendar_dir_var, str(BASE_DIR / "data" / "calendar")),
+        ("Open test", records_test_dir_var, str(BASE_DIR / "records_test")),
+        ("Open index", index_dir_var, str(BASE_DIR / "data" / "index")),
+        ("Open config", config_dir_var, str(CONFIG_DIR)),
+    )):
+        ttk.Button(folder_buttons, text=label, command=lambda v=var, f=fallback: open_configured_folder(v, f)).grid(row=0, column=idx, padx=(0, 6))
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -950,6 +978,11 @@ def run_tk() -> int:
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(BASE_DIR / "records"),
             "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(BASE_DIR / "data" / "calendar"),
             "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
+            "PC_INDEX_DIR": index_dir_var.get().strip() or str(BASE_DIR / "data" / "index"),
+            "PC_CONFIG_DIR": config_dir_var.get().strip() or str(CONFIG_DIR),
+            "PC_MONITOR_DEADLINE_SOON_DAYS": soon_days_var.get().strip() or str(SOON_DAYS),
+            "PC_MAX_DETAIL_ATTEMPTS": max_attempts_var.get().strip() or "5",
+            "PC_DETAIL_ORDER": detail_order_var.get().strip() or "oldest",
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -965,9 +998,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=10, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=13, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=11, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=14, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1040,6 +1073,11 @@ def run_tk() -> int:
     index_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
     index_downloaded_mindate_var = tk.StringVar(value="")
+    index_inserted_mindate_var = tk.StringVar(value="")
+    index_lastseen_mindate_var = tk.StringVar(value="")
+    index_statuschanged_mindate_var = tk.StringVar(value="")
+    index_renamed_mindate_var = tk.StringVar(value="")
+    index_notified_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
     ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
@@ -1059,15 +1097,21 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
     index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
-    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    ttk.Label(dates_row, text="Detail saved on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
     index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
     index_downloaded_entry.grid(row=0, column=5, sticky="w", padx=(0, 8))
+    extra_dates = ttk.Frame(record_index, style="Card.TFrame")
+    extra_dates.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+    extra_date_specs = [("Index inserted:", index_inserted_mindate_var), ("Last seen:", index_lastseen_mindate_var), ("Status changed:", index_statuschanged_mindate_var), ("Folder renamed:", index_renamed_mindate_var), ("Notified:", index_notified_mindate_var)]
+    for c, (label, var) in enumerate(extra_date_specs):
+        ttk.Label(extra_dates, text=label, style="Card.TLabel").grid(row=0, column=c*2, sticky="e", padx=(0, 4))
+        ttk.Entry(extra_dates, textvariable=var, width=12).grid(row=0, column=c*2+1, sticky="w", padx=(0, 8))
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
     add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
 
     list_frame = ttk.Frame(record_index, style="Card.TFrame")
-    list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+    list_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(4, 4))
     list_frame.columnconfigure(0, weight=1)
     index_listbox = tk.Listbox(
         list_frame, height=10, activestyle="none", exportselection=False, selectmode="extended",
@@ -1085,7 +1129,7 @@ def run_tk() -> int:
         record_index, height=3, wrap="word", bd=0, highlightthickness=0,
         bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9),
     )
-    index_detail_text.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+    index_detail_text.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
     def set_index_detail(text: str) -> None:
         index_detail_text.configure(state="normal")
@@ -1128,7 +1172,8 @@ def run_tk() -> int:
         set_index_detail(
             f"NUMERO: {rec['numero']}   ·   {expiry_status(rec).upper()}{status}\n"
             f"Descripción: {rec['descripcion'] or '-'}\n"
-            f"Downloaded: {downloaded_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
+            f"Detail saved: {downloaded_text(rec)}   ·   Index inserted: {(rec.get("index_downloaded_at") or "—")[:16].replace("T", " ")}   ·   Last seen: {(rec.get("last_seen") or "—")[:16].replace("T", " ")}\n"
+            f"Status changed: {(rec.get("status_changed_at") or "—")[:16].replace("T", " ")}   ·   Folder renamed: {(rec.get("folder_renamed_at") or "—")[:16].replace("T", " ")}   ·   Notified: {(rec.get("notified_at") or "—")[:16].replace("T", " ")}   ·   DTEND: {deadline_text(rec)}"
         )
 
     def populate_listbox(records: list[dict[str, str]]) -> None:
@@ -1154,13 +1199,14 @@ def run_tk() -> int:
                 min_date = datetime.strptime(raw_min, "%Y-%m-%d")
             except ValueError:
                 min_date = None
-        downloaded_min = None
-        raw_downloaded_min = index_downloaded_mindate_var.get().strip()
-        if raw_downloaded_min:
-            try:
-                downloaded_min = datetime.strptime(raw_downloaded_min, "%Y-%m-%d")
-            except ValueError:
-                downloaded_min = None
+        date_filters = []
+        for key, var in (("detail_saved_at", index_downloaded_mindate_var), ("index_downloaded_at", index_inserted_mindate_var), ("last_seen", index_lastseen_mindate_var), ("status_changed_at", index_statuschanged_mindate_var), ("folder_renamed_at", index_renamed_mindate_var), ("notified_at", index_notified_mindate_var)):
+            raw = var.get().strip()
+            if raw:
+                try:
+                    date_filters.append((key, datetime.strptime(raw, "%Y-%m-%d")))
+                except ValueError:
+                    pass
 
         records = []
         for rec in index_records:
@@ -1172,10 +1218,19 @@ def run_tk() -> int:
                 dt = parse_deadline(rec)
                 if dt is None or dt < min_date:
                     continue
-            if downloaded_min is not None:
-                downloaded = parse_downloaded(rec)
-                if downloaded is None or downloaded < downloaded_min:
-                    continue
+            blocked = False
+            for key, min_dt in date_filters:
+                raw = (rec.get(key) or "").strip().replace("T", " ")
+                try:
+                    dt = datetime.strptime(raw[:10], "%Y-%m-%d")
+                except ValueError:
+                    blocked = True
+                    break
+                if dt < min_dt:
+                    blocked = True
+                    break
+            if blocked:
+                continue
             records.append(rec)
 
         # Show the soonest deadlines first so "next to expire" floats to the top;
@@ -1245,10 +1300,11 @@ def run_tk() -> int:
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
-    index_downloaded_mindate_var.trace_add("write", apply_filter)
+    for var in (index_downloaded_mindate_var, index_inserted_mindate_var, index_lastseen_mindate_var, index_statuschanged_mindate_var, index_renamed_mindate_var, index_notified_mindate_var):
+        var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
-    index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    index_buttons.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
     refresh_index_button = ttk.Button(index_buttons, text="Refresh list", command=refresh_index_list)
     refresh_index_button.grid(row=0, column=0, padx=(0, 8))
     open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
@@ -1395,7 +1451,7 @@ def run_tk() -> int:
     add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
     add_section_toggle(reset_zone, button_column=1)
 
-    logs = ttk.Frame(content, style="TFrame")
+    logs = ttk.Frame(content, style="Card.TFrame", padding=14)
     logs.grid(row=8, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
