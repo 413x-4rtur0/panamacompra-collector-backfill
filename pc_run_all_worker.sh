@@ -30,6 +30,10 @@ PROGRESS_FILE="data/logs/run_all_progress.env"
 
 DETAIL_LIMIT="${1:-0}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
+if [ "${PC_RUN_MODE^^}" = "AUTO" ]; then
+  DETAIL_LIMIT="0"
+  INDEX_LIMIT="0"
+fi
 RUN_COMPLETED=0
 
 log() {

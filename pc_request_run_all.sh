@@ -8,6 +8,10 @@ mkdir -p data/logs data/queue
 DETAIL_LIMIT="${1:-0}"
 RUN_MODE="${2:-${PC_RUN_MODE:-RESTART}}"
 INDEX_LIMIT="${3:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
+if [ "${RUN_MODE^^}" = "AUTO" ]; then
+  DETAIL_LIMIT="0"
+  INDEX_LIMIT="0"
+fi
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
 REQUEST_LOG="data/logs/run_all_requests.log"
