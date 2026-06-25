@@ -204,9 +204,12 @@ def tail(path: Path, lines: int) -> str:
     return "\n".join(content[-lines:])
 
 
-def load_record_index(limit: int = 500) -> list[dict[str, str]]:
+def load_record_index(limit: int = 500, status_filter: str | None = None) -> list[dict[str, str]]:
     """Read collected records (NUMERO + description + folder/link) from the
     archive DB for the monitor's record-index selector. Newest first.
+
+    If ``status_filter`` is provided, only records matching that detail_status
+    are returned (e.g., 'saved' for completed records).
 
     Never raises: a missing, empty or locked database simply yields an empty
     list so the monitor keeps working before the collector has ever run.
@@ -219,8 +222,9 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         return []
     try:
         conn.row_factory = sqlite3.Row
+        where_clause = "WHERE detail_status = ?" if status_filter else ""
         rows = conn.execute(
-            "SELECT numero, "
+            f"SELECT numero, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
             "COALESCE(record_folder, '') AS record_folder, "
             "COALESCE(link, '') AS link, "
@@ -233,10 +237,10 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(folder_renamed_at, '') AS folder_renamed_at, "
             "COALESCE(notified_at, '') AS notified_at, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess "
-            "FROM opportunities "
-            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
+            f"FROM opportunities {where_clause} "
+            "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC "
             "LIMIT ?",
-            (limit,),
+            (status_filter, limit) if status_filter else (limit,),
         ).fetchall()
     except sqlite3.Error:
         rows = []
@@ -260,6 +264,15 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         }
         for row in rows
     ]
+
+
+def load_completed_records(limit: int = 500) -> list[dict[str, str]]:
+    """Read completed records (detail_status = 'saved') from the archive DB.
+    
+    Same structure as load_record_index but filtered for completed records only,
+    ordered by completion timestamp (detail_saved_at) descending.
+    """
+    return load_record_index(limit=limit, status_filter="saved")
 
 
 _FOLDER_COMPLETE_RE = re.compile(r"^\[[^\]\[]+\]-\[[^\]\[]+\]-\[[^\]\[]+\]$")
@@ -1427,12 +1440,239 @@ def run_tk() -> int:
     add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
+    # SECTION 4B: RECORDS COMPLETED - shows all records with detail_status =
+    # 'saved' (completed), with the same structure and info as the Record index
+    # section above but filtered for completed records only. Timestamps are shown
+    # for detail_saved_at, index_downloaded_at, folder_renamed_at, notified_at.
+    # ========================================================================
+    records_completed = ttk.Frame(content, style="Card.TFrame", padding=14)
+    records_completed.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    records_completed.columnconfigure(1, weight=1)
+
+    ttk.Label(records_completed, text="Records completed", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    completed_records: list[dict[str, str]] = []
+    completed_filtered: list[dict[str, str]] = []
+    completed_filter_var = tk.StringVar(value="")
+    completed_mindate_var = tk.StringVar(value="")
+    completed_detail_var = tk.StringVar(value="No completed records yet. Run the collector to download details.")
+
+    ttk.Label(records_completed, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    completed_filter_entry = ttk.Entry(records_completed, textvariable=completed_filter_var)
+    completed_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
+    add_tooltip(completed_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
+
+    dates_row_completed = ttk.Frame(records_completed, style="Card.TFrame")
+    dates_row_completed.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+    ttk.Label(dates_row_completed, text="Detail saved on/after:", style="Card.TLabel").grid(row=0, column=0, sticky="e", padx=(0, 6))
+    completed_mindate_entry = ttk.Entry(dates_row_completed, textvariable=completed_mindate_var, width=12)
+    completed_mindate_entry.grid(row=0, column=1, sticky="w", padx=(0, 12))
+    add_tooltip(completed_mindate_entry, "Show only records whose detail was saved on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
+
+    list_frame_completed = ttk.Frame(records_completed, style="Card.TFrame")
+    list_frame_completed.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+    list_frame_completed.columnconfigure(0, weight=1)
+    completed_listbox = tk.Listbox(
+        list_frame_completed, height=8, activestyle="none", exportselection=False, selectmode="extended",
+        bg="#020617", fg="#86efac", selectbackground="#2563eb", selectforeground="#ffffff",
+        highlightthickness=0, borderwidth=0, font=("Sans", 9),
+    )
+    completed_scroll = ttk.Scrollbar(list_frame_completed, orient="vertical", command=completed_listbox.yview)
+    completed_listbox.configure(yscrollcommand=completed_scroll.set)
+    completed_listbox.grid(row=0, column=0, sticky="ew")
+    completed_scroll.grid(row=0, column=1, sticky="ns")
+
+    completed_detail_text = tk.Text(
+        records_completed, height=3, wrap="word", bd=0, highlightthickness=0,
+        bg="#0b1220", fg="#86efac", insertbackground="#86efac", font=("Sans", 9),
+    )
+    completed_detail_text.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
+    def set_completed_detail(text: str) -> None:
+        completed_detail_text.configure(state="normal")
+        completed_detail_text.delete("1.0", "end")
+        completed_detail_text.insert("1.0", text)
+        completed_detail_text.configure(state="disabled")
+
+    set_completed_detail(completed_detail_var.get())
+
+    def completed_label(rec: dict[str, str]) -> str:
+        numero = rec["numero"] or "(sin número)"
+        desc = rec["descripcion"] or "(sin descripción)"
+        return f"{numero} — {desc}"
+
+    def completed_row_text(rec: dict[str, str]) -> str:
+        """List row prefixed with completion timestamp."""
+        downloaded = parse_downloaded(rec)
+        downloaded_part = downloaded.strftime("%y-%m-%d %H:%M") if downloaded else "no time"
+        return f"[Completed {downloaded_part}]  {completed_label(rec)}"
+
+    def selected_completed_records() -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for idx in completed_listbox.curselection():
+            if 0 <= idx < len(completed_filtered):
+                records.append(completed_filtered[idx])
+        return records
+
+    def selected_completed_record() -> dict[str, str] | None:
+        records = selected_completed_records()
+        return records[0] if records else None
+
+    def show_completed_detail(_event: object = None) -> None:
+        rec = selected_completed_record()
+        if not rec:
+            return
+        set_completed_detail(
+            f"NUMERO: {rec['numero']}   ·   COMPLETED   ·   detail: {rec.get('detail_status', 'saved')}\n"
+            f"Descripción: {rec['descripcion'] or '-'}\n"
+            f"Detail saved: {downloaded_text(rec)}   ·   Index inserted: {(rec.get('index_downloaded_at') or '—')[:16].replace('T', ' ')}   ·   Last seen: {(rec.get('last_seen') or '—')[:16].replace('T', ' ')}\n"
+            f"Status changed: {(rec.get('status_changed_at') or '—')[:16].replace('T', ' ')}   ·   Folder renamed: {(rec.get('folder_renamed_at') or '—')[:16].replace('T', ' ')}   ·   Notified: {(rec.get('notified_at') or '—')[:16].replace('T', ' ')}   ·   DTEND: {deadline_text(rec)}"
+        )
+
+    def populate_completed_listbox(records: list[dict[str, str]]) -> None:
+        nonlocal completed_filtered
+        completed_filtered = records
+        completed_listbox.delete(0, "end")
+        for rec in records:
+            completed_listbox.insert("end", completed_row_text(rec))
+        if records:
+            completed_listbox.selection_clear(0, "end")
+            completed_listbox.selection_set(0)
+            completed_listbox.see(0)
+            show_completed_detail()
+
+    def apply_completed_filter(*_args: object) -> None:
+        needle = completed_filter_var.get().strip().lower()
+        min_date = None
+        raw_min = completed_mindate_var.get().strip()
+        if raw_min:
+            try:
+                min_date = datetime.strptime(raw_min, "%Y-%m-%d")
+            except ValueError:
+                min_date = None
+
+        records = []
+        for rec in completed_records:
+            if needle and needle not in completed_label(rec).lower():
+                continue
+            if min_date is not None:
+                dt = parse_deadline(rec)
+                if dt is None or dt < min_date:
+                    continue
+                downloaded = parse_downloaded(rec)
+                if downloaded and downloaded < min_date:
+                    continue
+            records.append(rec)
+
+        records.sort(key=lambda r: (parse_downloaded(r) or datetime.max))
+        populate_completed_listbox(records)
+        if not records:
+            set_completed_detail("No completed records match the filter." if completed_records else
+                                 "No completed records yet. Run the collector to download details.")
+
+    def refresh_completed_list() -> None:
+        nonlocal completed_records
+        completed_records = load_completed_records()
+        apply_completed_filter()
+        if completed_records:
+            button_status_var.set(f"Loaded {len(completed_records)} completed record(s).")
+
+    def open_selected_completed_folder() -> None:
+        rec = selected_completed_record()
+        if not rec:
+            button_status_var.set("Select a completed record from the list first.")
+            return
+        folder = rec["record_folder"]
+        if not folder or not Path(folder).exists():
+            button_status_var.set(f"Record folder not found on disk for {rec['numero'] or 'the selection'}.")
+            return
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened record folder for {rec['numero']}.")
+
+    def selected_completed_numeros() -> list[str]:
+        return [rec["numero"] for rec in selected_completed_records() if rec.get("numero")]
+
+    def notify_completed_records() -> None:
+        numeros = selected_completed_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more completed records first (Ctrl/Shift-click).")
+            return
+        cmd = [str(BASE_DIR / "pc_notify_new_records.py"), "--force"]
+        for numero in numeros:
+            cmd.extend(["--record", numero])
+        subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected completed record(s).")
+
+    def import_completed_calendars() -> None:
+        numeros = selected_completed_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more completed records first (Ctrl/Shift-click).")
+            return
+        subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Calendar import requested for {len(numeros)} selected completed record(s).")
+
+    def open_selected_completed_detail_folder() -> None:
+        rec = selected_completed_record()
+        if not rec:
+            button_status_var.set("Select a completed record from the list first.")
+            return
+        detail_path = rec.get("detail_json_path") or ""
+        folder = Path(detail_path).parent if detail_path else Path(rec["record_folder"]) / "details"
+        if not folder.exists():
+            button_status_var.set(f"Details folder not found on disk for {rec['numero'] or 'the selection'}.")
+            return
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, str(folder)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened details folder for {rec['numero']}.")
+
+    def open_selected_completed_portal() -> None:
+        rec = selected_completed_record()
+        if not rec:
+            button_status_var.set("Select a completed record from the list first.")
+            return
+        if not rec["link"]:
+            button_status_var.set(f"No portal link stored for {rec['numero'] or 'the selection'}.")
+            return
+        subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opening portal page for {rec['numero']}.")
+
+    completed_listbox.bind("<<ListboxSelect>>", show_completed_detail)
+    completed_listbox.bind("<Double-Button-1>", lambda _e: open_selected_completed_folder())
+    completed_filter_var.trace_add("write", apply_completed_filter)
+    completed_mindate_var.trace_add("write", apply_completed_filter)
+
+    completed_buttons = ttk.Frame(records_completed, style="Card.TFrame")
+    completed_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    refresh_completed_button = ttk.Button(completed_buttons, text="Refresh list", command=refresh_completed_list)
+    refresh_completed_button.grid(row=0, column=0, padx=(0, 8))
+    open_completed_folder_button = ttk.Button(completed_buttons, text="Open record folder", command=open_selected_completed_folder)
+    open_completed_folder_button.grid(row=0, column=1, padx=(0, 8))
+    open_completed_detail_folder_button = ttk.Button(completed_buttons, text="Open details folder", command=open_selected_completed_detail_folder)
+    open_completed_detail_folder_button.grid(row=0, column=2, padx=(0, 8))
+    open_completed_portal_button = ttk.Button(completed_buttons, text="Open in portal", command=open_selected_completed_portal)
+    open_completed_portal_button.grid(row=0, column=3, padx=(0, 8))
+    notify_completed_button = ttk.Button(completed_buttons, text="Notify selected WhatsApp", command=notify_completed_records)
+    notify_completed_button.grid(row=0, column=4, padx=(0, 8))
+    import_completed_button = ttk.Button(completed_buttons, text="Import selected calendars", command=import_completed_calendars)
+    import_completed_button.grid(row=0, column=5, padx=(0, 8))
+    add_tooltip(refresh_completed_button, "Reload the completed records list from the archive database.")
+    add_tooltip(open_completed_folder_button, "Open the selected completed record's archive folder (or double-click a row).")
+    add_tooltip(open_completed_detail_folder_button, "Open the separated details/ folder for the selected completed record.")
+    add_tooltip(open_completed_portal_button, "Open the selected completed record's PanamaCompra portal page in the browser.")
+    add_tooltip(notify_completed_button, "Send WhatsApp notifications for all selected completed records (Ctrl/Shift-click to select several).")
+    add_tooltip(import_completed_button, "Export/open calendar ICS files for all selected completed records (Ctrl/Shift-click to select several).")
+
+    refresh_completed_list()
+    add_section_toggle(records_completed, button_column=2)
+
+    # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
     # Each button's explanation is shown as a hover tooltip (not an inline label)
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1480,7 +1720,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
