@@ -15,8 +15,11 @@ set -euo pipefail
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
 FLAG="data/queue/run_all_requested.flag"
+UPDATE_QUEUE_FLAG="data/queue/update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG="data/queue/update_monitor_in_progress.flag"
 REQUEST_LOG="data/logs/run_all_requests.log"
 DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-99}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 POLL_SECONDS="${PC_RUNNER_POLL_SECONDS:-5}"
 
 mkdir -p data/logs data/queue
@@ -29,9 +32,27 @@ worker_running() {
   pgrep -f "[p]c_run_all_worker.sh" >/dev/null 2>&1
 }
 
+updater_running() {
+  [ -f "$UPDATE_IN_PROGRESS_FLAG" ] || pgrep -f "[u]pdate_local_copy.sh|[p]c_update_loader.py" >/dev/null 2>&1
+}
+
+launch_queued_update_monitor() {
+  if [ ! -f "$UPDATE_QUEUE_FLAG" ] || worker_running || updater_running; then
+    return 0
+  fi
+  log "queued Update + Monitor detected; launching updater"
+  rm -f "$UPDATE_QUEUE_FLAG"
+  if [ -x ./pc_update_loader.py ]; then
+    nohup "$PYTHON_BIN" ./pc_update_loader.py --open-monitor-after >> data/logs/update_monitor_queue.log 2>&1 &
+  else
+    nohup ./update_local_copy.sh >> data/logs/update_monitor_queue.log 2>&1 &
+  fi
+}
+
 log "started (poll ${POLL_SECONDS}s, detail_limit ${DETAIL_LIMIT}); watching $FLAG"
 
 while true; do
+  launch_queued_update_monitor
   if [ -f "$FLAG" ] && ! worker_running; then
     log "request flag detected; launching host collector"
     # pc_request_run_all.sh keeps/refreshes the flag and starts the host worker,

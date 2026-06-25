@@ -963,6 +963,16 @@ bind-mounted checkout. A tiny **host** runner then performs the actual collectio
 ./pc_run_all_flag_watcher.sh
 ```
 
+If another **Update + Monitor** request arrives while a changedetection-triggered
+collector is still active, the updater is queued instead of interrupting the
+run. The request is recorded in `data/queue/update_monitor_requested.flag`, the
+monitor is opened/reused so the active run remains visible, and the queued update
+starts only after the current worker exits cleanly. `pc_run_all_worker.sh`
+launches `pc_update_loader.py --open-monitor-after` when it consumes the queued
+update; the host flag watcher performs the same handoff if it sees the update
+queue while no collector/updater is active. Use `./pc_queue_status.sh` to list
+both queues: collector requests and pending/running Update + Monitor requests.
+
 In the changedetection.io UI, set the watch **notification URL** to reach the
 webhook container on the compose network (no `host.docker.internal` needed):
 

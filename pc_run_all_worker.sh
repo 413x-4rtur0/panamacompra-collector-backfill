@@ -29,6 +29,8 @@ CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
 LAST_SUMMARY_FILE="data/logs/run_all_last_summary.env"
+UPDATE_QUEUE_FLAG="data/queue/update_monitor_requested.flag"
+UPDATE_QUEUE_LOG="data/logs/update_monitor_queue.log"
 
 DETAIL_LIMIT="${1:-99}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
@@ -50,6 +52,20 @@ notify_waha() {
 # Send rich WhatsApp messages after detail and calendar processing. This keeps
 # downloads free of mid-stream notification side effects and lets the monitor
 # show each outbound message in the dedicated MESSAGING step.
+launch_queued_update_monitor() {
+  if [ ! -f "$UPDATE_QUEUE_FLAG" ]; then
+    return 0
+  fi
+  log "Queued Update + Monitor request found after collector finished; launching updater."
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | UPDATE+MONITOR STARTING after collector finished" >> "$UPDATE_QUEUE_LOG"
+  rm -f "$UPDATE_QUEUE_FLAG"
+  if [ -x ./pc_update_loader.py ]; then
+    nohup "$PYTHON_BIN" ./pc_update_loader.py --open-monitor-after >> "$UPDATE_QUEUE_LOG" 2>&1 &
+  else
+    nohup ./update_local_copy.sh >> "$UPDATE_QUEUE_LOG" 2>&1 &
+  fi
+}
+
 notify_new_records() {
   if [ -x ./pc_notify_new_records.py ]; then
     "$PYTHON_BIN" ./pc_notify_new_records.py "$@" >> "$WORKER_LOG" 2>&1 || true
@@ -511,3 +527,4 @@ RUN_COMPLETED=1
 rm -f "$IN_PROGRESS_FLAG"
 write_progress "IDLE" "DONE" "100" "Worker stopped. No active PanamaCompra process." "$(date '+%Y-%m-%d %H:%M:%S')"
 log "RUN-ALL WORKER STOPPED"
+launch_queued_update_monitor
