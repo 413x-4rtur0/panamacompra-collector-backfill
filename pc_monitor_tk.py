@@ -862,13 +862,16 @@ def run_tk() -> int:
     manual_radio.grid(row=1, column=3, sticky="w")
     test_radio = ttk.Radiobutton(controls, text="test run", value="test", variable=run_mode_var, style="Card.TRadiobutton")
     test_radio.grid(row=1, column=4, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Index limit:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
+    index_limit_label = ttk.Label(controls, text="Index limit:", style="Card.TLabel")
+    index_limit_label.grid(row=2, column=0, sticky="e")
     index_limit_entry = ttk.Entry(controls, textvariable=index_limit_var, width=8)
     index_limit_entry.grid(row=2, column=1, sticky="w", padx=(6, 12))
-    ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
+    detail_limit_label = ttk.Label(controls, text="Detail limit:", style="Card.TLabel")
+    detail_limit_label.grid(row=2, column=2, sticky="e")
     detail_limit_entry = ttk.Entry(controls, textvariable=detail_limit_var, width=8)
     detail_limit_entry.grid(row=2, column=3, sticky="w", padx=(6, 16))
-    ttk.Label(controls, text="Start from:", style="Card.TLabel").grid(row=2, column=4, sticky="e")
+    detail_order_label = ttk.Label(controls, text="Start from:", style="Card.TLabel")
+    detail_order_label.grid(row=2, column=4, sticky="e")
     detail_order_box = ttk.Combobox(controls, textvariable=detail_order_var, values=("newest", "oldest"), width=8, state="readonly")
     detail_order_box.grid(row=2, column=5, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
@@ -889,6 +892,7 @@ def run_tk() -> int:
     # of them are active and unlock once the run is fully idle.
     run_control_widgets = (live_radio, manual_radio, test_radio, run_button)
     limit_widgets = (index_limit_entry, detail_limit_entry, detail_order_box)
+    limit_grid_widgets = (index_limit_label, index_limit_entry, detail_limit_label, detail_limit_entry, detail_order_label, detail_order_box)
 
     def update_run_controls(snap: dict[str, object]) -> None:
         processes = snap.get("processes", {}) or {}
@@ -900,6 +904,14 @@ def run_tk() -> int:
             except tk.TclError:
                 pass
         limits_allowed = (not busy) and run_mode_var.get() in {"manual", "test"}
+        for widget in limit_grid_widgets:
+            try:
+                if limits_allowed:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+            except tk.TclError:
+                pass
         for widget in limit_widgets:
             try:
                 widget.configure(state=("normal" if limits_allowed else "disabled"))
@@ -920,6 +932,8 @@ def run_tk() -> int:
             if run_mode_var.get() == "auto":
                 run_mode_var.set("restart")
             run_button.configure(text="Request selected run")
+
+    run_mode_var.trace_add("write", lambda *_: update_run_controls({"processes": {}, "MODE": run_mode_var.get().upper()}))
 
     # ========================================================================
     # SECTION 3: SETTINGS - editable fields with defaults; leave as-is to keep
