@@ -1301,3 +1301,31 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 - The index scan reports zero duplicate `NUMERO`
 - The detail downloader reports no pending rows after completion
 - Records are stored under `records/YY-MM-DD/[finish]-[NUMERO]-[desc]/` and existing files are skipped, not overwritten
+
+## Git credentials and Linux Mint keyring at PC startup
+
+If the desktop updater or monitor asks for GitHub credentials after every reboot,
+run the helper once from this checkout:
+
+```bash
+./pc_setup_git_credentials.sh
+```
+
+For HTTPS remotes, the helper sets this repository to use Git's local `store`
+credential helper instead of the GNOME/libsecret keyring, clears GUI askpass for
+this repo, and can pre-seed `~/.git-credentials` from either environment
+variables or gitignored config files:
+
+```bash
+PC_GITHUB_USER=myuser PC_GITHUB_TOKEN=github_pat_or_ghp_token ./pc_setup_git_credentials.sh
+# or:
+echo myuser > data/config/github_user.txt
+echo github_pat_or_ghp_token > data/config/github_token.txt
+./pc_setup_git_credentials.sh
+```
+
+Use a fine-grained GitHub token with read-only **Contents** access for this repo
+when the machine only needs to fetch/pull updates. If the remote is SSH, the
+helper prints a deploy-key workflow instead: create a dedicated ed25519 key,
+add the public key as a read-only deploy key on GitHub, and pin it with
+`git config core.sshCommand` so startup jobs do not wait on the login keyring.

@@ -226,6 +226,11 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(index_downloaded_at, first_seen, '') AS index_downloaded_at, "
+            "COALESCE(last_seen, '') AS last_seen, "
+            "COALESCE(status_changed_at, '') AS status_changed_at, "
+            "COALESCE(folder_renamed_at, '') AS folder_renamed_at, "
+            "COALESCE(notified_at, '') AS notified_at, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
@@ -244,6 +249,11 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "index_downloaded_at": str(row["index_downloaded_at"] or ""),
+            "last_seen": str(row["last_seen"] or ""),
+            "status_changed_at": str(row["status_changed_at"] or ""),
+            "folder_renamed_at": str(row["folder_renamed_at"] or ""),
+            "notified_at": str(row["notified_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
         }
         for row in rows
@@ -256,7 +266,7 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "notified": 0, "with_detail_json": 0, "groups": [], "db_exists": ARCHIVE_DB.exists(),
+        "notified": 0, "with_detail_json": 0, "possible_pending": 0, "status_changes": 0, "renamed_folders": 0, "calendar_exports": 0, "latest": [], "groups": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -279,8 +289,13 @@ def db_review_stats() -> dict[str, object]:
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "possible_pending": count("detail_status <> 'saved' OR COALESCE(detail_json_path, '') = ''"),
+            "status_changes": count("COALESCE(pending_status_change, '') <> '' OR COALESCE(status_changed_at, '') <> ''"),
+            "renamed_folders": count("COALESCE(folder_renamed_at, '') <> ''"),
+            "calendar_exports": count("COALESCE(last_calendar_export_path, '') <> ''"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "latest": [dict(r) for r in conn.execute("SELECT numero, detail_status, COALESCE(index_downloaded_at, first_seen, '') AS index_downloaded_at, COALESCE(detail_saved_at, '') AS detail_saved_at, COALESCE(last_seen, '') AS last_seen, COALESCE(status_changed_at, '') AS status_changed_at FROM opportunities ORDER BY datetime(COALESCE(detail_saved_at, index_downloaded_at, first_seen, last_seen)) DESC LIMIT 8").fetchall()],
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
@@ -741,6 +756,7 @@ def run_tk() -> int:
     run_mode_var = tk.StringVar(value="restart")
     index_limit_var = tk.StringVar(value="20")
     detail_limit_var = tk.StringVar(value="99")
+    detail_order_var = tk.StringVar(value=setting("PC_DETAIL_ORDER", "oldest"))
 
     def selected_limit(var: tk.StringVar, default: str) -> str:
         value = var.get().strip() or default
@@ -750,16 +766,18 @@ def run_tk() -> int:
         index_limit = selected_limit(index_limit_var, "20")
         detail_limit = selected_limit(detail_limit_var, "99")
         mode = run_mode_var.get()
+        detail_order = "newest" if detail_order_var.get().lower().startswith("new") else "oldest"
+        env = monitor_env(); env["PC_DETAIL_ORDER"] = detail_order
         if mode == "test":
-            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
+            subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--order", detail_order, "--apply"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}, starting from {detail_order}.")
             return
         if mode == "manual":
-            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
+            subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}, starting from {detail_order}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99", "RESTART"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Restart-pending run requested with normal configured limits.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
@@ -782,22 +800,27 @@ def run_tk() -> int:
     ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
     detail_limit_entry = ttk.Entry(controls, textvariable=detail_limit_var, width=8)
     detail_limit_entry.grid(row=2, column=3, sticky="w", padx=(6, 16))
+    ttk.Label(controls, text="Start from:", style="Card.TLabel").grid(row=2, column=4, sticky="e")
+    detail_order_box = ttk.Combobox(controls, textvariable=detail_order_var, values=("newest", "oldest"), width=8, state="readonly")
+    detail_order_box.grid(row=2, column=5, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
-    run_button.grid(row=2, column=4, sticky="w")
-    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+    run_button.grid(row=3, column=4, sticky="w")
+    ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
     add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
     add_tooltip(live_radio, "restart pending = queue the normal collector pipeline (real archive).")
     add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
     add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
     add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
-    add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
+    add_tooltip(detail_limit_entry, "Maximum detail pages (manual) or sandbox records (test) to process this run; disabled for automatic/restart pending.")
+    add_tooltip(detail_order_box, "When a limit is used, choose whether to start from newest or oldest DB records.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
     add_section_toggle(controls, button_column=5)
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
     # shows up here (worker/index/detail/...), so the run controls lock while any
     # of them are active and unlock once the run is fully idle.
-    run_control_widgets = (live_radio, manual_radio, test_radio, index_limit_entry, detail_limit_entry, run_button)
+    run_control_widgets = (live_radio, manual_radio, test_radio, run_button)
+    limit_widgets = (index_limit_entry, detail_limit_entry, detail_order_box)
 
     def update_run_controls(snap: dict[str, object]) -> None:
         processes = snap.get("processes", {}) or {}
@@ -806,6 +829,12 @@ def run_tk() -> int:
         for widget in run_control_widgets:
             try:
                 widget.configure(state=target_state)
+            except tk.TclError:
+                pass
+        limits_allowed = (not busy) and run_mode_var.get() in {"manual", "test"}
+        for widget in limit_widgets:
+            try:
+                widget.configure(state=("normal" if limits_allowed else "disabled"))
             except tk.TclError:
                 pass
         current_mode = str(snap.get("MODE", "")).strip().upper()

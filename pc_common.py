@@ -855,8 +855,8 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
     detail_json = target / f"{n}.detail.json"
     conn.execute(
         "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
-        "detail_json_path = ? WHERE numero = ?",
-        (str(target), str(index_json), str(detail_json), numero),
+        "detail_json_path = ?, folder_renamed_at = ? WHERE numero = ?",
+        (str(target), str(index_json), str(detail_json), now_iso(), numero),
     )
     conn.commit()
 
@@ -928,6 +928,9 @@ def ensure_db_schema(conn):
         "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
         "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",
         "last_calendar_export_path": "ALTER TABLE opportunities ADD COLUMN last_calendar_export_path TEXT",
+        "index_downloaded_at": "ALTER TABLE opportunities ADD COLUMN index_downloaded_at TEXT",
+        "status_changed_at": "ALTER TABLE opportunities ADD COLUMN status_changed_at TEXT",
+        "folder_renamed_at": "ALTER TABLE opportunities ADD COLUMN folder_renamed_at TEXT",
     }
 
     for column, statement in migrations.items():
@@ -973,7 +976,10 @@ def init_db(db_path=None):
         detail_attempts INTEGER DEFAULT 0,
         detail_saved_at TEXT,
         detail_json_path TEXT,
-        finish_date_guess TEXT
+        finish_date_guess TEXT,
+        index_downloaded_at TEXT,
+        status_changed_at TEXT,
+        folder_renamed_at TEXT
     )
     """)
 
@@ -1116,7 +1122,8 @@ def insert_or_update_index(conn, row):
             link = ?,
             last_seen = ?,
             tipo_url = ?,
-            pending_status_change = COALESCE(?, pending_status_change)
+            pending_status_change = COALESCE(?, pending_status_change),
+            status_changed_at = CASE WHEN ? IS NOT NULL THEN ? ELSE status_changed_at END
         WHERE numero = ?
         """, (
             row["grupo"],
@@ -1131,6 +1138,8 @@ def insert_or_update_index(conn, row):
             row["last_seen"],
             row["tipo_url"],
             status_change,
+            now_iso() if status_change else None,
+            now_iso() if status_change else None,
             row["numero"],
         ))
         conn.commit()
@@ -1141,9 +1150,9 @@ def insert_or_update_index(conn, row):
         numero, grupo, tipo_url, estado, descripcion, short_description,
         entidad, dependencia, fecha, modalidad, link, first_seen, last_seen,
         date_folder, record_folder, index_json_path, detail_status,
-        finish_date_guess
+        finish_date_guess, index_downloaded_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         row["numero"],
         row["grupo"],
@@ -1163,6 +1172,7 @@ def insert_or_update_index(conn, row):
         row["index_json_path"],
         row["detail_status"],
         row["finish_date_guess"],
+        row.get("index_downloaded_at") or now_iso(),
     ))
 
     conn.commit()

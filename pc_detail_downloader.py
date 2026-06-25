@@ -17,6 +17,7 @@ except Exception:  # noqa: BLE001 - notifications are strictly optional
 
 DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
+DETAIL_ORDER = os.environ.get("PC_DETAIL_ORDER", "oldest").strip().lower()
 
 # Bump when the link/table cleaning rules change so existing archives are
 # refreshed from their saved HTML on the next run instead of keeping old noise.
@@ -327,7 +328,7 @@ def row_archive_is_current(row):
     return archive_complete(Path(row["record_folder"]), row["numero"])
 
 
-def detail_pending_rows(conn, limit, max_attempts):
+def detail_pending_rows(conn, limit, max_attempts, order="oldest"):
     if limit <= 0:
         return []
 
@@ -336,14 +337,16 @@ def detail_pending_rows(conn, limit, max_attempts):
     # attempts are processed first. Also include rows marked saved in SQLite but
     # missing the current archive files/views on disk, which can happen after
     # migrating older records or when an earlier run only wrote the index JSON.
-    candidates = conn.execute("""
+    direction = "DESC" if str(order).lower().startswith("new") else "ASC"
+    candidates = conn.execute(f"""
     SELECT *
     FROM opportunities
     WHERE detail_attempts < ?
     ORDER BY
       CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END,
       detail_attempts ASC,
-      first_seen ASC
+      datetime(COALESCE(index_downloaded_at, first_seen, last_seen)) {direction},
+      numero {direction}
     """, (max_attempts,)).fetchall()
     pending = []
     for row in candidates:
@@ -565,7 +568,7 @@ def main():
         except Exception as exc:  # noqa: BLE001 - baseline setup never blocks a run
             print(f"WAHA baseline check failed: {exc}", file=sys.stderr)
 
-    rows = detail_pending_rows(conn, DETAIL_LIMIT, MAX_DETAIL_ATTEMPTS)
+    rows = detail_pending_rows(conn, DETAIL_LIMIT, MAX_DETAIL_ATTEMPTS, DETAIL_ORDER)
 
     run_started = now_iso()
     saved = 0

@@ -35,12 +35,15 @@ PATH_SETTING_DEFAULTS = {
     "PC_RECORDS_DIR": str(BASE_DIR / "records"),
     "PC_CALENDAR_DIR": str(BASE_DIR / "data" / "calendar"),
     "PC_RECORDS_TEST_DIR": str(BASE_DIR / "records_test"),
+    "PC_INDEX_DIR": str(BASE_DIR / "data" / "index"),
+    "PC_CONFIG_DIR": str(BASE_DIR / "data" / "config"),
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
     "PC_CALENDAR_AUTO_IMPORT": "0",
 }
-ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS)
+TEXT_SETTING_DEFAULTS = {"PC_DETAIL_ORDER": "oldest"}
+ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS) | set(TEXT_SETTING_DEFAULTS)
 
 
 class ManualAction(tuple):
@@ -143,7 +146,7 @@ def parse_settings_file() -> dict[str, str]:
 
 
 def load_monitor_settings() -> dict[str, str]:
-    settings = {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}
+    settings = {**TEXT_SETTING_DEFAULTS, **BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}
     settings.update({key: os.environ.get(key, default) for key, default in settings.items() if key in os.environ})
     file_settings = parse_settings_file()
     for key in settings:
@@ -162,10 +165,12 @@ def save_monitor_setting(key: str, value: str) -> None:
     if key not in ALLOWED_MONITOR_SETTINGS:
         raise ValueError(f"unsupported setting: {key}")
     settings = parse_settings_file()
-    for default_key, default_value in {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}.items():
+    for default_key, default_value in {**TEXT_SETTING_DEFAULTS, **BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}.items():
         settings.setdefault(default_key, os.environ.get(default_key, default_value))
     if key in BOOLEAN_SETTING_DEFAULTS:
         settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
+    elif key == "PC_DETAIL_ORDER":
+        settings[key] = "newest" if value.lower().startswith("new") else "oldest"
     else:
         settings[key] = value.strip() or PATH_SETTING_DEFAULTS[key]
     MONITOR_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +207,11 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(index_downloaded_at, first_seen, '') AS index_downloaded_at, "
+            "COALESCE(last_seen, '') AS last_seen, "
+            "COALESCE(status_changed_at, '') AS status_changed_at, "
+            "COALESCE(folder_renamed_at, '') AS folder_renamed_at, "
+            "COALESCE(notified_at, '') AS notified_at, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
@@ -220,6 +230,11 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "index_downloaded_at": str(row["index_downloaded_at"] or ""),
+            "last_seen": str(row["last_seen"] or ""),
+            "status_changed_at": str(row["status_changed_at"] or ""),
+            "folder_renamed_at": str(row["folder_renamed_at"] or ""),
+            "notified_at": str(row["notified_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
         }
         for row in rows
@@ -232,7 +247,7 @@ def db_review_stats() -> dict[str, object]:
     per-group breakdown. Never raises; a missing/locked DB yields zeros."""
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
-        "failed": 0, "notified": 0, "with_detail_json": 0, "groups": [],
+        "failed": 0, "possible_pending": 0, "status_changes": 0, "renamed_folders": 0, "calendar_exports": 0, "notified": 0, "with_detail_json": 0, "latest": [], "groups": [],
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -255,8 +270,13 @@ def db_review_stats() -> dict[str, object]:
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "possible_pending": count("detail_status <> 'saved' OR COALESCE(detail_json_path, '') = ''"),
+            "status_changes": count("COALESCE(pending_status_change, '') <> '' OR COALESCE(status_changed_at, '') <> ''"),
+            "renamed_folders": count("COALESCE(folder_renamed_at, '') <> ''"),
+            "calendar_exports": count("COALESCE(last_calendar_export_path, '') <> ''"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "latest": [dict(r) for r in conn.execute("SELECT numero, detail_status, COALESCE(index_downloaded_at, first_seen, '') AS index_downloaded_at, COALESCE(detail_saved_at, '') AS detail_saved_at, COALESCE(last_seen, '') AS last_seen, COALESCE(status_changed_at, '') AS status_changed_at FROM opportunities ORDER BY datetime(COALESCE(detail_saved_at, index_downloaded_at, first_seen, last_seen)) DESC LIMIT 8").fetchall()],
             "groups": [
                 {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
                 for r in conn.execute(
@@ -451,7 +471,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <label class="small">Start from <select id="detail-order"><option value="newest">newest DB record</option><option value="oldest" selected>oldest DB record</option></select></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Automatic/restart pending use normal defaults. Index/detail limits and newest/oldest start order are only enabled for manual and test runs.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label> <label class="small">Default order <select id="setting-detail-order" onchange="saveMonitorSetting('PC_DETAIL_ORDER', this.value)"><option value="oldest">oldest pending first</option><option value="newest">newest pending first</option></select></label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button> <button onclick="openSettingFolder('PC_RECORDS_DIR')">Open records</button><button onclick="openSettingFolder('PC_CALENDAR_DIR')">Open calendar</button><button onclick="openSettingFolder('PC_RECORDS_TEST_DIR')">Open test</button><button onclick="openSettingFolder('PC_INDEX_DIR')">Open index</button><button onclick="openSettingFolder('PC_CONFIG_DIR')">Open config</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Read-only snapshot of data/panamacompra_archive.db. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
@@ -501,6 +521,8 @@ function render(data) {{
   if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
   const calendarToggle = document.getElementById('calendar-auto-import');
   if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
+  const orderSetting = document.getElementById('setting-detail-order');
+  if (orderSetting && document.activeElement !== orderSetting) orderSetting.value = String(settings.PC_DETAIL_ORDER ?? 'oldest');
   [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
@@ -535,7 +557,9 @@ function updateRunControls(data) {{
   const procs = data.processes || {{}};
   const busy = RUN_WORK_KEYS.some(k => procs[k]);
   document.querySelectorAll('input[name="run-mode"]').forEach(el => {{ el.disabled = busy; }});
-  ['index-limit', 'detail-limit'].forEach(id => {{ const el = document.getElementById(id); if (el) el.disabled = busy; }});
+  const selected = document.querySelector('input[name="run-mode"]:checked');
+  const limitsAllowed = !busy && selected && ['manual', 'test'].includes(selected.value);
+  ['index-limit', 'detail-limit', 'detail-order'].forEach(id => {{ const el = document.getElementById(id); if (el) el.disabled = !limitsAllowed; }});
   const mode = String((data.progress || {{}}).MODE || '').toUpperCase();
   if (busy) {{
     const modeValue = mode === 'AUTO' ? 'auto' : mode === 'MANUAL' ? 'manual' : mode === 'TEST' ? 'test' : 'restart';
@@ -555,7 +579,8 @@ function requestRun() {{
   const mode = encodeURIComponent(checked ? checked.value : 'restart');
   const detailLimit = encodeURIComponent(document.getElementById('detail-limit').value || '99');
   const indexLimit = encodeURIComponent(document.getElementById('index-limit').value || '20');
-  postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{detailLimit}}&index_limit=${{indexLimit}}`);
+  const order = encodeURIComponent(document.getElementById('detail-order').value || 'oldest');
+  postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{detailLimit}}&index_limit=${{indexLimit}}&detail_order=${{order}}`);
 }}
 function importCalendars() {{ postForm('/api/import-calendars', ''); }}
 function stopRun() {{ postForm('/api/manual-action', 'label=' + encodeURIComponent('Stop active run')); }}
@@ -570,6 +595,7 @@ function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
+function openSettingFolder(key) {{ postForm('/api/open-setting-folder', 'key=' + encodeURIComponent(key)); }}
 let recordIndex = [];
 let recordFiltered = [];
 const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
@@ -769,16 +795,18 @@ class MonitorHandler(BaseHTTPRequestHandler):
             detail_limit = raw_detail if raw_detail.isdigit() and int(raw_detail) > 0 else "99"
             index_limit = raw_index if raw_index.isdigit() and int(raw_index) > 0 else "20"
             mode = form.get("mode", ["restart"])[0].strip().lower()
+            detail_order = "newest" if form.get("detail_order", [load_monitor_settings().get("PC_DETAIL_ORDER", "oldest")])[0].lower().startswith("new") else "oldest"
+            env = monitor_env(); env["PC_DETAIL_ORDER"] = detail_order
             if mode == "test":
-                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+                subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--order", detail_order, "--apply"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}, starting from {detail_order}.\n", "text/plain; charset=utf-8")
                 return
             if mode == "manual":
-                subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+                subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}, starting from {detail_order}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.send_text(202, f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99", "RESTART"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.send_text(202, "Restart-pending run requested with normal configured limits.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
             label = form.get("label", [""])[0].strip()
@@ -807,6 +835,18 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     self.send_text(202, f"Opened record folder for {numero}.\n", "text/plain; charset=utf-8")
                     return
             self.send_text(404, f"Unknown record: {numero}\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/open-setting-folder":
+            key = form.get("key", [""])[0].strip()
+            settings = load_monitor_settings()
+            if key not in settings or key not in ALLOWED_MONITOR_SETTINGS:
+                self.send_text(400, "Unknown folder setting.\n", "text/plain; charset=utf-8")
+                return
+            folder = Path(settings[key]).expanduser()
+            if not folder.is_absolute():
+                folder = BASE_DIR / folder
+            open_folder(folder)
+            self.send_text(202, f"Opened {key}: {folder}\n", "text/plain; charset=utf-8")
             return
         if path == "/api/monitor-setting":
             key = form.get("key", [""])[0].strip()

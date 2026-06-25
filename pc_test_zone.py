@@ -36,13 +36,14 @@ from pc_build_calendar import write_packages
 from pc_update_day_folder import ensure_playwright_available
 
 
-def recent_rows(conn, limit):
-    """The most recently processed records that still have a usable link."""
+def recent_rows(conn, limit, order="newest"):
+    """Processed records that still have a usable link, newest or oldest first."""
     if limit <= 0:
         return []
+    direction = "ASC" if str(order).lower().startswith("old") else "DESC"
     return conn.execute(
-        "SELECT * FROM opportunities WHERE COALESCE(link, '') != '' "
-        "ORDER BY datetime(COALESCE(detail_saved_at, last_seen, first_seen)) DESC, numero DESC "
+        f"SELECT * FROM opportunities WHERE COALESCE(link, '') != '' "
+        f"ORDER BY datetime(COALESCE(detail_saved_at, last_seen, first_seen)) {direction}, numero {direction} "
         "LIMIT ?",
         (limit,),
     ).fetchall()
@@ -142,12 +143,13 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=5, help="most-recent records to re-run (default 5)")
     parser.add_argument("--apply", action="store_true", help="run without the confirmation prompt")
+    parser.add_argument("--order", choices=("newest", "oldest"), default=os.environ.get("PC_DETAIL_ORDER", "newest"), help="choose newest or oldest records when --limit is used")
     args = parser.parse_args()
 
     conn = init_db()
-    rows = recent_rows(conn, max(args.limit, 0))
+    rows = recent_rows(conn, max(args.limit, 0), args.order)
 
-    print(f"Testing zone: last {len(rows)} record(s) -> sandbox {RECORDS_TEST_DIR} (real archive untouched)")
+    print(f"Testing zone: {args.order} {len(rows)} record(s) -> sandbox {RECORDS_TEST_DIR} (real archive untouched)")
     print("-" * 80)
     for row in rows:
         print(f"  {row['numero']:38}  {row['detail_status']:8}  {row['record_folder']}")
