@@ -257,7 +257,7 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "with_detail_json": 0,
-        "groups": [], "recent": [], "db_exists": ARCHIVE_DB.exists(),
+        "groups": [], "recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -273,6 +273,22 @@ def db_review_stats() -> dict[str, object]:
         def count(where: str = "") -> int:
             sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
             return int(conn.execute(sql).fetchone()[0])
+
+        column_details = []
+        for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
+            name = col[1]
+            nonempty = int(conn.execute(
+                f"SELECT COUNT(*) FROM opportunities WHERE COALESCE(CAST({name} AS TEXT), '') <> ''"
+            ).fetchone()[0])
+            column_details.append({"name": name, "type": col[2], "nonempty": nonempty})
+
+        status_rows = [
+            {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
+            for r in conn.execute(
+                "SELECT detail_status, COUNT(*) AS c FROM opportunities "
+                "GROUP BY detail_status ORDER BY c DESC"
+            ).fetchall()
+        ]
 
         stats = {
             "db_exists": True,
@@ -291,6 +307,8 @@ def db_review_stats() -> dict[str, object]:
                     "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8"
                 ).fetchall()
             ],
+            "columns": column_details,
+            "status_breakdown": status_rows,
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
@@ -1008,7 +1026,7 @@ def run_tk() -> int:
     records_overview.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         records_overview.columnconfigure(col, weight=1, uniform="record_overview")
-    ttk.Label(records_overview, text="Records pending and completed", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ttk.Label(records_overview, text="Records Pendings / Records Completed", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
     pending_var = tk.StringVar(value="Pending records: —")
     completed_var = tk.StringVar(value="Completed records: —")
@@ -1035,19 +1053,23 @@ def run_tk() -> int:
         found = progress.get("RECORDS_FOUND", "-")
         new = progress.get("RECORDS_NEW", "-")
         existing = progress.get("RECORDS_EXISTING", "-")
-        pending_var.set(f"Pending records\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
-        completed_var.set(f"Records completed\nSaved/skipped: {saved}\nFailures needing review: {failed}")
+        pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
+        completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}")
         s = db_review_stats()
         if not s.get("db_exists"):
             set_previous_db_text("Previous database data: no archive database yet.")
             return
         recent = "\n".join(f"  • {num} [{status or 'unknown'}] — {desc[:90]}" for num, desc, status in s.get("recent", [])) or "  • —"
         groups = ", ".join(f"{name}: {qty}" for name, qty in s.get("groups", [])) or "—"
+        statuses = ", ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "—"
+        columns = ", ".join(f"{col['name']}[{col['type'] or 'TEXT'}]={col['nonempty']}" for col in s.get("columns", [])[:24]) or "—"
         set_previous_db_text(
             "Previous database data / all records summary\n"
             f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
             f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
+            f"Detail statuses: {statuses}\n"
             f"Groups: {groups}\n"
+            f"DB elements/columns with data: {columns}\n"
             f"Most recent records:\n{recent}"
         )
 

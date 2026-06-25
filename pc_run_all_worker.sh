@@ -337,7 +337,19 @@ PY
   # nothing to send. It runs only after index, all details, per-record calendars,
   # and calendar packages succeed.
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$VIEW_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    if [ "${PC_NOTIFY_WHATSAPP:-1}" != "0" ]; then
+    NOTIFY_WHATSAPP="${PC_NOTIFY_WHATSAPP:-}"
+    if [ -z "$NOTIFY_WHATSAPP" ] && [ -f data/config/monitor_settings.env ]; then
+      NOTIFY_WHATSAPP="$($PYTHON_BIN - <<'PY'
+from pathlib import Path
+for line in Path("data/config/monitor_settings.env").read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.startswith("PC_NOTIFY_WHATSAPP="):
+        print(line.split("=", 1)[1].strip().strip("\"").strip("'"))
+        break
+PY
+)"
+    fi
+    NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
+    if [ "$NOTIFY_WHATSAPP" != "0" ]; then
       write_progress "MESSAGING" "RUNNING" "96" "Step 5/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
       {
         echo ""
