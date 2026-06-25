@@ -262,13 +262,53 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
+_FOLDER_COMPLETE_RE = re.compile(r"^\[[^\]\[]+\]-\[[^\]\[]+\]-\[[^\]\[]+\]$")
+
+
+def _folder_name_complete(path_text: str) -> bool:
+    leaf = Path(path_text or "").name
+    if not _FOLDER_COMPLETE_RE.match(leaf):
+        return False
+    return "[]" not in leaf and "[unknown]" not in leaf.lower()
+
+
+def _file_exists(path_text: str) -> bool:
+    return bool(path_text) and Path(path_text).exists()
+
+
+def _detail_files_complete(row: sqlite3.Row) -> bool:
+    numero = str(row["numero"] or "")
+    folder = Path(str(row["record_folder"] or ""))
+    detail_json = Path(str(row["detail_json_path"] or "")) if row["detail_json_path"] else folder / "details" / f"{numero}.detail.json"
+    detail_dir = detail_json.parent
+    needed = [
+        detail_json,
+        detail_dir / f"{numero}.detail.html",
+        detail_dir / f"{numero}.detail.txt",
+        detail_dir / f"{numero}.calendar.ics",
+    ]
+    return all(path.exists() for path in needed)
+
+
+def _review_issue(row: sqlite3.Row) -> str:
+    issues = []
+    if not _file_exists(str(row["index_json_path"] or "")):
+        issues.append("missing index JSON")
+    if (row["detail_status"] or "") == "saved" and not _detail_files_complete(row):
+        issues.append("saved detail incomplete")
+    if not _folder_name_complete(str(row["record_folder"] or "")):
+        issues.append("folder name incomplete")
+    if row["detail_status"] in ("pending", "failed"):
+        issues.append(f"detail {row['detail_status']}")
+    return ", ".join(issues)
+
 def db_review_stats() -> dict[str, object]:
     """Aggregate counts for the Database review panel (totals, detail-queue state,
     notification state, and a per-group breakdown). Never raises; a missing/locked
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "notified": 0, "with_detail_json": 0, "possible_pending": 0, "status_changes": 0, "renamed_folders": 0, "calendar_exports": 0, "latest": [], "groups": [], "db_exists": ARCHIVE_DB.exists(),
+        "notified": 0, "with_detail_json": 0, "index_downloaded": 0, "index_json_on_disk": 0, "detail_downloaded": 0, "details_complete": 0, "folder_name_incomplete": 0, "review_needed": 0, "review_rows": [], "possible_pending": 0, "status_changes": 0, "renamed_folders": 0, "calendar_exports": 0, "latest": [], "groups": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -285,12 +325,35 @@ def db_review_stats() -> dict[str, object]:
             sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
             return int(conn.execute(sql).fetchone()[0])
 
+        rows = conn.execute("SELECT numero, detail_status, record_folder, index_json_path, detail_json_path FROM opportunities").fetchall()
+        review_rows = []
+        index_json_on_disk = 0
+        details_complete = 0
+        folder_name_incomplete = 0
+        for row in rows:
+            if _file_exists(str(row["index_json_path"] or "")):
+                index_json_on_disk += 1
+            if _detail_files_complete(row):
+                details_complete += 1
+            if not _folder_name_complete(str(row["record_folder"] or "")):
+                folder_name_incomplete += 1
+            issue = _review_issue(row)
+            if issue:
+                review_rows.append({"numero": str(row["numero"] or ""), "detail_status": str(row["detail_status"] or ""), "issue": issue, "folder": Path(str(row["record_folder"] or "")).name})
+
         stats = {
             "db_exists": True,
             "total": count(),
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "index_downloaded": count("COALESCE(index_downloaded_at, '') <> ''"),
+            "index_json_on_disk": index_json_on_disk,
+            "detail_downloaded": count("COALESCE(detail_saved_at, '') <> ''"),
+            "details_complete": details_complete,
+            "folder_name_incomplete": folder_name_incomplete,
+            "review_needed": len(review_rows),
+            "review_rows": review_rows[:12],
             "possible_pending": count("detail_status <> 'saved' OR COALESCE(detail_json_path, '') = ''"),
             "status_changes": count("COALESCE(pending_status_change, '') <> '' OR COALESCE(status_changed_at, '') <> ''"),
             "renamed_folders": count("COALESCE(folder_renamed_at, '') <> ''"),
@@ -1409,10 +1472,14 @@ def run_tk() -> int:
             db_review_var.set("No database yet (data/panamacompra_archive.db). Run the collector first.")
             return
         groups = "   ·   ".join(f"{name}: {qty}" for name, qty in s["groups"]) or "—"
+        review = "\n".join(f"  {r['numero']} | {r['issue']} | {r.get('folder', '')}" for r in s.get("review_rows", [])) or "  none"
         db_review_var.set(
             f"Total records: {s['total']}\n"
-            f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
-            f"Detail JSON on record: {s['with_detail_json']}   ·   Notified (WAHA): {s['notified']}\n"
+            f"Index   ·   inserted/downloaded: {s['index_downloaded']}   ·   JSON on disk: {s['index_json_on_disk']}/{s['total']}\n"
+            f"Detail  ·   saved: {s['saved']}   ·   downloaded time set: {s['detail_downloaded']}   ·   complete files: {s['details_complete']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
+            f"Review needed   ·   total: {s['review_needed']}   ·   folder names incomplete: {s['folder_name_incomplete']}   ·   possible pending/incomplete: {s['possible_pending']}\n"
+            f"Other   ·   Detail JSON in DB: {s['with_detail_json']}   ·   Status changes: {s['status_changes']}   ·   Calendar exports: {s['calendar_exports']}   ·   Notified (WAHA): {s['notified']}\n"
+            f"Review area (first 12):\n{review}\n"
             f"By group   ·   {groups}"
         )
 

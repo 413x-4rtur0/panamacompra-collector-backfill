@@ -468,7 +468,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
 5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `pc_start_webhook_listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
 
-Transparency, refresh cadence, WhatsApp/calendar toggles, section Hide/Show state and the auto-close countdown can all be changed from the monitor without restarting a run. The web monitor (`pc_monitor_server.py`) exposes the same ETA, toggles, path settings, multi-select record-index actions, downloaded-date filter and `/api/record-index` endpoint.
+Transparency, refresh cadence, WhatsApp/calendar toggles, section Hide/Show state and the auto-close countdown can all be changed from the monitor without restarting a run. The Database review section now shows index insertion/download counts, index JSON files found on disk, detail saved/downloaded/completed counts, and a review area listing records whose detail files are incomplete, whose index JSON is missing, whose detail status is pending/failed, or whose folder name is missing the expected `[finish]-[numero]-[desc]` fields. The web monitor (`pc_monitor_server.py`) exposes the same ETA, toggles, path settings, multi-select record-index actions, downloaded-date filter and `/api/record-index` endpoint.
 
 ### Optional WAHA private WhatsApp group alerts
 
