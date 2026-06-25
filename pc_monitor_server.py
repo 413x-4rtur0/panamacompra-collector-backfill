@@ -405,7 +405,7 @@ def status_payload() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
-        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() in {"LIVE", "AUTO", "RESTART"} and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 20),
@@ -683,10 +683,10 @@ function applyRecordFilter() {{
   const sel = document.getElementById('record-index');
   sel.innerHTML = recordFiltered.map((r, i) => {{
     const st = expiryStatus(r);
-    const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
+    const tag = parseDeadline(r) ? deadlineText(r).slice(0, 16) : 'no date';
     const dl = parseDownloaded(r);
     const downloaded = dl ? downloadedText(r) : 'not local';
-    const label = '[DL ' + downloaded + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    const label = '[Downloaded ' + downloaded + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
     return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
   }}).join('');
   renderRecordDetail();
@@ -833,7 +833,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}, starting from {detail_order}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99", "RESTART"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "0", "RESTART", "0"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_text(202, "Restart-pending run requested with normal configured limits.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":

@@ -3,7 +3,7 @@ import os
 from playwright.sync_api import sync_playwright
 from pc_common import *
 
-MAX_PAGES_PER_GROUP = env_int("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "20"), minimum=1)
+MAX_PAGES_PER_GROUP = env_int("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "20"), minimum=0)
 
 GROUPS = [
     {"name": "Programadas", "radio_id": "btnradio2"},
@@ -241,7 +241,8 @@ def main():
             set_rows_to_50(page)
             go_first_page(page)
 
-            for page_number in range(1, MAX_PAGES_PER_GROUP + 1):
+            page_number = 1
+            while MAX_PAGES_PER_GROUP == 0 or page_number <= MAX_PAGES_PER_GROUP:
                 wait_for_table(page)
                 rows = extract_rows(page, group_name, page_number)
 
@@ -249,9 +250,10 @@ def main():
                 page_counts.append((group_name, page_number, len(rows)))
 
                 group_index = GROUPS.index(group)
-                overall_page = group_index * MAX_PAGES_PER_GROUP + page_number
-                total_pages_budget = len(GROUPS) * MAX_PAGES_PER_GROUP
-                percent = 10 + int(40 * overall_page / total_pages_budget)
+                page_budget = MAX_PAGES_PER_GROUP if MAX_PAGES_PER_GROUP > 0 else max(page_number + 1, 2)
+                overall_page = group_index * page_budget + page_number
+                total_pages_budget = len(GROUPS) * page_budget
+                percent = min(50, 10 + int(40 * overall_page / total_pages_budget))
                 write_run_progress(
                     "INDEX",
                     "RUNNING",
@@ -361,7 +363,8 @@ def main():
                 if not moved:
                     stop_reasons.append(f"{group_name}: {reason}")
                     break
-            else:
+                page_number += 1
+            if MAX_PAGES_PER_GROUP > 0 and page_number > MAX_PAGES_PER_GROUP:
                 stop_reasons.append(f"{group_name}: MAX_PAGES_PER_GROUP reached")
 
         browser.close()
@@ -372,7 +375,7 @@ def main():
     summary_lines = [
         f"INDEX RUN started: {run_started}",
         f"INDEX RUN finished: {now_iso()}",
-        f"MAX_PAGES_PER_GROUP: {MAX_PAGES_PER_GROUP}",
+        f"MAX_PAGES_PER_GROUP: {MAX_PAGES_PER_GROUP if MAX_PAGES_PER_GROUP else 'unlimited'}",
         f"Stop reasons: {' | '.join(stop_reasons)}",
         "",
         f"Rows extracted total from site: {extracted_total}",
@@ -408,7 +411,7 @@ def main():
         step_current=1,
         step_total=5,
         item_current=len(page_counts),
-        item_total=len(GROUPS) * MAX_PAGES_PER_GROUP,
+        item_total=(len(GROUPS) * MAX_PAGES_PER_GROUP) if MAX_PAGES_PER_GROUP else "unlimited",
         records_found=extracted_total,
         records_new=new_records,
         records_existing=existing_records,

@@ -778,7 +778,7 @@ def run_tk() -> int:
             subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}, starting from {detail_order}.")
             return
-        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "99", "RESTART"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), "0", "RESTART", "0"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Restart-pending run requested with normal configured limits.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
@@ -1151,9 +1151,9 @@ def run_tk() -> int:
         downloaded = parse_downloaded(rec)
         downloaded_part = downloaded.strftime("%y-%m-%d %H:%M") if downloaded else "not local"
         dt = parse_deadline(rec)
-        dtend = dt.strftime("%y-%m-%d") if dt else "no date"
+        dtend = dt.strftime("%Y-%m-%d %H:%M") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
-        return f"[DL {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
+        return f"[Downloaded {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
 
     def selected_records() -> list[dict[str, str]]:
         records: list[dict[str, str]] = []

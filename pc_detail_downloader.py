@@ -329,7 +329,7 @@ def row_archive_is_current(row):
 
 
 def detail_pending_rows(conn, limit, max_attempts, order="oldest"):
-    if limit <= 0:
+    if limit < 0:
         return []
 
     # Skip rows that have already failed too many times, so a permanently broken
@@ -352,7 +352,7 @@ def detail_pending_rows(conn, limit, max_attempts, order="oldest"):
     for row in candidates:
         if row["detail_status"] != "saved" or not row_archive_is_current(row):
             pending.append(row)
-            if len(pending) >= limit:
+            if limit > 0 and len(pending) >= limit:
                 break
     return pending
 
