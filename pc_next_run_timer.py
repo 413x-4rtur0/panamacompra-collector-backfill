@@ -76,7 +76,12 @@ def is_live_run_active() -> bool:
     if subprocess.run(["pgrep", "-f", "[p]c_run_all_worker.sh"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
         return True
     values = progress_values()
-    return values.get("MODE") == "LIVE" and (values.get("PHASE") in ACTIVE_PHASES or values.get("STATUS") in ACTIVE_STATUSES)
+    # The worker process is the authoritative signal; the progress file is the
+    # fallback for the brief windows around start/stop. A sandbox TEST run never
+    # hides the "next live run" countdown — it does not touch the real schedule.
+    if values.get("MODE", "").strip().upper() == "TEST":
+        return False
+    return values.get("PHASE") in ACTIVE_PHASES or values.get("STATUS") in ACTIVE_STATUSES
 
 
 def _parse_progress_timestamp(text: str) -> datetime | None:
@@ -92,14 +97,16 @@ def _parse_progress_timestamp(text: str) -> datetime | None:
 
 
 def last_live_run_start() -> datetime | None:
-    """When the most recent live run started, taken from the progress file.
+    """When the most recent real run started, taken from the progress file.
 
     The countdown is anchored to the real previous run, so it reflects when the
     next run is actually due (last start + interval) rather than an arbitrary
-    wall-clock boundary.
+    wall-clock boundary. A sandbox TEST run is ignored: it does not advance the
+    real collection schedule, so the countdown keeps using the last real run (or
+    the clock fallback) instead.
     """
     values = progress_values()
-    if values.get("MODE") and values.get("MODE") != "LIVE":
+    if values.get("MODE", "").strip().upper() == "TEST":
         return None
     return _parse_progress_timestamp(values.get("STARTED_AT", "")) or _parse_progress_timestamp(values.get("UPDATED_AT", ""))
 

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from pc_common import *
@@ -488,7 +489,10 @@ def process_detail(browser, conn, row, force=False):
             text, tables, numero, dtstamp=saved_at, link=row["link"]
         )
         start_date_guess = calendar.get("dtstart") or ""
-        finish_date_guess = finish_date_guess or calendar.get("dtend") or finish_stamp
+        # Keep the DB deadline coherent with the folder finish-stamp and the
+        # per-record .ics: all three derive from the same calendar close window.
+        # The looser free-text guess is only a last resort when that found nothing.
+        finish_date_guess = calendar.get("dtend") or finish_stamp or finish_date_guess
         summary["date_start_opportunity"] = start_date_guess
         summary["date_end_opportunity"] = calendar.get("dtend") or finish_date_guess
         summary["date_downloaded_local"] = saved_at
@@ -602,6 +606,16 @@ def process_detail(browser, conn, row, force=False):
     finally:
         page.close()
 
+def detail_eta_text(done, total, elapsed_seconds, prev_avg_seconds):
+    """Monitor ETA string for the detail phase: estimated time for the detail
+    pages still pending in this batch. '-' when no pace is known yet."""
+    secs = eta_seconds_from_counts(done, total, elapsed_seconds, prev_avg_seconds)
+    if secs is None:
+        return "-"
+    remaining = max(0, int(total) - int(done))
+    return f"{format_duration(secs)} (~{remaining} pendiente(s))"
+
+
 def main():
     conn = init_db()
 
@@ -652,8 +666,14 @@ def main():
         )
 
         total_rows = len(rows)
+        # Count-based ETA: time each detail page and project the ones still
+        # pending. The first item has no live measurement yet, so it falls back
+        # to the average seconds/detail recorded by the previous run.
+        prev_detail_avg = previous_phase_avg_seconds(DETAIL_TIMING_PATH)
+        loop_start = time.monotonic()
         for index, row in enumerate(rows, start=1):
             percent = 55 + int(40 * (index - 1) / max(total_rows, 1))
+            elapsed = time.monotonic() - loop_start
             write_run_progress(
                 "DETAIL",
                 "RUNNING",
@@ -665,6 +685,7 @@ def main():
                 item_total=total_rows,
                 records_saved=saved + skipped,
                 records_failed=failed,
+                eta=detail_eta_text(index - 1, total_rows, elapsed, prev_detail_avg),
                 extra=f"current_numero={row['numero']}",
             )
 
@@ -676,6 +697,7 @@ def main():
             else:
                 failed += 1
 
+            elapsed = time.monotonic() - loop_start
             write_run_progress(
                 "DETAIL",
                 "RUNNING",
@@ -687,9 +709,12 @@ def main():
                 item_total=total_rows,
                 records_saved=saved + skipped,
                 records_failed=failed,
+                eta=detail_eta_text(index, total_rows, elapsed, prev_detail_avg),
                 extra=f"last_numero={row['numero']}; result={result}",
             )
 
+        # Remember this run's pace so the next run can show an ETA immediately.
+        record_phase_timing(DETAIL_TIMING_PATH, seconds=time.monotonic() - loop_start, count=total_rows)
         browser.close()
 
     pending = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]

@@ -27,7 +27,7 @@ import hashlib
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pc_common
@@ -68,11 +68,87 @@ def cfg(name: str, default: str) -> str:
     return _SETTINGS_FILE.get(name, default)
 
 
+def cfg_bool(name: str, default: bool = False) -> bool:
+    return cfg(name, "1" if default else "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def cfg_int(name: str):
+    raw = cfg(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 SOURCE_NAME = cfg("PC_WAHA_SOURCE", "Panamá Compra")
 
 
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def fmt_dt(value, *, with_time: bool = True) -> str:
+    """Normalize a stored date/datetime string to 'YYYY-MM-DD HH:MM' (or a bare
+    date when no time is present), so WhatsApp messages show consistent dates and
+    times. Falls back to the cleaned original when it cannot be parsed."""
+    raw = clean_field(value)
+    if raw == DASH:
+        return DASH
+    text = raw.replace("T", " ").replace("_", " ").strip()
+    formats = (
+        ("%Y-%m-%d %H:%M:%S", True),
+        ("%Y-%m-%d %H:%M", True),
+        ("%Y-%m-%d", False),
+        ("%d/%m/%Y %H:%M", True),
+        ("%d/%m/%Y", False),
+    )
+    for candidate in (text, text[:19], text[:16], text[:10]):
+        for fmt, has_time in formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            return parsed.strftime("%Y-%m-%d %H:%M" if (with_time and has_time) else "%Y-%m-%d")
+    return raw
+
+
+def parse_finish_date(row):
+    """The record deadline (finish_date_guess) as a datetime, or None."""
+    raw = (row["finish_date_guess"] or "").strip().replace("_", " ").replace("T", " ")
+    if not raw:
+        return None
+    for candidate in (raw, raw[:19], raw[:16], raw[:10]):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def deadline_decision(row) -> str:
+    """Whether a record's deadline lets it be announced now.
+
+    Returns 'ok', 'expired' (deadline already passed → skip and never recheck) or
+    'too_far' (deadline beyond the configured window → skip now, recheck later as
+    time moves it into range). Controlled by PC_NOTIFY_SKIP_EXPIRED (0/1) and
+    PC_NOTIFY_WITHIN_DAYS (int); both default off so every record is announced
+    unless the operator opts in (env or monitor_settings.env)."""
+    skip_expired = cfg_bool("PC_NOTIFY_SKIP_EXPIRED", False)
+    within_days = cfg_int("PC_NOTIFY_WITHIN_DAYS")
+    if not skip_expired and within_days is None:
+        return "ok"
+    deadline = parse_finish_date(row)
+    if deadline is None:
+        return "ok"  # no detectable deadline → never suppress on date grounds
+    now = datetime.now()
+    if skip_expired and deadline < now:
+        return "expired"
+    if within_days is not None and deadline > now + timedelta(days=within_days):
+        return "too_far"
+    return "ok"
 
 
 def waha_enabled() -> bool:
@@ -223,8 +299,8 @@ def record_location(summary: dict) -> str:
 
 
 def date_range(row, summary: dict) -> str:
-    start = clean_field(row["fecha"] or summary.get("fecha_de_publicacion"))
-    end = clean_field(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion"))
+    start = fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion"))
+    end = fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion"))
     return f"{start} al {end}" if start != DASH or end != DASH else DASH
 
 
@@ -234,8 +310,8 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     title = clean_field(row["descripcion"] or row["short_description"] or summary.get("descripcion"))
     location = record_location(summary)
     url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
-    created = clean_field(row["first_seen"] or row["fecha"])
-    downloaded = clean_field(row["detail_saved_at"] or now_str())
+    created = fmt_dt(row["first_seen"] or row["fecha"])
+    downloaded = fmt_dt(row["detail_saved_at"] or now_str())
     numero = clean_field(row["numero"])
 
     if variant == "new":
@@ -448,6 +524,15 @@ def notify_saved_record(conn, numero: str) -> bool:
             return False
         row = fetch_row(conn, numero)
         if row is None or row["detail_status"] != "saved" or row["notified_at"]:
+            return False
+        decision = deadline_decision(row)
+        if decision == "expired":
+            # Past its deadline: never actionable, so mark done and stay quiet.
+            mark_notified(conn, numero)
+            return False
+        if decision == "too_far":
+            # Beyond the announce window for now; leave it unmarked so a later
+            # run re-checks it once the deadline moves into range.
             return False
         summary = load_detail_summary(row["detail_json_path"])
         match_line = match_line_for(row, summary, load_keywords())
