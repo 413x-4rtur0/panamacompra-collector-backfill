@@ -390,10 +390,10 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
     finally:
         page.close()
 
-    _, table_descriptors = save_table_jsons(Path(row["record_folder"]), row["numero"], tables, overwrite=True)
+    _, table_descriptors = save_table_jsons(detail_json_path.parent, row["numero"], tables, overwrite=True)
 
     n = safe_name(row["numero"])
-    txt_path = Path(row["record_folder"]) / f"{n}.detail.txt"
+    txt_path = detail_json_path.parent / f"{n}.detail.txt"
     text = txt_path.read_text(encoding="utf-8", errors="ignore") if txt_path.exists() else ""
     finish_stamp, slug, proposed_folder_name = naming_fields(tables, text, row)
 
@@ -432,7 +432,7 @@ def refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_p
         "views_schema_version": VIEWS_SCHEMA_VERSION,
     })
     detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_calendar_ics(Path(row["record_folder"]) / f"{n}.calendar.ics", calendar)
+    write_calendar_ics(detail_json_path.parent / f"{n}.calendar.ics", calendar)
     return proposed_folder_name
 
 def process_detail(browser, conn, row, force=False):
@@ -448,9 +448,11 @@ def process_detail(browser, conn, row, force=False):
     record_folder.mkdir(parents=True, exist_ok=True)
 
     n = safe_name(numero)
-    html_path = record_folder / f"{n}.detail.html"
-    txt_path = record_folder / f"{n}.detail.txt"
-    detail_json_path = record_folder / f"{n}.detail.json"
+    detail_dir = record_detail_dir(record_folder)
+    detail_dir.mkdir(parents=True, exist_ok=True)
+    html_path = detail_dir / f"{n}.detail.html"
+    txt_path = detail_dir / f"{n}.detail.txt"
+    detail_json_path = archive_detail_json_path(record_folder, numero)
 
     if not force and html_path.exists() and txt_path.exists() and detail_json_path.exists():
         # "Complete" here must mean the SAME thing as archive_complete (the gate
@@ -497,7 +499,7 @@ def process_detail(browser, conn, row, force=False):
         else:
             write_text_once(html_path, html)
             write_text_once(txt_path, text)
-        tables_written, table_descriptors = save_table_jsons(record_folder, numero, tables, overwrite=force)
+        tables_written, table_descriptors = save_table_jsons(detail_dir, numero, tables, overwrite=force)
 
         detail_data = {
             "numero": numero,
@@ -534,8 +536,8 @@ def process_detail(browser, conn, row, force=False):
                 "detail_json": str(detail_json_path),
                 "detail_html": str(html_path),
                 "detail_txt": str(txt_path),
-                "calendar_ics": str(record_folder / f"{n}.calendar.ics"),
-                "tables_folder": str(record_folder / "tables"),
+                "calendar_ics": str(detail_dir / f"{n}.calendar.ics"),
+                "tables_folder": str(detail_dir / "tables"),
             }
         }
 
@@ -543,8 +545,8 @@ def process_detail(browser, conn, row, force=False):
             detail_json_path.write_text(json.dumps(detail_data, ensure_ascii=False, indent=2), encoding="utf-8")
         else:
             write_json_once(detail_json_path, detail_data)
-        if force or not (record_folder / f"{n}.calendar.ics").exists():
-            write_calendar_ics(record_folder / f"{n}.calendar.ics", calendar)
+        if force or not (detail_dir / f"{n}.calendar.ics").exists():
+            write_calendar_ics(detail_dir / f"{n}.calendar.ics", calendar)
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
         maybe_rename_folder(conn, row, proposed_folder_name)
 

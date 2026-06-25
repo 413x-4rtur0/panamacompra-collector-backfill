@@ -613,15 +613,16 @@ panamacompra-collector/
 └── records/                                   # archive (gitignored)
     └── YY-MM-DD/
         └── [<finish>]-[<numero>]-[<desc>]/     # created as NUMERO, then renamed (see Record folder naming)
-            ├── NUMERO.json                     # index record
-            ├── NUMERO.detail.json              # detail metadata
-            ├── NUMERO.detail.html              # full page HTML
-            ├── NUMERO.detail.txt               # visible text
-            ├── NUMERO.calendar.ics             # importable calendar event
-            └── tables/                         # one detail-page section -> three files:
-                ├── NUMERO.table.<section>.001.json         # clean: headers/rows/key_values/links
-                ├── NUMERO.table.<section>.001.raw.json     # raw rows
-                └── NUMERO.table.<section>.001.raw_wL.json  # raw rows with links
+            ├── NUMERO.json                     # index record (kept separate at folder root)
+            └── details/                        # downloaded detail artifacts, separated from index JSON
+                ├── NUMERO.detail.json          # detail metadata / summary / items / links
+                ├── NUMERO.detail.html          # full page HTML
+                ├── NUMERO.detail.txt           # visible text
+                ├── NUMERO.calendar.ics         # importable calendar event
+                └── tables/                     # one detail-page section -> three files:
+                    ├── NUMERO.table.<section>.001.json         # clean: headers/rows/key_values/links
+                    ├── NUMERO.table.<section>.001.raw.json     # raw rows
+                    └── NUMERO.table.<section>.001.raw_wL.json  # raw rows with links
 ```
 
 `<section>` is a short identifier derived from the detail-page section heading
@@ -703,8 +704,9 @@ Recommended review/test commands before and after applying updates:
 Use `pc_update_day_folder.py --date YY-MM-DD --apply` when previous records
 need to be **fetched/re-fetched from the live portal** instead of just renamed
 or rebuilt from saved detail files. This includes index-only folders that have
-`NUMERO.json` but do not yet have `NUMERO.detail.json`, `NUMERO.detail.html`,
-or `NUMERO.detail.txt`.
+`NUMERO.json` but do not yet have separated `details/NUMERO.detail.json`,
+`details/NUMERO.detail.html`, or `details/NUMERO.detail.txt` artifacts. Legacy
+root-level detail files are still detected when present.
 
 ### Detail tables and links
 

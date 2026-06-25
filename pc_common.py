@@ -852,7 +852,7 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
     current.rename(target)
     n = safe_name(numero)
     index_json = target / f"{n}.json"
-    detail_json = target / f"{n}.detail.json"
+    detail_json = existing_detail_json_path(target, numero)
     conn.execute(
         "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
         "detail_json_path = ?, folder_renamed_at = ? WHERE numero = ?",
@@ -866,10 +866,10 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
         data["files"] = {
             "index_json": str(index_json),
             "detail_json": str(detail_json),
-            "detail_html": str(target / f"{n}.detail.html"),
-            "detail_txt": str(target / f"{n}.detail.txt"),
-            "calendar_ics": str(target / f"{n}.calendar.ics"),
-            "tables_folder": str(target / "tables"),
+            "detail_html": str(detail_json.parent / f"{n}.detail.html"),
+            "detail_txt": str(detail_json.parent / f"{n}.detail.txt"),
+            "calendar_ics": str(detail_json.parent / f"{n}.calendar.ics"),
+            "tables_folder": str(detail_json.parent / "tables"),
         }
         data["folder_renamed_from"] = str(current)
         data["folder_renamed_at"] = now_iso()
@@ -1001,8 +1001,22 @@ def get_record_folder(date_folder, numero):
 def archive_index_json_path(record_folder, numero):
     return record_folder / f"{safe_name(numero)}.json"
 
+DETAILS_SUBDIR_NAME = "details"
+
+def record_detail_dir(record_folder):
+    """Folder for downloaded detail artifacts, separated from index JSON."""
+    return Path(record_folder) / DETAILS_SUBDIR_NAME
+
 def archive_detail_json_path(record_folder, numero):
-    return record_folder / f"{safe_name(numero)}.detail.json"
+    return record_detail_dir(record_folder) / f"{safe_name(numero)}.detail.json"
+
+def existing_detail_json_path(record_folder, numero):
+    """Prefer the separated detail JSON path, but accept legacy root files."""
+    new_path = archive_detail_json_path(record_folder, numero)
+    if new_path.exists():
+        return new_path
+    legacy_path = Path(record_folder) / f"{safe_name(numero)}.detail.json"
+    return legacy_path if legacy_path.exists() else new_path
 
 def find_existing_record_archive(numero, records_dir=RECORDS_DIR, date_folder=None):
     """Find an on-disk archive folder for ``numero`` even after folder renames.
@@ -1036,13 +1050,14 @@ def archive_complete(record_folder, numero):
     instead of leaving folders like ``[]-[NUMERO]-[DESC]`` stuck forever.
     """
     n = safe_name(numero)
-    detail_json = record_folder / f"{n}.detail.json"
+    detail_json = existing_detail_json_path(record_folder, numero)
+    detail_dir = detail_json.parent
     required = [
         record_folder / f"{n}.json",
         detail_json,
-        record_folder / f"{n}.detail.html",
-        record_folder / f"{n}.detail.txt",
-        record_folder / f"{n}.calendar.ics",
+        detail_dir / f"{n}.detail.html",
+        detail_dir / f"{n}.detail.txt",
+        detail_dir / f"{n}.calendar.ics",
     ]
     if not record_folder.exists() or not all(path.exists() for path in required):
         return False

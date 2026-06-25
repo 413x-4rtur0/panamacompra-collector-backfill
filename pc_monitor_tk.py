@@ -226,6 +226,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(detail_json_path, '') AS detail_json_path, "
             "COALESCE(index_downloaded_at, first_seen, '') AS index_downloaded_at, "
             "COALESCE(last_seen, '') AS last_seen, "
             "COALESCE(status_changed_at, '') AS status_changed_at, "
@@ -249,6 +250,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "detail_json_path": str(row["detail_json_path"] or ""),
             "index_downloaded_at": str(row["index_downloaded_at"] or ""),
             "last_seen": str(row["last_seen"] or ""),
             "status_changed_at": str(row["status_changed_at"] or ""),
@@ -1284,6 +1286,20 @@ def run_tk() -> int:
         subprocess.Popen([str(BASE_DIR / "pc_import_selected_calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
 
+    def open_selected_detail_folder() -> None:
+        rec = selected_record()
+        if not rec:
+            button_status_var.set("Select a record from the list first.")
+            return
+        detail_path = rec.get("detail_json_path") or ""
+        folder = Path(detail_path).parent if detail_path else Path(rec["record_folder"]) / "details"
+        if not folder.exists():
+            button_status_var.set(f"Details folder not found on disk for {rec['numero'] or 'the selection'}.")
+            return
+        opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
+        subprocess.Popen([opener, str(folder)], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Opened details folder for {rec['numero']}.")
+
     def open_selected_portal() -> None:
         rec = selected_record()
         if not rec:
@@ -1309,14 +1325,17 @@ def run_tk() -> int:
     refresh_index_button.grid(row=0, column=0, padx=(0, 8))
     open_folder_button = ttk.Button(index_buttons, text="Open record folder", command=open_selected_folder)
     open_folder_button.grid(row=0, column=1, padx=(0, 8))
+    open_detail_folder_button = ttk.Button(index_buttons, text="Open details folder", command=open_selected_detail_folder)
+    open_detail_folder_button.grid(row=0, column=2, padx=(0, 8))
     open_portal_button = ttk.Button(index_buttons, text="Open in portal", command=open_selected_portal)
-    open_portal_button.grid(row=0, column=2, padx=(0, 8))
+    open_portal_button.grid(row=0, column=3, padx=(0, 8))
     notify_selected_button = ttk.Button(index_buttons, text="Notify selected WhatsApp", command=notify_selected_records)
-    notify_selected_button.grid(row=0, column=3, padx=(0, 8))
+    notify_selected_button.grid(row=0, column=4, padx=(0, 8))
     import_selected_button = ttk.Button(index_buttons, text="Import selected calendars", command=import_selected_calendars)
-    import_selected_button.grid(row=0, column=4, padx=(0, 8))
+    import_selected_button.grid(row=0, column=5, padx=(0, 8))
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
     add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
+    add_tooltip(open_detail_folder_button, "Open the separated details/ folder for the selected record.")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
     add_tooltip(notify_selected_button, "Send WhatsApp notifications for all selected records (Ctrl/Shift-click to select several).")
     add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
