@@ -18,6 +18,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
+LAST_SUMMARY_FILE = BASE_DIR / "data" / "logs" / "run_all_last_summary.env"
 ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
 INTERVAL_MINUTES = max(1, int(os.environ.get("PC_NEXT_RUN_INTERVAL_MINUTES", "30")))
 # Fixed window size. Bigger by default than the old timer because it now carries
@@ -45,6 +46,30 @@ def progress_values() -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip("'\"")
     return values
+
+
+def last_summary_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not LAST_SUMMARY_FILE.exists():
+        return values
+    for line in LAST_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def duration_parts_text(values: dict[str, str]) -> str:
+    if not values:
+        return "Prev duration: —"
+    total = values.get("TOTAL_TEXT") or "—"
+    index = values.get("INDEX_SECONDS", "0")
+    detail = values.get("DETAIL_SECONDS", "0")
+    views = values.get("VIEW_SECONDS", "0")
+    calendar = values.get("CALENDAR_SECONDS", "0")
+    messaging = values.get("MESSAGING_SECONDS", "0")
+    return f"Prev duration: {total} (idx {index}s · det {detail}s · store {views}s · cal {calendar}s · msg {messaging}s)"
 
 
 def is_live_run_active() -> bool:
@@ -196,6 +221,8 @@ def main() -> int:
     tk.Label(root, textvariable=summary_var, font=("Sans", 9), bg="#1e293b", fg="#e5e7eb").pack(pady=0)
     lastrun_var = tk.StringVar(value="")
     tk.Label(root, textvariable=lastrun_var, font=("Sans", 8), bg="#1e293b", fg="#94a3b8").pack(pady=0)
+    duration_var = tk.StringVar(value="Prev duration: —")
+    tk.Label(root, textvariable=duration_var, font=("Sans", 8), bg="#1e293b", fg="#cbd5e1", wraplength=WINDOW_WIDTH - 24).pack(pady=0)
 
     tk.Label(root, text="Latest records", font=("Sans", 8, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(4, 0))
 
@@ -253,6 +280,7 @@ def main() -> int:
         last_start = values.get("STARTED_AT", "") or "—"
         last_status = values.get("STATUS", "") or "—"
         lastrun_var.set(f"Last run: {last_start}  ·  {last_status}")
+        duration_var.set(_truncate(duration_parts_text(last_summary_values()), 96))
         if latest:
             # Newest first: each entry leads with its download date (YY-MM-DD) so
             # the list reads latest -> oldest at a glance.
