@@ -636,9 +636,9 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    # The logs pane (now row 8, after the Database review and Reset sections) is
-    # the one that should absorb extra vertical space.
-    content.rowconfigure(9, weight=1)
+    # The logs pane (after record/database sections plus reset actions) is the
+    # one that should absorb extra vertical space.
+    content.rowconfigure(11, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -1035,7 +1035,7 @@ def run_tk() -> int:
     records_overview.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         records_overview.columnconfigure(col, weight=1, uniform="record_overview")
-    ttk.Label(records_overview, text="Records Pendings / Records Completed", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ttk.Label(records_overview, text="Records summary counters", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
     pending_var = tk.StringVar(value="Pending records: —")
     completed_var = tk.StringVar(value="Completed records: —")
@@ -1086,13 +1086,84 @@ def run_tk() -> int:
             f"Most recent records:\n{recent}"
         )
 
+    add_section_toggle(records_overview, button_column=1)
+
+    def make_status_browser(title: str, detail_status: str, row: int) -> None:
+        frame = ttk.Frame(content, style="Card.TFrame", padding=14)
+        frame.grid(row=row, column=0, sticky="ew", padx=14, pady=8)
+        frame.columnconfigure(1, weight=1)
+        ttk.Label(frame, text=title, style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        filter_var = tk.StringVar(value="")
+        ttk.Label(frame, text="Search:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        filter_entry = ttk.Entry(frame, textvariable=filter_var)
+        filter_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
+        listbox = tk.Listbox(frame, height=6, activestyle="none", exportselection=False,
+                             bg="#020617", fg="#e5e7eb", selectbackground="#2563eb",
+                             selectforeground="#ffffff", highlightthickness=0, borderwidth=0, font=("Sans", 9))
+        listbox.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(4, 6))
+        records: list[dict[str, str]] = []
+
+        def label(rec: dict[str, str]) -> str:
+            return f"{rec.get('numero') or '(sin número)'} — ends {deadline_text(rec)} — {rec.get('descripcion') or '(sin descripción)'}"
+
+        def selected() -> dict[str, str] | None:
+            sel = listbox.curselection()
+            return records[sel[0]] if sel else None
+
+        def refresh_list(*_args: object) -> None:
+            nonlocal records
+            needle = filter_var.get().strip().lower()
+            records = [
+                rec for rec in load_record_index(limit=1000)
+                if (rec.get("detail_status") or "").lower() == detail_status
+                and (not needle or needle in label(rec).lower())
+            ]
+            records.sort(key=lambda rec: (parse_deadline(rec) or datetime.max))
+            listbox.delete(0, "end")
+            for rec in records:
+                listbox.insert("end", label(rec))
+            if records:
+                listbox.selection_set(0)
+
+        def open_folder_for_selection() -> None:
+            rec = selected()
+            if not rec:
+                button_status_var.set(f"Select a record in {title} first.")
+                return
+            folder = rec.get("record_folder") or ""
+            if not folder or not Path(folder).exists():
+                button_status_var.set(f"Record folder not found for {rec.get('numero') or 'selection'}.")
+                return
+            subprocess.Popen([os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open"), folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def open_portal_for_selection() -> None:
+            rec = selected()
+            if rec and rec.get("link"):
+                subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                button_status_var.set(f"No portal link for the selected {title} record.")
+
+        refresh_btn = ttk.Button(frame, text="Refresh", command=refresh_list)
+        refresh_btn.grid(row=3, column=0, sticky="w", padx=(0, 8))
+        folder_btn = ttk.Button(frame, text="Open folder", command=open_folder_for_selection)
+        folder_btn.grid(row=3, column=1, sticky="w", padx=(0, 8))
+        portal_btn = ttk.Button(frame, text="Open portal", command=open_portal_for_selection)
+        portal_btn.grid(row=3, column=2, sticky="w", padx=(0, 8))
+        add_tooltip(filter_entry, f"Filter records in {title} by NUMERO, deadline or description.")
+        filter_var.trace_add("write", refresh_list)
+        refresh_list()
+        add_section_toggle(frame, button_column=3)
+
+    make_status_browser("Records Pendings", "pending", 5)
+    make_status_browser("Records Completed", "saved", 6)
+
     # ========================================================================
     # SECTION 5: RECORD INDEX - pick a collected record by NUMERO + description
     # and open its archive folder or the portal page. Populated read-only from
     # data/panamacompra_archive.db; empty until the collector has run.
     # ========================================================================
     record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    record_index.grid(row=8, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
     ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
@@ -1343,7 +1414,7 @@ def run_tk() -> int:
     add_tooltip(import_selected_button, "Export/open calendar ICS files for all selected records (Ctrl/Shift-click to select several).")
 
     refresh_index_list()
-    add_section_toggle(record_index, button_column=2, start_hidden=False)
+    add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
@@ -1351,7 +1422,7 @@ def run_tk() -> int:
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1399,7 +1470,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -1422,7 +1493,7 @@ def run_tk() -> int:
     db_review_refresh_button = ttk.Button(db_review, text="Refresh DB snapshot", command=refresh_db_review)
     db_review_refresh_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
     add_tooltip(db_review_refresh_button, "Re-read the archive database and refresh these review counts.")
-    add_section_toggle(db_review, button_column=1, start_hidden=False)
+    add_section_toggle(db_review, button_column=1)
 
     # ========================================================================
     # SECTION 7: RESET / REVIEW FROM ZERO - separate buttons (per the operator's
@@ -1431,7 +1502,7 @@ def run_tk() -> int:
     # confirmed, so a stray click cannot erase the archive. All call pc_reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=8, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -1473,7 +1544,7 @@ def run_tk() -> int:
     add_section_toggle(reset_zone, button_column=1)
 
     logs = ttk.Frame(content, style="Card.TFrame", padding=14)
-    logs.grid(row=9, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=11, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -1496,7 +1567,7 @@ def run_tk() -> int:
 
     worker_text = make_log_pane(logs, 0, (0, 7))
     current_text = make_log_pane(logs, 1, (7, 0))
-    add_section_toggle(logs, button_column=2, start_hidden=False)
+    add_section_toggle(logs, button_column=2)
 
     # Centered auto-close countdown overlay. It is placed in the exact middle of
     # the window (relx/rely 0.5, anchor center) only while a finished LIVE run is
