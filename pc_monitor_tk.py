@@ -339,6 +339,8 @@ STATUS_TAGS = {"expired": "EXPIRED", "soon": "SOON", "upcoming": "ok", "unknown"
 # Friendly labels for the status selector, mapped back to the internal keys.
 STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming")
 STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming"}
+DETAIL_STATUS_FILTER_CHOICES = ("All", "Pending records", "Completed records", "Failed records")
+DETAIL_STATUS_FILTER_KEYS = {"Pending records": "pending", "Completed records": "saved", "Failed records": "failed"}
 
 
 def parse_deadline(rec: dict[str, str]) -> datetime | None:
@@ -1104,6 +1106,7 @@ def run_tk() -> int:
     index_filtered: list[dict[str, str]] = []
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
+    index_detail_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
     index_downloaded_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
@@ -1119,16 +1122,20 @@ def run_tk() -> int:
     # glance which records are still actionable.
     dates_row = ttk.Frame(record_index, style="Card.TFrame")
     dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
-    ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    ttk.Label(dates_row, text="Deadline:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
     index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
-    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
-    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
+    index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
-    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
-    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_mindate_entry.grid(row=1, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(0, 6))
     index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
-    index_downloaded_entry.grid(row=0, column=5, sticky="w", padx=(0, 8))
+    index_downloaded_entry.grid(row=1, column=3, sticky="w", padx=(0, 8))
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
+    add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
     add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
 
@@ -1213,6 +1220,7 @@ def run_tk() -> int:
     def apply_filter(*_args: object) -> None:
         needle = index_filter_var.get().strip().lower()
         wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
+        wanted_detail_status = DETAIL_STATUS_FILTER_KEYS.get(index_detail_status_var.get())
         min_date = None
         raw_min = index_mindate_var.get().strip()
         if raw_min:
@@ -1233,6 +1241,8 @@ def run_tk() -> int:
             if needle and needle not in index_label(rec).lower():
                 continue
             if wanted_status and expiry_status(rec) != wanted_status:
+                continue
+            if wanted_detail_status and (rec.get("detail_status") or "").lower() != wanted_detail_status:
                 continue
             if min_date is not None:
                 dt = parse_deadline(rec)
@@ -1310,6 +1320,7 @@ def run_tk() -> int:
     index_listbox.bind("<Double-Button-1>", lambda _e: open_selected_folder())
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
+    index_detail_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
     index_downloaded_mindate_var.trace_add("write", apply_filter)
 
