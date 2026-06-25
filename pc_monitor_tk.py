@@ -874,6 +874,7 @@ def run_tk() -> int:
     detail_order_label.grid(row=2, column=4, sticky="e")
     detail_order_box = ttk.Combobox(controls, textvariable=detail_order_var, values=("newest", "oldest"), width=8, state="readonly")
     detail_order_box.grid(row=2, column=5, sticky="w", padx=(6, 16))
+    ttk.Label(controls, text="Automatic/restart runs are unlimited; manual/test modes reveal optional caps and start order.", style="Card.TLabel", wraplength=560).grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
     run_button.grid(row=3, column=4, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
@@ -987,17 +988,19 @@ def run_tk() -> int:
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
-    field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
-    field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
-    field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
-    field(9, 0, "Index folder:", index_dir_var, 36, "Operator-facing index/data folder. Environment key: PC_INDEX_DIR.")
-    field(10, 0, "Config folder:", config_dir_var, 36, "Monitor/notifier config folder. Environment key: PC_CONFIG_DIR.")
-    field(11, 0, "Soon days:", soon_days_var, 8, "Deadline filter threshold for next-to-expire records. Environment key: PC_MONITOR_DEADLINE_SOON_DAYS.")
-    field(11, 2, "Max detail attempts:", max_attempts_var, 8, "Retry attempts before detail rows stop retrying. Environment key: PC_MAX_DETAIL_ATTEMPTS.")
+    ttk.Label(settings, text="Folders and paths", style="Message.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 2))
+    field(7, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
+    field(8, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
+    field(9, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
+    field(10, 0, "Index folder:", index_dir_var, 36, "Operator-facing index/data folder. Environment key: PC_INDEX_DIR.")
+    field(11, 0, "Config folder:", config_dir_var, 36, "Monitor/notifier config folder. Environment key: PC_CONFIG_DIR.")
+    ttk.Label(settings, text="Review / retry tuning", style="Message.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(8, 2))
+    field(13, 0, "Soon days:", soon_days_var, 8, "Deadline filter threshold for next-to-expire records. Environment key: PC_MONITOR_DEADLINE_SOON_DAYS.")
+    field(13, 2, "Max detail attempts:", max_attempts_var, 8, "Retry attempts before detail rows stop retrying. Environment key: PC_MAX_DETAIL_ATTEMPTS.")
     notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
-    notify_check.grid(row=12, column=0, columnspan=2, sticky="w", pady=3)
+    notify_check.grid(row=14, column=0, columnspan=2, sticky="w", pady=3)
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
-    calendar_check.grid(row=12, column=2, columnspan=2, sticky="w", pady=3)
+    calendar_check.grid(row=14, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
 
@@ -1011,7 +1014,7 @@ def run_tk() -> int:
         button_status_var.set(f"Opened folder: {path}")
 
     folder_buttons = ttk.Frame(settings, style="Card.TFrame")
-    folder_buttons.grid(row=13, column=1, columnspan=3, sticky="w", pady=(10, 0))
+    folder_buttons.grid(row=15, column=1, columnspan=3, sticky="w", pady=(10, 0))
     for idx, (label, var, fallback) in enumerate((
         ("Open records", records_dir_var, str(BASE_DIR / "records")),
         ("Open calendar", calendar_dir_var, str(BASE_DIR / "data" / "calendar")),
@@ -1080,9 +1083,9 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=13, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=15, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=14, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=16, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
