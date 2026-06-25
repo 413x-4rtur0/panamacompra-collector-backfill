@@ -29,7 +29,7 @@ else
   echo "Worker started."
 fi
 
-if [ -x "./pc_open_monitor.sh" ]; then
+if [ "${PC_REQUEST_OPEN_MONITOR:-1}" != "0" ] && [ -x "./pc_open_monitor.sh" ]; then
   ./pc_open_monitor.sh >/dev/null 2>&1 || true
 fi
 

@@ -386,9 +386,12 @@ echo ""
 echo "11) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
-  ./pc_request_run_all.sh "$DETAIL_LIMIT"
+  # The updater loader is responsible for opening the monitor after this script
+  # exits successfully. Suppress pc_request_run_all.sh's normal monitor opener so
+  # an optional smoke request cannot show the monitor before steps 12/final done.
+  PC_REQUEST_OPEN_MONITOR=0 ./pc_request_run_all.sh "$DETAIL_LIMIT"
 else
-  echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to request one after update."
+  echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to queue one during the update without opening the monitor early."
 fi
 
 echo ""
