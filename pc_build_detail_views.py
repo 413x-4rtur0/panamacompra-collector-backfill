@@ -25,6 +25,7 @@ from pc_common import (
     build_detail_views,
     safe_name,
     save_table_jsons,
+    save_detail_section_jsons,
     write_calendar_ics,
 )
 
@@ -142,8 +143,22 @@ def main():
             numero = data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)]
             # Migrate table files to the split layout and record the tables index.
             _, descriptors = save_table_jsons(detail_json_path.parent, numero, tables, overwrite=True)
+            section_written, section_descriptors = save_detail_section_jsons(
+                detail_json_path.parent,
+                numero,
+                {
+                    "summary": data.get("summary", {}),
+                    "items": data.get("items", []),
+                    "calendar": data.get("calendar", {}),
+                    "fields_detected": data.get("fields_detected", {}),
+                },
+                overwrite=True,
+            )
             data["tables"] = descriptors
             data["tables_count"] = len(descriptors)
+            data["detail_sections"] = section_descriptors
+            data["detail_sections_count"] = len(section_descriptors)
+            data["detail_sections_written_now"] = section_written
             detail_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             write_calendar_ics(detail_json_path.parent / f"{safe_name(numero)}.calendar.ics", data.get("calendar"))
 

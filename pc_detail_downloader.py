@@ -495,6 +495,18 @@ def process_detail(browser, conn, row, force=False):
             write_text_once(html_path, html)
             write_text_once(txt_path, text)
         tables_written, table_descriptors = save_table_jsons(record_folder, numero, tables, overwrite=force)
+        detail_sections_written, detail_section_descriptors = save_detail_section_jsons(
+            record_folder,
+            numero,
+            {
+                "summary": summary,
+                "items": items,
+                "calendar": calendar,
+                "fields_detected": fields_detected,
+                "links_detected": links,
+            },
+            overwrite=force,
+        )
 
         detail_data = {
             "numero": numero,
@@ -517,6 +529,9 @@ def process_detail(browser, conn, row, force=False):
             "calendar": calendar,
             "fields_detected": fields_detected,
             "views_schema_version": VIEWS_SCHEMA_VERSION,
+            "detail_sections_count": len(detail_section_descriptors),
+            "detail_sections_written_now": detail_sections_written,
+            "detail_sections": detail_section_descriptors,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
             "tables": table_descriptors,

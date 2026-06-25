@@ -296,6 +296,39 @@ def section_identifier(section, index=0):
     ident = "-".join(words)[:28].strip("-")
     return ident or f"tabla-{int(index or 0):03d}"
 
+
+
+def save_detail_section_jsons(record_folder, numero, sections, overwrite=False):
+    """Write major detail.json views as separate JSON files.
+
+    The downloader keeps a compact index in ``detail.json`` while also storing
+    the larger logical views next to the record under ``detail_sections/``. This
+    mirrors the split table-file layout and makes summary/items/calendar/fields
+    easier to inspect or regenerate independently.
+    """
+    sections_dir = Path(record_folder) / "detail_sections"
+    sections_dir.mkdir(parents=True, exist_ok=True)
+    n = safe_name(numero)
+    if overwrite:
+        for old_path in sections_dir.glob(f"{n}.*.json"):
+            old_path.unlink()
+    descriptors = {}
+    written = 0
+    for name, payload in sections.items():
+        safe_section = safe_name(str(name)).lower()
+        path = sections_dir / f"{n}.{safe_section}.json"
+        if overwrite or not path.exists():
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            written += 1
+        if isinstance(payload, list):
+            count = len(payload)
+        elif isinstance(payload, dict):
+            count = len(payload)
+        else:
+            count = 1 if payload not in (None, "") else 0
+        descriptors[name] = {"file": path.name, "count": count}
+    return written, descriptors
+
 def save_table_jsons(record_folder, numero, tables, overwrite=False):
     """Write three JSON files per table and return ``(written, descriptors)``.
 

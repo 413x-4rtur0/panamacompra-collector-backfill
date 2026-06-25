@@ -256,7 +256,8 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "notified": 0, "with_detail_json": 0, "groups": [], "db_exists": ARCHIVE_DB.exists(),
+        "new_records": 0, "existing_records": 0, "notified": 0, "with_detail_json": 0,
+        "groups": [], "recent": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -279,8 +280,17 @@ def db_review_stats() -> dict[str, object]:
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "new_records": count("detail_status = 'pending'"),
+            "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "recent": [
+                (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
+                for r in conn.execute(
+                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
+                    "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8"
+                ).fetchall()
+            ],
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
@@ -601,7 +611,7 @@ def run_tk() -> int:
     content.columnconfigure(0, weight=1)
     # The logs pane (now row 8, after the Database review and Reset sections) is
     # the one that should absorb extra vertical space.
-    content.rowconfigure(8, weight=1)
+    content.rowconfigure(9, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -808,7 +818,8 @@ def run_tk() -> int:
                 widget.configure(state=target_state)
             except tk.TclError:
                 pass
-        current_mode = str(snap.get("MODE", "")).strip().upper()
+        progress = snap.get("progress", {}) or {}
+        current_mode = str(progress.get("MODE", "")).strip().upper()
         if busy:
             if current_mode == "AUTO":
                 run_mode_var.set("auto")
@@ -990,12 +1001,63 @@ def run_tk() -> int:
     add_section_toggle(diag, button_column=3)
 
     # ========================================================================
-    # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
+    # SECTION 4: RECORDS PENDING / COMPLETED - readable run counters plus the
+    # previous database snapshot directly after the live records-completed view.
+    # ========================================================================
+    records_overview = ttk.Frame(content, style="Card.TFrame", padding=14)
+    records_overview.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    for col in range(2):
+        records_overview.columnconfigure(col, weight=1, uniform="record_overview")
+    ttk.Label(records_overview, text="Records pending and completed", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    pending_var = tk.StringVar(value="Pending records: —")
+    completed_var = tk.StringVar(value="Completed records: —")
+    pending_card = tk.Label(records_overview, textvariable=pending_var, anchor="nw", justify="left",
+                            bg="#3f1d1d", fg="#fecaca", padx=12, pady=10, font=("Sans", 11, "bold"))
+    pending_card.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(0, 8))
+    completed_card = tk.Label(records_overview, textvariable=completed_var, anchor="nw", justify="left",
+                              bg="#14532d", fg="#bbf7d0", padx=12, pady=10, font=("Sans", 11, "bold"))
+    completed_card.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(0, 8))
+    previous_db_text = tk.Text(records_overview, height=7, wrap="word", bd=0, highlightthickness=0,
+                               bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9))
+    previous_db_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+    def set_previous_db_text(value: str) -> None:
+        previous_db_text.configure(state="normal")
+        previous_db_text.delete("1.0", "end")
+        previous_db_text.insert("1.0", value)
+        previous_db_text.configure(state="disabled")
+
+    def update_records_overview(progress: dict[str, str]) -> None:
+        pending = progress.get("RECORDS_PENDING", "-")
+        saved = progress.get("RECORDS_SAVED", "-")
+        failed = progress.get("RECORDS_FAILED", "-")
+        found = progress.get("RECORDS_FOUND", "-")
+        new = progress.get("RECORDS_NEW", "-")
+        existing = progress.get("RECORDS_EXISTING", "-")
+        pending_var.set(f"Pending records\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
+        completed_var.set(f"Records completed\nSaved/skipped: {saved}\nFailures needing review: {failed}")
+        s = db_review_stats()
+        if not s.get("db_exists"):
+            set_previous_db_text("Previous database data: no archive database yet.")
+            return
+        recent = "\n".join(f"  • {num} [{status or 'unknown'}] — {desc[:90]}" for num, desc, status in s.get("recent", [])) or "  • —"
+        groups = ", ".join(f"{name}: {qty}" for name, qty in s.get("groups", [])) or "—"
+        set_previous_db_text(
+            "Previous database data / all records summary\n"
+            f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
+            f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
+            f"Groups: {groups}\n"
+            f"Most recent records:\n{recent}"
+        )
+
+    # ========================================================================
+    # SECTION 5: RECORD INDEX - pick a collected record by NUMERO + description
     # and open its archive folder or the portal page. Populated read-only from
     # data/panamacompra_archive.db; empty until the collector has run.
     # ========================================================================
     record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    record_index.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
     ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
@@ -1245,7 +1307,7 @@ def run_tk() -> int:
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1293,7 +1355,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -1325,7 +1387,7 @@ def run_tk() -> int:
     # confirmed, so a stray click cannot erase the archive. All call pc_reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=8, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -1367,7 +1429,7 @@ def run_tk() -> int:
     add_section_toggle(reset_zone, button_column=1)
 
     logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=8, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=9, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -1438,6 +1500,7 @@ def run_tk() -> int:
         message_var.set(str(progress.get("MESSAGE", "")))
         update_process_chips(snap["processes"])
         update_run_controls(snap)
+        update_records_overview(progress)
 
         for key, var in diag_vars.items():
             if key == "STEP":
