@@ -46,8 +46,15 @@ def load_settings_file() -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, value = line.split("=", 1)
-        data[key.strip()] = value.strip().strip('"').strip("'")
+        key, raw_value = line.split("=", 1)
+        # Values are written shell-quoted (shlex.quote) so the worker can source
+        # this file with `. file`; parse them back the same way so values with
+        # spaces (e.g. the WhatsApp source label) round-trip correctly.
+        try:
+            parsed = shlex.split(raw_value, posix=True)
+            data[key.strip()] = parsed[0] if parsed else ""
+        except ValueError:
+            data[key.strip()] = raw_value.strip().strip('"').strip("'")
     return data
 
 
@@ -204,6 +211,23 @@ def tail(path: Path, lines: int) -> str:
     return "\n".join(content[-lines:])
 
 
+def finish_stamp_from_folder(record_folder: str) -> str:
+    """Fallback DTEND for records whose finish_date_guess column is empty: read the
+    close stamp from the folder leaf '(YYYY-MM-DD_HH_MM)-(numero)-(desc)'. Returns
+    'YYYY-MM-DD HH:MM' (or 'YYYY-MM-DD'), or '' when the folder carries no stamp."""
+    name = os.path.basename((record_folder or "").rstrip("/"))
+    # Only inspect the first parenthesized token so the NUMERO (which also holds
+    # digits and dashes) cannot be mistaken for the close date.
+    if name.startswith("(") and ")" in name:
+        name = name[1:name.index(")")]
+    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
+    if not match:
+        return ""
+    if match.group(2) and match.group(3):
+        return f"{match.group(1)} {match.group(2)}:{match.group(3)}"
+    return match.group(1)
+
+
 def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     """Read collected records (NUMERO + description + folder/link) from the
     archive DB for the monitor's record-index selector. Newest first.
@@ -247,7 +271,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
@@ -312,9 +336,9 @@ def db_review_stats() -> dict[str, object]:
                 ).fetchall()
             ],
             "completed_recent": [
-                (str(r["numero"] or ""), str(r["finish_date_guess"] or ""), str(r["descripcion"] or r["short_description"] or ""))
+                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")), str(r["descripcion"] or r["short_description"] or ""))
                 for r in conn.execute(
-                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "SELECT numero, finish_date_guess, record_folder, descripcion, short_description FROM opportunities "
                     "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
@@ -845,6 +869,12 @@ def run_tk() -> int:
         subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
 
+    def stop_run_now() -> None:
+        # Halt the active collection but keep this monitor (and the timer/webhook)
+        # running. Stays enabled while a run is active — that is when it is needed.
+        subprocess.Popen([str(BASE_DIR / "pc_stop_collectors.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Stop requested: halting the active collection (worker + collectors). Monitor stays open; request a new run to resume.")
+
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
     # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
@@ -868,6 +898,8 @@ def run_tk() -> int:
     detail_limit_entry.grid(row=2, column=3, sticky="w", padx=(6, 16))
     run_button = ttk.Button(controls, text="Request selected run", command=request_run_now, style="Accent.TButton")
     run_button.grid(row=2, column=4, sticky="w")
+    stop_button = ttk.Button(controls, text="■ Stop run", command=stop_run_now, style="Danger.TButton")
+    stop_button.grid(row=2, column=5, sticky="e")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
     add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
     add_tooltip(live_radio, "run pending only = queue the normal collector pipeline (real archive).")
@@ -876,6 +908,7 @@ def run_tk() -> int:
     add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
     add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
+    add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
     add_section_toggle(controls, button_column=5)
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
@@ -937,6 +970,25 @@ def run_tk() -> int:
     calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(BASE_DIR / "data" / "calendar")))
     records_test_dir_var = tk.StringVar(value=setting("PC_RECORDS_TEST_DIR", str(BASE_DIR / "records_test")))
 
+    # Advanced collector / timer / WhatsApp settings. These are read by the
+    # collectors, timer and notifier from monitor_settings.env at their own
+    # startup, so they take effect on the next run/launch (not live like alpha).
+    _truthy = {"1", "true", "yes", "on"}
+    interval_var = tk.StringVar(value=setting("PC_NEXT_RUN_INTERVAL_MINUTES", "30"))
+    soon_days_var = tk.StringVar(value=setting("PC_MONITOR_DEADLINE_SOON_DAYS", "7"))
+    webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "20")))
+    webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "99"))
+    within_days_var = tk.StringVar(value=setting("PC_NOTIFY_WITHIN_DAYS", ""))
+    retries_var = tk.StringVar(value=setting("PC_WAHA_RETRIES", "2"))
+    waha_base_var = tk.StringVar(value=setting("PC_WAHA_BASE_URL", "http://127.0.0.1:3000"))
+    waha_session_var = tk.StringVar(value=setting("PC_WAHA_SESSION", "default"))
+    waha_events_var = tk.StringVar(value=setting("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update,new,none"))
+    test_limit_var = tk.StringVar(value=setting("PC_TEST_ZONE_LIMIT", "5"))
+    waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
+    skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
+    test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
+    update_before_var = tk.BooleanVar(value=setting("PC_RUN_UPDATE_BEFORE_RUN", "1") != "0")
+
     def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
         ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
         entry = ttk.Entry(settings, textvariable=var, width=width)
@@ -966,6 +1018,33 @@ def run_tk() -> int:
     calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
+
+    ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
+    field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
+    field(14, 0, "Webhook index limit:", webhook_index_var, 8, "Index pages per status group for automatic (changedetection) AUTO runs. Env: PC_WEBHOOK_INDEX_LIMIT.")
+    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. Env: PC_WEBHOOK_DETAIL_LIMIT.")
+    field(15, 0, "WhatsApp within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
+    field(15, 2, "WhatsApp send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
+    field(16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
+    field(16, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
+    ttk.Label(settings, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=17, column=0, sticky="w", pady=3)
+    events_entry = ttk.Entry(settings, textvariable=waha_events_var)
+    events_entry.grid(row=17, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
+    field(18, 0, "Test-zone records:", test_limit_var, 8, "How many recent records the idle test zone re-runs in the sandbox. Env: PC_TEST_ZONE_LIMIT.")
+    waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
+    waha_enabled_check.grid(row=19, column=0, columnspan=2, sticky="w", pady=3)
+    skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
+    skip_expired_check.grid(row=19, column=2, columnspan=2, sticky="w", pady=3)
+    test_autorun_check = ttk.Checkbutton(settings, text="Auto-run test zone when no new records", variable=test_autorun_var, style="Card.TCheckbutton")
+    test_autorun_check.grid(row=20, column=0, columnspan=2, sticky="w", pady=3)
+    update_before_check = ttk.Checkbutton(settings, text="Update local copy before each run", variable=update_before_var, style="Card.TCheckbutton")
+    update_before_check.grid(row=20, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
+    add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
+    add_tooltip(test_autorun_check, "When a run finds no new records, exercise the current code on the last N records in the sandbox. Env: PC_TEST_ZONE_AUTORUN.")
+    add_tooltip(update_before_check, "Fast-forward the local git checkout before each worker iteration. Env: PC_RUN_UPDATE_BEFORE_RUN.")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -1006,6 +1085,20 @@ def run_tk() -> int:
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(BASE_DIR / "records"),
             "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(BASE_DIR / "data" / "calendar"),
             "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
+            "PC_NEXT_RUN_INTERVAL_MINUTES": interval_var.get().strip() or "30",
+            "PC_MONITOR_DEADLINE_SOON_DAYS": soon_days_var.get().strip() or "7",
+            "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "20",
+            "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "99",
+            "PC_NOTIFY_WITHIN_DAYS": within_days_var.get().strip(),
+            "PC_WAHA_RETRIES": retries_var.get().strip() or "2",
+            "PC_WAHA_BASE_URL": waha_base_var.get().strip() or "http://127.0.0.1:3000",
+            "PC_WAHA_SESSION": waha_session_var.get().strip() or "default",
+            "PC_WAHA_NOTIFY_EVENTS": waha_events_var.get().strip() or "info,start,done,failed,timeout,resume,update,new,none",
+            "PC_TEST_ZONE_LIMIT": test_limit_var.get().strip() or "5",
+            "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
+            "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
+            "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
+            "PC_RUN_UPDATE_BEFORE_RUN": "1" if update_before_var.get() else "0",
         }
         merged = load_settings_file()
         merged.update(updates)
@@ -1014,16 +1107,16 @@ def run_tk() -> int:
             "# Edited from the monitor Settings panel; same-named environment",
             "# variables override these at startup.",
         ]
-        lines += [f"{key}={merged[key]}" for key in sorted(merged)]
+        lines += [f"{key}={shlex.quote(str(merged[key]))}" for key in sorted(merged)]
         SETTINGS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
         _SETTINGS_FILE.clear()
         _SETTINGS_FILE.update(merged)
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=10, column=0, sticky="w", pady=(10, 0))
-    add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env, and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending also requires PC_WAHA_ENABLED=1 and a WAHA server (default port 3000). Source label, destination and keywords here are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled.", style="Card.TLabel", wraplength=820).grid(row=11, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
+    add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=22, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1086,15 +1179,17 @@ def run_tk() -> int:
 
     pending_var = tk.StringVar(value="Pending records: —")
     completed_var = tk.StringVar(value="Completed records: —")
+    # Stacked full-width for readability: the red Pending card sits directly above
+    # the green Completed card (one after another), each stretched across the row.
     pending_card = tk.Label(records_overview, textvariable=pending_var, anchor="nw", justify="left",
                             bg="#3f1d1d", fg="#fecaca", padx=12, pady=10, font=("Sans", 11, "bold"))
-    pending_card.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(0, 8))
+    pending_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
     completed_card = tk.Label(records_overview, textvariable=completed_var, anchor="nw", justify="left",
                               bg="#14532d", fg="#bbf7d0", padx=12, pady=10, font=("Sans", 11, "bold"))
-    completed_card.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(0, 8))
+    completed_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
     previous_db_text = tk.Text(records_overview, height=7, wrap="word", bd=0, highlightthickness=0,
                                bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9))
-    previous_db_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+    previous_db_text.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
     def set_previous_db_text(value: str) -> None:
         previous_db_text.configure(state="normal")

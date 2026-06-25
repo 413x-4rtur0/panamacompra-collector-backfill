@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -36,11 +37,30 @@ PATH_SETTING_DEFAULTS = {
     "PC_CALENDAR_DIR": str(BASE_DIR / "data" / "calendar"),
     "PC_RECORDS_TEST_DIR": str(BASE_DIR / "records_test"),
 }
+# Plain string/number settings the operator can edit. PC_NOTIFY_WITHIN_DAYS is
+# intentionally blank by default (blank = announce every deadline).
+VALUE_SETTING_DEFAULTS = {
+    "PC_WAHA_SOURCE": "Panamá Compra",
+    "PC_NEXT_RUN_INTERVAL_MINUTES": "30",
+    "PC_MONITOR_DEADLINE_SOON_DAYS": "7",
+    "PC_WEBHOOK_INDEX_LIMIT": "20",
+    "PC_WEBHOOK_DETAIL_LIMIT": "99",
+    "PC_NOTIFY_WITHIN_DAYS": "",
+    "PC_WAHA_RETRIES": "2",
+    "PC_WAHA_BASE_URL": "http://127.0.0.1:3000",
+    "PC_WAHA_SESSION": "default",
+    "PC_WAHA_NOTIFY_EVENTS": "info,start,done,failed,timeout,resume,update,new,none",
+    "PC_TEST_ZONE_LIMIT": "5",
+}
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
     "PC_CALENDAR_AUTO_IMPORT": "0",
+    "PC_WAHA_ENABLED": "0",
+    "PC_NOTIFY_SKIP_EXPIRED": "0",
+    "PC_TEST_ZONE_AUTORUN": "0",
+    "PC_RUN_UPDATE_BEFORE_RUN": "1",
 }
-ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS)
+ALLOWED_MONITOR_SETTINGS = set(PATH_SETTING_DEFAULTS) | set(VALUE_SETTING_DEFAULTS) | set(BOOLEAN_SETTING_DEFAULTS)
 
 
 class ManualAction(tuple):
@@ -59,7 +79,7 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 MANUAL_ACTIONS = [
     ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run and opens/reuses this monitor."),
     ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages."),
-    ManualAction("Runners", "Stop active run", ("./pc_stop_run_all.sh",), "Stops worker/index/detail processes and clears the queued run flag."),
+    ManualAction("Runners", "Stop active run", ("./pc_stop_collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
     ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review_panamacompra_system.sh",), "Runs the repository health review and troubleshooting summary."),
@@ -143,7 +163,7 @@ def parse_settings_file() -> dict[str, str]:
 
 
 def load_monitor_settings() -> dict[str, str]:
-    settings = {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}
+    settings = {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS, **VALUE_SETTING_DEFAULTS}
     settings.update({key: os.environ.get(key, default) for key, default in settings.items() if key in os.environ})
     file_settings = parse_settings_file()
     for key in settings:
@@ -162,12 +182,14 @@ def save_monitor_setting(key: str, value: str) -> None:
     if key not in ALLOWED_MONITOR_SETTINGS:
         raise ValueError(f"unsupported setting: {key}")
     settings = parse_settings_file()
-    for default_key, default_value in {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS}.items():
+    for default_key, default_value in {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS, **VALUE_SETTING_DEFAULTS}.items():
         settings.setdefault(default_key, os.environ.get(default_key, default_value))
     if key in BOOLEAN_SETTING_DEFAULTS:
         settings[key] = "1" if value not in {"0", "false", "False", "off", "OFF", ""} else "0"
-    else:
+    elif key in PATH_SETTING_DEFAULTS:
         settings[key] = value.strip() or PATH_SETTING_DEFAULTS[key]
+    else:
+        settings[key] = value.strip() or VALUE_SETTING_DEFAULTS[key]
     MONITOR_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     MONITOR_SETTINGS_PATH.write_text(
         "# PanamaCompra monitor settings (KEY=VALUE).\n"
@@ -182,6 +204,22 @@ def tail(path: Path, lines: int) -> str:
         return f"No {path.name} yet."
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(content[-lines:])
+
+
+def finish_stamp_from_folder(record_folder: str) -> str:
+    """Fallback DTEND from the record folder leaf '(YYYY-MM-DD_HH_MM)-(numero)-(desc)'
+    when the finish_date_guess column is empty (older records). Returns
+    'YYYY-MM-DD HH:MM' (or 'YYYY-MM-DD'), or '' when the folder carries no stamp."""
+    name = os.path.basename((record_folder or "").rstrip("/"))
+    # Only the first parenthesized token, so the NUMERO cannot be mistaken for it.
+    if name.startswith("(") and ")" in name:
+        name = name[1:name.index(")")]
+    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
+    if not match:
+        return ""
+    if match.group(2) and match.group(3):
+        return f"{match.group(1)} {match.group(2)}:{match.group(3)}"
+    return match.group(1)
 
 
 def load_record_index(limit: int = 500) -> list[dict[str, str]]:
@@ -223,7 +261,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
@@ -283,9 +321,9 @@ def db_review_stats() -> dict[str, object]:
                 ).fetchall()
             ],
             "completed_recent": [
-                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
+                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
                 for r in conn.execute(
-                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "SELECT numero, finish_date_guess, record_folder, descripcion, short_description FROM opportunities "
                     "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
@@ -491,7 +529,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><p><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index limit <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
@@ -549,6 +587,8 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const note = document.getElementById('done-note');
   if (data.done) {{
     if (!doneSince) doneSince = Date.now();
@@ -613,6 +653,9 @@ function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIC
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
+}}
+function saveAdvancedSettings() {{
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 let recordIndex = [];
 let recordFiltered = [];
