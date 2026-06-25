@@ -86,7 +86,7 @@ DEFAULT_PROGRESS = {
     "STARTED_AT": "",
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
-    "MODE": "LIVE",
+    "MODE": "IDLE",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -407,7 +407,9 @@ def status_payload() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
-        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        # Auto-close only the unattended automatic (changedetection/webhook) run.
+        # RESTART/MANUAL/TEST are operator-initiated, so the page stays open.
+        "auto_close_enabled": done and progress.get("MODE", "IDLE").upper() == "AUTO" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 20),
@@ -494,7 +496,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -640,6 +642,23 @@ function parseDownloaded(rec) {{
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
 }}
+function parseStart(rec) {{
+  const raw = (rec.start_date_guess || '').trim().replace('T', ' ').replace('_', ' ');
+  const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
+}}
+function parseFilterBound(raw, upper) {{
+  // Accept a date or a date+time; a bare date used as an upper bound covers the
+  // whole day. Returns null for blank/invalid input so the bound is ignored.
+  const text = (raw || '').trim().replace('T', ' ').replace('_', ' ');
+  const m = text.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ ](\\d{{2}}):(\\d{{2}}))?$/);
+  if (!m) return null;
+  if (m[4] !== undefined) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  return upper
+    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59)
+    : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0);
+}}
 const FAR_FUTURE = new Date(8640000000000000);
 function selectedRecord() {{
   const sel = document.getElementById('record-index');
@@ -664,15 +683,24 @@ function renderRecordDetail() {{
 function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
   const detailStatus = (document.getElementById('record-detail-status') || {{}}).value || 'all';
-  const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
-  const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
-  const downloadedRaw = (document.getElementById('record-downloaded-mindate') || {{}}).value || '';
-  const downloadedMinDate = downloadedRaw ? new Date(downloadedRaw + 'T00:00') : null;
+  const val = id => (document.getElementById(id) || {{}}).value || '';
+  const deadlineMin = parseFilterBound(val('record-mindate'), false);
+  const deadlineMax = parseFilterBound(val('record-maxdate'), true);
+  const startMin = parseFilterBound(val('record-start-mindate'), false);
+  const startMax = parseFilterBound(val('record-start-maxdate'), true);
+  const downloadedMin = parseFilterBound(val('record-downloaded-mindate'), false);
+  const downloadedMax = parseFilterBound(val('record-downloaded-maxdate'), true);
+  const inWindow = (value, low, high) => {{
+    if (low && (!value || value < low)) return false;
+    if (high && (!value || value > high)) return false;
+    return true;
+  }};
   recordFiltered = recordIndex.filter(r => {{
     if (status !== 'all' && expiryStatus(r) !== status) return false;
     if (detailStatus !== 'all' && String(r.detail_status || '').toLowerCase() !== detailStatus) return false;
-    if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
-    if (downloadedMinDate) {{ const dl = parseDownloaded(r); if (!dl || dl < downloadedMinDate) return false; }}
+    if ((deadlineMin || deadlineMax) && !inWindow(parseDeadline(r), deadlineMin, deadlineMax)) return false;
+    if ((startMin || startMax) && !inWindow(parseStart(r), startMin, startMax)) return false;
+    if ((downloadedMin || downloadedMax) && !inWindow(parseDownloaded(r), downloadedMin, downloadedMax)) return false;
     return true;
   }});
   recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
@@ -802,8 +830,10 @@ renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
 document.getElementById('record-detail-status').addEventListener('change', applyRecordFilter);
-document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
-document.getElementById('record-downloaded-mindate').addEventListener('change', applyRecordFilter);
+['record-mindate', 'record-maxdate', 'record-start-mindate', 'record-start-maxdate', 'record-downloaded-mindate', 'record-downloaded-maxdate'].forEach(id => {{
+  const el = document.getElementById(id);
+  if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
+}});
 initCollapsibleSections();
 refreshRecordIndex();
 refreshDbReview();

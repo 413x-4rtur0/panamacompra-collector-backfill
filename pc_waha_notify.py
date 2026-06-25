@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -62,17 +63,56 @@ def save_message(message: str) -> None:
     SAVED_MESSAGE_PATH.write_text(message.strip() + "\n", encoding="utf-8")
 
 
+# Friendly labels for the run mode that produced a run-outcome message, so a
+# WhatsApp alert says whether it came from the automatic (changedetection) flow
+# or an operator-initiated restart/manual/test run.
+RUN_MODE_LABELS = {
+    "AUTO": "Automático (changedetection)",
+    "RESTART": "Reinicio de pendientes",
+    "MANUAL": "Manual",
+    "TEST": "Prueba (sandbox)",
+}
+
+
+def run_mode_label() -> str:
+    """Friendly label for the current run mode, or '' when not inside a run."""
+    mode = os.environ.get("PC_RUN_MODE", "").strip().upper()
+    if not mode or mode == "IDLE":
+        return ""
+    return RUN_MODE_LABELS.get(mode, mode.title())
+
+
 def build_message(event: str, status: str, message: str) -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}", f"Time: {timestamp}"]
+    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
+    mode_label = run_mode_label()
+    if mode_label:
+        parts.append(f"Run: {mode_label}")
+    parts.append(f"Time: {timestamp}")
     body = message.strip() or saved_message()
     if body:
         parts.append(body)
     return "\n".join(parts)
 
 
+# Simple in-process circuit breaker: after several outright failures (e.g. WAHA
+# is down) we stop retrying so a batch of messages does not pile up many seconds
+# of backoff per message. A single success clears it.
+_send_failures = 0
+
+
+def _max_send_attempts() -> int:
+    """1 + PC_WAHA_RETRIES (default 2 retries → 3 attempts), minimum 1."""
+    try:
+        retries = int(os.environ.get("PC_WAHA_RETRIES", "2"))
+    except (TypeError, ValueError):
+        retries = 2
+    return max(1, retries + 1)
+
+
 def send_text(text: str) -> None:
+    global _send_failures
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
     chat_id = configured_chat_id()
@@ -88,10 +128,23 @@ def send_text(text: str) -> None:
     if api_key:
         headers["X-Api-Key"] = api_key
 
-    request = urllib.request.Request(f"{base_url}/api/sendText", data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - local/private WAHA endpoint by configuration
-        response.read()
-        print(f"WAHA notification sent to {chat_id} via session {session}.")
+    # Stop retrying once the endpoint looks persistently down, to bound latency.
+    attempts = 1 if _send_failures >= 3 else _max_send_attempts()
+    for attempt in range(1, attempts + 1):
+        request = urllib.request.Request(f"{base_url}/api/sendText", data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - local/private WAHA endpoint by configuration
+                response.read()
+            _send_failures = 0
+            print(f"WAHA notification sent to {chat_id} via session {session}.")
+            return
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            if attempt >= attempts:
+                _send_failures += 1
+                raise
+            backoff = min(8.0, 2.0 ** (attempt - 1))  # 1s, 2s, 4s, …
+            print(f"WAHA send attempt {attempt}/{attempts} failed: {exc}; retrying in {backoff:.0f}s.", file=sys.stderr)
+            time.sleep(backoff)
 
 
 def main() -> int:

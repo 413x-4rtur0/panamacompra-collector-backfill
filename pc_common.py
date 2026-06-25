@@ -47,6 +47,8 @@ def write_run_progress(
     *,
     started_at=None,
     detail_limit=None,
+    index_limit=None,
+    eta=None,
     step_current=None,
     step_total=None,
     item_current=None,
@@ -70,17 +72,21 @@ def write_run_progress(
     ensure_dirs()
     started_at = started_at or os.environ.get("PC_RUN_STARTED_AT", "")
     detail_limit = detail_limit if detail_limit is not None else os.environ.get("PC_DETAIL_LIMIT", "-")
+    if index_limit is None:
+        index_limit = os.environ.get("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "-"))
 
     fields = {
         "PHASE": phase,
         "STATUS": status,
         "PERCENT": max(0, min(100, int(percent))),
         "MESSAGE": message,
+        "INDEX_LIMIT": index_limit,
+        "ETA": eta if eta is not None else "-",
         "DETAIL_LIMIT": detail_limit,
         "STARTED_AT": started_at,
         "UPDATED_AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "WORKER_PID": os.environ.get("PC_WORKER_PID", "-"),
-        "MODE": mode or os.environ.get("PC_RUN_MODE", "LIVE"),
+        "MODE": mode or os.environ.get("PC_RUN_MODE", "IDLE"),
         "STEP_CURRENT": step_current if step_current is not None else "-",
         "STEP_TOTAL": step_total if step_total is not None else "-",
         "ITEM_CURRENT": item_current if item_current is not None else "-",
@@ -99,6 +105,97 @@ def write_run_progress(
     tmp.write_text("".join(f"{key}={shell_quote(value)}\n" for key, value in fields.items()), encoding="utf-8")
     tmp.replace(PROGRESS_PATH)
 
+
+# --- Run timing history + count-based ETA ---------------------------------
+# Collectors persist how long their last run took per unit of work (one detail
+# page, one index page) so the *next* run can show an ETA from its very first
+# item, before it has measured its own pace. Each run also refines the estimate
+# live from its own elapsed time. The ETA the monitor shows is therefore the
+# remaining index/detail items still to handle times the seconds each takes.
+DETAIL_TIMING_PATH = LOG_DIR / "detail_timing.env"
+INDEX_TIMING_PATH = LOG_DIR / "index_timing.env"
+
+
+def _read_env_file(path):
+    data = {}
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return data
+    for line in text.splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip().strip("'\"")
+    return data
+
+
+def _write_env_file(path, values):
+    ensure_dirs()
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(f"{key}={shell_quote(value)}\n" for key, value in values.items()), encoding="utf-8")
+    tmp.replace(path)
+
+
+def format_duration(seconds):
+    """Human 'Xh YYm' / 'Xm YYs' for ETA/elapsed display; '-' when unknown."""
+    try:
+        seconds = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return "-"
+    if seconds < 0:
+        return "-"
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m {secs:02d}s"
+
+
+def record_phase_timing(path, *, seconds, count):
+    """Persist the average seconds-per-item of a finished phase for next time."""
+    try:
+        count = int(count)
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if count <= 0 or seconds < 0:
+        return
+    _write_env_file(path, {
+        "LAST_SECONDS": int(round(seconds)),
+        "LAST_COUNT": count,
+        "LAST_AVG_SECONDS": round(seconds / count, 3),
+        "UPDATED_AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
+def previous_phase_avg_seconds(path):
+    """Average seconds-per-item from the last recorded run, or None."""
+    try:
+        avg = float(_read_env_file(path).get("LAST_AVG_SECONDS", ""))
+    except (TypeError, ValueError):
+        return None
+    return avg if avg > 0 else None
+
+
+def eta_seconds_from_counts(done, total, elapsed_seconds, prev_avg_seconds=None):
+    """Estimate seconds remaining from item counts.
+
+    Uses the live average (elapsed / done) once at least one item is finished,
+    otherwise the previous run's per-item average. Returns None when neither is
+    available so the caller can fall back to a coarser estimate."""
+    remaining = max(0, int(total) - int(done))
+    if remaining <= 0:
+        return 0
+    avg = None
+    if done > 0 and elapsed_seconds and elapsed_seconds > 0:
+        avg = elapsed_seconds / done
+    elif prev_avg_seconds and prev_avg_seconds > 0:
+        avg = prev_avg_seconds
+    if avg is None:
+        return None
+    return avg * remaining
 
 
 def env_int(name, default, minimum=None):

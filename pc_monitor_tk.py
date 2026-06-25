@@ -161,7 +161,7 @@ DEFAULT_PROGRESS = {
     "STARTED_AT": "",
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
-    "MODE": "LIVE",
+    "MODE": "IDLE",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -388,6 +388,42 @@ def parse_downloaded(rec: dict[str, str]) -> datetime | None:
     )
 
 
+def parse_start(rec: dict[str, str]) -> datetime | None:
+    """The record's DTSTART/start (start_date_guess), or None."""
+    raw = (rec.get("start_date_guess") or "").strip().replace("T", " ").replace("_", " ")
+    if not raw:
+        return None
+    for candidate in (raw, raw[:19], raw[:16], raw[:10]):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def parse_filter_bound(text: str, *, upper: bool = False) -> datetime | None:
+    """Parse a user-typed date or date+time filter bound.
+
+    Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (HH:MM:SS tolerated). A bare date
+    used as an upper bound covers the whole day (23:59:59) so 'on/before'
+    includes that day; as a lower bound it starts at 00:00. Returns None for
+    blank/unparseable input so the bound simply does not constrain the list."""
+    text = (text or "").strip().replace("T", " ").replace("_", " ")
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        day = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return day.replace(hour=23, minute=59, second=59) if upper else day
+
+
 def expiry_status(rec: dict[str, str], now: datetime | None = None) -> str:
     dt = parse_deadline(rec)
     if dt is None:
@@ -489,7 +525,9 @@ def status_snapshot() -> dict[str, object]:
         "percent": percent_value(progress),
         "processes": processes,
         "done": done,
-        "auto_close_enabled": done and progress.get("MODE", "LIVE").upper() == "LIVE" and not processes.get("test_run", False),
+        # Auto-close only the unattended automatic (changedetection/webhook) run.
+        # RESTART/MANUAL/TEST are operator-initiated, so the window stays open.
+        "auto_close_enabled": done and progress.get("MODE", "IDLE").upper() == "AUTO" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 18),
@@ -1188,7 +1226,11 @@ def run_tk() -> int:
     index_status_var = tk.StringVar(value="All")
     index_detail_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
+    index_maxdate_var = tk.StringVar(value="")
+    index_start_mindate_var = tk.StringVar(value="")
+    index_start_maxdate_var = tk.StringVar(value="")
     index_downloaded_mindate_var = tk.StringVar(value="")
+    index_downloaded_maxdate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
     ttk.Label(record_index, text="Search NUMERO / description:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
@@ -1196,10 +1238,12 @@ def run_tk() -> int:
     index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
     add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
 
-    # Dates selector: a status filter (expired / next to expire / upcoming) plus a
-    # DTEND date picker. Each row shows its downloaded date and DTEND, colored red
-    # (expired), amber (next to expire) or green (upcoming) so it is obvious at a
-    # glance which records are still actionable.
+    # Dates selector: a deadline-status filter plus from/to pickers for the
+    # deadline (DTEND), the start date (DTSTART) and the local download date. Each
+    # accepts a plain date (YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM); a
+    # bare date used as an upper bound covers the whole day. Each list row shows
+    # its downloaded date, DTSTART and DTEND, colored red (expired), amber (next
+    # to expire) or green (upcoming) so it is obvious which records are actionable.
     dates_row = ttk.Frame(record_index, style="Card.TFrame")
     dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
     ttk.Label(dates_row, text="Deadline:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
@@ -1208,16 +1252,37 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
     index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
+
     ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
-    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
+    index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=16)
     index_mindate_entry.grid(row=1, column=1, sticky="w", padx=(0, 12))
-    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(0, 6))
-    index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
-    index_downloaded_entry.grid(row=1, column=3, sticky="w", padx=(0, 8))
+    ttk.Label(dates_row, text="DTEND on/before:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(0, 6))
+    index_maxdate_entry = ttk.Entry(dates_row, textvariable=index_maxdate_var, width=16)
+    index_maxdate_entry.grid(row=1, column=3, sticky="w", padx=(0, 8))
+
+    ttk.Label(dates_row, text="DTSTART on/after:", style="Card.TLabel").grid(row=2, column=0, sticky="e", padx=(0, 6))
+    index_start_mindate_entry = ttk.Entry(dates_row, textvariable=index_start_mindate_var, width=16)
+    index_start_mindate_entry.grid(row=2, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="DTSTART on/before:", style="Card.TLabel").grid(row=2, column=2, sticky="e", padx=(0, 6))
+    index_start_maxdate_entry = ttk.Entry(dates_row, textvariable=index_start_maxdate_var, width=16)
+    index_start_maxdate_entry.grid(row=2, column=3, sticky="w", padx=(0, 8))
+
+    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=3, column=0, sticky="e", padx=(0, 6))
+    index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=16)
+    index_downloaded_entry.grid(row=3, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Downloaded on/before:", style="Card.TLabel").grid(row=3, column=2, sticky="e", padx=(0, 6))
+    index_downloaded_maxdate_entry = ttk.Entry(dates_row, textvariable=index_downloaded_maxdate_var, width=16)
+    index_downloaded_maxdate_entry.grid(row=3, column=3, sticky="w", padx=(0, 8))
+
+    _date_hint = " Format YYYY-MM-DD or YYYY-MM-DD HH:MM; leave blank for no limit."
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
-    add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
-    add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
+    add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date/time." + _date_hint)
+    add_tooltip(index_maxdate_entry, "Show only records whose DTEND (deadline) is on or before this date/time (a bare date covers the whole day)." + _date_hint)
+    add_tooltip(index_start_mindate_entry, "Show only records whose DTSTART (start) is on or after this date/time." + _date_hint)
+    add_tooltip(index_start_maxdate_entry, "Show only records whose DTSTART (start) is on or before this date/time (a bare date covers the whole day)." + _date_hint)
+    add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date/time." + _date_hint)
+    add_tooltip(index_downloaded_maxdate_entry, "Show only records downloaded on or before this date/time (a bare date covers the whole day)." + _date_hint)
 
     list_frame = ttk.Frame(record_index, style="Card.TFrame")
     list_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 4))
@@ -1301,20 +1366,23 @@ def run_tk() -> int:
         needle = index_filter_var.get().strip().lower()
         wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
         wanted_detail_status = DETAIL_STATUS_FILTER_KEYS.get(index_detail_status_var.get())
-        min_date = None
-        raw_min = index_mindate_var.get().strip()
-        if raw_min:
-            try:
-                min_date = datetime.strptime(raw_min, "%Y-%m-%d")
-            except ValueError:
-                min_date = None
-        downloaded_min = None
-        raw_downloaded_min = index_downloaded_mindate_var.get().strip()
-        if raw_downloaded_min:
-            try:
-                downloaded_min = datetime.strptime(raw_downloaded_min, "%Y-%m-%d")
-            except ValueError:
-                downloaded_min = None
+        # Deadline (DTEND), start (DTSTART) and downloaded date windows. Each
+        # bound accepts a date or a date+time; a bare date upper bound covers the
+        # whole day. parse_filter_bound returns None for blank/invalid input, so
+        # an unparseable value simply does not constrain the list.
+        deadline_min = parse_filter_bound(index_mindate_var.get())
+        deadline_max = parse_filter_bound(index_maxdate_var.get(), upper=True)
+        start_min = parse_filter_bound(index_start_mindate_var.get())
+        start_max = parse_filter_bound(index_start_maxdate_var.get(), upper=True)
+        downloaded_min = parse_filter_bound(index_downloaded_mindate_var.get())
+        downloaded_max = parse_filter_bound(index_downloaded_maxdate_var.get(), upper=True)
+
+        def in_window(value: datetime | None, low: datetime | None, high: datetime | None) -> bool:
+            if low is not None and (value is None or value < low):
+                return False
+            if high is not None and (value is None or value > high):
+                return False
+            return True
 
         records = []
         for rec in index_records:
@@ -1324,14 +1392,12 @@ def run_tk() -> int:
                 continue
             if wanted_detail_status and (rec.get("detail_status") or "").lower() != wanted_detail_status:
                 continue
-            if min_date is not None:
-                dt = parse_deadline(rec)
-                if dt is None or dt < min_date:
-                    continue
-            if downloaded_min is not None:
-                downloaded = parse_downloaded(rec)
-                if downloaded is None or downloaded < downloaded_min:
-                    continue
+            if (deadline_min or deadline_max) and not in_window(parse_deadline(rec), deadline_min, deadline_max):
+                continue
+            if (start_min or start_max) and not in_window(parse_start(rec), start_min, start_max):
+                continue
+            if (downloaded_min or downloaded_max) and not in_window(parse_downloaded(rec), downloaded_min, downloaded_max):
+                continue
             records.append(rec)
 
         # Show the soonest deadlines first so "next to expire" floats to the top;
@@ -1402,7 +1468,11 @@ def run_tk() -> int:
     index_status_var.trace_add("write", apply_filter)
     index_detail_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
+    index_maxdate_var.trace_add("write", apply_filter)
+    index_start_mindate_var.trace_add("write", apply_filter)
+    index_start_maxdate_var.trace_add("write", apply_filter)
     index_downloaded_mindate_var.trace_add("write", apply_filter)
+    index_downloaded_maxdate_var.trace_add("write", apply_filter)
 
     index_buttons = ttk.Frame(record_index, style="Card.TFrame")
     index_buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -1651,7 +1721,7 @@ def run_tk() -> int:
         elif not saw_active:
             # Opened into a pre-existing idle/done state: show status, no countdown.
             done_since = None
-            done_var.set("Idle. Auto-close starts only after a live run finishes while the monitor is open.")
+            done_var.set("Idle. Auto-close starts only after an automatic (changedetection) run finishes while the monitor is open.")
             overlay.place_forget()
         else:
             if done_since is None:
@@ -1660,7 +1730,7 @@ def run_tk() -> int:
             remaining = max(0, wait - int(time.monotonic() - done_since))
             if wait:
                 counting_down = True
-                done_var.set(f"Live run finished. This window will close in {remaining} seconds.")
+                done_var.set(f"Automatic run finished. This window will close in {remaining} seconds.")
                 overlay_var.set(f"✅ Run finished\n\nClosing in {remaining} s")
                 overlay.place(relx=0.5, rely=0.5, anchor="center")
             else:

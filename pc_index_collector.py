@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import time
 from playwright.sync_api import sync_playwright
 from pc_common import *
 
@@ -206,6 +207,18 @@ def click_next(page):
 
     return False, "Next clicked but page did not change"
 
+def index_eta_text(pages_done, pages_budget, new_records, elapsed_seconds, prev_index_avg, prev_detail_avg):
+    """Monitor ETA for the index phase: remaining budgeted index pages PLUS the
+    detail downloads the new records found so far will still need. '-' when no
+    pace is known yet."""
+    index_secs = eta_seconds_from_counts(pages_done, pages_budget, elapsed_seconds, prev_index_avg)
+    detail_secs = new_records * prev_detail_avg if prev_detail_avg else 0
+    if index_secs is None and not detail_secs:
+        return "-"
+    total = (index_secs or 0) + (detail_secs or 0)
+    return f"{format_duration(total)} (índice + {new_records} det.)"
+
+
 def main():
     conn = init_db()
 
@@ -232,6 +245,12 @@ def main():
 
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         prepare_base_page(page)
+
+        # Count-based ETA inputs: previous per-page and per-detail pace, plus a
+        # crawl clock so the remaining-pages estimate refines live.
+        prev_index_avg = previous_phase_avg_seconds(INDEX_TIMING_PATH)
+        prev_detail_avg = previous_phase_avg_seconds(DETAIL_TIMING_PATH)
+        index_start = time.monotonic()
 
         for group in GROUPS:
             group_name = group["name"]
@@ -264,6 +283,7 @@ def main():
                     records_found=extracted_total,
                     records_new=new_records,
                     records_existing=existing_records,
+                    eta=index_eta_text(overall_page - 1, total_pages_budget, new_records, time.monotonic() - index_start, prev_index_avg, prev_detail_avg),
                     extra=f"group={group_name}; page={page_number}; rows={len(rows)}",
                 )
 
@@ -354,6 +374,7 @@ def main():
                     records_found=extracted_total,
                     records_new=new_records,
                     records_existing=existing_records,
+                    eta=index_eta_text(overall_page, total_pages_budget, new_records, time.monotonic() - index_start, prev_index_avg, prev_detail_avg),
                     extra=f"json_written={json_written}; json_skipped={json_skipped}; duplicates={len(duplicate_in_crawl)}",
                 )
 
@@ -365,6 +386,10 @@ def main():
                 stop_reasons.append(f"{group_name}: MAX_PAGES_PER_GROUP reached")
 
         browser.close()
+
+    # Persist this crawl's per-page pace so the next run can show an ETA from
+    # its very first page instead of waiting to measure its own speed.
+    record_phase_timing(INDEX_TIMING_PATH, seconds=time.monotonic() - index_start, count=len(page_counts))
 
     db_total = conn.execute("SELECT COUNT(*) AS c FROM opportunities").fetchone()["c"]
     pending_details = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]
