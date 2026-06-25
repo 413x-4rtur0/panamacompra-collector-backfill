@@ -487,6 +487,12 @@ def process_detail(browser, conn, row, force=False):
         summary, items, calendar, fields_detected = build_detail_views(
             text, tables, numero, dtstamp=saved_at, link=row["link"]
         )
+        start_date_guess = calendar.get("dtstart") or ""
+        finish_date_guess = finish_date_guess or calendar.get("dtend") or finish_stamp
+        summary["date_start_opportunity"] = start_date_guess
+        summary["date_end_opportunity"] = calendar.get("dtend") or finish_date_guess
+        summary["date_downloaded_local"] = saved_at
+        summary["date_name_finish_stamp"] = finish_stamp
 
         if force:
             html_path.write_text(html, encoding="utf-8", errors="ignore")
@@ -495,6 +501,18 @@ def process_detail(browser, conn, row, force=False):
             write_text_once(html_path, html)
             write_text_once(txt_path, text)
         tables_written, table_descriptors = save_table_jsons(record_folder, numero, tables, overwrite=force)
+        detail_sections_written, detail_section_descriptors = save_detail_section_jsons(
+            record_folder,
+            numero,
+            {
+                "summary": summary,
+                "items": items,
+                "calendar": calendar,
+                "fields_detected": fields_detected,
+                "links_detected": links,
+            },
+            overwrite=force,
+        )
 
         detail_data = {
             "numero": numero,
@@ -504,6 +522,11 @@ def process_detail(browser, conn, row, force=False):
             "source": "PanamaCompra",
             "saved_at": saved_at,
             "finish_date_guess": finish_date_guess,
+            "start_date_guess": start_date_guess,
+            "date_start_opportunity": start_date_guess,
+            "date_end_opportunity": calendar.get("dtend") or finish_date_guess,
+            "date_downloaded_local": saved_at,
+            "date_name_finish_stamp": finish_stamp,
             "short_description": row["short_description"],
             "descripcion_index": row["descripcion"],
             "entidad_index": row["entidad"],
@@ -517,6 +540,9 @@ def process_detail(browser, conn, row, force=False):
             "calendar": calendar,
             "fields_detected": fields_detected,
             "views_schema_version": VIEWS_SCHEMA_VERSION,
+            "detail_sections_count": len(detail_section_descriptors),
+            "detail_sections_written_now": detail_sections_written,
+            "detail_sections": detail_section_descriptors,
             "tables_count": len(tables),
             "tables_written_now": tables_written,
             "tables": table_descriptors,
@@ -542,7 +568,27 @@ def process_detail(browser, conn, row, force=False):
             write_json_once(detail_json_path, detail_data)
         if force or not (record_folder / f"{n}.calendar.ics").exists():
             write_calendar_ics(record_folder / f"{n}.calendar.ics", calendar)
-        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
+        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess, start_date_guess=start_date_guess)
+        conn.execute(
+            """
+            UPDATE opportunities
+            SET record_folder_leaf = ?,
+                files_layout_version = ?,
+                detail_sections_count = ?,
+                tables_count = ?,
+                db_reviewed_at = ?
+            WHERE numero = ?
+            """,
+            (
+                record_folder.name,
+                2,
+                len([key for key in detail_section_descriptors if key != "_all"]),
+                len(table_descriptors),
+                now_iso(),
+                numero,
+            ),
+        )
+        conn.commit()
         maybe_rename_folder(conn, row, proposed_folder_name)
 
         return "saved"

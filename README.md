@@ -76,7 +76,7 @@ pc_run_all_worker.sh        single locked worker
         └─ STEP 6  pc_test_zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
         │
         ▼
-records/YY-MM-DD/[finish]-[NUMERO]-[desc]/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
+records/YY-MM-DD/(finish)-(NUMERO)-(desc)/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
 records_test/…                                isolated testing sandbox (shown as MODE=TEST in the monitor)
 data/calendar/YY-MM-DD/YY-MM-DD_HH-MM_panamacompra_calendar_001.ics  normal-run import packages
 ```
@@ -342,7 +342,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_index_collector.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `pc_detail_downloader.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `pc_request_run_all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, **index → details → per-record calendars/detail views → calendar packages → WhatsApp**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. |
+| `pc_run_all_worker.sh` | Locked sequential worker: pre-run update, **index → details/downloads → storing/per-record calendars/detail views → calendar packages → WhatsApp**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
 | `pc_update_before_run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `pc_waha_notify.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
 | `pc_notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step to send one “🟢 NUEVA OPORTUNIDAD DETECTADA” message per new record with per-message monitor progress; `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
@@ -355,23 +355,25 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
 | `pc_migrate_apps_layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
-| `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. Its manual buttons are grouped into Collector Runners, Updater & Migration, Data Tools, Testing & Validation, and Folder Management zones, with stop buttons and test-sandbox folder opening after test-zone completion. |
-| `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **latest collected records** (newest NUMERO + short description, read from `data/panamacompra_archive.db`), and a **last-run summary** (New/Saved counts + total archive size). Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
-| `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same restart/test run request and stop controls plus its own grouped action buttons, and auto-closes only after completed collector runs. |
+| `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons and test-sandbox folder opening after test-zone completion. |
+| `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **latest collected records** (newest NUMERO + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
+| `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same locked automatic/restart/manual/test controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, and auto-closes only after completed collector runs. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `pc_run_all_status.sh` | One-shot status snapshot. |
+| `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `pc_stop_run_all.sh` | Emergency stop for stuck index/detail/worker processes. |
 | `pc_follow_run_all.sh` | `tail -f` of the worker and current-run logs. |
-| `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `[finish]-[NUMERO]-[desc]`. |
-| `pc_rename_record_folders.py` | Rename record folders to `[finish]-[numero]-[desc]` from already-saved data. Dry-run by default; `--apply` to act. |
-| `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free). Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
+| `migrate_previous_records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `<finish>--<numero>--<desc>`. |
+| `pc_rename_record_folders.py` | Rename record folders to `<finish>--<numero>--<desc>` from already-saved data. Dry-run by default; `--apply` to act. |
+| `pc_db_maintenance.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
+| `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
 | `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 4 after the per-record detail view/calendar rebuild; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 6 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
-| `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after** the update finishes so the monitor reflects the already-updated code. |
+| `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after the update finishes successfully** so the monitor reflects the already-updated code; failed updates keep the loader open with the log path and do not open the monitor. Stopping a worker for update/manual stop does not recreate the pending/recover request flag, so an update launcher will not silently restart failed or pending work. |
 
 ---
 
@@ -385,8 +387,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Legacy/default max pages crawled per status group when `PC_INDEX_LIMIT` is not set. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
-| `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `[description]` token in the record-folder name. |
-| `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `[finish]-[numero]-[desc]` after a successful detail save. Set `0` to keep `<numero>`. |
+| `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `(description)` token in the record-folder name. |
+| `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `(finish)-(numero)-(desc)` after a successful detail save. Parentheses replace the older square-bracket style to stay readable on network shares without shell/glob bracket surprises. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
 | `PC_CALENDAR_ATTENDEES` | `a2gutierrezmora@gmail.com,razelgutierrez@gmail.com` | detail views | Comma-separated attendee emails for the `calendar` event. |
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
@@ -405,10 +407,11 @@ Behavior is controlled with environment variables (all optional):
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
 | `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update_local_copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `pc_update_before_run.sh` uses it (or the current branch) for its lightweight refresh. |
-| `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request after a successful local update. |
+| `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update_local_copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update_local_copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
-| `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor. Set to `0` to skip. |
+| `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update_local_copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor only after the updater exits successfully. Set to `0` to skip. |
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update_local_copy.sh` | Controls whether the updater restores `webhook_listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
+| `PC_REQUEST_OPEN_MONITOR` | `1` | `pc_request_run_all.sh` | When `0`, queue/start the worker without opening the monitor. `update_local_copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
 | `PC_WEBHOOK_REPLACE_PORT_OWNER` | `0` | `pc_start_webhook_listener.sh` | Set to `1` (or pass `--replace-port-owner`) to stop an old process that is still listening on the webhook port before starting the current listener. |
@@ -421,7 +424,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.85` | native monitor | Native monitor whole-window opacity (text shares it; Tk has no per-widget transparency). `0.85` is lightly translucent but readable; lower toward `0.30` for a more see-through window (clamped to 0.30–1.00). Editable live from the monitor's Settings panel; re-applied after the window is visible so it works on X11 WMs. |
-| settings file | `data/config/monitor_settings.env` | native monitor / WAHA notifier | `KEY=VALUE` file written by the monitor's Settings panel (transparency, auto-close/refresh seconds, WAHA source label). Read at startup and by the notifier. Precedence: environment variable > this file > built-in default. |
+| `pc_db_maintenance.py --apply` | manual / update scripts | Updates DB schema and metadata after code changes: `record_folder_leaf`, `files_layout_version`, `detail_sections_count`, `tables_count`, `db_reviewed_at`. |
+| settings file | `data/config/monitor_settings.env` | native/web monitor / worker / WAHA notifier | `KEY=VALUE` file written by the monitors' Settings panels (transparency, auto-close/refresh seconds, path settings, `PC_NOTIFY_WHATSAPP`, WAHA source label). Read at startup and by the worker/notifier. Precedence: environment variable > this file > built-in default. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
 | `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the timer window. |
@@ -439,7 +443,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If `PC_WAHA_CHAT_ID` is not configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
-| `PC_WAHA_CHAT_ID` | unset | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. This environment variable is the only destination source; group ids usually end in `@g.us`. |
+| `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
@@ -448,13 +452,13 @@ Behavior is controlled with environment variables (all optional):
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs.
+The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Native monitor layout
 
 The native Tk monitor is organized top-to-bottom into clear sections:
 
-1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `restart pending` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index limit and Detail limit are separate: index controls pages per status group; detail controls saved detail pages or sandbox records.
+1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `run pending only` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index limit and Detail limit are separate: index controls pages per status group; detail controls saved detail pages or sandbox records.
 2. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row. Placed directly under Run controls so the live run status is visible without scrolling. The worker writes an estimated time remaining (`ETA`) while a phase is running, and while the WhatsApp MESSAGING step runs, a `messaging` process pill lights up and the Phase/Step/Item fields track each message being sent. Every section after the top progress card has a **Hide/Show** control so the monitor can stay compact during long runs.
 3. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
@@ -464,7 +468,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier.
-4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `[DL local-download timestamp | DTEND deadline status] NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
+4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `(DL local-download timestamp | DTSTART start | DTEND deadline status) NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/start date/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
 5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `pc_start_webhook_listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
 
@@ -590,8 +594,12 @@ Behavior notes:
   records whose send failed keep `notified_at` empty and are retried by the
   end-of-run flush (`pc_notify_new_records.py --flush`) or the next run.
 - **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
-  `http://127.0.0.1:3000`) and a destination chat id in `PC_WAHA_CHAT_ID`
-  (for example, a group id ending in `@g.us`).
+  `http://127.0.0.1:3000`) and a destination chat id. Set
+  `PC_WAHA_CHAT_ID` or save the destination from either monitor, which writes
+  `data/config/waha_chat_id.txt` for the notifier to read. If messages do not
+  send, verify `PC_WAHA_ENABLED=1`, the WAHA server/session is running,
+  `PC_NOTIFY_WHATSAPP` is not `0`, and `PC_WAHA_NOTIFY_EVENTS` includes
+  `new`, `update`, `none`, and `done` as needed.
 
 ---
 
@@ -612,22 +620,27 @@ panamacompra-collector/
 │   └── queue/                                 # run_all_requested.flag
 └── records/                                   # archive (gitignored)
     └── YY-MM-DD/
-        └── [<finish>]-[<numero>]-[<desc>]/     # created as NUMERO, then renamed (see Record folder naming)
+        └── <finish>--<numero>--<desc>/         # network-friendly, created as NUMERO then renamed
             ├── NUMERO.json                     # index record
             ├── NUMERO.detail.json              # detail metadata
             ├── NUMERO.detail.html              # full page HTML
             ├── NUMERO.detail.txt               # visible text
             ├── NUMERO.calendar.ics             # importable calendar event
-            └── tables/                         # one detail-page section -> three files:
-                ├── NUMERO.table.<section>.001.json         # clean: headers/rows/key_values/links
-                ├── NUMERO.table.<section>.001.raw.json     # raw rows
-                └── NUMERO.table.<section>.001.raw_wL.json  # raw rows with links
+            ├── detail_sections/                # major detail.json logical sections split out
+            │   ├── NUMERO-DETAIL-000-ALL.json
+            │   ├── NUMERO-DETAIL-001-SUMMARY.json
+            │   ├── NUMERO-DETAIL-002-ITEMS.json
+            │   └── NUMERO-DETAIL-###-SECTION.json
+            └── tables/                         # tables split into all + one file per section
+                ├── NUMERO-TABLE-000-ALL.json
+                ├── NUMERO-TABLE-001-INFORMACION-GENERAL.json
+                └── NUMERO-TABLE-###-SECTION.json
 ```
 
-`<section>` is a short identifier derived from the detail-page section heading
-(e.g. `informacion-general`, `contacto-unidad-compra`, `items-cotizacion`). The
-per-table index — section, identifier and the three filenames — is also listed in
-`detail.json` under `tables`. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive. To auto-open/import generated packages on a desktop machine, set `PC_CALENDAR_AUTO_IMPORT=1` or provide a custom `PC_CALENDAR_AUTO_IMPORT_CMD`.
+`<SECTION>` is a short uppercase network-friendly identifier derived from the detail-page section heading
+(e.g. `INFORMACION-GENERAL`, `CONTACTO-UNIDAD-COMPRA`, `ITEMS-COTIZACION`). The
+per-table index — section, identifier, the `000-ALL` file and the numbered section file — is also listed in
+`detail.json` under `tables`. Major logical views are also written under `detail_sections/` as `NUMERO-DETAIL-000-ALL.json` plus numbered section files and indexed in `detail.json` under `detail_sections`, so large sections can be inspected or regenerated independently. Timestamped files under `data/calendar/YY-MM-DD/` hold small import packages for calendar apps. The normal worker exports only events from records written in that run, so you can import each package once without re-importing the entire archive. To auto-open/import generated packages on a desktop machine, set `PC_CALENDAR_AUTO_IMPORT=1` or provide a custom `PC_CALENDAR_AUTO_IMPORT_CMD`.
 
 > `panamacompra_index.csv` is written once per `NUMERO` at first insert and is **not**
 > updated afterwards, so it is a first-seen log, not a mirror of current state. Query
@@ -639,15 +652,16 @@ Folders are created as `NUMERO` during the index scan, then renamed to encode th
 key facts once detail data is available:
 
 ```text
-records/YY-MM-DD/[<finish>]-[<numero>]-[<desc>]/
-              e.g. [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
+records/YY-MM-DD/<finish>--<numero>--<desc>/
+              e.g. 2022-10-11_12_00--2022-0-12-214-12-CL-008498--FRS-126-CMPRS-D-CJ-PLSTC
 ```
 
 - **`<finish>`** = `YYYY-MM-DD_HH:MM` when proposals stop being accepted: the **end**
   time of the *"Fecha y hora presentación de cotizaciones"* window (24-hour). For older
-  records without that field, the delivery (*entrega*) date at `12:00` is used. Empty `[]`
-  if no date can be found.
-- **`<numero>`** = the PanamaCompra `NUMERO`, unchanged.
+  records without that field, the delivery (*entrega*) date at `12:00` is used.
+  `NO-DATE` is used if no date can be found. The folder token is passed through
+  `safe_name`, so colons become underscores for network/share compatibility.
+- **`<numero>`** = the PanamaCompra `NUMERO`, sanitized with the same network-friendly filename rules.
 - **`<desc>`** = the request description, accent-stripped, uppercased, with **vowels
   removed**, each run of non-alphanumerics collapsed to one `-`, truncated to `PC_DESC_SLUG_MAX` chars.
 
@@ -666,7 +680,7 @@ target. Inner files keep their `NUMERO.*` names.
 #### Keeping new and previous records in the same format
 
 There are two supported paths, and both converge on the same
-`[finish]-[numero]-[desc]` leaf format:
+`(finish)-(numero)-(desc)` leaf format:
 
 1. **New records** — run the normal collector. The index scan first creates a
    temporary `records/YY-MM-DD/NUMERO/` folder; once detail data is downloaded,
@@ -833,7 +847,7 @@ import Playwright, the error message prints the current interpreter, the checked
 > Re-fetching uses each record's stored `link`. If the listing URLs may have changed,
 > run an index scan first so links and `last_seen` are refreshed. The index scan
 > also checks for an existing `NUMERO.json` anywhere under `records/YY-MM-DD/`,
-> including renamed `[finish]-[numero]-[desc]` folders, before creating a new
+> including renamed `(finish)-(numero)-(desc)` folders, before creating a new
 > plain `NUMERO` folder. This prevents duplicate archives when the original
 > `NUMERO/` leaf was already renamed after detail download.
 
@@ -880,7 +894,7 @@ SQLite database at `data/panamacompra_archive.db`, table `opportunities`
 | `date_folder`, `record_folder`, `index_json_path` | Archive locations. |
 | `detail_status` | `pending`, `saved`, or `failed`. |
 | `detail_attempts`, `detail_saved_at`, `detail_json_path` | Detail tracking. |
-| `finish_date_guess` | Closing date guessed from detail text. |
+| `start_date_guess`, `finish_date_guess` | Opportunity start/end date guesses extracted from detail/calendar data. These are important monitor/filter/calendar values and are preserved separately from folder names. |
 | `notified_at` | Timestamp of the first WAHA “nueva oportunidad” WhatsApp message for this record (empty = not yet announced). |
 | `last_notified_status`, `last_notified_items_hash`, `last_notified_signature` | Last successfully notified record snapshot, used to suppress unchanged records and detect status/item updates. |
 | `last_calendar_export_path` | Per-record `.ics` path written after a successful WhatsApp notification. |
@@ -901,7 +915,7 @@ sqlite3 data/panamacompra_archive.db \
 
 # Latest activity
 sqlite3 data/panamacompra_archive.db \
-  "SELECT numero, grupo, estado, detail_status, finish_date_guess
+  "SELECT numero, grupo, estado, detail_status, start_date_guess, finish_date_guess
    FROM opportunities ORDER BY last_seen DESC LIMIT 20;"
 ```
 
@@ -1132,9 +1146,9 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
-`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar (steps 1–11 of `update_local_copy.sh`) and streams the update output, and only **after** the update attempt finishes does the normal monitor/timer open. If the update fails, the loader keeps the error visible and still starts the monitor so you can inspect logs and controls.
+`./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual restart collector runs or the test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
@@ -1300,4 +1314,9 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 - The webhook creates a run-all request
 - The index scan reports zero duplicate `NUMERO`
 - The detail downloader reports no pending rows after completion
-- Records are stored under `records/YY-MM-DD/[finish]-[NUMERO]-[desc]/` and existing files are skipped, not overwritten
+- Records are stored under `records/YY-MM-DD/(finish)-(NUMERO)-(desc)/` and existing files are skipped, not overwritten
+
+
+### Date fields retained in detail and database records
+
+The collector stores the important dates with explicit names: `date_start_opportunity` / `start_date_guess` for the opportunity start, `date_end_opportunity` / `finish_date_guess` for the opportunity end or deadline, `date_downloaded_local` / `detail_saved_at` for the local download time, and `date_name_finish_stamp` for the date token used in the record folder name. The monitor displays downloaded/start/end values together so filtering and review do not depend on the folder name alone.

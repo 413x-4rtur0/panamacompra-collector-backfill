@@ -136,7 +136,8 @@ def clean(text):
 
 def safe_name(text):
     text = clean(text)
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = re.sub(r"[^A-Za-z0-9._() -]+", "_", text)
+    text = re.sub(r"\s+", "_", text).strip("._- ")
     return text[:160] or "unknown"
 
 def short_description(text, max_len=80):
@@ -145,10 +146,10 @@ def short_description(text, max_len=80):
     return text[:max_len].strip()
 
 # --------------------------------------------------------------------------
-# Folder-naming helpers: [finish_stamp]-[numero]-[desc_slug]
+# Folder-naming helpers: (finish_stamp)-(numero)-(desc_slug)
 #
 # Example leaf:
-#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
+#   (2022-10-11_12_00)-(2022-0-12-214-12-CL-008498)-(FRS-126-CMPRS-D-CJ-PLSTC)
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)
@@ -215,7 +216,7 @@ def _resolve_close_datetimes(key_values, text):
 
     This is shared by BOTH the folder-name finish stamp (``compute_finish_stamp``)
     and the calendar DTSTART/DTEND (``_calendar_window_datetimes``) so the date
-    encoded in ``[finish]-[numero]-[desc]`` can never diverge from the ``.ics``
+    encoded in ``(finish)-(numero)-(desc)`` can never diverge from the ``.ics``
     DTEND for the same record.
 
     Priority (close-before-delivery, structured-before-text):
@@ -276,8 +277,17 @@ def compute_finish_stamp(key_values, text):
     return f"{dtend[:10]}_{dtend[11:16]}" if dtend else ""
 
 def build_record_folder_leaf(finish_stamp, numero, desc):
-    """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
-    return "[" + (finish_stamp or "") + "]-[" + str(numero) + "]-[" + (desc or "") + "]"
+    """Compose a readable, network-friendly record folder leaf.
+
+    Use parenthesized tokens instead of square brackets: parentheses remain
+    readable on network shares without colliding with shell/glob bracket syntax.
+    The three human-scannable parts stay explicit: close date, NUMERO and short
+    description.
+    """
+    stamp = safe_name(str(finish_stamp or "NO-DATE").replace(":", "_"))
+    number = safe_name(numero or "NO-NUMERO")
+    label = safe_name(desc or "NO-DESC")
+    return f"({stamp})-({number})-({label})"
 
 # Words dropped when turning a section heading into a short file identifier.
 _SECTION_STOPWORDS = {"de", "la", "del", "el", "los", "las", "y", "en", "a", "para"}
@@ -296,66 +306,117 @@ def section_identifier(section, index=0):
     ident = "-".join(words)[:28].strip("-")
     return ident or f"tabla-{int(index or 0):03d}"
 
-def save_table_jsons(record_folder, numero, tables, overwrite=False):
-    """Write three JSON files per table and return ``(written, descriptors)``.
 
-    Each table is split into:
-      * ``<n>.table.<ident>.NNN.json``        — clean view (headers/rows/key_values/links)
-      * ``<n>.table.<ident>.NNN.raw.json``     — raw_rows
-      * ``<n>.table.<ident>.NNN.raw_wL.json``  — raw rows with links
-    where ``<ident>`` is the table's section identifier and ``NNN`` its index.
-    ``descriptors`` is the per-table index recorded in detail.json's ``tables``.
+
+def split_file_label(value):
+    """Uppercase filename token used by split table/detail section files."""
+    return safe_name(strip_accents(str(value or "SECTION")).replace("_", "-")).upper()
+
+
+def save_detail_section_jsons(record_folder, numero, sections, overwrite=False):
+    """Write major detail views as network-friendly split JSON files.
+
+    Files follow the requested pattern::
+
+      <NUMERO>-DETAIL-000-ALL.json
+      <NUMERO>-DETAIL-###-<SECTION>.json
+
+    The ``000-ALL`` file carries every logical section together, while numbered
+    section files make summary/items/calendar/fields/links easy to inspect.
+    """
+    sections_dir = Path(record_folder) / "detail_sections"
+    sections_dir.mkdir(parents=True, exist_ok=True)
+    n = safe_name(numero)
+    if overwrite:
+        for old_path in list(sections_dir.glob(f"{n}.*.json")) + list(sections_dir.glob(f"{n}-DETAIL-*.json")):
+            old_path.unlink()
+
+    written = 0
+    descriptors = {}
+    all_path = sections_dir / f"{n}-DETAIL-000-ALL.json"
+    all_doc = {"numero": str(numero or ""), "kind": "DETAIL", "sections": sections}
+    if overwrite or not all_path.exists():
+        all_path.write_text(json.dumps(all_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        written += 1
+    descriptors["_all"] = {"file": all_path.name, "index": 0, "label": "ALL", "count": len(sections)}
+
+    for idx, (name, payload) in enumerate(sections.items(), start=1):
+        label = split_file_label(name)
+        path = sections_dir / f"{n}-DETAIL-{idx:03d}-{label}.json"
+        doc = {"numero": str(numero or ""), "kind": "DETAIL", "section": name, "section_index": idx, "data": payload}
+        if overwrite or not path.exists():
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            written += 1
+        if isinstance(payload, list):
+            count = len(payload)
+        elif isinstance(payload, dict):
+            count = len(payload)
+        else:
+            count = 1 if payload not in (None, "") else 0
+        descriptors[name] = {"file": path.name, "index": idx, "label": label, "count": count}
+    return written, descriptors
+
+def save_table_jsons(record_folder, numero, tables, overwrite=False):
+    """Write table JSON files using the requested readable split layout.
+
+    Files follow::
+
+      <NUMERO>-TABLE-000-ALL.json
+      <NUMERO>-TABLE-###-<SECTION>.json
+
+    The all file stores the complete list. Each numbered section file stores one
+    full table (clean rows, raw rows and rows-with-links together).
     """
     tables_dir = Path(record_folder) / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     n = safe_name(numero)
     if overwrite:
-        # Remove both the legacy single-file and the split-file layouts.
-        for old_path in tables_dir.glob(f"{n}.table*.json"):
+        for old_path in list(tables_dir.glob(f"{n}.table*.json")) + list(tables_dir.glob(f"{n}-TABLE-*.json")):
             old_path.unlink()
 
-    written = 0
+    normalized_tables = []
     descriptors = []
-    for position, table in enumerate(tables, start=1):
+    for position, table in enumerate(tables or [], start=1):
         idx = int(table.get("table_index") or position)
         section = table.get("section") or ""
         ident = section_identifier(section, idx)
-        base = f"{n}.table.{ident}.{idx:03d}"
-        clean_path = tables_dir / f"{base}.json"
-        raw_path = tables_dir / f"{base}.raw.json"
-        rawwl_path = tables_dir / f"{base}.raw_wL.json"
-        docs = [
-            (clean_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "headers": table.get("headers", []),
-                "rows": table.get("rows", []),
-                "key_values": table.get("key_values", {}),
-                "links_count": table.get("links_count", 0),
-                "links": table.get("links", []),
-            }),
-            (raw_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "raw_rows": table.get("raw_rows", []),
-            }),
-            (rawwl_path, {
-                "table_index": idx, "section": section, "identifier": ident,
-                "rows_with_links": table.get("rows_with_links", []),
-                "raw_rows_with_links": table.get("raw_rows_with_links", []),
-            }),
-        ]
-        for path, doc in docs:
-            if overwrite or not path.exists():
-                path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-                written += 1
-        descriptors.append({
+        label = split_file_label(ident)
+        doc = {
+            "numero": str(numero or ""),
+            "kind": "TABLE",
             "table_index": idx,
             "section": section,
             "identifier": ident,
-            "files": {
-                "clean": clean_path.name,
-                "raw": raw_path.name,
-                "raw_with_links": rawwl_path.name,
-            },
+            "headers": table.get("headers", []),
+            "rows": table.get("rows", []),
+            "key_values": table.get("key_values", {}),
+            "links_count": table.get("links_count", 0),
+            "links": table.get("links", []),
+            "raw_rows": table.get("raw_rows", []),
+            "rows_with_links": table.get("rows_with_links", []),
+            "raw_rows_with_links": table.get("raw_rows_with_links", []),
+        }
+        normalized_tables.append(doc)
+
+    written = 0
+    all_path = tables_dir / f"{n}-TABLE-000-ALL.json"
+    all_doc = {"numero": str(numero or ""), "kind": "TABLE", "tables_count": len(normalized_tables), "tables": normalized_tables}
+    if overwrite or not all_path.exists():
+        all_path.write_text(json.dumps(all_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        written += 1
+
+    for doc in normalized_tables:
+        idx = int(doc["table_index"])
+        label = split_file_label(doc["identifier"])
+        path = tables_dir / f"{n}-TABLE-{idx:03d}-{label}.json"
+        if overwrite or not path.exists():
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            written += 1
+        descriptors.append({
+            "table_index": idx,
+            "section": doc["section"],
+            "identifier": doc["identifier"],
+            "files": {"all": all_path.name, "section": path.name},
         })
     return written, descriptors
 
@@ -855,8 +916,8 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
     detail_json = target / f"{n}.detail.json"
     conn.execute(
         "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
-        "detail_json_path = ? WHERE numero = ?",
-        (str(target), str(index_json), str(detail_json), numero),
+        "detail_json_path = ?, record_folder_leaf = ?, db_reviewed_at = ? WHERE numero = ?",
+        (str(target), str(index_json), str(detail_json), target.name, now_iso(), numero),
     )
     conn.commit()
 
@@ -917,6 +978,7 @@ def ensure_db_schema(conn):
         "detail_saved_at": "ALTER TABLE opportunities ADD COLUMN detail_saved_at TEXT",
         "detail_json_path": "ALTER TABLE opportunities ADD COLUMN detail_json_path TEXT",
         "finish_date_guess": "ALTER TABLE opportunities ADD COLUMN finish_date_guess TEXT",
+        "start_date_guess": "ALTER TABLE opportunities ADD COLUMN start_date_guess TEXT",
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
         # pc_notify_new_records.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
@@ -928,6 +990,14 @@ def ensure_db_schema(conn):
         "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
         "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",
         "last_calendar_export_path": "ALTER TABLE opportunities ADD COLUMN last_calendar_export_path TEXT",
+        # Maintained by pc_db_maintenance.py / detail saves. These make monitor
+        # summaries and update checks independent from repeatedly opening every
+        # detail JSON file.
+        "record_folder_leaf": "ALTER TABLE opportunities ADD COLUMN record_folder_leaf TEXT",
+        "files_layout_version": "ALTER TABLE opportunities ADD COLUMN files_layout_version INTEGER DEFAULT 1",
+        "detail_sections_count": "ALTER TABLE opportunities ADD COLUMN detail_sections_count INTEGER DEFAULT 0",
+        "tables_count": "ALTER TABLE opportunities ADD COLUMN tables_count INTEGER DEFAULT 0",
+        "db_reviewed_at": "ALTER TABLE opportunities ADD COLUMN db_reviewed_at TEXT",
     }
 
     for column, statement in migrations.items():
@@ -941,6 +1011,18 @@ def ensure_db_schema(conn):
     conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_opportunities_last_seen
     ON opportunities(last_seen)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_finish_date
+    ON opportunities(finish_date_guess)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_start_date
+    ON opportunities(start_date_guess)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_layout_version
+    ON opportunities(files_layout_version)
     """)
 
 def init_db(db_path=None):
@@ -973,7 +1055,8 @@ def init_db(db_path=None):
         detail_attempts INTEGER DEFAULT 0,
         detail_saved_at TEXT,
         detail_json_path TEXT,
-        finish_date_guess TEXT
+        finish_date_guess TEXT,
+        start_date_guess TEXT
     )
     """)
 
@@ -1003,7 +1086,7 @@ def find_existing_record_archive(numero, records_dir=RECORDS_DIR, date_folder=No
 
     The immutable index JSON keeps the stable ``<NUMERO>.json`` filename inside
     both old ``records/YY-MM-DD/NUMERO/`` leaves and renamed
-    ``records/YY-MM-DD/[finish]-[numero]-[desc]/`` leaves.  Use that file as
+    ``records/YY-MM-DD/(finish)-(numero)-(desc)/`` leaves.  Use that file as
     the source of truth so a rebuilt/empty DB does not create a duplicate
     ``NUMERO`` folder just because the original leaf was renamed.
     """
@@ -1027,7 +1110,7 @@ def archive_complete(record_folder, numero):
     Older migrated records may have just the index JSON, or detail HTML/text
     without the newer summary/calendar views and ``.ics`` companion file. Treat
     those as incomplete so update/backfill tools re-download or rebuild them
-    instead of leaving folders like ``[]-[NUMERO]-[DESC]`` stuck forever.
+    instead of leaving old/incomplete folders stuck forever.
     """
     n = safe_name(numero)
     detail_json = record_folder / f"{n}.detail.json"
@@ -1186,7 +1269,8 @@ def guess_finish_date_from_text(text):
     return ""
 
 def update_detail_status(conn, numero, status, detail_json_path=None,
-                         finish_date_guess=None, increment_attempts=True):
+                         finish_date_guess=None, start_date_guess=None,
+                         increment_attempts=True):
     """Update a record's detail status.
 
     ``detail_attempts`` counts genuine download attempts so a permanently broken
@@ -1202,7 +1286,8 @@ def update_detail_status(conn, numero, status, detail_json_path=None,
         detail_attempts = detail_attempts + ?,
         detail_saved_at = ?,
         detail_json_path = COALESCE(?, detail_json_path),
-        finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess)
+        finish_date_guess = COALESCE(NULLIF(?, ''), finish_date_guess),
+        start_date_guess = COALESCE(NULLIF(?, ''), start_date_guess)
     WHERE numero = ?
     """, (
         status,
@@ -1210,6 +1295,7 @@ def update_detail_status(conn, numero, status, detail_json_path=None,
         now_iso() if status == "saved" else None,
         str(detail_json_path) if detail_json_path else None,
         finish_date_guess or "",
+        start_date_guess or "",
         numero,
     ))
     conn.commit()

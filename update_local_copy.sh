@@ -168,7 +168,11 @@ trap restore_webhook_on_exit EXIT
 # made the updater appear to "freeze" or close right after step 1, and it also
 # added a fixed 5s wait. Instead stop only the collector pipeline plus the
 # webhook trigger so a new run cannot start mid-update, and never touch the
-# updater/loader/monitor processes.
+# updater/loader/monitor processes. The no-resume marker tells a worker that is
+# being stopped by the updater NOT to recreate run_all_requested.flag from its
+# abrupt-exit trap; local updates/manual launchers must not restart/recover a
+# pending/failed collector task unless the operator explicitly requests it.
+touch data/queue/run_all_stop_no_resume.flag
 rm -f data/queue/run_all_requested.flag
 pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
@@ -185,6 +189,7 @@ done
 pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
+rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag data/queue/run_all_stop_no_resume.flag
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"
@@ -351,11 +356,15 @@ else
 fi
 
 echo ""
-echo "7) Run repository health checks"
+echo "7) Review and update archive database metadata"
+python -u ./pc_db_maintenance.py --apply
+
+echo ""
+echo "8) Run repository health checks"
 ./review_panamacompra_system.sh
 
 echo ""
-echo "8) Refresh already-downloaded records (optional, manual)"
+echo "9) Refresh already-downloaded records (optional, manual)"
 echo "   A normal run only processes NEW records; it never re-pulls previously"
 echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
 echo "   and the per-section split-table layout, run one of these manually:"
@@ -370,20 +379,23 @@ echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; m
 echo "     ./pc_test_zone.py --limit 5 --apply"
 
 echo ""
-echo "9) Install manual monitor desktop shortcut"
+echo "10) Install manual monitor desktop shortcut"
 install_desktop_shortcut
 
 echo ""
-echo "10) Optional smoke run request"
+echo "11) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
-  ./pc_request_run_all.sh "$DETAIL_LIMIT"
+  # The updater loader is responsible for opening the monitor after this script
+  # exits successfully. Suppress pc_request_run_all.sh's normal monitor opener so
+  # an optional smoke request cannot show the monitor before steps 12/final done.
+  PC_REQUEST_OPEN_MONITOR=0 ./pc_request_run_all.sh "$DETAIL_LIMIT"
 else
-  echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to request one after update."
+  echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to queue one during the update without opening the monitor early."
 fi
 
 echo ""
-echo "11) Restore webhook listener after update"
+echo "12) Restore webhook listener after update"
 restart_webhook_listener
 trap - EXIT
 

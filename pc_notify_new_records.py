@@ -80,7 +80,13 @@ def waha_enabled() -> bool:
 
 
 def waha_destination() -> str:
-    return os.environ.get("PC_WAHA_CHAT_ID", "").strip()
+    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
+    if chat_id:
+        return chat_id
+    path = CONFIG_DIR / "waha_chat_id.txt"
+    if path.exists():
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    return ""
 
 
 def load_keywords() -> list[str]:
@@ -116,20 +122,45 @@ def load_detail_data(detail_json_path: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_split_detail_section(detail_data: dict, detail_json_path: str | None, section: str):
+    descriptor = (detail_data.get("detail_sections") or {}).get(section)
+    if not isinstance(descriptor, dict) or not descriptor.get("file") or not detail_json_path:
+        return None
+    base = Path(detail_json_path)
+    if not base.is_absolute():
+        base = BASE_DIR / base
+    path = base.parent / "detail_sections" / str(descriptor["file"])
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(doc, dict) and "data" in doc:
+        return doc.get("data")
+    return doc
+
+
 def load_detail_summary(detail_json_path: str | None) -> dict:
-    summary = load_detail_data(detail_json_path).get("summary")
+    data = load_detail_data(detail_json_path)
+    summary = data.get("summary")
+    if not isinstance(summary, dict):
+        summary = load_split_detail_section(data, detail_json_path, "summary")
     return summary if isinstance(summary, dict) else {}
 
 
 def load_detail_items(detail_json_path: str | None) -> list[dict]:
-    items = load_detail_data(detail_json_path).get("items")
+    data = load_detail_data(detail_json_path)
+    items = data.get("items")
+    if not isinstance(items, list):
+        items = load_split_detail_section(data, detail_json_path, "items")
     return items if isinstance(items, list) else []
 
 
 def load_detail_calendar(detail_json_path: str | None) -> dict:
-    calendar = load_detail_data(detail_json_path).get("calendar")
+    data = load_detail_data(detail_json_path)
+    calendar = data.get("calendar")
+    if not isinstance(calendar, dict):
+        calendar = load_split_detail_section(data, detail_json_path, "calendar")
     return calendar if isinstance(calendar, dict) else {}
-
 
 def stable_hash(value) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

@@ -219,6 +219,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         return []
     try:
         conn.row_factory = sqlite3.Row
+        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
         rows = conn.execute(
             "SELECT numero, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
@@ -226,7 +228,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
+            f"{start_expr} AS start_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -245,6 +248,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
     ]
@@ -256,7 +260,8 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "notified": 0, "with_detail_json": 0, "groups": [], "db_exists": ARCHIVE_DB.exists(),
+        "new_records": 0, "existing_records": 0, "notified": 0, "with_detail_json": 0,
+        "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -273,14 +278,48 @@ def db_review_stats() -> dict[str, object]:
             sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
             return int(conn.execute(sql).fetchone()[0])
 
+        column_details = []
+        for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
+            name = col[1]
+            nonempty = int(conn.execute(
+                f"SELECT COUNT(*) FROM opportunities WHERE COALESCE(CAST({name} AS TEXT), '') <> ''"
+            ).fetchone()[0])
+            column_details.append({"name": name, "type": col[2], "nonempty": nonempty})
+
+        status_rows = [
+            {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
+            for r in conn.execute(
+                "SELECT detail_status, COUNT(*) AS c FROM opportunities "
+                "GROUP BY detail_status ORDER BY c DESC"
+            ).fetchall()
+        ]
+
         stats = {
             "db_exists": True,
             "total": count(),
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "new_records": count("detail_status = 'pending'"),
+            "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "recent": [
+                (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
+                for r in conn.execute(
+                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
+                    "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8"
+                ).fetchall()
+            ],
+            "completed_recent": [
+                (str(r["numero"] or ""), str(r["finish_date_guess"] or ""), str(r["descripcion"] or r["short_description"] or ""))
+                for r in conn.execute(
+                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
+                ).fetchall()
+            ],
+            "columns": column_details,
+            "status_breakdown": status_rows,
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
@@ -304,6 +343,8 @@ STATUS_TAGS = {"expired": "EXPIRED", "soon": "SOON", "upcoming": "ok", "unknown"
 # Friendly labels for the status selector, mapped back to the internal keys.
 STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming")
 STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming"}
+DETAIL_STATUS_FILTER_CHOICES = ("All", "Pending records", "Completed records", "Failed records")
+DETAIL_STATUS_FILTER_KEYS = {"Pending records": "pending", "Completed records": "saved", "Failed records": "failed"}
 
 
 def parse_deadline(rec: dict[str, str]) -> datetime | None:
@@ -322,6 +363,11 @@ def parse_deadline(rec: dict[str, str]) -> datetime | None:
 def deadline_text(rec: dict[str, str]) -> str:
     dt = parse_deadline(rec)
     return dt.strftime("%Y-%m-%d %H:%M") if dt else "—"
+
+
+def start_text(rec: dict[str, str]) -> str:
+    raw = (rec.get("start_date_guess") or "").strip().replace("T", " ").replace("_", " ")
+    return raw[:16] if raw else "—"
 
 
 def downloaded_text(rec: dict[str, str]) -> str:
@@ -599,9 +645,9 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    # The logs pane (now row 8, after the Database review and Reset sections) is
-    # the one that should absorb extra vertical space.
-    content.rowconfigure(8, weight=1)
+    # The logs pane (after record/database sections plus reset actions) is the
+    # one that should absorb extra vertical space.
+    content.rowconfigure(11, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -770,7 +816,7 @@ def run_tk() -> int:
     ttk.Label(controls, text="Mode:", style="Card.TLabel").grid(row=1, column=0, sticky="w")
     auto_radio = ttk.Radiobutton(controls, text="automatic", value="auto", variable=run_mode_var, style="Card.TRadiobutton", state="disabled")
     auto_radio.grid(row=1, column=1, sticky="w")
-    live_radio = ttk.Radiobutton(controls, text="restart pending", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
+    live_radio = ttk.Radiobutton(controls, text="run pending only", value="restart", variable=run_mode_var, style="Card.TRadiobutton")
     live_radio.grid(row=1, column=2, sticky="w")
     manual_radio = ttk.Radiobutton(controls, text="manual run", value="manual", variable=run_mode_var, style="Card.TRadiobutton")
     manual_radio.grid(row=1, column=3, sticky="w")
@@ -786,7 +832,7 @@ def run_tk() -> int:
     run_button.grid(row=2, column=4, sticky="w")
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
     add_tooltip(auto_radio, "automatic = shown for changedetection/webhook runs; not selectable manually.")
-    add_tooltip(live_radio, "restart pending = queue the normal collector pipeline (real archive).")
+    add_tooltip(live_radio, "run pending only = queue the normal collector pipeline (real archive).")
     add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
     add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
     add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
@@ -808,7 +854,8 @@ def run_tk() -> int:
                 widget.configure(state=target_state)
             except tk.TclError:
                 pass
-        current_mode = str(snap.get("MODE", "")).strip().upper()
+        progress = snap.get("progress", {}) or {}
+        current_mode = str(progress.get("MODE", "")).strip().upper()
         if busy:
             if current_mode == "AUTO":
                 run_mode_var.set("auto")
@@ -990,15 +1037,145 @@ def run_tk() -> int:
     add_section_toggle(diag, button_column=3)
 
     # ========================================================================
-    # SECTION 4: RECORD INDEX - pick a collected record by NUMERO + description
+    # SECTION 4: RECORDS PENDING / COMPLETED - readable run counters plus the
+    # previous database snapshot directly after the live records-completed view.
+    # ========================================================================
+    records_overview = ttk.Frame(content, style="Card.TFrame", padding=14)
+    records_overview.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    for col in range(2):
+        records_overview.columnconfigure(col, weight=1, uniform="record_overview")
+    ttk.Label(records_overview, text="Records summary counters", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    pending_var = tk.StringVar(value="Pending records: —")
+    completed_var = tk.StringVar(value="Completed records: —")
+    pending_card = tk.Label(records_overview, textvariable=pending_var, anchor="nw", justify="left",
+                            bg="#3f1d1d", fg="#fecaca", padx=12, pady=10, font=("Sans", 11, "bold"))
+    pending_card.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(0, 8))
+    completed_card = tk.Label(records_overview, textvariable=completed_var, anchor="nw", justify="left",
+                              bg="#14532d", fg="#bbf7d0", padx=12, pady=10, font=("Sans", 11, "bold"))
+    completed_card.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(0, 8))
+    previous_db_text = tk.Text(records_overview, height=7, wrap="word", bd=0, highlightthickness=0,
+                               bg="#0b1220", fg="#e5e7eb", insertbackground="#e5e7eb", font=("Sans", 9))
+    previous_db_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+    def set_previous_db_text(value: str) -> None:
+        previous_db_text.configure(state="normal")
+        previous_db_text.delete("1.0", "end")
+        previous_db_text.insert("1.0", value)
+        previous_db_text.configure(state="disabled")
+
+    def update_records_overview(progress: dict[str, str]) -> None:
+        pending = progress.get("RECORDS_PENDING", "-")
+        saved = progress.get("RECORDS_SAVED", "-")
+        failed = progress.get("RECORDS_FAILED", "-")
+        found = progress.get("RECORDS_FOUND", "-")
+        new = progress.get("RECORDS_NEW", "-")
+        existing = progress.get("RECORDS_EXISTING", "-")
+        pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
+        s = db_review_stats()
+        end_dates = "; ".join(
+            f"{num} ends {finish or 'no date'}"
+            for num, finish, _desc in s.get("completed_recent", [])[:3]
+        ) or "No completed end dates yet"
+        completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
+        if not s.get("db_exists"):
+            set_previous_db_text("Previous database data: no archive database yet.")
+            return
+        recent = "\n".join(f"  • {num} [{status or 'unknown'}] — {desc[:90]}" for num, desc, status in s.get("recent", [])) or "  • —"
+        groups = ", ".join(f"{name}: {qty}" for name, qty in s.get("groups", [])) or "—"
+        statuses = ", ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "—"
+        columns = ", ".join(f"{col['name']}[{col['type'] or 'TEXT'}]={col['nonempty']}" for col in s.get("columns", [])[:24]) or "—"
+        set_previous_db_text(
+            "Previous database data / all records summary\n"
+            f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
+            f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
+            f"Detail statuses: {statuses}\n"
+            f"Groups: {groups}\n"
+            f"DB elements/columns with data: {columns}\n"
+            f"Most recent records:\n{recent}"
+        )
+
+    add_section_toggle(records_overview, button_column=1)
+
+    def make_status_browser(title: str, detail_status: str, row: int) -> None:
+        frame = ttk.Frame(content, style="Card.TFrame", padding=14)
+        frame.grid(row=row, column=0, sticky="ew", padx=14, pady=8)
+        frame.columnconfigure(1, weight=1)
+        ttk.Label(frame, text=title, style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        filter_var = tk.StringVar(value="")
+        ttk.Label(frame, text="Search:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        filter_entry = ttk.Entry(frame, textvariable=filter_var)
+        filter_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
+        listbox = tk.Listbox(frame, height=6, activestyle="none", exportselection=False,
+                             bg="#020617", fg="#e5e7eb", selectbackground="#2563eb",
+                             selectforeground="#ffffff", highlightthickness=0, borderwidth=0, font=("Sans", 9))
+        listbox.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(4, 6))
+        records: list[dict[str, str]] = []
+
+        def label(rec: dict[str, str]) -> str:
+            return f"{rec.get('numero') or '(sin número)'} — starts {start_text(rec)} — ends {deadline_text(rec)} — {rec.get('descripcion') or '(sin descripción)'}"
+
+        def selected() -> dict[str, str] | None:
+            sel = listbox.curselection()
+            return records[sel[0]] if sel else None
+
+        def refresh_list(*_args: object) -> None:
+            nonlocal records
+            needle = filter_var.get().strip().lower()
+            records = [
+                rec for rec in load_record_index(limit=1000)
+                if (rec.get("detail_status") or "").lower() == detail_status
+                and (not needle or needle in label(rec).lower())
+            ]
+            records.sort(key=lambda rec: (parse_deadline(rec) or datetime.max))
+            listbox.delete(0, "end")
+            for rec in records:
+                listbox.insert("end", label(rec))
+            if records:
+                listbox.selection_set(0)
+
+        def open_folder_for_selection() -> None:
+            rec = selected()
+            if not rec:
+                button_status_var.set(f"Select a record in {title} first.")
+                return
+            folder = rec.get("record_folder") or ""
+            if not folder or not Path(folder).exists():
+                button_status_var.set(f"Record folder not found for {rec.get('numero') or 'selection'}.")
+                return
+            subprocess.Popen([os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open"), folder], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def open_portal_for_selection() -> None:
+            rec = selected()
+            if rec and rec.get("link"):
+                subprocess.Popen(["xdg-open", rec["link"]], cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                button_status_var.set(f"No portal link for the selected {title} record.")
+
+        refresh_btn = ttk.Button(frame, text="Refresh", command=refresh_list)
+        refresh_btn.grid(row=3, column=0, sticky="w", padx=(0, 8))
+        folder_btn = ttk.Button(frame, text="Open folder", command=open_folder_for_selection)
+        folder_btn.grid(row=3, column=1, sticky="w", padx=(0, 8))
+        portal_btn = ttk.Button(frame, text="Open portal", command=open_portal_for_selection)
+        portal_btn.grid(row=3, column=2, sticky="w", padx=(0, 8))
+        add_tooltip(filter_entry, f"Filter records in {title} by NUMERO, deadline or description.")
+        filter_var.trace_add("write", refresh_list)
+        refresh_list()
+        add_section_toggle(frame, button_column=3)
+
+    make_status_browser("Records Pendings", "pending", 5)
+    make_status_browser("Records Completed", "saved", 6)
+
+    # ========================================================================
+    # SECTION 5: RECORD INDEX - pick a collected record by NUMERO + description
     # and open its archive folder or the portal page. Populated read-only from
     # data/panamacompra_archive.db; empty until the collector has run.
     # ========================================================================
     record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    record_index.grid(row=8, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
-    ttk.Label(record_index, text="Record index", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
     # The folder selector is a type-to-filter box plus a dedicated, self-scrolling
     # list (with its own scrollbar) instead of a dropdown. A dropdown's popup
@@ -1009,11 +1186,12 @@ def run_tk() -> int:
     index_filtered: list[dict[str, str]] = []
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
+    index_detail_status_var = tk.StringVar(value="All")
     index_mindate_var = tk.StringVar(value="")
     index_downloaded_mindate_var = tk.StringVar(value="")
     index_detail_var = tk.StringVar(value="No records collected yet. Run the collector, then click Refresh list.")
 
-    ttk.Label(record_index, text="Filter:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    ttk.Label(record_index, text="Search NUMERO / description:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
     index_filter_entry = ttk.Entry(record_index, textvariable=index_filter_var)
     index_filter_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
     add_tooltip(index_filter_entry, "Type any part of a NUMERO or description to narrow the list below.")
@@ -1024,16 +1202,20 @@ def run_tk() -> int:
     # glance which records are still actionable.
     dates_row = ttk.Frame(record_index, style="Card.TFrame")
     dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
-    ttk.Label(dates_row, text="Status:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    ttk.Label(dates_row, text="Deadline:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
     index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
-    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 16))
-    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+    index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
+    index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=12)
-    index_mindate_entry.grid(row=0, column=3, sticky="w", padx=(0, 12))
-    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_mindate_entry.grid(row=1, column=1, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Downloaded on/after:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(0, 6))
     index_downloaded_entry = ttk.Entry(dates_row, textvariable=index_downloaded_mindate_var, width=12)
-    index_downloaded_entry.grid(row=0, column=5, sticky="w", padx=(0, 8))
+    index_downloaded_entry.grid(row=1, column=3, sticky="w", padx=(0, 8))
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
+    add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date. Format YYYY-MM-DD; leave blank for no date limit.")
     add_tooltip(index_downloaded_entry, "Show only records downloaded into the local archive on or after this date. Format YYYY-MM-DD; leave blank for no downloaded-date limit.")
 
@@ -1078,7 +1260,7 @@ def run_tk() -> int:
         dt = parse_deadline(rec)
         dtend = dt.strftime("%y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
-        return f"[DL {downloaded_part} | DTEND {dtend} {tag:>7}]  {index_label(rec)}"
+        return f"(DL {downloaded_part} | DTSTART {start_text(rec)} | DTEND {dtend} {tag:>7})  {index_label(rec)}"
 
     def selected_records() -> list[dict[str, str]]:
         records: list[dict[str, str]] = []
@@ -1099,7 +1281,7 @@ def run_tk() -> int:
         set_index_detail(
             f"NUMERO: {rec['numero']}   ·   {expiry_status(rec).upper()}{status}\n"
             f"Descripción: {rec['descripcion'] or '-'}\n"
-            f"Downloaded: {downloaded_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
+            f"Downloaded: {downloaded_text(rec)}   ·   DTSTART: {start_text(rec)}   ·   DTEND (deadline): {deadline_text(rec)}"
         )
 
     def populate_listbox(records: list[dict[str, str]]) -> None:
@@ -1118,6 +1300,7 @@ def run_tk() -> int:
     def apply_filter(*_args: object) -> None:
         needle = index_filter_var.get().strip().lower()
         wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
+        wanted_detail_status = DETAIL_STATUS_FILTER_KEYS.get(index_detail_status_var.get())
         min_date = None
         raw_min = index_mindate_var.get().strip()
         if raw_min:
@@ -1138,6 +1321,8 @@ def run_tk() -> int:
             if needle and needle not in index_label(rec).lower():
                 continue
             if wanted_status and expiry_status(rec) != wanted_status:
+                continue
+            if wanted_detail_status and (rec.get("detail_status") or "").lower() != wanted_detail_status:
                 continue
             if min_date is not None:
                 dt = parse_deadline(rec)
@@ -1215,6 +1400,7 @@ def run_tk() -> int:
     index_listbox.bind("<Double-Button-1>", lambda _e: open_selected_folder())
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
+    index_detail_status_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
     index_downloaded_mindate_var.trace_add("write", apply_filter)
 
@@ -1245,7 +1431,7 @@ def run_tk() -> int:
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=5, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1293,7 +1479,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=6, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -1325,7 +1511,7 @@ def run_tk() -> int:
     # confirmed, so a stray click cannot erase the archive. All call pc_reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -1366,18 +1552,18 @@ def run_tk() -> int:
     add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
     add_section_toggle(reset_zone, button_column=1)
 
-    logs = ttk.Frame(content, style="TFrame")
-    logs.grid(row=8, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs = ttk.Frame(content, style="Card.TFrame", padding=14)
+    logs.grid(row=11, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
-    ttk.Label(logs, text="Recent worker log").grid(row=0, column=0, sticky="w")
-    ttk.Label(logs, text="Current action log").grid(row=0, column=1, sticky="w")
+    ttk.Label(logs, text="Recent worker log", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+    ttk.Label(logs, text="Current action log", style="Title.TLabel").grid(row=0, column=1, sticky="w", pady=(0, 8))
 
     # Each log is a fixed-height box WITH its own scrollbar, so the pane scrolls
     # the log itself (wheel or scrollbar) instead of moving the whole page.
     def make_log_pane(parent: tk.Widget, grid_col: int, pad: tuple[int, int]) -> tk.Text:
-        frame = ttk.Frame(parent, style="TFrame")
+        frame = ttk.Frame(parent, style="Card.TFrame")
         frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
@@ -1438,6 +1624,7 @@ def run_tk() -> int:
         message_var.set(str(progress.get("MESSAGE", "")))
         update_process_chips(snap["processes"])
         update_run_controls(snap)
+        update_records_overview(progress)
 
         for key, var in diag_vars.items():
             if key == "STEP":

@@ -195,6 +195,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
         return []
     try:
         conn.row_factory = sqlite3.Row
+        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
         rows = conn.execute(
             "SELECT numero, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
@@ -202,7 +204,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess "
+            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
+            f"{start_expr} AS start_date_guess "
             "FROM opportunities "
             "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
             "LIMIT ?",
@@ -221,6 +224,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or ""),
+            "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
     ]
@@ -233,6 +237,7 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
         "failed": 0, "notified": 0, "with_detail_json": 0, "groups": [],
+        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [],
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -249,6 +254,19 @@ def db_review_stats() -> dict[str, object]:
             sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
             return int(conn.execute(sql).fetchone()[0])
 
+        column_details = []
+        for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
+            name = col[1]
+            nonempty = int(conn.execute(
+                f"SELECT COUNT(*) FROM opportunities WHERE COALESCE(CAST({name} AS TEXT), '') <> ''"
+            ).fetchone()[0])
+            column_details.append({"name": name, "type": col[2], "nonempty": nonempty})
+        status_rows = [
+            {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
+            for r in conn.execute(
+                "SELECT detail_status, COUNT(*) AS c FROM opportunities GROUP BY detail_status ORDER BY c DESC"
+            ).fetchall()
+        ]
         return {
             "db_exists": True,
             "total": count(),
@@ -257,6 +275,22 @@ def db_review_stats() -> dict[str, object]:
             "failed": count("detail_status = 'failed'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "recent": [
+                {"numero": str(r["numero"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or ""), "detail_status": str(r["detail_status"] or "")}
+                for r in conn.execute(
+                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
+                    "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 12"
+                ).fetchall()
+            ],
+            "completed_recent": [
+                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
+                for r in conn.execute(
+                    "SELECT numero, finish_date_guess, descripcion, short_description FROM opportunities "
+                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
+                ).fetchall()
+            ],
+            "columns": column_details,
+            "status_breakdown": status_rows,
             "groups": [
                 {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
                 for r in conn.execute(
@@ -440,6 +474,10 @@ pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
 pre::-webkit-scrollbar-track {{ background: #0f172a; border-radius: 8px; }}
 pre::-webkit-scrollbar-thumb {{ background: #334155; border-radius: 8px; }}
 pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
+.record-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
+.record-card {{ border-radius: 10px; padding: 14px; font-weight: 700; white-space: pre-line; }}
+.record-pending {{ background: #3f1d1d; color: #fecaca; }}
+.record-completed {{ background: #14532d; color: #bbf7d0; }}
 </style>
 </head>
 <body>
@@ -451,10 +489,13 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>restart pending</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; restart pending queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Record index</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Status <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
-<div class="card"><h2>Database review</h2><p class="small">Read-only snapshot of data/panamacompra_archive.db. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
+<div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
+<div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
+<div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
+<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">DTEND on/after <input type="date" id="record-mindate"></label> <label class="small">Downloaded on/after <input type="date" id="record-downloaded-mindate"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
@@ -492,6 +533,7 @@ function render(data) {{
     `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
   ).join('');
   updateRunControls(data);
+  renderRecordSummary(data);
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
@@ -590,6 +632,7 @@ function expiryStatus(rec) {{
   return 'upcoming';
 }}
 function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
+function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ').replace('_', ' ') : '—'; }}
 function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
 function parseDownloaded(rec) {{
   const raw = (rec.detail_saved_at || '').trim().replace('T', ' ');
@@ -616,16 +659,18 @@ function renderRecordDetail() {{
   const detail = rec.detail_status ? '   ·   detail: ' + esc(rec.detail_status) : '';
   node.innerHTML = '<span style="color:' + STATUS_COLOR[st] + ';font-weight:700">' + st.toUpperCase() + '</span>  ·  NUMERO: ' + esc(rec.numero) + detail
     + '<br>' + esc(rec.descripcion || '-')
-    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
+    + '<br>Downloaded: ' + esc(downloadedText(rec)) + '   ·   DTSTART: ' + esc(startText(rec)) + '   ·   DTEND (deadline): ' + esc(deadlineText(rec));
 }}
 function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
+  const detailStatus = (document.getElementById('record-detail-status') || {{}}).value || 'all';
   const minRaw = (document.getElementById('record-mindate') || {{}}).value || '';
   const minDate = minRaw ? new Date(minRaw + 'T00:00') : null;
   const downloadedRaw = (document.getElementById('record-downloaded-mindate') || {{}}).value || '';
   const downloadedMinDate = downloadedRaw ? new Date(downloadedRaw + 'T00:00') : null;
   recordFiltered = recordIndex.filter(r => {{
     if (status !== 'all' && expiryStatus(r) !== status) return false;
+    if (detailStatus !== 'all' && String(r.detail_status || '').toLowerCase() !== detailStatus) return false;
     if (minDate) {{ const dt = parseDeadline(r); if (!dt || dt < minDate) return false; }}
     if (downloadedMinDate) {{ const dl = parseDownloaded(r); if (!dl || dl < downloadedMinDate) return false; }}
     return true;
@@ -637,7 +682,7 @@ function applyRecordFilter() {{
     const tag = parseDeadline(r) ? (r.finish_date_guess || '').slice(2, 10) : 'no date';
     const dl = parseDownloaded(r);
     const downloaded = dl ? downloadedText(r) : 'not local';
-    const label = '[DL ' + downloaded + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + '] ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
+    const label = '(DL ' + downloaded + ' | DTSTART ' + startText(r) + ' | DTEND ' + tag + ' ' + STATUS_TAG[st] + ') ' + (r.numero || '(sin número)') + ' — ' + (r.descripcion || '(sin descripción)');
     return `<option value="${{i}}" style="color:${{STATUS_COLOR[st]}}">${{esc(label)}}</option>`;
   }}).join('');
   renderRecordDetail();
@@ -675,8 +720,8 @@ function initCollapsibleSections() {{
   // opens compact; the operator expands only the panels they need (matches the
   // Tk monitor's default-hidden sections).
   document.querySelectorAll('.card').forEach((card, idx) => {{
-    if (idx === 0) return;
     const heading = card.querySelector('h1, h2');
+    if (idx === 0) return;
     if (!heading || heading.querySelector('.section-toggle')) return;
     card.classList.add('collapsed');
     const btn = document.createElement('button');
@@ -692,18 +737,39 @@ function initCollapsibleSections() {{
   }});
 }}
 
-async function refreshDbReview() {{
-  const node = document.getElementById('db-review');
+function renderRecordSummary(data) {{
+  const p = data.progress || {{}};
+  const pending = document.getElementById('records-pending');
+  const completed = document.getElementById('records-completed');
+  if (pending) pending.textContent = `Records Pendings\n${{p.RECORDS_PENDING ?? '-'}} waiting for detail/download\nFound: ${{p.RECORDS_FOUND ?? '-'}} · New: ${{p.RECORDS_NEW ?? '-'}} · Existing: ${{p.RECORDS_EXISTING ?? '-'}}`;
+  refreshDbReview('records-db-summary');
+  fetch('/api/db-stats', {{cache: 'no-store'}})
+    .then(r => r.json())
+    .then(s => {{
+      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{r.finish_date_guess || 'no date'}}`).join('; ') || 'No completed end dates yet';
+      if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}\nOpportunity ends: ${{endDates}}`;
+    }})
+    .catch(() => {{ if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}`; }});
+}}
+
+async function refreshDbReview(targetId = 'db-review') {{
+  const node = document.getElementById(targetId || 'db-review');
   try {{
     const response = await fetch('/api/db-stats', {{cache: 'no-store'}});
     const s = await response.json();
     if (!s.db_exists) {{ node.textContent = 'No database yet (data/panamacompra_archive.db). Run the collector first.'; return; }}
-    const groups = (s.groups || []).map(g => `${{esc(g.grupo)}}: ${{g.count}}`).join('   ·   ') || '—';
+    const groups = (s.groups || []).map(g => `${{g.grupo}}: ${{g.count}}`).join('   ·   ') || '—';
+    const statuses = (s.status_breakdown || []).map(r => `${{r.status}}: ${{r.count}}`).join('   ·   ') || '—';
+    const columns = (s.columns || []).map(c => `${{c.name}}[${{c.type || 'TEXT'}}]=${{c.nonempty}}`).join('   ·   ') || '—';
+    const recent = (s.recent || []).map(r => `  • ${{r.numero}} [${{r.detail_status || 'unknown'}}] — ${{(r.descripcion || '').slice(0, 120)}}`).join('\n') || '  • —';
     node.textContent =
       `Total records: ${{s.total}}\n` +
-      `Detail status   ·   saved: ${{s.saved}}   ·   pending: ${{s.pending}}   ·   failed: ${{s.failed}}\n` +
+      `Records Completed (saved): ${{s.saved}}   ·   Records Pendings: ${{s.pending}}   ·   Failed: ${{s.failed}}\n` +
       `Detail JSON on record: ${{s.with_detail_json}}   ·   Notified (WAHA): ${{s.notified}}\n` +
-      `By group   ·   ${{groups}}`;
+      `Detail statuses: ${{statuses}}\n` +
+      `By group: ${{groups}}\n` +
+      `DB elements / columns with data: ${{columns}}\n` +
+      `Most recent records:\n${{recent}}`;
   }} catch (err) {{ node.textContent = 'Could not read database snapshot: ' + err; }}
 }}
 
@@ -735,6 +801,7 @@ window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer);
 renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
+document.getElementById('record-detail-status').addEventListener('change', applyRecordFilter);
 document.getElementById('record-mindate').addEventListener('change', applyRecordFilter);
 document.getElementById('record-downloaded-mindate').addEventListener('change', applyRecordFilter);
 initCollapsibleSections();

@@ -23,10 +23,12 @@ fi
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="data/queue/run_all_requested.flag"
 IN_PROGRESS_FLAG="data/queue/run_all_in_progress.flag"
+STOP_NO_RESUME_FLAG="data/queue/run_all_stop_no_resume.flag"
 WORKER_LOG="data/logs/run_all_worker.log"
 CURRENT_LOG="data/logs/run_all_current.log"
 HISTORY_LOG="data/logs/run_all_history.log"
 PROGRESS_FILE="data/logs/run_all_progress.env"
+LAST_SUMMARY_FILE="data/logs/run_all_last_summary.env"
 
 DETAIL_LIMIT="${1:-99}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
@@ -74,6 +76,22 @@ format_eta() {
   fi
 }
 
+historical_eta_seconds() {
+  local percent="$1"
+  if [ ! -f "$LAST_SUMMARY_FILE" ] || ! printf '%s' "$percent" | grep -qE '^[0-9]+$'; then
+    echo ""
+    return
+  fi
+  # shellcheck disable=SC1090
+  . "$LAST_SUMMARY_FILE" 2>/dev/null || true
+  local total="${TOTAL_SECONDS:-}"
+  if ! printf '%s' "$total" | grep -qE '^[0-9]+$' || [ "$total" -le 0 ]; then
+    echo ""
+    return
+  fi
+  echo $((total * (100 - percent) / 100))
+}
+
 write_progress() {
   local phase="$1"
   local status="$2"
@@ -83,12 +101,17 @@ write_progress() {
   local tmp="${PROGRESS_FILE}.tmp"
   local eta="-"
   if [ "$status" = "RUNNING" ] && printf '%s' "$percent" | grep -qE '^[0-9]+$' && [ "$percent" -gt 0 ] && [ "$percent" -lt 100 ] && [ -n "$started_at" ]; then
-    start_epoch="$(date -d "$started_at" '+%s' 2>/dev/null || true)"
-    now_epoch="$(date '+%s')"
-    if [ -n "$start_epoch" ] && [ "$now_epoch" -gt "$start_epoch" ]; then
-      elapsed=$((now_epoch - start_epoch))
-      total_est=$((elapsed * 100 / percent))
-      eta="$(format_eta $((total_est - elapsed)))"
+    historical_eta="$(historical_eta_seconds "$percent")"
+    if [ -n "$historical_eta" ]; then
+      eta="$(format_eta "$historical_eta") (based on previous run)"
+    else
+      start_epoch="$(date -d "$started_at" '+%s' 2>/dev/null || true)"
+      now_epoch="$(date '+%s')"
+      if [ -n "$start_epoch" ] && [ "$now_epoch" -gt "$start_epoch" ]; then
+        elapsed=$((now_epoch - start_epoch))
+        total_est=$((elapsed * 100 / percent))
+        eta="$(format_eta $((total_est - elapsed)))"
+      fi
     fi
   fi
 
@@ -124,6 +147,12 @@ write_progress() {
 
 mark_abrupt_exit_for_resume() {
   local exit_code="$?"
+  if [ -f "$STOP_NO_RESUME_FLAG" ]; then
+    rm -f "$REQUEST_FLAG" "$IN_PROGRESS_FLAG" "$STOP_NO_RESUME_FLAG"
+    log "Worker stopped by updater/manual stop with no-resume marker. Pending/recover request was NOT restored."
+    write_progress "STOPPED" "DONE" "100" "Worker stopped intentionally by updater/manual launcher; no pending/recover restart was queued." "$(date '+%Y-%m-%d %H:%M:%S')" || true
+    return
+  fi
   if [ "$RUN_COMPLETED" -eq 0 ]; then
     touch "$REQUEST_FLAG"
     rm -f "$IN_PROGRESS_FLAG"
@@ -170,12 +199,15 @@ while true; do
 
   rm -f "$REQUEST_FLAG"
   ITERATION=$((ITERATION + 1))
+  UPDATE_SECONDS=0
 
   if [ "${PC_RUN_UPDATE_BEFORE_RUN:-1}" != "0" ] && [ -x ./pc_update_before_run.sh ]; then
     write_progress "UPDATE" "RUNNING" "3" "Updating local copy before run-all iteration $ITERATION..." "$(date '+%Y-%m-%d %H:%M:%S')"
     log "ITERATION $ITERATION pre-run local update started."
+    UPDATE_START_EPOCH="$(date '+%s')"
     ./pc_update_before_run.sh >> "$WORKER_LOG" 2>&1
     UPDATE_EXIT=$?
+    UPDATE_SECONDS=$(( $(date '+%s') - UPDATE_START_EPOCH ))
     if [ "$UPDATE_EXIT" -ne 0 ]; then
       # A failed pre-run update must NOT stop the collector. Previously the worker
       # skipped the whole iteration here, so any update hiccup (e.g. local
@@ -189,6 +221,12 @@ while true; do
   fi
 
   STARTED="$(date '+%Y-%m-%d %H:%M:%S')"
+  RUN_START_EPOCH="$(date '+%s')"
+  INDEX_SECONDS=0
+  DETAIL_SECONDS=0
+  VIEW_SECONDS=0
+  CALENDAR_SECONDS=0
+  MESSAGING_SECONDS=0
   export PC_RUN_STARTED_AT="$STARTED"
   export PC_WORKER_PID="$$"
   export PC_INDEX_LIMIT="$INDEX_LIMIT"
@@ -213,8 +251,10 @@ while true; do
     echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT timeout 1h ${PYTHON_BIN} -u ./pc_index_collector.py"
   } >> "$CURRENT_LOG"
 
+  INDEX_START_EPOCH="$(date '+%s')"
   PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" timeout 1h "$PYTHON_BIN" -u ./pc_index_collector.py >> "$CURRENT_LOG" 2>&1
   INDEX_EXIT=$?
+  INDEX_SECONDS=$(( $(date '+%s') - INDEX_START_EPOCH ))
 
   {
     echo ""
@@ -255,8 +295,10 @@ PY
     echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u ./pc_detail_downloader.py"
   } >> "$CURRENT_LOG"
 
+  DETAIL_START_EPOCH="$(date '+%s')"
   PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u ./pc_detail_downloader.py >> "$CURRENT_LOG" 2>&1
   DETAIL_EXIT=$?
+  DETAIL_SECONDS=$(( $(date '+%s') - DETAIL_START_EPOCH ))
 
   {
     echo ""
@@ -279,8 +321,10 @@ PY
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "Command: ${PYTHON_BIN} -u ./pc_build_detail_views.py --apply --since $STARTED"
       } >> "$CURRENT_LOG"
+      VIEW_START_EPOCH="$(date '+%s')"
       "$PYTHON_BIN" -u ./pc_build_detail_views.py --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
       VIEW_EXIT=$?
+      VIEW_SECONDS=$(( $(date '+%s') - VIEW_START_EPOCH ))
       {
         echo "Detail views exit code: $VIEW_EXIT"
         echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -301,8 +345,10 @@ PY
         echo "Command: ${PYTHON_BIN} -u ./pc_build_calendar.py"
       } >> "$CURRENT_LOG"
 
+      CALENDAR_START_EPOCH="$(date '+%s')"
       "$PYTHON_BIN" -u ./pc_build_calendar.py >> "$CURRENT_LOG" 2>&1
       CALENDAR_EXIT=$?
+      CALENDAR_SECONDS=$(( $(date '+%s') - CALENDAR_START_EPOCH ))
 
       {
         echo "Calendar package exit code: $CALENDAR_EXIT"
@@ -337,14 +383,28 @@ PY
   # nothing to send. It runs only after index, all details, per-record calendars,
   # and calendar packages succeed.
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$VIEW_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    if [ "${PC_NOTIFY_WHATSAPP:-1}" != "0" ]; then
+    NOTIFY_WHATSAPP="${PC_NOTIFY_WHATSAPP:-}"
+    if [ -z "$NOTIFY_WHATSAPP" ] && [ -f data/config/monitor_settings.env ]; then
+      NOTIFY_WHATSAPP="$($PYTHON_BIN - <<'PY'
+from pathlib import Path
+for line in Path("data/config/monitor_settings.env").read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.startswith("PC_NOTIFY_WHATSAPP="):
+        print(line.split("=", 1)[1].strip().strip("\"").strip("'"))
+        break
+PY
+)"
+    fi
+    NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
+    if [ "$NOTIFY_WHATSAPP" != "0" ]; then
       write_progress "MESSAGING" "RUNNING" "96" "Step 5/5: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
       {
         echo ""
         echo "-------------------- STEP 5: WHATSAPP MESSAGING ----------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
+      MESSAGING_START_EPOCH="$(date '+%s')"
       notify_new_records --announce
+      MESSAGING_SECONDS=$(( $(date '+%s') - MESSAGING_START_EPOCH ))
     else
       write_progress "MESSAGING" "DONE" "96" "Step 5/5: WhatsApp notifications disabled by monitor setting." "$STARTED"
       log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
@@ -372,9 +432,25 @@ print(
 )
 PY
 )"
+    TOTAL_SECONDS=$(( $(date '+%s') - RUN_START_EPOCH ))
+    {
+      echo "STARTED_AT='$(quote_value "$STARTED")'"
+      echo "FINISHED_AT='$(quote_value "$FINISHED")'"
+      echo "TOTAL_SECONDS='$TOTAL_SECONDS'"
+      echo "UPDATE_SECONDS='$UPDATE_SECONDS'"
+      echo "INDEX_SECONDS='$INDEX_SECONDS'"
+      echo "DETAIL_SECONDS='$DETAIL_SECONDS'"
+      echo "VIEW_SECONDS='$VIEW_SECONDS'"
+      echo "CALENDAR_SECONDS='$CALENDAR_SECONDS'"
+      echo "MESSAGING_SECONDS='$MESSAGING_SECONDS'"
+      echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
+    } > "$LAST_SUMMARY_FILE"
+
     notify_waha "done" "DONE" "📊 Resumen de Ejecución - Panama Compra
 Inicio: $STARTED
 Fin: $FINISHED
+Duración total: $(format_eta "$TOTAL_SECONDS")
+Etapas: index $(format_eta "$INDEX_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS")
 Iteración: $ITERATION
 $SUMMARY_COUNTS"
     {

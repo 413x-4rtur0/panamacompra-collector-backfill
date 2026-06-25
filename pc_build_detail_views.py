@@ -25,6 +25,7 @@ from pc_common import (
     build_detail_views,
     safe_name,
     save_table_jsons,
+    save_detail_section_jsons,
     write_calendar_ics,
 )
 
@@ -46,8 +47,22 @@ def load_tables(detail_json_path):
             doc = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        if isinstance(doc.get("tables"), list):
+            for table_doc in doc["tables"]:
+                idx = table_doc.get("table_index")
+                if idx is None:
+                    continue
+                table = merged.setdefault(int(idx), {"table_index": int(idx)})
+                for key in ("section", "identifier", "headers", "rows", "key_values",
+                            "links", "links_count", "raw_rows", "rows_with_links",
+                            "raw_rows_with_links"):
+                    if key in table_doc and not table.get(key):
+                        table[key] = table_doc[key]
+            continue
         idx = doc.get("table_index")
         if idx is None:
+            if "-TABLE-000-ALL" in path.name:
+                continue
             m = re.search(r"(\d+)\.json$", path.name)
             idx = int(m.group(1)) if m else len(merged) + 1
         table = merged.setdefault(int(idx), {"table_index": int(idx)})
@@ -140,10 +155,38 @@ def main():
         print(f"VIEWS      {detail_json_path.name}  items={n_items}  finish={data['calendar'].get('dtend') or '-'}")
         if args.apply:
             numero = data.get("numero") or detail_json_path.name[: -len(DETAIL_SUFFIX)]
+            calendar = data.get("calendar", {}) if isinstance(data.get("calendar"), dict) else {}
+            summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+            start_date_guess = calendar.get("dtstart") or data.get("start_date_guess") or ""
+            finish_date_guess = calendar.get("dtend") or data.get("finish_date_guess") or ""
+            if isinstance(summary, dict):
+                summary["date_start_opportunity"] = start_date_guess
+                summary["date_end_opportunity"] = finish_date_guess
+                summary.setdefault("date_downloaded_local", data.get("saved_at") or "")
+                data["summary"] = summary
+            data["start_date_guess"] = start_date_guess
+            data["finish_date_guess"] = finish_date_guess
+            data["date_start_opportunity"] = start_date_guess
+            data["date_end_opportunity"] = finish_date_guess
+            data["date_downloaded_local"] = data.get("saved_at") or ""
             # Migrate table files to the split layout and record the tables index.
             _, descriptors = save_table_jsons(detail_json_path.parent, numero, tables, overwrite=True)
+            section_written, section_descriptors = save_detail_section_jsons(
+                detail_json_path.parent,
+                numero,
+                {
+                    "summary": data.get("summary", {}),
+                    "items": data.get("items", []),
+                    "calendar": data.get("calendar", {}),
+                    "fields_detected": data.get("fields_detected", {}),
+                },
+                overwrite=True,
+            )
             data["tables"] = descriptors
             data["tables_count"] = len(descriptors)
+            data["detail_sections"] = section_descriptors
+            data["detail_sections_count"] = len(section_descriptors)
+            data["detail_sections_written_now"] = section_written
             detail_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             write_calendar_ics(detail_json_path.parent / f"{safe_name(numero)}.calendar.ics", data.get("calendar"))
 

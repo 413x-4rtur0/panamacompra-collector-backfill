@@ -25,7 +25,7 @@ UPDATE_SCRIPT = BASE_DIR / "update_local_copy.sh"
 MONITOR_SCRIPT = BASE_DIR / "pc_open_monitor.sh"
 
 # update_local_copy.sh prints numbered steps "1) ..." through "11) ...".
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 STEP_RE = re.compile(r"^\s*(\d{1,2})\)\s")
 
 
@@ -44,7 +44,7 @@ def main() -> int:
     if not os.environ.get("DISPLAY"):
         with log_file.open("w", encoding="utf-8") as out:
             result = subprocess.run([str(UPDATE_SCRIPT)], cwd=BASE_DIR, stdout=out, stderr=subprocess.STDOUT)
-        if args.open_monitor_after:
+        if args.open_monitor_after and result.returncode == 0:
             open_monitor()
         return result.returncode
 
@@ -124,9 +124,7 @@ def main() -> int:
                 else:
                     root.after(1500, root.destroy)
             else:
-                status_var.set(f"Update failed with exit {code}. Opening monitor anyway; review: {log_file.relative_to(BASE_DIR)}")
-                if args.open_monitor_after:
-                    root.after(900, open_monitor)
+                status_var.set(f"Update failed with exit {code}. Monitor will not open; review: {log_file.relative_to(BASE_DIR)}")
 
         root.after(0, finish)
 
