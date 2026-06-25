@@ -351,11 +351,15 @@ else
 fi
 
 echo ""
-echo "7) Run repository health checks"
+echo "7) Review and update archive database metadata"
+python -u ./pc_db_maintenance.py --apply
+
+echo ""
+echo "8) Run repository health checks"
 ./review_panamacompra_system.sh
 
 echo ""
-echo "8) Refresh already-downloaded records (optional, manual)"
+echo "9) Refresh already-downloaded records (optional, manual)"
 echo "   A normal run only processes NEW records; it never re-pulls previously"
 echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
 echo "   and the per-section split-table layout, run one of these manually:"
@@ -370,11 +374,11 @@ echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; m
 echo "     ./pc_test_zone.py --limit 5 --apply"
 
 echo ""
-echo "9) Install manual monitor desktop shortcut"
+echo "10) Install manual monitor desktop shortcut"
 install_desktop_shortcut
 
 echo ""
-echo "10) Optional smoke run request"
+echo "11) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   ./pc_request_run_all.sh "$DETAIL_LIMIT"
@@ -383,7 +387,7 @@ else
 fi
 
 echo ""
-echo "11) Restore webhook listener after update"
+echo "12) Restore webhook listener after update"
 restart_webhook_listener
 trap - EXIT
 

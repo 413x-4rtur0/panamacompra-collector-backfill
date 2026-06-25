@@ -45,6 +45,9 @@ if ! git pull --ff-only "$REMOTE" "$BRANCH"; then
 fi
 chmod +x ./*.sh ./*.py
 
+echo "Reviewing/updating archive DB metadata after code refresh."
+python -u ./pc_db_maintenance.py --apply || echo "WARNING: DB maintenance failed; continuing pre-run update."
+
 if [ -d .venv ]; then
   # shellcheck disable=SC1091
   source .venv/bin/activate

@@ -558,6 +558,26 @@ def process_detail(browser, conn, row, force=False):
         if force or not (record_folder / f"{n}.calendar.ics").exists():
             write_calendar_ics(record_folder / f"{n}.calendar.ics", calendar)
         update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path, finish_date_guess=finish_date_guess)
+        conn.execute(
+            """
+            UPDATE opportunities
+            SET record_folder_leaf = ?,
+                files_layout_version = ?,
+                detail_sections_count = ?,
+                tables_count = ?,
+                db_reviewed_at = ?
+            WHERE numero = ?
+            """,
+            (
+                record_folder.name,
+                2,
+                len([key for key in detail_section_descriptors if key != "_all"]),
+                len(table_descriptors),
+                now_iso(),
+                numero,
+            ),
+        )
+        conn.commit()
         maybe_rename_folder(conn, row, proposed_folder_name)
 
         return "saved"

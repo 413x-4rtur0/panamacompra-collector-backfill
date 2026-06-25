@@ -914,8 +914,8 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
     detail_json = target / f"{n}.detail.json"
     conn.execute(
         "UPDATE opportunities SET record_folder = ?, index_json_path = ?, "
-        "detail_json_path = ? WHERE numero = ?",
-        (str(target), str(index_json), str(detail_json), numero),
+        "detail_json_path = ?, record_folder_leaf = ?, db_reviewed_at = ? WHERE numero = ?",
+        (str(target), str(index_json), str(detail_json), target.name, now_iso(), numero),
     )
     conn.commit()
 
@@ -987,6 +987,14 @@ def ensure_db_schema(conn):
         "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
         "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",
         "last_calendar_export_path": "ALTER TABLE opportunities ADD COLUMN last_calendar_export_path TEXT",
+        # Maintained by pc_db_maintenance.py / detail saves. These make monitor
+        # summaries and update checks independent from repeatedly opening every
+        # detail JSON file.
+        "record_folder_leaf": "ALTER TABLE opportunities ADD COLUMN record_folder_leaf TEXT",
+        "files_layout_version": "ALTER TABLE opportunities ADD COLUMN files_layout_version INTEGER DEFAULT 1",
+        "detail_sections_count": "ALTER TABLE opportunities ADD COLUMN detail_sections_count INTEGER DEFAULT 0",
+        "tables_count": "ALTER TABLE opportunities ADD COLUMN tables_count INTEGER DEFAULT 0",
+        "db_reviewed_at": "ALTER TABLE opportunities ADD COLUMN db_reviewed_at TEXT",
     }
 
     for column, statement in migrations.items():
@@ -1000,6 +1008,14 @@ def ensure_db_schema(conn):
     conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_opportunities_last_seen
     ON opportunities(last_seen)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_finish_date
+    ON opportunities(finish_date_guess)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_opportunities_layout_version
+    ON opportunities(files_layout_version)
     """)
 
 def init_db(db_path=None):
