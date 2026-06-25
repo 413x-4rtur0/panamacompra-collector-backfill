@@ -450,13 +450,23 @@ def process_detail(browser, conn, row, force=False):
     detail_json_path = record_folder / f"{n}.detail.json"
 
     if not force and html_path.exists() and txt_path.exists() and detail_json_path.exists():
-        if not detail_archive_has_link_metadata(detail_json_path):
+        # "Complete" here must mean the SAME thing as archive_complete (the gate
+        # detail_pending_rows re-queues on): current link schema AND all required
+        # files present on disk, including the .ics and the summary/items/calendar
+        # views. Otherwise a record missing only its .ics (e.g. interrupted right
+        # after detail.json was written) is skipped as "complete" forever while
+        # the queue keeps re-selecting it. When anything is missing we rebuild the
+        # views/.ics from the saved HTML instead of re-marking it saved blindly.
+        if not (detail_archive_has_link_metadata(detail_json_path)
+                and archive_complete(record_folder, numero)):
             proposed = refresh_link_metadata_from_saved_html(browser, row, html_path, detail_json_path)
-            update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
+            update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path,
+                                 increment_attempts=False)
             maybe_rename_folder(conn, row, proposed)
             return "refreshed_links"
 
-        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path)
+        update_detail_status(conn, numero, "saved", detail_json_path=detail_json_path,
+                             increment_attempts=False)
         return "skipped_complete"
 
     page = browser.new_page(viewport={"width": 1280, "height": 720})
