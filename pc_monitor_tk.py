@@ -269,7 +269,10 @@ def _folder_name_complete(path_text: str) -> bool:
     leaf = Path(path_text or "").name
     if not _FOLDER_COMPLETE_RE.match(leaf):
         return False
-    return "[]" not in leaf and "[unknown]" not in leaf.lower()
+    if any(ch in leaf for ch in '<>:"/\\|?*'):
+        return False
+    lower = leaf.lower()
+    return "[]" not in leaf and "[unknown]" not in lower and "[no-finish]" not in lower and "[no-numero]" not in lower and "[no-desc]" not in lower
 
 
 def _file_exists(path_text: str) -> bool:

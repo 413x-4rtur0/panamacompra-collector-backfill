@@ -2,7 +2,7 @@
 """Rename record folders to the scheme [finish]-[numero]-[desc].
 
 Old leaf:  records/YY-MM-DD/<NUMERO>/
-New leaf:  records/YY-MM-DD/[2022-10-11_12:00]-[<NUMERO>]-[FRS-126--CMPRS-D-CJ-PLSTC]/
+New leaf:  records/YY-MM-DD/[2022-10-11_12-00]-[<NUMERO>]-[FRS-126--CMPRS-D-CJ-PLSTC]/
 
 The finish stamp is when proposals stop being accepted (end of the
 "presentación de cotizaciones" window, or the delivery date at 12:00 for older

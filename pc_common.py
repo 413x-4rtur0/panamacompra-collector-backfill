@@ -148,7 +148,7 @@ def short_description(text, max_len=80):
 # Folder-naming helpers: [finish_stamp]-[numero]-[desc_slug]
 #
 # Example leaf:
-#   [2022-10-11_12:00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
+#   [2022-10-11_12-00]-[2022-0-12-214-12-CL-008498]-[FRS-126-CMPRS-D-CJ-PLSTC]
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)
@@ -275,9 +275,29 @@ def compute_finish_stamp(key_values, text):
     _, _, dtend = _resolve_close_datetimes(key_values, text)
     return f"{dtend[:10]}_{dtend[11:16]}" if dtend else ""
 
+_NETWORK_FORBIDDEN_CHARS = '<>:"/\\|?*'
+
+
+def network_folder_token(value, fallback):
+    """Return a non-empty Windows/SMB-friendly token for record folder names."""
+    text = clean(str(value or ""))
+    for ch in _NETWORK_FORBIDDEN_CHARS:
+        text = text.replace(ch, "-")
+    text = re.sub(r"-+", "-", text).strip(" .-")
+    return text or fallback
+
+
 def build_record_folder_leaf(finish_stamp, numero, desc):
-    """Compose the record-folder leaf name: [stamp]-[numero]-[desc]."""
-    return "[" + (finish_stamp or "") + "]-[" + str(numero) + "]-[" + (desc or "") + "]"
+    """Compose a network-safe folder leaf: [stamp]-[numero]-[desc].
+
+    Empty fields are rendered as explicit NO-* tokens so the folder still looks
+    complete over SMB/network shares, while the monitor review can flag those
+    placeholders for correction.
+    """
+    stamp = network_folder_token(finish_stamp, "NO-FINISH")
+    num = network_folder_token(numero, "NO-NUMERO")
+    description = network_folder_token(desc, "NO-DESC")
+    return f"[{stamp}]-[{num}]-[{description}]"
 
 # Words dropped when turning a section heading into a short file identifier.
 _SECTION_STOPWORDS = {"de", "la", "del", "el", "los", "las", "y", "en", "a", "para"}
