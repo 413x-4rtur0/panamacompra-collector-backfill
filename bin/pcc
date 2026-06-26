@@ -18,6 +18,7 @@ Commands:
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
+  launcher [install|remove|path]            Manage Update + Monitor desktop launcher
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE
@@ -40,6 +41,7 @@ case "$cmd" in
   migrate) exec "$APP_ROOT/pc_migrate_apps_layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
+  launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install_desktop_launcher.sh" "$@" ;;
   env) env | sort | sed -n '/^APP_MODE=/p;/^APP_ROOT=/p;/^PC_/p;/^XDG_/p' ;;
   -h|--help|help) usage ;;
   -v|--version|version) echo "panamacompra-collector ${APP_VERSION:-unknown}" ;;
