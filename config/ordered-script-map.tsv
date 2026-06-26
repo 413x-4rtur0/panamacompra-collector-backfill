@@ -5,6 +5,7 @@
 003-validate-installation.sh	scripts/validate_installation.sh	Validate installation prerequisites.
 004-fresh-install-doctor.sh	scripts/fresh_install_doctor.sh	Evaluate fresh clone/install readiness.
 005-self-contained-doctor.sh	scripts/self_contained_doctor.sh	Check self-contained Docker/secret policy.
+006-persistent-data.sh	scripts/persistent_data.sh	Export/import persistent downloaded data.
 010-install-desktop-launcher.sh	scripts/install_desktop_launcher.sh	Install/remove Update + Monitor launcher.
 011-install-user-services.sh	scripts/install_user_services.sh	Install/remove user systemd services.
 012-install-webhook-service-legacy.sh	pc_install_webhook_service.sh	Install legacy webhook user service.

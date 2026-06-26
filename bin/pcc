@@ -23,6 +23,7 @@ Commands:
   review-names                              Review legacy names vs ordered tasks
   doctor                                    Run fresh-clone readiness checks
   self-contained                            Check self-contained Docker/secret policy
+  data export|import|summary                 Export/import persistent downloaded data
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE
@@ -50,6 +51,7 @@ case "$cmd" in
   review-names|names) exec "$APP_ROOT/scripts/review_entrypoint_names.sh" "$@" ;;
   doctor|fresh-check) exec "$APP_ROOT/scripts/fresh_install_doctor.sh" "$@" ;;
   self-contained|self-check) exec "$APP_ROOT/scripts/self_contained_doctor.sh" "$@" ;;
+  data|persistence) exec "$APP_ROOT/scripts/persistent_data.sh" "$@" ;;
   env) env | sort | sed -n '/^APP_MODE=/p;/^APP_ROOT=/p;/^PC_/p;/^XDG_/p' ;;
   -h|--help|help) usage ;;
   -v|--version|version) echo "panamacompra-collector ${APP_VERSION:-unknown}" ;;

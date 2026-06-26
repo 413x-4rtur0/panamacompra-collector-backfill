@@ -58,3 +58,12 @@ for every shell entrypoint that still exists in the repository. The source map i
 phase task wrappers and the full ordered alias set. Run `./bin/pcc doctor` before
 redoing a clone/install from zero to verify required files, syntax, and runtime
 path resolution. Run `./bin/pcc self-contained` to verify the repository is self-contained while secrets/runtime data remain excluded and Docker Compose ports/project names are safe.
+
+
+## Persistent data during reinstall/uninstall
+
+Use `./bin/pcc data summary` to review persistent locations, `./bin/pcc data export`
+to create a migration bundle, and `./bin/pcc data import <bundle.tar.gz>` after a
+fresh clone. `./bin/pcc uninstall` can also ask what to do with persistent data
+when run interactively, or use `--export-data <bundle.tar.gz>` / `--purge-data`
+for non-interactive flows.
