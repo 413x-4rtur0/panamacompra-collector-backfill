@@ -86,7 +86,7 @@ DATA_REFRESH_TICKS = max(1, setting_int("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS"
 # little less obtrusive while staying clearly legible; lower it toward 0.2 for a
 # more see-through window. Clamped to [0.2, 1.0] so the countdown can never be
 # made invisible.
-WINDOW_ALPHA = setting_float("PC_NEXT_RUN_TIMER_ALPHA", "0.9", 0.2, 1.0)
+WINDOW_ALPHA = setting_float("PC_NEXT_RUN_TIMER_ALPHA", "0.75", 0.2, 1.0)
 # Keep the timer above other windows (default on, matching the previous behaviour).
 # Set PC_NEXT_RUN_TIMER_TOPMOST=0 to let it fall behind focused windows.
 WINDOW_TOPMOST = setting_bool("PC_NEXT_RUN_TIMER_TOPMOST", "1")
@@ -301,20 +301,34 @@ def main() -> int:
     root.configure(bg="#1e293b")
     root.resizable(False, False)
     root.attributes("-topmost", WINDOW_TOPMOST)
-    if WINDOW_ALPHA < 1.0:
-        # Best-effort: window managers without a compositor raise TclError or
-        # silently ignore -alpha; never let that stop the timer from opening.
+    transparency_var = tk.StringVar(value="Transparency: checking…")
+
+    def apply_window_alpha() -> None:
+        if WINDOW_ALPHA >= 1.0:
+            transparency_var.set("Transparency: disabled (alpha=1.00)")
+            return
         try:
             root.attributes("-alpha", WINDOW_ALPHA)
-        except tk.TclError:
-            pass
+            root.update_idletasks()
+            actual = float(root.attributes("-alpha"))
+        except (tk.TclError, ValueError):
+            transparency_var.set("Transparency unavailable: enable an X11 compositor or set PC_NEXT_RUN_TIMER_ALPHA=1")
+            return
+        if abs(actual - WINDOW_ALPHA) <= 0.03:
+            transparency_var.set(f"Transparency active: alpha={actual:.2f}")
+        else:
+            transparency_var.set(f"Transparency may be ignored by this desktop (requested {WINDOW_ALPHA:.2f}, got {actual:.2f})")
+
+    apply_window_alpha()
 
     root.update_idletasks()
     x = max(0, (root.winfo_screenwidth() - WINDOW_WIDTH) // 2)
     # Pin the window to a fixed size and position so it never grows with content.
     root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{WINDOW_TOP}")
+    root.after(300, apply_window_alpha)
 
     tk.Label(root, text="Next live run", font=("Sans", 12, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(10, 1))
+    tk.Label(root, textvariable=transparency_var, font=("Sans", 8), bg="#1e293b", fg="#93c5fd", wraplength=WINDOW_WIDTH - 24).pack(pady=(0, 1))
     next_var = tk.StringVar(value="Loading...")
     tk.Label(root, textvariable=next_var, font=("Sans", 11), bg="#1e293b", fg="#e5e7eb").pack(pady=1)
     count_var = tk.StringVar(value="")

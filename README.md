@@ -154,6 +154,19 @@ The workflow has two phases run back-to-back by the worker:
 
 ---
 
+## Development methodology
+
+The repository includes lightweight Scrum/agile infrastructure so future work can be
+managed as auditable backlog items instead of ad-hoc edits:
+
+- GitHub issue templates capture defects, feature requests, priority and acceptance criteria.
+- The pull request template requires validation evidence, linked backlog context and rollback notes.
+- CI runs Python dependency installation, compile checks, installation validation and shell syntax checks.
+- `docs/AGILE_PROCESS.md` defines sprint cadence, Definition of Ready, Definition of Done, branching and release expectations.
+
+These controls are intentionally lightweight: they improve repeatability without
+changing the collector's local-first operating model.
+
 ## Design decisions
 
 - **`NUMERO` is the primary key.** Row number, page number, changedetection history
@@ -267,7 +280,21 @@ available locally. Fetch it first, or merge the remote-tracking name directly, f
 example `git fetch origin codex/review-project-for-enhancements-e8vmmy` followed by
 `git merge origin/codex/review-project-for-enhancements-e8vmmy`.
 
-### Setup
+### One-command setup
+
+```bash
+cd ~/Apps/panamacompra-collector
+./setup.sh
+```
+
+`setup.sh` installs Debian/Ubuntu Python system packages when `apt-get` is
+available, creates `.venv`, installs Python dependencies, installs the Playwright
+Firefox browser, creates runtime directories, and finishes by running
+`./scripts/validate_installation.sh`. Set `PC_SETUP_SKIP_APT=1` when system
+packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for CI/offline
+validation.
+
+### Manual setup
 
 ```bash
 cd ~/Apps/panamacompra-collector
@@ -283,6 +310,9 @@ python -m pip install -r requirements.txt
 
 # Browser engine used by the collectors
 python -m playwright install firefox
+
+# Validate the checkout and create runtime directories
+./scripts/validate_installation.sh
 ```
 
 `requirements.txt` intentionally lists only pip-installable Python modules. The
@@ -440,7 +470,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_NEXT_RUN_TIMER_WIDTH` / `PC_NEXT_RUN_TIMER_HEIGHT` | `380` / `360` | next-run timer | Fixed timer window size (the window is not resizable). Editable from monitor Settings. |
 | `PC_NEXT_RUN_TIMER_RECORDS` | `20` | next-run timer | How many latest collected records to list in the timer. The timer now shows end date/status when available. |
 | `PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS` | `10` | next-run timer | How often the timer refreshes git/database/queue details. Editable from Settings. |
-| `PC_NEXT_RUN_TIMER_ALPHA` | `0.9` | next-run timer | Window opacity (`1.0` = fully opaque). Best-effort: X11 sessions without a compositor may ignore it. Clamped to `[0.2, 1.0]` so the countdown can never be made invisible. |
+| `PC_NEXT_RUN_TIMER_ALPHA` | `0.75` | next-run timer | Window opacity (`1.0` = fully opaque). The timer displays whether alpha is active, unavailable, or apparently ignored by the desktop. X11 sessions usually need a compositor; set `1` to disable translucency. Clamped to `[0.2, 1.0]`. |
 | `PC_NEXT_RUN_TIMER_TOPMOST` | `1` | next-run timer | Keep the timer above other windows. Set `0` to let it fall behind the focused window. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
