@@ -25,6 +25,10 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_QUEUE_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_in_progress.flag"
+REQUEST_LOG = BASE_DIR / "data" / "logs" / "run_all_requests.log"
+UPDATE_QUEUE_LOG = BASE_DIR / "data" / "logs" / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
@@ -516,6 +520,37 @@ def process_snapshot() -> dict[str, bool]:
     }
 
 
+def file_timestamp(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return "-"
+
+
+def queue_snapshot() -> dict[str, str]:
+    """Current queued collector/update requests for the monitor queue panel."""
+    collector_pending = REQUEST_FLAG.exists()
+    update_pending = UPDATE_QUEUE_FLAG.exists()
+    update_running = UPDATE_IN_PROGRESS_FLAG.exists()
+    if update_running:
+        update_state = "RUNNING"
+        update_since = file_timestamp(UPDATE_IN_PROGRESS_FLAG)
+    elif update_pending:
+        update_state = "PENDING"
+        update_since = file_timestamp(UPDATE_QUEUE_FLAG)
+    else:
+        update_state = "none"
+        update_since = "-"
+    return {
+        "collector_state": "PENDING" if collector_pending else "none",
+        "collector_since": file_timestamp(REQUEST_FLAG) if collector_pending else "-",
+        "update_state": update_state,
+        "update_since": update_since,
+        "request_log": tail(REQUEST_LOG, 8),
+        "update_log": tail(UPDATE_QUEUE_LOG, 8),
+    }
+
+
 def percent_value(progress: dict[str, str]) -> int:
     try:
         return max(0, min(100, int(progress.get("PERCENT", "0"))))
@@ -562,6 +597,7 @@ def status_snapshot() -> dict[str, object]:
         "progress": progress,
         "percent": percent_value(progress),
         "processes": processes,
+        "queue": queue_snapshot(),
         "done": done,
         # Auto-close only the unattended automatic (changedetection/webhook) run.
         # RESTART/MANUAL/TEST are operator-initiated, so the window stays open.
@@ -805,6 +841,32 @@ def run_tk() -> int:
                 bg="#14532d" if value else "#1f2937",
                 fg="#bbf7d0" if value else "#9ca3af",
             )
+
+    queue_frame = ttk.Frame(header, style="Card.TFrame", padding=(0, 8, 0, 0))
+    queue_frame.grid(row=7, column=0, sticky="ew")
+    queue_frame.columnconfigure(1, weight=1)
+    ttk.Label(queue_frame, text="Queue process", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+    queue_summary_var = tk.StringVar(value="Collector queue: none · Update + Monitor queue: none")
+    ttk.Label(queue_frame, textvariable=queue_summary_var, style="Card.TLabel", wraplength=680).grid(row=1, column=0, columnspan=2, sticky="ew")
+    queue_log_text = tk.Text(queue_frame, height=5, wrap="word", bd=0, highlightthickness=0,
+                             bg="#020617", fg="#cbd5e1", insertbackground="#e5e7eb", font=("Sans", 8))
+    queue_log_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+    queue_log_text.configure(state="disabled")
+
+    def update_queue_panel(queue: dict[str, str]) -> None:
+        collector = queue.get("collector_state", "none")
+        collector_since = queue.get("collector_since", "-")
+        update = queue.get("update_state", "none")
+        update_since = queue.get("update_since", "-")
+        queue_summary_var.set(
+            f"Collector request: {collector} (since {collector_since}) · "
+            f"Update + Monitor: {update} (since {update_since})"
+        )
+        log_text = (
+            "Recent collector queue log:\n" + (queue.get("request_log") or "(missing)") +
+            "\nRecent Update + Monitor queue log:\n" + (queue.get("update_log") or "(missing)")
+        )
+        set_text(queue_log_text, log_text)
 
     def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
                            start_hidden: bool = True) -> None:
@@ -1814,6 +1876,7 @@ def run_tk() -> int:
         meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
         update_process_chips(snap["processes"])
+        update_queue_panel(snap.get("queue", {}) or {})
         update_run_controls(snap)
         update_records_overview(progress)
 

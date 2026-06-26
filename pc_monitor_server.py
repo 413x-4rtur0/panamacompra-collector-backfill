@@ -23,6 +23,10 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_QUEUE_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_in_progress.flag"
+REQUEST_LOG = BASE_DIR / "data" / "logs" / "run_all_requests.log"
+UPDATE_QUEUE_LOG = BASE_DIR / "data" / "logs" / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MONITOR_SETTINGS_PATH = BASE_DIR / "data" / "config" / "monitor_settings.env"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
@@ -415,6 +419,36 @@ def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
 
 
 
+def file_timestamp(path: Path) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+    except OSError:
+        return "-"
+
+
+def queue_payload() -> dict[str, str]:
+    collector_pending = REQUEST_FLAG.exists()
+    update_pending = UPDATE_QUEUE_FLAG.exists()
+    update_running = UPDATE_IN_PROGRESS_FLAG.exists()
+    if update_running:
+        update_state = "RUNNING"
+        update_since = file_timestamp(UPDATE_IN_PROGRESS_FLAG)
+    elif update_pending:
+        update_state = "PENDING"
+        update_since = file_timestamp(UPDATE_QUEUE_FLAG)
+    else:
+        update_state = "none"
+        update_since = "-"
+    return {
+        "collector_state": "PENDING" if collector_pending else "none",
+        "collector_since": file_timestamp(REQUEST_FLAG) if collector_pending else "-",
+        "update_state": update_state,
+        "update_since": update_since,
+        "request_log": tail(REQUEST_LOG, 8),
+        "update_log": tail(UPDATE_QUEUE_LOG, 8),
+    }
+
+
 def open_folder(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     opener = os.environ.get("PC_OPEN_FOLDER_COMMAND", "xdg-open")
@@ -446,6 +480,7 @@ def status_payload() -> dict[str, object]:
         "progress": progress,
         "percent": percent_value(progress),
         "processes": processes,
+        "queue": queue_payload(),
         "done": done,
         # Auto-close only the unattended automatic (changedetection/webhook) run.
         # RESTART/MANUAL/TEST are operator-initiated, so the page stays open.
@@ -531,6 +566,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
+<div class="card"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
 <div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><p><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
@@ -575,6 +611,7 @@ function render(data) {{
     `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
   ).join('');
   updateRunControls(data);
+  renderQueue(data);
   renderRecordSummary(data);
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
@@ -816,6 +853,16 @@ function initCollapsibleSections() {{
     }});
     heading.appendChild(btn);
   }});
+}}
+
+function renderQueue(data) {{
+  const q = data.queue || {{}};
+  document.getElementById('queue-summary').textContent =
+    `Collector request: ${{q.collector_state || 'none'}} (since ${{q.collector_since || '-'}}) · ` +
+    `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}})`;
+  document.getElementById('queue-log').textContent =
+    'Recent collector queue log:\n' + (q.request_log || '(missing)') +
+    '\nRecent Update + Monitor queue log:\n' + (q.update_log || '(missing)');
 }}
 
 function renderRecordSummary(data) {{
