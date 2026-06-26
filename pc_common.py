@@ -9,17 +9,39 @@ from pathlib import Path
 from datetime import datetime
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_ROOT = Path(os.environ.get("APP_ROOT", BASE_DIR)).expanduser().resolve()
+APP_MODE = os.environ.get("APP_MODE", "development" if (APP_ROOT / ".git").exists() else "portable")
 
-def env_path(name: str, default: Path) -> Path:
+
+def env_path(name: str, default: Path, *, base: Path | None = None) -> Path:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     path = Path(raw).expanduser()
-    return path if path.is_absolute() else BASE_DIR / path
+    return path if path.is_absolute() else (base or APP_ROOT) / path
 
-DATA_DIR = env_path("PC_DATA_DIR", BASE_DIR / "data")
-RECORDS_DIR = env_path("PC_RECORDS_DIR", BASE_DIR / "records")
-LOG_DIR = DATA_DIR / "logs"
+
+def default_state_dir() -> Path:
+    if APP_MODE == "installed":
+        xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
+        return xdg_data_home / "panamacompra"
+    return APP_ROOT / "var"
+
+
+def default_config_dir() -> Path:
+    if APP_MODE == "installed":
+        xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
+        return xdg_config_home / "panamacompra"
+    return APP_ROOT / "config"
+
+
+STATE_DIR = env_path("PC_STATE_DIR", default_state_dir())
+CONFIG_DIR = env_path("PC_CONFIG_DIR", default_config_dir())
+DATA_DIR = env_path("PC_DATA_DIR", STATE_DIR / "data")
+RECORDS_DIR = env_path("PC_RECORDS_DIR", STATE_DIR / "records")
+LOG_DIR = env_path("PC_LOG_DIR", DATA_DIR / "logs")
+RUN_DIR = env_path("PC_RUN_DIR", STATE_DIR / "run")
+QUEUE_DIR = env_path("PC_QUEUE_DIR", DATA_DIR / "queue")
 DB_PATH = env_path("PC_ARCHIVE_DB_PATH", DATA_DIR / "panamacompra_archive.db")
 CSV_PATH = env_path("PC_INDEX_CSV_PATH", DATA_DIR / "panamacompra_index.csv")
 # Combined ICS calendar (every event) for a single Thunderbird subscription.
@@ -27,7 +49,7 @@ CALENDAR_DIR = env_path("PC_CALENDAR_DIR", DATA_DIR / "calendar")
 COMBINED_CALENDAR_PATH = env_path("PC_COMBINED_CALENDAR_PATH", CALENDAR_DIR / "panamacompra.ics")
 # Testing zone: an isolated sandbox so the last N records can be re-run with the
 # current code without touching the real archive (records/) or DB.
-RECORDS_TEST_DIR = env_path("PC_RECORDS_TEST_DIR", BASE_DIR / "records_test")
+RECORDS_TEST_DIR = env_path("PC_RECORDS_TEST_DIR", STATE_DIR / "records_test")
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 
@@ -1107,6 +1129,8 @@ def ensure_dirs():
     CALENDAR_DIR.mkdir(parents=True, exist_ok=True)
     RECORDS_TEST_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_db_schema(conn):
