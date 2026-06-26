@@ -17,6 +17,7 @@ Commands:
   webhook start|diag                        Start or diagnose the webhook listener
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
+  uninstall [options]                       Stop services/containers and optionally purge state
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE
@@ -38,6 +39,7 @@ case "$cmd" in
     esac ;;
   migrate) exec "$APP_ROOT/pc_migrate_apps_layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
+  uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
   env) env | sort | sed -n '/^APP_MODE=/p;/^APP_ROOT=/p;/^PC_/p;/^XDG_/p' ;;
   -h|--help|help) usage ;;
   -v|--version|version) echo "panamacompra-collector ${APP_VERSION:-unknown}" ;;
