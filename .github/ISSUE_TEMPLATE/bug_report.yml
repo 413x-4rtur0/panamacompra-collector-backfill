@@ -1,0 +1,19 @@
+name: Bug report
+description: Report a reproducible defect
+labels: [bug, triage]
+body:
+  - type: textarea
+    id: summary
+    attributes: {label: Summary, description: What happened?}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps to reproduce, description: List exact commands and inputs.}
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes: {label: Expected behavior}
+    validations: {required: true}
+  - type: textarea
+    id: environment
+    attributes: {label: Environment, description: OS, Python, desktop/session type, Docker availability.}
