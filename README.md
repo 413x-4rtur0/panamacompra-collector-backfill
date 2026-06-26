@@ -711,6 +711,12 @@ script checks DNS/HTTPS reachability for `www.panamacompra.gob.pa`; if Playwrigh
 would hit `NS_ERROR_UNKNOWN_HOST`, it aborts with a network/DNS message so the
 operator can fix DNS/VPN/connectivity and run it again.
 
+To find these records quickly, both monitors' record list has a **No date / needs
+repair** choice in the deadline filter (records with no `DTEND`/close date — the
+same set this tool repairs), and the database summary shows a **Needs deadline
+repair** count alongside an **Awaiting WhatsApp (backlog)** count (saved records
+not yet announced, which the next run's messaging step or a `--flush` will send).
+
 #### Keeping new and previous records in the same format
 
 There are two supported paths, and both converge on the same

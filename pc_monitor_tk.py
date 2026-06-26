@@ -316,7 +316,8 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "new_records": 0, "existing_records": 0, "notified": 0, "with_detail_json": 0,
+        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0,
+        "needs_deadline": 0, "with_detail_json": 0,
         "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
@@ -350,6 +351,16 @@ def db_review_stats() -> dict[str, object]:
             ).fetchall()
         ]
 
+        # Records the "Repair missing deadlines" action would act on: blank
+        # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
+        # pc_retry_missing_deadlines so the count matches what that tool processes.
+        deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
+                               "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
+        if "record_folder_leaf" in columns:
+            deadline_predicates.insert(1, "UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'")
+        needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
+                                + " OR ".join(deadline_predicates) + ")")
+
         stats = {
             "db_exists": True,
             "total": count(),
@@ -359,6 +370,8 @@ def db_review_stats() -> dict[str, object]:
             "new_records": count("detail_status = 'pending'"),
             "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
+            "notify_backlog": count("detail_status = 'saved' AND notified_at IS NULL") if has_notified else 0,
+            "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
             "recent": [
                 (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
@@ -397,8 +410,8 @@ SOON_DAYS = setting_int("PC_MONITOR_DEADLINE_SOON_DAYS", 7, minimum=1)
 STATUS_COLORS = {"expired": "#fca5a5", "soon": "#fcd34d", "upcoming": "#86efac", "unknown": "#94a3b8"}
 STATUS_TAGS = {"expired": "EXPIRED", "soon": "SOON", "upcoming": "ok", "unknown": "no date"}
 # Friendly labels for the status selector, mapped back to the internal keys.
-STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming")
-STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming"}
+STATUS_FILTER_CHOICES = ("All", "Next to expire", "Expired", "Upcoming", "No date / needs repair")
+STATUS_FILTER_KEYS = {"Next to expire": "soon", "Expired": "expired", "Upcoming": "upcoming", "No date / needs repair": "unknown"}
 DETAIL_STATUS_FILTER_CHOICES = ("All", "Pending records", "Completed records", "Failed records")
 DETAIL_STATUS_FILTER_KEYS = {"Pending records": "pending", "Completed records": "saved", "Failed records": "failed"}
 
@@ -1351,6 +1364,7 @@ def run_tk() -> int:
             "Previous database data / all records summary\n"
             f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
             f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
+            f"Awaiting WhatsApp (backlog): {s['notify_backlog']} · Needs deadline repair: {s['needs_deadline']}\n"
             f"Detail statuses: {statuses}\n"
             f"Groups: {groups}\n"
             f"DB elements/columns with data: {columns}\n"
@@ -1480,7 +1494,7 @@ def run_tk() -> int:
     dates_row = ttk.Frame(record_index, style="Card.TFrame")
     dates_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
     ttk.Label(dates_row, text="Deadline:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
-    index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=15, state="readonly")
+    index_status_box = ttk.Combobox(dates_row, textvariable=index_status_var, values=STATUS_FILTER_CHOICES, width=22, state="readonly")
     index_status_box.grid(row=0, column=1, sticky="w", padx=(0, 12))
     ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
@@ -1513,7 +1527,7 @@ def run_tk() -> int:
     index_downloaded_maxdate_entry.grid(row=3, column=3, sticky="w", padx=(0, 8))
 
     _date_hint = " Format YYYY-MM-DD or YYYY-MM-DD HH:MM; leave blank for no limit."
-    add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
+    add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out, No date / needs repair = no DTEND found (what 'Repair missing deadlines' targets).")
     add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
     add_tooltip(index_order_field_box, "Choose whether newest/oldest ordering uses downloaded date, end/deadline date, or start date.")
     add_tooltip(index_order_box, "Choose newest first or oldest first for the selected order-by date.")
@@ -1810,6 +1824,7 @@ def run_tk() -> int:
             f"Total records: {s['total']}\n"
             f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
             f"Detail JSON on record: {s['with_detail_json']}   ·   Notified (WAHA): {s['notified']}\n"
+            f"Awaiting WhatsApp (backlog): {s['notify_backlog']}   ·   Needs deadline repair: {s['needs_deadline']}\n"
             f"By group   ·   {groups}"
         )
 
