@@ -125,8 +125,8 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run (up to 20 index pages per group and 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
@@ -847,7 +847,7 @@ def run_tk() -> int:
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
     run_mode_var = tk.StringVar(value="restart")
-    index_limit_var = tk.StringVar(value="20")
+    index_limit_var = tk.StringVar(value="0")
     detail_limit_var = tk.StringVar(value="99")
 
     def selected_limit(var: tk.StringVar, default: str) -> str:
@@ -855,7 +855,7 @@ def run_tk() -> int:
         return value if value.isdigit() and int(value) > 0 else default
 
     def request_run_now() -> None:
-        index_limit = selected_limit(index_limit_var, "20")
+        index_limit = selected_limit(index_limit_var, "0")
         detail_limit = selected_limit(detail_limit_var, "99")
         mode = run_mode_var.get()
         if mode == "test":
@@ -864,10 +864,10 @@ def run_tk() -> int:
             return
         if mode == "manual":
             subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
+            button_status_var.set(f"Manual run started with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
             return
         subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
+        button_status_var.set(f"Restart-pending run requested with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
 
     def stop_run_now() -> None:
         # Halt the active collection but keep this monitor (and the timer/webhook)
@@ -890,7 +890,7 @@ def run_tk() -> int:
     manual_radio.grid(row=1, column=3, sticky="w")
     test_radio = ttk.Radiobutton(controls, text="test run", value="test", variable=run_mode_var, style="Card.TRadiobutton")
     test_radio.grid(row=1, column=4, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Index limit:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
+    ttk.Label(controls, text="Index page cap:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
     index_limit_entry = ttk.Entry(controls, textvariable=index_limit_var, width=8)
     index_limit_entry.grid(row=2, column=1, sticky="w", padx=(6, 12))
     ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
@@ -905,7 +905,7 @@ def run_tk() -> int:
     add_tooltip(live_radio, "run pending only = queue the normal collector pipeline (real archive).")
     add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
     add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
-    add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
+    add_tooltip(index_limit_entry, "Optional cap for index pages per status group. 0 = all pages until the portal has no Next page.")
     add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
     add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
@@ -976,7 +976,7 @@ def run_tk() -> int:
     _truthy = {"1", "true", "yes", "on"}
     interval_var = tk.StringVar(value=setting("PC_NEXT_RUN_INTERVAL_MINUTES", "30"))
     soon_days_var = tk.StringVar(value=setting("PC_MONITOR_DEADLINE_SOON_DAYS", "7"))
-    webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "20")))
+    webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "0")))
     webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "99"))
     within_days_var = tk.StringVar(value=setting("PC_NOTIFY_WITHIN_DAYS", ""))
     retries_var = tk.StringVar(value=setting("PC_WAHA_RETRIES", "2"))
@@ -1022,7 +1022,7 @@ def run_tk() -> int:
     ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
     field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
-    field(14, 0, "Webhook index limit:", webhook_index_var, 8, "Index pages per status group for automatic (changedetection) AUTO runs. Env: PC_WEBHOOK_INDEX_LIMIT.")
+    field(14, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
     field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. Env: PC_WEBHOOK_DETAIL_LIMIT.")
     field(15, 0, "WhatsApp within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
     field(15, 2, "WhatsApp send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
@@ -1087,7 +1087,7 @@ def run_tk() -> int:
             "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
             "PC_NEXT_RUN_INTERVAL_MINUTES": interval_var.get().strip() or "30",
             "PC_MONITOR_DEADLINE_SOON_DAYS": soon_days_var.get().strip() or "7",
-            "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "20",
+            "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "0",
             "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "99",
             "PC_NOTIFY_WITHIN_DAYS": within_days_var.get().strip(),
             "PC_WAHA_RETRIES": retries_var.get().strip() or "2",
@@ -1140,7 +1140,7 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("ETA", "ETA"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("ETA", "ETA"), ("Index page cap", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),

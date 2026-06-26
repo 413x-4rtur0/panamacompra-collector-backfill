@@ -33,7 +33,7 @@ UPDATE_QUEUE_FLAG="data/queue/update_monitor_requested.flag"
 UPDATE_QUEUE_LOG="data/logs/update_monitor_queue.log"
 
 DETAIL_LIMIT="${1:-99}"
-INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-20}}}"
+INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 RUN_COMPLETED=0
 
 log() {
@@ -199,7 +199,7 @@ fi
 
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
 touch "$IN_PROGRESS_FLAG"
-log "RUN-ALL WORKER STARTED index_limit=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
+log "RUN-ALL WORKER STARTED index_page_cap=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
 
 ITERATION=0
 
@@ -251,14 +251,14 @@ while true; do
   {
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION STARTED: $STARTED"
-    echo "INDEX_LIMIT: $INDEX_LIMIT"
+    echo "INDEX_PAGE_CAP: $INDEX_LIMIT (0 = all pages)"
     echo "DETAIL_LIMIT: $DETAIL_LIMIT"
     echo "PID: $$"
     echo "============================================================"
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables, index_limit=$INDEX_LIMIT..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/5: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
 
   {
     echo ""

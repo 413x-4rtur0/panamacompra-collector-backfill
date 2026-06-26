@@ -4,7 +4,24 @@ import time
 from playwright.sync_api import sync_playwright
 from pc_common import *
 
-MAX_PAGES_PER_GROUP = env_int("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "20"), minimum=1)
+def index_page_cap():
+    """Return the optional per-status index page cap.
+
+    0/auto/all means no normal cap: crawl until the portal disables Next. The
+    separate hard safety cap prevents accidental infinite pagination loops.
+    """
+    raw = os.environ.get("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "0"))
+    value = str(raw or "0").strip().lower()
+    if value in {"", "0", "all", "auto", "none", "unlimited"}:
+        return 0
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 0
+
+
+MAX_PAGES_PER_GROUP = index_page_cap()
+INDEX_HARD_SAFETY_CAP = env_int("PC_INDEX_HARD_SAFETY_CAP", "500", minimum=1)
 
 GROUPS = [
     {"name": "Programadas", "radio_id": "btnradio2"},
@@ -208,10 +225,13 @@ def click_next(page):
     return False, "Next clicked but page did not change"
 
 def index_eta_text(pages_done, pages_budget, new_records, elapsed_seconds, prev_index_avg, prev_detail_avg):
-    """Monitor ETA for the index phase: remaining budgeted index pages PLUS the
-    detail downloads the new records found so far will still need. '-' when no
-    pace is known yet."""
-    index_secs = eta_seconds_from_counts(pages_done, pages_budget, elapsed_seconds, prev_index_avg)
+    """Monitor ETA for the index phase plus expected detail time.
+
+    When there is no configured page cap, the portal decides when indexing is
+    done, so we only estimate known detail work instead of pretending there is a
+    fixed index-page budget.
+    """
+    index_secs = eta_seconds_from_counts(pages_done, pages_budget, elapsed_seconds, prev_index_avg) if pages_budget else None
     detail_secs = new_records * prev_detail_avg if prev_detail_avg else 0
     if index_secs is None and not detail_secs:
         return "-"
@@ -252,6 +272,9 @@ def main():
         prev_detail_avg = previous_phase_avg_seconds(DETAIL_TIMING_PATH)
         index_start = time.monotonic()
 
+        pages_done = 0
+        total_pages_budget = len(GROUPS) * MAX_PAGES_PER_GROUP if MAX_PAGES_PER_GROUP else None
+
         for group in GROUPS:
             group_name = group["name"]
             radio_id = group["radio_id"]
@@ -260,17 +283,27 @@ def main():
             set_rows_to_50(page)
             go_first_page(page)
 
-            for page_number in range(1, MAX_PAGES_PER_GROUP + 1):
+            page_number = 1
+            while True:
+                if MAX_PAGES_PER_GROUP and page_number > MAX_PAGES_PER_GROUP:
+                    stop_reasons.append(f"{group_name}: index page cap reached ({MAX_PAGES_PER_GROUP})")
+                    break
+                if not MAX_PAGES_PER_GROUP and page_number > INDEX_HARD_SAFETY_CAP:
+                    stop_reasons.append(f"{group_name}: hard safety page cap reached ({INDEX_HARD_SAFETY_CAP})")
+                    break
+
                 wait_for_table(page)
                 rows = extract_rows(page, group_name, page_number)
 
                 extracted_total += len(rows)
                 page_counts.append((group_name, page_number, len(rows)))
 
-                group_index = GROUPS.index(group)
-                overall_page = group_index * MAX_PAGES_PER_GROUP + page_number
-                total_pages_budget = len(GROUPS) * MAX_PAGES_PER_GROUP
-                percent = 10 + int(40 * overall_page / total_pages_budget)
+                pages_done += 1
+                overall_page = pages_done
+                if total_pages_budget:
+                    percent = 10 + int(40 * overall_page / total_pages_budget)
+                else:
+                    percent = min(49, 10 + (overall_page * 10))
                 write_run_progress(
                     "INDEX",
                     "RUNNING",
@@ -279,7 +312,7 @@ def main():
                     step_current=1,
                     step_total=5,
                     item_current=overall_page,
-                    item_total=total_pages_budget,
+                    item_total=total_pages_budget or "auto",
                     records_found=extracted_total,
                     records_new=new_records,
                     records_existing=existing_records,
@@ -370,7 +403,7 @@ def main():
                     step_current=1,
                     step_total=5,
                     item_current=overall_page,
-                    item_total=total_pages_budget,
+                    item_total=total_pages_budget or "auto",
                     records_found=extracted_total,
                     records_new=new_records,
                     records_existing=existing_records,
@@ -382,8 +415,7 @@ def main():
                 if not moved:
                     stop_reasons.append(f"{group_name}: {reason}")
                     break
-            else:
-                stop_reasons.append(f"{group_name}: MAX_PAGES_PER_GROUP reached")
+                page_number += 1
 
         browser.close()
 
