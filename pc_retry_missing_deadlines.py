@@ -88,18 +88,24 @@ def row_needs_deadline(row) -> bool:
     return not _text(row["finish_date_guess"]) or folder_needs_deadline(row["record_folder"])
 
 
-def rows_missing_deadline(conn, limit: int = 0):
-    sql = """
+def rows_missing_deadline(conn, limit: int = 0, *, include_failed: bool = False):
+    predicates = [
+        "COALESCE(finish_date_guess, '') = ''",
+        "UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'",
+        "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'",
+    ]
+    if include_failed:
+        predicates.append("detail_status = 'failed'")
+    sql = f"""
     SELECT *
     FROM opportunities
     WHERE COALESCE(link, '') <> ''
       AND COALESCE(record_folder, '') <> ''
-      AND (
-        COALESCE(finish_date_guess, '') = ''
-        OR UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'
-        OR UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'
-      )
-    ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC
+      AND ({' OR '.join(predicates)})
+    ORDER BY
+      CASE WHEN detail_status = 'failed' THEN 0 ELSE 1 END,
+      COALESCE(detail_saved_at, first_seen, '') DESC,
+      numero DESC
     """
     if limit > 0:
         sql += " LIMIT ?"
@@ -168,14 +174,16 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Actually re-download and rename matching records (default: dry-run list).")
     parser.add_argument("--limit", type=int, default=0, help="Process/list at most N records (0 = all).")
     parser.add_argument("--skip-network-check", action="store_true", help="Skip the portal DNS/HTTPS preflight before --apply (not recommended).")
+    parser.add_argument("--include-failed", action="store_true", help="Also retry rows whose detail_status is failed, even when they already have a deadline.")
     args = parser.parse_args()
 
     conn = init_db()
-    rows = rows_missing_deadline(conn, args.limit)
-    print(f"{'APPLY' if args.apply else 'DRY-RUN'} | records missing DTEND/deadline: {len(rows)}")
+    rows = rows_missing_deadline(conn, args.limit, include_failed=args.include_failed)
+    label = "failed or missing DTEND/deadline" if args.include_failed else "missing DTEND/deadline"
+    print(f"{'APPLY' if args.apply else 'DRY-RUN'} | records {label}: {len(rows)}")
     print("-" * 100)
     for row in rows:
-        marker = "folder+db" if folder_needs_deadline(row["record_folder"]) and not _text(row["finish_date_guess"]) else "folder" if folder_needs_deadline(row["record_folder"]) else "db"
+        marker = "failed" if _text(row["detail_status"]) == "failed" else "folder+db" if folder_needs_deadline(row["record_folder"]) and not _text(row["finish_date_guess"]) else "folder" if folder_needs_deadline(row["record_folder"]) else "db"
         print(f"{marker:9}  {row['numero']:38}  {row['detail_status']:8}  {row['finish_date_guess'] or 'NO-DATE':19}  {row['record_folder']}")
     print("-" * 100)
 
