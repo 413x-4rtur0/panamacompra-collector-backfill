@@ -11,10 +11,64 @@ lets the detail downloader rename the folder to the current
 from __future__ import annotations
 
 import argparse
+import socket
+import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
-from pc_common import init_db
+from pc_common import init_db, safe_name
 from pc_update_day_folder import ensure_playwright_available
+
+PORTAL_HOST = "www.panamacompra.gob.pa"
+DNS_ERROR_MARKERS = ("NS_ERROR_UNKNOWN_HOST", "ERR_NAME_NOT_RESOLVED", "Name or service not known")
+
+
+def portal_host_from_rows(rows) -> str:
+    """Return the host that will be contacted for these repair downloads."""
+    for row in rows:
+        host = urlparse(_text(row["link"])).hostname
+        if host:
+            return host
+    return PORTAL_HOST
+
+
+def check_portal_reachable(host: str = PORTAL_HOST, url: str | None = None, timeout: int = 15) -> tuple[bool, str]:
+    """Check DNS and a lightweight HTTPS request before mutating any records.
+
+    The repair command force-downloads live details. If the portal host cannot be
+    resolved (the Playwright error shown as NS_ERROR_UNKNOWN_HOST), every record
+    would fail for an environment/network reason. Detect that up front so no
+    folders are rewritten and no rows are marked failed just because DNS is down.
+    """
+    target_url = url or f"https://{host}/"
+    try:
+        socket.getaddrinfo(host, 443)
+    except OSError as exc:
+        return False, f"DNS lookup failed for {host}: {exc}"
+
+    request = urllib.request.Request(target_url, headers={"User-Agent": "panamacompra-deadline-repair/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return True, f"{host} reachable (HTTP {response.status})"
+    except urllib.error.HTTPError as exc:
+        # HTTP errors still prove DNS/TLS/connectivity worked; the detail pages
+        # may remain reachable even if the root path rejects the probe.
+        return True, f"{host} reachable (HTTP {exc.code})"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, f"HTTPS probe failed for {target_url}: {exc}"
+
+
+def error_text_for_row(row) -> str:
+    """Read the latest per-record detail error text, if process_detail wrote one."""
+    path = Path(row["record_folder"]) / f"{safe_name(row['numero'])}.error.txt"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def looks_like_dns_error(text: str) -> bool:
+    return any(marker in (text or "") for marker in DNS_ERROR_MARKERS)
 
 
 def _text(value) -> str:
@@ -53,8 +107,15 @@ def rows_missing_deadline(conn, limit: int = 0):
     return conn.execute(sql).fetchall()
 
 
-def redownload_missing_deadlines(conn, rows) -> tuple[int, int, int]:
+def redownload_missing_deadlines(conn, rows, *, skip_network_check: bool = False) -> tuple[int, int, int]:
     """Force redownload selected rows. Returns (saved, renamed_or_fixed, failed)."""
+    if not skip_network_check:
+        host = portal_host_from_rows(rows)
+        ok, message = check_portal_reachable(host)
+        print(f"Portal connectivity check: {message}", flush=True)
+        if not ok:
+            print("Aborting before any re-download, DB update, or folder rename. Fix DNS/network/VPN and run again.", flush=True)
+            return 0, 0, len(rows)
     ensure_playwright_available()
     from playwright.sync_api import sync_playwright
     from pc_detail_downloader import process_detail
@@ -85,7 +146,18 @@ def redownload_missing_deadlines(conn, rows) -> tuple[int, int, int]:
                     print(f"    OK finish={after_finish or 'NO-DATE'} folder={after_folder or before_folder}", flush=True)
                 else:
                     failed += 1
+                    error_text = error_text_for_row(row)
                     print(f"    {result}", flush=True)
+                    if looks_like_dns_error(error_text):
+                        remaining = total - index
+                        print(
+                            "    Portal DNS/host resolution failed inside Playwright "
+                            f"({error_text.splitlines()[0] if error_text else 'unknown host'}). "
+                            f"Aborting remaining {remaining} record(s); fix DNS/network/VPN and run again.",
+                            flush=True,
+                        )
+                        failed += remaining
+                        break
         finally:
             browser.close()
     return saved, fixed, failed
@@ -95,6 +167,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", action="store_true", help="Actually re-download and rename matching records (default: dry-run list).")
     parser.add_argument("--limit", type=int, default=0, help="Process/list at most N records (0 = all).")
+    parser.add_argument("--skip-network-check", action="store_true", help="Skip the portal DNS/HTTPS preflight before --apply (not recommended).")
     args = parser.parse_args()
 
     conn = init_db()
@@ -113,7 +186,7 @@ def main() -> int:
         print("Dry-run only. Re-run with --apply to re-download details and rename fixed folders.")
         return 0
 
-    saved, fixed, failed = redownload_missing_deadlines(conn, rows)
+    saved, fixed, failed = redownload_missing_deadlines(conn, rows, skip_network_check=args.skip_network_check)
     print("-" * 100)
     print(f"Re-downloaded: {saved} | fixed deadline+folder: {fixed} | failed: {failed}")
     return 1 if failed else 0

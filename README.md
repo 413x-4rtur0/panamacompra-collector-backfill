@@ -697,7 +697,10 @@ recompute `DTSTART`/`DTEND`, and rename the folder when a close date is recovere
 ```
 
 The native and web monitors expose the same action as **Repair missing deadlines**
-in their manual/data tools section.
+in their manual/data tools section. Before `--apply` mutates any row or folder, the
+script checks DNS/HTTPS reachability for `www.panamacompra.gob.pa`; if Playwright
+would hit `NS_ERROR_UNKNOWN_HOST`, it aborts with a network/DNS message so the
+operator can fix DNS/VPN/connectivity and run it again.
 
 #### Keeping new and previous records in the same format
 
