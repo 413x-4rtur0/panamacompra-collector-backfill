@@ -98,6 +98,7 @@ MANUAL_ACTIONS = [
     ManualAction("Updater / Migration", "Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names."),
     ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives."),
     ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
+    ManualAction("Settings", "Repair missing deadlines", ("./pc_retry_missing_deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
     ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages."),
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
     ManualAction("Settings", "Webhook listener", ("./pc_start_webhook_listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),

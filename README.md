@@ -369,6 +369,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_db_maintenance.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
+| `pc_retry_missing_deadlines.py` | Finds records/folders with no `DTEND`/deadline (blank `finish_date_guess` or `(NO-DATE)` folder), force re-downloads their details, recalculates the close window, and renames folders when a deadline is recovered. Dry-run by default; `--apply` to act. |
 | `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 4 after the per-record detail view/calendar rebuild; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 6 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
@@ -682,6 +683,19 @@ disk, run the tool below (reads only saved files, no network):
 
 It is idempotent (already-named folders are skipped) and never overwrites an existing
 target. Inner files keep their `NUMERO.*` names.
+
+If folders still show `(NO-DATE)` or the database has blank `finish_date_guess`, use
+the deadline repair tool to go back to the live portal, re-download the detail,
+recompute `DTSTART`/`DTEND`, and rename the folder when a close date is recovered:
+
+```bash
+./pc_retry_missing_deadlines.py           # dry-run: list missing-deadline folders/rows
+./pc_retry_missing_deadlines.py --apply   # re-download details and rename fixed folders
+./pc_retry_missing_deadlines.py --limit 20 --apply
+```
+
+The native and web monitors expose the same action as **Repair missing deadlines**
+in their manual/data tools section.
 
 #### Keeping new and previous records in the same format
 

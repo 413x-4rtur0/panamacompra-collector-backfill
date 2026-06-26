@@ -142,6 +142,7 @@ MANUAL_ACTIONS = [
 
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
+    ManualAction("Data Tools", "Repair missing deadlines", ("./pc_retry_missing_deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
     ManualAction("Data Tools", "Start webhook listener", ("./pc_start_webhook_listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
