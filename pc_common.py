@@ -280,6 +280,44 @@ def _parse_ddmmyyyy(text):
     day, month, year = m.group(1), m.group(2), m.group(3)
     return f"{year}-{int(month):02d}-{int(day):02d}"
 
+def _parse_ddmmyyyy_matches(text):
+    """All DD-MM-YYYY / DD/MM/YYYY dates in text as (match, ISO date)."""
+    out = []
+    for match in re.finditer(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", str(text or "")):
+        day, month, year = match.group(1), match.group(2), match.group(3)
+        out.append((match, f"{year}-{int(month):02d}-{int(day):02d}"))
+    return out
+
+
+def _window_datetimes_from_text(window):
+    """Return (dtstart, dtend) for one close-window value.
+
+    Handles the PanamaCompra range form seen in details, for example
+    ``23-06-2026 a 26-06-2026``. A date-only range means the full first day
+    through the full last day: start at 00:00 and end at 23:59. If each date has
+    an explicit time, those times are respected. Single-date windows keep the
+    legacy behavior: earliest time -> latest time, or noon when no time exists.
+    """
+    text = str(window or "")
+    dates = _parse_ddmmyyyy_matches(text)
+    if not dates:
+        return "", ""
+    if len(dates) >= 2:
+        first_match, start_date = dates[0]
+        last_match, end_date = dates[-1]
+        start_segment = text[first_match.end():last_match.start()]
+        end_segment = text[last_match.end():]
+        start_times = _parse_times_24h(start_segment)
+        end_times = _parse_times_24h(end_segment)
+        start_time = start_times[0] if start_times else "00:00"
+        end_time = end_times[-1] if end_times else "23:59"
+        return f"{start_date}T{start_time}:00", f"{end_date}T{end_time}:00"
+
+    date = dates[0][1]
+    times = sorted(_parse_times_24h(text)) or ["12:00"]
+    return f"{date}T{times[0]}:00", f"{date}T{times[-1]}:00"
+
+
 def _parse_times_24h(text):
     """Return every clock time in ``text`` as 24h 'HH:MM', in order.
 
@@ -324,18 +362,19 @@ def _resolve_close_datetimes(key_values, text):
       5) an 'entrega ... DD-MM-YYYY' phrase in the text   (date only, noon)
       6) any DD-MM-YYYY date anywhere in the text          (date only, noon)
     For 1-4 the window's own clock times are used (earliest -> DTSTART, latest ->
-    DTEND); when a window has no time, or for the date-only fallbacks, noon is used.
+    DTEND). Date-only ranges such as '23-06-2026 a 26-06-2026' mean the full
+    first day through the full last day (00:00 -> 23:59). Single date-only
+    windows and broad text fallbacks still use noon.
     """
     key_values = key_values or {}
     text = str(text or "")
     text_fields = parse_detail_fields(text)
 
     def from_window(window):
-        date = _parse_ddmmyyyy(window)
-        if not date:
+        dtstart, dtend = _window_datetimes_from_text(window)
+        if not dtend:
             return None
-        times = sorted(_parse_times_24h(window)) or ["12:00"]
-        return window, f"{date}T{times[0]}:00", f"{date}T{times[-1]}:00"
+        return window, dtstart, dtend
 
     for window in (
         _close_window_value(key_values),
@@ -938,7 +977,8 @@ def build_calendar(fields, items, numero="", dtstamp=None, link="",
     DTSTART/DTEND come from the 'Fecha y hora presentación de cotizaciones' /
     cierre / límite window (first/last clock time on its date), falling back to
     the 'Día y Hora de Entrega' window for older records. If a source has a
-    date but no explicit clock time, the event is kept importable at 12:00.
+    single date but no explicit clock time, the event is kept importable at 12:00;
+    date-only ranges span 00:00 on the first date through 23:59 on the last.
     """
     numero = find_kv(fields, "numero") or numero
     descripcion = find_kv(fields, "descripcion")
