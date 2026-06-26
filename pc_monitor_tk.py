@@ -252,6 +252,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(first_seen, '') AS first_seen, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess, "
             f"{start_expr} AS start_date_guess "
             "FROM opportunities "
@@ -271,6 +272,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
+            "first_seen": str(row["first_seen"] or ""),
             "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
@@ -410,6 +412,18 @@ def parse_downloaded(rec: dict[str, str]) -> datetime | None:
         int(match.group(4) or 0),
         int(match.group(5) or 0),
     )
+
+
+def parse_record_order_date(rec: dict[str, str]) -> datetime:
+    """Best available creation/download timestamp for newest/oldest ordering."""
+    raw = (rec.get("first_seen") or rec.get("detail_saved_at") or "").strip().replace("T", " ")
+    for candidate in (raw, raw[:19], raw[:16], raw[:10]):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                pass
+    return datetime.min
 
 
 def parse_start(rec: dict[str, str]) -> datetime | None:
@@ -1236,9 +1250,13 @@ def run_tk() -> int:
         frame.columnconfigure(1, weight=1)
         ttk.Label(frame, text=title, style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
         filter_var = tk.StringVar(value="")
+        order_var = tk.StringVar(value="Newest first")
         ttk.Label(frame, text="Search:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
         filter_entry = ttk.Entry(frame, textvariable=filter_var)
-        filter_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
+        filter_entry.grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(frame, text="Order:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(8, 6))
+        order_box = ttk.Combobox(frame, textvariable=order_var, values=("Newest first", "Oldest first"), width=13, state="readonly")
+        order_box.grid(row=1, column=3, sticky="w", pady=3)
         listbox = tk.Listbox(frame, height=6, activestyle="none", exportselection=False,
                              bg="#020617", fg="#e5e7eb", selectbackground="#2563eb",
                              selectforeground="#ffffff", highlightthickness=0, borderwidth=0, font=("Sans", 9))
@@ -1260,7 +1278,8 @@ def run_tk() -> int:
                 if (rec.get("detail_status") or "").lower() == detail_status
                 and (not needle or needle in label(rec).lower())
             ]
-            records.sort(key=lambda rec: (parse_deadline(rec) or datetime.max))
+            newest_first = order_var.get() != "Oldest first"
+            records.sort(key=parse_record_order_date, reverse=newest_first)
             listbox.delete(0, "end")
             for rec in records:
                 listbox.insert("end", label(rec))
@@ -1292,7 +1311,9 @@ def run_tk() -> int:
         portal_btn = ttk.Button(frame, text="Open portal", command=open_portal_for_selection)
         portal_btn.grid(row=3, column=2, sticky="w", padx=(0, 8))
         add_tooltip(filter_entry, f"Filter records in {title} by NUMERO, deadline or description.")
+        add_tooltip(order_box, f"Order {title} by when the record was first seen/downloaded locally.")
         filter_var.trace_add("write", refresh_list)
+        order_var.trace_add("write", refresh_list)
         refresh_list()
         add_section_toggle(frame, button_column=3)
 
@@ -1320,6 +1341,7 @@ def run_tk() -> int:
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
     index_detail_status_var = tk.StringVar(value="All")
+    index_order_var = tk.StringVar(value="Newest first")
     index_mindate_var = tk.StringVar(value="")
     index_maxdate_var = tk.StringVar(value="")
     index_start_mindate_var = tk.StringVar(value="")
@@ -1347,6 +1369,9 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
     index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Order:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_order_box = ttk.Combobox(dates_row, textvariable=index_order_var, values=("Newest first", "Oldest first"), width=13, state="readonly")
+    index_order_box.grid(row=0, column=5, sticky="w", padx=(0, 8))
 
     ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=16)
@@ -1372,6 +1397,7 @@ def run_tk() -> int:
     _date_hint = " Format YYYY-MM-DD or YYYY-MM-DD HH:MM; leave blank for no limit."
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
+    add_tooltip(index_order_box, "Order records by when they were first seen/downloaded locally: newest first or oldest first.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date/time." + _date_hint)
     add_tooltip(index_maxdate_entry, "Show only records whose DTEND (deadline) is on or before this date/time (a bare date covers the whole day)." + _date_hint)
     add_tooltip(index_start_mindate_entry, "Show only records whose DTSTART (start) is on or after this date/time." + _date_hint)
@@ -1495,9 +1521,8 @@ def run_tk() -> int:
                 continue
             records.append(rec)
 
-        # Show the soonest deadlines first so "next to expire" floats to the top;
-        # records without a DTEND sink to the bottom.
-        records.sort(key=lambda r: (parse_deadline(r) or datetime.max))
+        newest_first = index_order_var.get() != "Oldest first"
+        records.sort(key=parse_record_order_date, reverse=newest_first)
         populate_listbox(records)
         if not records:
             set_index_detail("No records match the filter." if index_records else
@@ -1562,6 +1587,7 @@ def run_tk() -> int:
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
     index_detail_status_var.trace_add("write", apply_filter)
+    index_order_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
     index_maxdate_var.trace_add("write", apply_filter)
     index_start_mindate_var.trace_add("write", apply_filter)
