@@ -315,19 +315,19 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     numero = clean_field(row["numero"])
 
     if variant == "new":
-        heading = "🔔 *Nueva Oportunidad - Panama Compra*"
+        heading = f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
     elif variant == "cancelled":
-        heading = "❌ *Oportunidad Cancelada - Panama Compra*"
+        heading = f"❌ *Oportunidad Cancelada - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status.upper()}"
     elif variant == "status":
-        heading = "⚠️ *Cambio de Estado - Panama Compra*"
+        heading = f"⚠️ *Cambio de Estado - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* [ANTERIOR: {clean_field(previous_status)}] ➡️ [ACTUAL: {status}]"
     elif variant == "items":
-        heading = "🔄 *Actualización de Items - Panama Compra*"
+        heading = f"🔄 *Actualización de Items - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status} (Sin cambios)"
     else:
-        heading = "🔔 *Oportunidad - Panama Compra*"
+        heading = f"🔔 *Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
 
     parts = [

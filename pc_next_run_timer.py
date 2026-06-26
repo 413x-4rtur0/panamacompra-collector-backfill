@@ -59,6 +59,17 @@ def setting_int(name: str, default: str, minimum: int = 0) -> int:
         return max(minimum, int(default))
 
 
+def setting_float(name: str, default: str, minimum: float, maximum: float) -> float:
+    try:
+        return max(minimum, min(maximum, float(setting(name, default))))
+    except ValueError:
+        return max(minimum, min(maximum, float(default)))
+
+
+def setting_bool(name: str, default: str) -> bool:
+    return setting(name, default).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
 INTERVAL_MINUTES = setting_int("PC_NEXT_RUN_INTERVAL_MINUTES", "30", 1)
 # Fixed window size. Bigger by default than the old timer because it now carries
 # the branch, latest records and last-run summary; still pinned (resizable off).
@@ -70,6 +81,15 @@ WINDOW_TOP = setting_int("PC_NEXT_RUN_TIMER_TOP", "30", 0)
 RECORDS_SHOWN = max(1, setting_int("PC_NEXT_RUN_TIMER_RECORDS", "20", 1))
 # Refresh the cheap countdown every second; the heavier git/DB reads less often.
 DATA_REFRESH_TICKS = max(1, setting_int("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10", 1))
+# Window opacity (1.0 = fully opaque). Applied best-effort: X11 setups without a
+# compositor may ignore it. Default is a subtle translucency so the overlay is a
+# little less obtrusive while staying clearly legible; lower it toward 0.2 for a
+# more see-through window. Clamped to [0.2, 1.0] so the countdown can never be
+# made invisible.
+WINDOW_ALPHA = setting_float("PC_NEXT_RUN_TIMER_ALPHA", "0.9", 0.2, 1.0)
+# Keep the timer above other windows (default on, matching the previous behaviour).
+# Set PC_NEXT_RUN_TIMER_TOPMOST=0 to let it fall behind focused windows.
+WINDOW_TOPMOST = setting_bool("PC_NEXT_RUN_TIMER_TOPMOST", "1")
 
 ACTIVE_PHASES = {"STARTING", "UPDATE", "INDEX", "DETAIL", "CALENDAR", "MESSAGING", "TEST"}
 ACTIVE_STATUSES = {"RUNNING"}
@@ -280,7 +300,14 @@ def main() -> int:
     root.title("Next Live Run")
     root.configure(bg="#1e293b")
     root.resizable(False, False)
-    root.attributes("-topmost", True)
+    root.attributes("-topmost", WINDOW_TOPMOST)
+    if WINDOW_ALPHA < 1.0:
+        # Best-effort: window managers without a compositor raise TclError or
+        # silently ignore -alpha; never let that stop the timer from opening.
+        try:
+            root.attributes("-alpha", WINDOW_ALPHA)
+        except tk.TclError:
+            pass
 
     root.update_idletasks()
     x = max(0, (root.winfo_screenwidth() - WINDOW_WIDTH) // 2)

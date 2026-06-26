@@ -28,7 +28,6 @@ COMBINED_CALENDAR_PATH = env_path("PC_COMBINED_CALENDAR_PATH", CALENDAR_DIR / "p
 # Testing zone: an isolated sandbox so the last N records can be re-run with the
 # current code without touching the real archive (records/) or DB.
 RECORDS_TEST_DIR = env_path("PC_RECORDS_TEST_DIR", BASE_DIR / "records_test")
-TEST_CALENDAR_PATH = env_path("PC_TEST_CALENDAR_PATH", CALENDAR_DIR / "panamacompra_test.ics")
 
 BASE_URL = "https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-linea"
 

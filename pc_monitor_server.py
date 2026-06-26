@@ -531,6 +531,14 @@ ACTIONS_JSON = json.dumps([
     for action in MANUAL_ACTIONS
 ], ensure_ascii=False)
 
+# Honour the operator's "deadline soon" window in the web record list, matching
+# the native monitor. Resolved once at startup, so a changed setting applies on
+# the next monitor restart (same as PC_MONITOR_DEADLINE_SOON_DAYS elsewhere).
+try:
+    RECORD_SOON_DAYS = max(1, int(load_monitor_settings().get("PC_MONITOR_DEADLINE_SOON_DAYS", "7")))
+except (TypeError, ValueError):
+    RECORD_SOON_DAYS = 7
+
 HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -733,7 +741,7 @@ function saveAdvancedSettings() {{
 }}
 let recordIndex = [];
 let recordFiltered = [];
-const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
+const RECORD_SOON_DAYS = {RECORD_SOON_DAYS};  // DTEND within this many days = "next to expire" (PC_MONITOR_DEADLINE_SOON_DAYS).
 const STATUS_COLOR = {{expired: '#fca5a5', soon: '#fcd34d', upcoming: '#86efac', unknown: '#94a3b8'}};
 const STATUS_TAG = {{expired: 'EXPIRED', soon: 'SOON', upcoming: 'ok', unknown: 'no date'}};
 function parseDeadline(rec) {{

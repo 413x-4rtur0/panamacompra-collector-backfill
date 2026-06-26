@@ -111,13 +111,22 @@ def _max_send_attempts() -> int:
     return max(1, retries + 1)
 
 
+def _breaker_threshold() -> int:
+    """Consecutive outright failures before retries are suppressed (still one
+    attempt per message). Tunable via PC_WAHA_BREAKER_THRESHOLD, minimum 1."""
+    try:
+        return max(1, int(os.environ.get("PC_WAHA_BREAKER_THRESHOLD", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
 def send_text(text: str) -> None:
     global _send_failures
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
     chat_id = configured_chat_id()
     api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
-    timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "10"))
+    timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 
     if not chat_id:
         print("WAHA notification skipped: PC_WAHA_CHAT_ID is not set.")
@@ -129,7 +138,7 @@ def send_text(text: str) -> None:
         headers["X-Api-Key"] = api_key
 
     # Stop retrying once the endpoint looks persistently down, to bound latency.
-    attempts = 1 if _send_failures >= 3 else _max_send_attempts()
+    attempts = 1 if _send_failures >= _breaker_threshold() else _max_send_attempts()
     for attempt in range(1, attempts + 1):
         request = urllib.request.Request(f"{base_url}/api/sendText", data=payload, headers=headers, method="POST")
         try:
