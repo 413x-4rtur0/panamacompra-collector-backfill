@@ -404,7 +404,7 @@ DETAIL_STATUS_FILTER_KEYS = {"Pending records": "pending", "Completed records": 
 
 def parse_deadline(rec: dict[str, str]) -> datetime | None:
     """The record's DTEND/deadline (finish_date_guess 'YYYY-MM-DD_HH:MM'), or None."""
-    raw = (rec.get("finish_date_guess") or "").strip().replace("_", " ")
+    raw = (rec.get("finish_date_guess") or "").strip().replace("T", " ").replace("_", " ")
     if not raw:
         return None
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -443,16 +443,24 @@ def parse_downloaded(rec: dict[str, str]) -> datetime | None:
     )
 
 
-def parse_record_order_date(rec: dict[str, str]) -> datetime:
-    """Best available creation/download timestamp for newest/oldest ordering."""
-    raw = (rec.get("first_seen") or rec.get("detail_saved_at") or "").strip().replace("T", " ")
-    for candidate in (raw, raw[:19], raw[:16], raw[:10]):
+def parse_record_order_date(rec: dict[str, str], field: str = "Downloaded date") -> datetime | None:
+    """Timestamp used by the record selector ordering controls."""
+    if field == "End date":
+        return parse_deadline(rec)
+    if field == "Start date":
+        return parse_start(rec)
+    return parse_downloaded(rec) or _parse_iso_like(rec.get("first_seen") or "")
+
+
+def _parse_iso_like(raw: str) -> datetime | None:
+    text = (raw or "").strip().replace("T", " ").replace("_", " ")
+    for candidate in (text, text[:19], text[:16], text[:10]):
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
                 return datetime.strptime(candidate, fmt)
             except ValueError:
                 pass
-    return datetime.min
+    return None
 
 
 def parse_start(rec: dict[str, str]) -> datetime | None:
@@ -1327,7 +1335,7 @@ def run_tk() -> int:
         pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
         s = db_review_stats()
         end_dates = "; ".join(
-            f"{num} ends {finish or 'no date'}"
+            f"{num} ends {(finish or 'no date').replace('T', ' ').replace('_', ' ')}"
             for num, finish, _desc in s.get("completed_recent", [])[:3]
         ) or "No completed end dates yet"
         completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
@@ -1385,7 +1393,7 @@ def run_tk() -> int:
                 and (not needle or needle in label(rec).lower())
             ]
             newest_first = order_var.get() != "Oldest first"
-            records.sort(key=parse_record_order_date, reverse=newest_first)
+            records.sort(key=lambda rec: parse_record_order_date(rec) or datetime.min, reverse=newest_first)
             listbox.delete(0, "end")
             for rec in records:
                 listbox.insert("end", label(rec))
@@ -1448,6 +1456,7 @@ def run_tk() -> int:
     index_status_var = tk.StringVar(value="All")
     index_detail_status_var = tk.StringVar(value="All")
     index_order_var = tk.StringVar(value="Newest first")
+    index_order_field_var = tk.StringVar(value="Downloaded date")
     index_mindate_var = tk.StringVar(value="")
     index_maxdate_var = tk.StringVar(value="")
     index_start_mindate_var = tk.StringVar(value="")
@@ -1475,9 +1484,11 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
     index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
-    ttk.Label(dates_row, text="Order:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    ttk.Label(dates_row, text="Order by:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_order_field_box = ttk.Combobox(dates_row, textvariable=index_order_field_var, values=("Downloaded date", "End date", "Start date"), width=15, state="readonly")
+    index_order_field_box.grid(row=0, column=5, sticky="w", padx=(0, 8))
     index_order_box = ttk.Combobox(dates_row, textvariable=index_order_var, values=("Newest first", "Oldest first"), width=13, state="readonly")
-    index_order_box.grid(row=0, column=5, sticky="w", padx=(0, 8))
+    index_order_box.grid(row=0, column=6, sticky="w", padx=(0, 8))
 
     ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=16)
@@ -1503,7 +1514,8 @@ def run_tk() -> int:
     _date_hint = " Format YYYY-MM-DD or YYYY-MM-DD HH:MM; leave blank for no limit."
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
-    add_tooltip(index_order_box, "Order records by when they were first seen/downloaded locally: newest first or oldest first.")
+    add_tooltip(index_order_field_box, "Choose whether newest/oldest ordering uses downloaded date, end/deadline date, or start date.")
+    add_tooltip(index_order_box, "Choose newest first or oldest first for the selected order-by date.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date/time." + _date_hint)
     add_tooltip(index_maxdate_entry, "Show only records whose DTEND (deadline) is on or before this date/time (a bare date covers the whole day)." + _date_hint)
     add_tooltip(index_start_mindate_entry, "Show only records whose DTSTART (start) is on or after this date/time." + _date_hint)
@@ -1628,7 +1640,11 @@ def run_tk() -> int:
             records.append(rec)
 
         newest_first = index_order_var.get() != "Oldest first"
-        records.sort(key=parse_record_order_date, reverse=newest_first)
+        order_field = index_order_field_var.get()
+        if newest_first:
+            records.sort(key=lambda rec: parse_record_order_date(rec, order_field) or datetime.min, reverse=True)
+        else:
+            records.sort(key=lambda rec: parse_record_order_date(rec, order_field) or datetime.max)
         populate_listbox(records)
         if not records:
             set_index_detail("No records match the filter." if index_records else
@@ -1694,6 +1710,7 @@ def run_tk() -> int:
     index_status_var.trace_add("write", apply_filter)
     index_detail_status_var.trace_add("write", apply_filter)
     index_order_var.trace_add("write", apply_filter)
+    index_order_field_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
     index_maxdate_var.trace_add("write", apply_filter)
     index_start_mindate_var.trace_add("write", apply_filter)
