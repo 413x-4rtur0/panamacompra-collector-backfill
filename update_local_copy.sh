@@ -19,6 +19,30 @@ DETAIL_LIMIT="${PC_UPDATE_TEST_DETAIL_LIMIT:-0}"
 CHECKED_OUT_BRANCH=""
 WEBHOOK_WAS_RUNNING=0
 WEBHOOK_RESTORED=0
+UPDATE_QUEUE_FLAG="data/queue/update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG="data/queue/update_monitor_in_progress.flag"
+UPDATE_LOCK_FILE="/tmp/panamacompra_update_local.lock"
+
+collector_pipeline_running() {
+  pgrep -f "[p]c_run_all_worker.sh|[p]ython3? -u ./pc_index_collector.py|[p]ython3? -u ./pc_detail_downloader.py|[p]ython3? -u ./pc_build_calendar.py|[p]ython3? -u ./pc_notify_new_records.py" >/dev/null 2>&1
+}
+
+open_monitor_best_effort() {
+  if [ "${PC_UPDATE_OPEN_MONITOR_WHEN_QUEUED:-1}" != "0" ] && [ -x ./pc_open_monitor.sh ]; then
+    ./pc_open_monitor.sh >/dev/null 2>&1 || true
+  fi
+}
+
+queue_update_monitor_request() {
+  local reason="$1"
+  mkdir -p data/logs data/queue
+  {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | UPDATE+MONITOR QUEUED: $reason"
+  } | tee -a data/logs/update_monitor_queue.log
+  printf "REQUESTED_AT='%s'\nREASON='%s'\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" > "$UPDATE_QUEUE_FLAG"
+  open_monitor_best_effort
+  echo "Update + Monitor request queued. It will run after the active collector/update finishes."
+}
 
 webhook_listener_running() {
   pgrep -f "[w]ebhook_listener.py" >/dev/null 2>&1
@@ -77,6 +101,7 @@ restart_webhook_listener() {
 
 restore_webhook_on_exit() {
   local code=$?
+  cleanup_update_flags || true
   if [ "$code" -ne 0 ]; then
     echo ""
     echo "Update exited with status $code; restoring webhook listener before exit if it was active."
@@ -142,6 +167,29 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 mkdir -p data/logs data/queue
+
+# Serialize manual/automatic Update + Monitor launchers. If changedetection (or
+# a user) asks for another update while the collector is still processing a
+# previous change, do NOT kill the active pipeline and do NOT start a second
+# updater. Leave a durable queue flag; pc_run_all_worker.sh consumes it after the
+# current run finishes cleanly.
+exec 8>"$UPDATE_LOCK_FILE"
+if ! flock -n 8; then
+  queue_update_monitor_request "another update_local_copy.sh is already running"
+  exit 0
+fi
+
+touch "$UPDATE_IN_PROGRESS_FLAG"
+cleanup_update_flags() {
+  rm -f "$UPDATE_IN_PROGRESS_FLAG"
+}
+trap cleanup_update_flags EXIT
+
+if collector_pipeline_running; then
+  queue_update_monitor_request "collector pipeline is still running"
+  exit 0
+fi
+rm -f "$UPDATE_QUEUE_FLAG"
 LOG_FILE="data/logs/update_local_copy_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -155,41 +203,23 @@ echo "Branch: ${BRANCH:-<auto-detect latest vs main>}"
 echo "Log: $LOG_FILE"
 echo ""
 
-echo "1) Stop the active collector pipeline before updating"
+echo "1) Verify no collector pipeline is active before updating"
+if collector_pipeline_running; then
+  queue_update_monitor_request "collector pipeline started before updater step 1"
+  exit 0
+fi
 if webhook_listener_running; then
   WEBHOOK_WAS_RUNNING=1
   echo "Webhook listener is currently running; it will be restarted after the update."
 fi
 trap restore_webhook_on_exit EXIT
-# IMPORTANT: do NOT call ./pc_stop_run_all.sh from here. That broad stopper also
-# runs `pkill update_local_copy.sh`, `pkill pc_update_loader.py` and
-# `pkill pc_monitor_tk.py` — i.e. it would terminate THIS update process, the
-# loader window, and the monitor the user is watching. That self-kill is what
-# made the updater appear to "freeze" or close right after step 1, and it also
-# added a fixed 5s wait. Instead stop only the collector pipeline plus the
-# webhook trigger so a new run cannot start mid-update, and never touch the
-# updater/loader/monitor processes. The no-resume marker tells a worker that is
-# being stopped by the updater NOT to recreate run_all_requested.flag from its
-# abrupt-exit trap; local updates/manual launchers must not restart/recover a
-# pending/failed collector task unless the operator explicitly requests it.
-touch data/queue/run_all_stop_no_resume.flag
-rm -f data/queue/run_all_requested.flag
-pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u ./pc_build_calendar.py" 2>/dev/null || true
+# The updater used to stop any active run here. That could cut a
+# changedetection-triggered collector in the middle of index/detail/calendar or
+# WhatsApp processing. Active collectors are now detected before this point and
+# converted into a queued Update + Monitor request instead. We only pause the
+# webhook listener during the actual update window so a fresh notification is
+# enqueued for after the update instead of racing code/dependency changes.
 pkill -TERM -f "[w]ebhook_listener.py" 2>/dev/null || true
-
-# Wait briefly (max ~3s) for a graceful exit, then force any straggler so the
-# update never blocks for long.
-for _ in 1 2 3; do
-  pgrep -f "[p]c_run_all_worker.sh|[p]ython3? -u ./pc_index_collector.py|[p]ython3? -u ./pc_detail_downloader.py" >/dev/null 2>&1 || break
-  sleep 1
-done
-pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
-pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
-pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
-rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag data/queue/run_all_stop_no_resume.flag
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"
@@ -397,6 +427,7 @@ fi
 echo ""
 echo "12) Restore webhook listener after update"
 restart_webhook_listener
+cleanup_update_flags
 trap - EXIT
 
 echo ""

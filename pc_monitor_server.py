@@ -23,6 +23,10 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_QUEUE_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_in_progress.flag"
+REQUEST_LOG = BASE_DIR / "data" / "logs" / "run_all_requests.log"
+UPDATE_QUEUE_LOG = BASE_DIR / "data" / "logs" / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = BASE_DIR / "data" / "config" / "waha_chat_id.txt"
 MONITOR_SETTINGS_PATH = BASE_DIR / "data" / "config" / "monitor_settings.env"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
@@ -43,14 +47,20 @@ VALUE_SETTING_DEFAULTS = {
     "PC_WAHA_SOURCE": "Panamá Compra",
     "PC_NEXT_RUN_INTERVAL_MINUTES": "30",
     "PC_MONITOR_DEADLINE_SOON_DAYS": "7",
-    "PC_WEBHOOK_INDEX_LIMIT": "20",
-    "PC_WEBHOOK_DETAIL_LIMIT": "99",
+    "PC_WEBHOOK_INDEX_LIMIT": "0",
+    "PC_WEBHOOK_DETAIL_LIMIT": "0",
     "PC_NOTIFY_WITHIN_DAYS": "",
     "PC_WAHA_RETRIES": "2",
     "PC_WAHA_BASE_URL": "http://127.0.0.1:3000",
     "PC_WAHA_SESSION": "default",
     "PC_WAHA_NOTIFY_EVENTS": "info,start,done,failed,timeout,resume,update,new,none",
     "PC_TEST_ZONE_LIMIT": "5",
+    "PC_NEXT_RUN_TIMER_WIDTH": "380",
+    "PC_NEXT_RUN_TIMER_HEIGHT": "360",
+    "PC_NEXT_RUN_TIMER_TOP": "30",
+    "PC_NEXT_RUN_TIMER_RECORDS": "20",
+    "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": "10",
+    "PC_MONITOR_STALE_SECONDS": "120",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
@@ -77,8 +87,8 @@ class ManualAction(tuple):
 
 RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 MANUAL_ACTIONS = [
-    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run and opens/reuses this monitor."),
-    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages."),
+    ManualAction("Runners", "Run full collector", ("./pc_request_run_all.sh", "99", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./pc_run_all_now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages."),
     ManualAction("Runners", "Stop active run", ("./pc_stop_collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
     ManualAction("Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./pc_test_zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
@@ -88,6 +98,7 @@ MANUAL_ACTIONS = [
     ManualAction("Updater / Migration", "Rename folders", ("./pc_rename_record_folders.py", "--apply"), "Normalizes existing record folder names."),
     ManualAction("Updater / Migration", "Migrate records", ("./migrate_previous_records.sh",), "Imports/migrates previous record archives."),
     ManualAction("Settings", "Build detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
+    ManualAction("Settings", "Repair missing deadlines", ("./pc_retry_missing_deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
     ManualAction("Settings", "Build calendars", ("./pc_build_calendar.py", "--all"), "Rebuilds calendar import packages."),
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
     ManualAction("Settings", "Webhook listener", ("./pc_start_webhook_listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
@@ -222,6 +233,25 @@ def finish_stamp_from_folder(record_folder: str) -> str:
     return match.group(1)
 
 
+def finish_stamp_from_detail_json(detail_json_path: str) -> str:
+    """Fallback DTEND from saved detail JSON calendar/summary fields."""
+    if not detail_json_path:
+        return ""
+    try:
+        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    return str(
+        calendar.get("dtend")
+        or data.get("finish_date_guess")
+        or data.get("date_end_opportunity")
+        or summary.get("date_end_opportunity")
+        or ""
+    )
+
+
 def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     """Read collected records (NUMERO + description + folder/link) from the
     archive DB for the record-index selector. Newest first; never raises."""
@@ -242,6 +272,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(detail_json_path, '') AS detail_json_path, "
+            "COALESCE(first_seen, '') AS first_seen, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess, "
             f"{start_expr} AS start_date_guess "
             "FROM opportunities "
@@ -261,7 +293,13 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
+            "first_seen": str(row["first_seen"] or ""),
+            "detail_json_path": str(row["detail_json_path"] or ""),
+            "finish_date_guess": (
+                str(row["finish_date_guess"] or "")
+                or finish_stamp_from_folder(str(row["record_folder"] or ""))
+                or finish_stamp_from_detail_json(str(row["detail_json_path"] or ""))
+            ),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
@@ -321,9 +359,9 @@ def db_review_stats() -> dict[str, object]:
                 ).fetchall()
             ],
             "completed_recent": [
-                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
+                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
                 for r in conn.execute(
-                    "SELECT numero, finish_date_guess, record_folder, descripcion, short_description FROM opportunities "
+                    "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
                     "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
@@ -403,7 +441,7 @@ def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool
         updated = time.mktime(time.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S"))
     except (TypeError, ValueError):
         return True
-    return (time.time() - updated) > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+    return (time.time() - updated) > int(load_monitor_settings().get("PC_MONITOR_STALE_SECONDS", "120"))
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -411,6 +449,36 @@ def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
         return False
     return progress_stale(processes, progress) or progress.get("STATUS") in {"DONE", "FAILED", "TIMEOUT", "STALE"} or progress.get("PHASE") in {"DONE", "IDLE"}
 
+
+
+def file_timestamp(path: Path) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+    except OSError:
+        return "-"
+
+
+def queue_payload() -> dict[str, str]:
+    collector_pending = REQUEST_FLAG.exists()
+    update_pending = UPDATE_QUEUE_FLAG.exists()
+    update_running = UPDATE_IN_PROGRESS_FLAG.exists()
+    if update_running:
+        update_state = "RUNNING"
+        update_since = file_timestamp(UPDATE_IN_PROGRESS_FLAG)
+    elif update_pending:
+        update_state = "PENDING"
+        update_since = file_timestamp(UPDATE_QUEUE_FLAG)
+    else:
+        update_state = "none"
+        update_since = "-"
+    return {
+        "collector_state": "PENDING" if collector_pending else "none",
+        "collector_since": file_timestamp(REQUEST_FLAG) if collector_pending else "-",
+        "update_state": update_state,
+        "update_since": update_since,
+        "request_log": tail(REQUEST_LOG, 8),
+        "update_log": tail(UPDATE_QUEUE_LOG, 8),
+    }
 
 
 def open_folder(path: Path) -> None:
@@ -444,6 +512,7 @@ def status_payload() -> dict[str, object]:
         "progress": progress,
         "percent": percent_value(progress),
         "processes": processes,
+        "queue": queue_payload(),
         "done": done,
         # Auto-close only the unattended automatic (changedetection/webhook) run.
         # RESTART/MANUAL/TEST are operator-initiated, so the page stays open.
@@ -506,6 +575,9 @@ input:disabled {{ opacity: .5; cursor: not-allowed; }}
 .mode-group label:has(input:checked) {{ border-color: #2563eb; color: #93c5fd; background: #0b1220; }}
 .mode-group input:disabled + span, .mode-group label:has(input:disabled) {{ opacity: .5; cursor: not-allowed; }}
 select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; line-height: 1.35; }}
+.settings-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; align-items: end; margin: 10px 0; }}
+.settings-grid label {{ display: flex; flex-direction: column; gap: 4px; margin: 0; }}
+.settings-grid input {{ width: 100%; box-sizing: border-box; }}
 .section-toggle {{ float: right; margin-left: 12px; padding: 5px 10px; font-size: .8rem; }}
 .card.collapsed > *:not(h1):not(h2) {{ display: none; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
@@ -529,12 +601,13 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index limit <input id="index-limit" value="20" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index limit controls index pages per status group; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><p><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index limit <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
+<div class="card"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”, sorted by DTEND (soonest deadline first). Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -544,7 +617,7 @@ let doneSince = null;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['ETA', 'ETA'], ['Index limit', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['ETA', 'ETA'], ['Index page cap', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
   ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
@@ -573,6 +646,7 @@ function render(data) {{
     `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
   ).join('');
   updateRunControls(data);
+  renderQueue(data);
   renderRecordSummary(data);
   document.getElementById('worker-log').textContent = data.worker_log || '';
   document.getElementById('current-log').textContent = data.current_log || '';
@@ -587,7 +661,7 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const note = document.getElementById('done-note');
   if (data.done) {{
@@ -638,7 +712,7 @@ function requestRun() {{
   const checked = document.querySelector('input[name="run-mode"]:checked');
   const mode = encodeURIComponent(checked ? checked.value : 'restart');
   const detailLimit = encodeURIComponent(document.getElementById('detail-limit').value || '99');
-  const indexLimit = encodeURIComponent(document.getElementById('index-limit').value || '20');
+  const indexLimit = encodeURIComponent(document.getElementById('index-limit').value || '0');
   postForm('/api/request-run', `mode=${{mode}}&detail_limit=${{detailLimit}}&index_limit=${{indexLimit}}`);
 }}
 function importCalendars() {{ postForm('/api/import-calendars', ''); }}
@@ -655,7 +729,7 @@ function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
 function saveAdvancedSettings() {{
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 let recordIndex = [];
 let recordFiltered = [];
@@ -663,7 +737,7 @@ const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
 const STATUS_COLOR = {{expired: '#fca5a5', soon: '#fcd34d', upcoming: '#86efac', unknown: '#94a3b8'}};
 const STATUS_TAG = {{expired: 'EXPIRED', soon: 'SOON', upcoming: 'ok', unknown: 'no date'}};
 function parseDeadline(rec) {{
-  const raw = (rec.finish_date_guess || '').trim().replace('_', ' ');
+  const raw = (rec.finish_date_guess || '').trim().replace('T', ' ').replace('_', ' ');
   const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ T](\\d{{2}}):(\\d{{2}}))?/);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 12), Number(m[5] || 0));
@@ -676,7 +750,7 @@ function expiryStatus(rec) {{
   if (dt <= new Date(now.getTime() + RECORD_SOON_DAYS * 86400000)) return 'soon';
   return 'upcoming';
 }}
-function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('_', ' ') : '—'; }}
+function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('T', ' ').replace('_', ' ') : '—'; }}
 function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ').replace('_', ' ') : '—'; }}
 function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
 function parseDownloaded(rec) {{
@@ -690,6 +764,17 @@ function parseStart(rec) {{
   const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
+}}
+function parseIsoLike(raw) {{
+  const text = (raw || '').trim().replace('T', ' ').replace('_', ' ');
+  const m = text.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 0), Number(m[5] || 0));
+}}
+function parseRecordOrderDate(rec, field) {{
+  if (field === 'end') return parseDeadline(rec);
+  if (field === 'start') return parseStart(rec);
+  return parseDownloaded(rec) || parseIsoLike(rec.first_seen || '');
 }}
 function parseFilterBound(raw, upper) {{
   // Accept a date or a date+time; a bare date used as an upper bound covers the
@@ -726,6 +811,8 @@ function renderRecordDetail() {{
 function applyRecordFilter() {{
   const status = (document.getElementById('record-status') || {{}}).value || 'all';
   const detailStatus = (document.getElementById('record-detail-status') || {{}}).value || 'all';
+  const order = (document.getElementById('record-order') || {{}}).value || 'newest';
+  const orderField = (document.getElementById('record-order-field') || {{}}).value || 'downloaded';
   const val = id => (document.getElementById(id) || {{}}).value || '';
   const deadlineMin = parseFilterBound(val('record-mindate'), false);
   const deadlineMax = parseFilterBound(val('record-maxdate'), true);
@@ -746,7 +833,13 @@ function applyRecordFilter() {{
     if ((downloadedMin || downloadedMax) && !inWindow(parseDownloaded(r), downloadedMin, downloadedMax)) return false;
     return true;
   }});
-  recordFiltered.sort((a, b) => (parseDeadline(a) || FAR_FUTURE) - (parseDeadline(b) || FAR_FUTURE));
+  recordFiltered.sort((a, b) => {{
+    const ad = parseRecordOrderDate(a, orderField);
+    const bd = parseRecordOrderDate(b, orderField);
+    const av = ad ? ad.getTime() : (order === 'oldest' ? Number.MAX_SAFE_INTEGER : 0);
+    const bv = bd ? bd.getTime() : (order === 'oldest' ? Number.MAX_SAFE_INTEGER : 0);
+    return order === 'oldest' ? av - bv : bv - av;
+  }});
   const sel = document.getElementById('record-index');
   sel.innerHTML = recordFiltered.map((r, i) => {{
     const st = expiryStatus(r);
@@ -808,6 +901,16 @@ function initCollapsibleSections() {{
   }});
 }}
 
+function renderQueue(data) {{
+  const q = data.queue || {{}};
+  document.getElementById('queue-summary').textContent =
+    `Collector request: ${{q.collector_state || 'none'}} (since ${{q.collector_since || '-'}}) · ` +
+    `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}})`;
+  document.getElementById('queue-log').textContent =
+    'Recent collector queue log:\n' + (q.request_log || '(missing)') +
+    '\nRecent Update + Monitor queue log:\n' + (q.update_log || '(missing)');
+}}
+
 function renderRecordSummary(data) {{
   const p = data.progress || {{}};
   const pending = document.getElementById('records-pending');
@@ -817,7 +920,7 @@ function renderRecordSummary(data) {{
   fetch('/api/db-stats', {{cache: 'no-store'}})
     .then(r => r.json())
     .then(s => {{
-      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{r.finish_date_guess || 'no date'}}`).join('; ') || 'No completed end dates yet';
+      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{(r.finish_date_guess || 'no date').replace('T', ' ').replace('_', ' ')}}`).join('; ') || 'No completed end dates yet';
       if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}\nOpportunity ends: ${{endDates}}`;
     }})
     .catch(() => {{ if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}`; }});
@@ -873,6 +976,8 @@ renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
 document.getElementById('record-detail-status').addEventListener('change', applyRecordFilter);
+document.getElementById('record-order').addEventListener('change', applyRecordFilter);
+document.getElementById('record-order-field').addEventListener('change', applyRecordFilter);
 ['record-mindate', 'record-maxdate', 'record-start-mindate', 'record-start-maxdate', 'record-downloaded-mindate', 'record-downloaded-maxdate'].forEach(id => {{
   const el = document.getElementById(id);
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
@@ -905,9 +1010,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
         form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         if path == "/api/request-run":
             raw_detail = form.get("detail_limit", ["99"])[0].strip()
-            raw_index = form.get("index_limit", ["20"])[0].strip()
+            raw_index = form.get("index_limit", ["0"])[0].strip()
             detail_limit = raw_detail if raw_detail.isdigit() and int(raw_detail) > 0 else "99"
-            index_limit = raw_index if raw_index.isdigit() and int(raw_index) > 0 else "20"
+            index_limit = raw_index if raw_index.isdigit() and int(raw_index) >= 0 else "0"
+            index_limit_text = "all" if index_limit == "0" else index_limit
             mode = form.get("mode", ["restart"])[0].strip().lower()
             if mode == "test":
                 subprocess.Popen([str(BASE_DIR / "pc_test_zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -915,10 +1021,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 return
             if mode == "manual":
                 subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_text(202, f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+                self.send_text(202, f"Manual run started with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
             subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.send_text(202, f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+            self.send_text(202, f"Restart-pending run requested with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
             label = form.get("label", [""])[0].strip()

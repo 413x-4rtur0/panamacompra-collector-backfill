@@ -681,8 +681,8 @@ def announce_with_progress(conn) -> int:
 
     When there is nothing to send it publishes the "Sin nuevas entradas" status.
     Returns the number of messages actually sent. Never raises."""
-    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "4")
-    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "5")
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "6")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "6")
 
     # ("new", numero), then status updates, then item-only changes, oldest first.
     new_rows = conn.execute(
@@ -725,7 +725,7 @@ def announce_with_progress(conn) -> int:
         send_text("none", build_empty_message(total_records))
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING", 98,
-            "Step 4/5: no new opportunities or status changes to send.",
+            "Step 6/6: no new opportunities or status changes to send.",
             step_current=step_current, step_total=step_total,
             item_current=0, item_total=0, records_new=0,
         )
@@ -755,7 +755,7 @@ def announce_with_progress(conn) -> int:
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING",
             min(99, 96 + int(3 * index / total)),
-            f"Step 4/5: sending WhatsApp {index}/{total} ({kind}): {label}",
+            f"Step 6/6: sending WhatsApp {index}/{total} ({kind}): {label}",
             step_current=step_current, step_total=step_total,
             item_current=index, item_total=total,
             records_new=total, records_saved=sent,
@@ -776,7 +776,7 @@ def announce_with_progress(conn) -> int:
 
     pc_common.write_run_progress(
         "MESSAGING", "RUNNING", 99,
-        f"Step 4/5: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
+        f"Step 6/6: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
         step_current=step_current, step_total=step_total,
         item_current=total, item_total=total,
         records_new=len(new_rows), records_saved=sent,

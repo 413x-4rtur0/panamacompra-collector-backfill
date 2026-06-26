@@ -25,6 +25,10 @@ PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 WORKER_LOG = BASE_DIR / "data" / "logs" / "run_all_worker.log"
 CURRENT_LOG = BASE_DIR / "data" / "logs" / "run_all_current.log"
 REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_QUEUE_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_in_progress.flag"
+REQUEST_LOG = BASE_DIR / "data" / "logs" / "run_all_requests.log"
+UPDATE_QUEUE_LOG = BASE_DIR / "data" / "logs" / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = BASE_DIR / "data" / "logs" / "manual_actions.log"
@@ -125,8 +129,8 @@ RECORDS_TEST_PARENT = BASE_DIR / "records_test"
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "20"), "Queues a manual restart run (up to 20 index pages per group and 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "20", "MANUAL"), "Starts the run-all worker immediately for up to 20 index pages per group and 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Request full collection", ("./pc_request_run_all.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./pc_run_all_now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./pc_run_all_status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./pc_stop_run_all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
@@ -138,6 +142,7 @@ MANUAL_ACTIONS = [
 
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
     ManualAction("Data Tools", "Rebuild detail views", ("./pc_build_detail_views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
+    ManualAction("Data Tools", "Repair missing deadlines", ("./pc_retry_missing_deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./pc_build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./pc_build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
     ManualAction("Data Tools", "Start webhook listener", ("./pc_start_webhook_listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
@@ -228,6 +233,25 @@ def finish_stamp_from_folder(record_folder: str) -> str:
     return match.group(1)
 
 
+def finish_stamp_from_detail_json(detail_json_path: str) -> str:
+    """Fallback DTEND from saved detail JSON calendar/summary fields."""
+    if not detail_json_path:
+        return ""
+    try:
+        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    return str(
+        calendar.get("dtend")
+        or data.get("finish_date_guess")
+        or data.get("date_end_opportunity")
+        or summary.get("date_end_opportunity")
+        or ""
+    )
+
+
 def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     """Read collected records (NUMERO + description + folder/link) from the
     archive DB for the monitor's record-index selector. Newest first.
@@ -252,6 +276,8 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(detail_json_path, '') AS detail_json_path, "
+            "COALESCE(first_seen, '') AS first_seen, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess, "
             f"{start_expr} AS start_date_guess "
             "FROM opportunities "
@@ -271,7 +297,13 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "link": str(row["link"] or ""),
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
+            "first_seen": str(row["first_seen"] or ""),
+            "detail_json_path": str(row["detail_json_path"] or ""),
+            "finish_date_guess": (
+                str(row["finish_date_guess"] or "")
+                or finish_stamp_from_folder(str(row["record_folder"] or ""))
+                or finish_stamp_from_detail_json(str(row["detail_json_path"] or ""))
+            ),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
@@ -336,9 +368,9 @@ def db_review_stats() -> dict[str, object]:
                 ).fetchall()
             ],
             "completed_recent": [
-                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")), str(r["descripcion"] or r["short_description"] or ""))
+                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), str(r["descripcion"] or r["short_description"] or ""))
                 for r in conn.execute(
-                    "SELECT numero, finish_date_guess, record_folder, descripcion, short_description FROM opportunities "
+                    "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
                     "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
@@ -373,7 +405,7 @@ DETAIL_STATUS_FILTER_KEYS = {"Pending records": "pending", "Completed records": 
 
 def parse_deadline(rec: dict[str, str]) -> datetime | None:
     """The record's DTEND/deadline (finish_date_guess 'YYYY-MM-DD_HH:MM'), or None."""
-    raw = (rec.get("finish_date_guess") or "").strip().replace("_", " ")
+    raw = (rec.get("finish_date_guess") or "").strip().replace("T", " ").replace("_", " ")
     if not raw:
         return None
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -410,6 +442,26 @@ def parse_downloaded(rec: dict[str, str]) -> datetime | None:
         int(match.group(4) or 0),
         int(match.group(5) or 0),
     )
+
+
+def parse_record_order_date(rec: dict[str, str], field: str = "Downloaded date") -> datetime | None:
+    """Timestamp used by the record selector ordering controls."""
+    if field == "End date":
+        return parse_deadline(rec)
+    if field == "Start date":
+        return parse_start(rec)
+    return parse_downloaded(rec) or _parse_iso_like(rec.get("first_seen") or "")
+
+
+def _parse_iso_like(raw: str) -> datetime | None:
+    text = (raw or "").strip().replace("T", " ").replace("_", " ")
+    for candidate in (text, text[:19], text[:16], text[:10]):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                pass
+    return None
 
 
 def parse_start(rec: dict[str, str]) -> datetime | None:
@@ -502,6 +554,37 @@ def process_snapshot() -> dict[str, bool]:
     }
 
 
+def file_timestamp(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return "-"
+
+
+def queue_snapshot() -> dict[str, str]:
+    """Current queued collector/update requests for the monitor queue panel."""
+    collector_pending = REQUEST_FLAG.exists()
+    update_pending = UPDATE_QUEUE_FLAG.exists()
+    update_running = UPDATE_IN_PROGRESS_FLAG.exists()
+    if update_running:
+        update_state = "RUNNING"
+        update_since = file_timestamp(UPDATE_IN_PROGRESS_FLAG)
+    elif update_pending:
+        update_state = "PENDING"
+        update_since = file_timestamp(UPDATE_QUEUE_FLAG)
+    else:
+        update_state = "none"
+        update_since = "-"
+    return {
+        "collector_state": "PENDING" if collector_pending else "none",
+        "collector_since": file_timestamp(REQUEST_FLAG) if collector_pending else "-",
+        "update_state": update_state,
+        "update_since": update_since,
+        "request_log": tail(REQUEST_LOG, 8),
+        "update_log": tail(UPDATE_QUEUE_LOG, 8),
+    }
+
+
 def percent_value(progress: dict[str, str]) -> int:
     try:
         return max(0, min(100, int(progress.get("PERCENT", "0"))))
@@ -527,7 +610,7 @@ def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool
         updated = datetime.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return True
-    return (datetime.now() - updated).total_seconds() > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+    return (datetime.now() - updated).total_seconds() > int(setting("PC_MONITOR_STALE_SECONDS", "120"))
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -548,6 +631,7 @@ def status_snapshot() -> dict[str, object]:
         "progress": progress,
         "percent": percent_value(progress),
         "processes": processes,
+        "queue": queue_snapshot(),
         "done": done,
         # Auto-close only the unattended automatic (changedetection/webhook) run.
         # RESTART/MANUAL/TEST are operator-initiated, so the window stays open.
@@ -792,6 +876,32 @@ def run_tk() -> int:
                 fg="#bbf7d0" if value else "#9ca3af",
             )
 
+    queue_frame = ttk.Frame(header, style="Card.TFrame", padding=(0, 8, 0, 0))
+    queue_frame.grid(row=7, column=0, sticky="ew")
+    queue_frame.columnconfigure(1, weight=1)
+    ttk.Label(queue_frame, text="Queue process", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+    queue_summary_var = tk.StringVar(value="Collector queue: none · Update + Monitor queue: none")
+    ttk.Label(queue_frame, textvariable=queue_summary_var, style="Card.TLabel", wraplength=680).grid(row=1, column=0, columnspan=2, sticky="ew")
+    queue_log_text = tk.Text(queue_frame, height=5, wrap="word", bd=0, highlightthickness=0,
+                             bg="#020617", fg="#cbd5e1", insertbackground="#e5e7eb", font=("Sans", 8))
+    queue_log_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+    queue_log_text.configure(state="disabled")
+
+    def update_queue_panel(queue: dict[str, str]) -> None:
+        collector = queue.get("collector_state", "none")
+        collector_since = queue.get("collector_since", "-")
+        update = queue.get("update_state", "none")
+        update_since = queue.get("update_since", "-")
+        queue_summary_var.set(
+            f"Collector request: {collector} (since {collector_since}) · "
+            f"Update + Monitor: {update} (since {update_since})"
+        )
+        log_text = (
+            "Recent collector queue log:\n" + (queue.get("request_log") or "(missing)") +
+            "\nRecent Update + Monitor queue log:\n" + (queue.get("update_log") or "(missing)")
+        )
+        set_text(queue_log_text, log_text)
+
     def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
                            start_hidden: bool = True) -> None:
         """Add a hide/show button that keeps the section header visible.
@@ -847,7 +957,7 @@ def run_tk() -> int:
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
     run_mode_var = tk.StringVar(value="restart")
-    index_limit_var = tk.StringVar(value="20")
+    index_limit_var = tk.StringVar(value="0")
     detail_limit_var = tk.StringVar(value="99")
 
     def selected_limit(var: tk.StringVar, default: str) -> str:
@@ -855,7 +965,7 @@ def run_tk() -> int:
         return value if value.isdigit() and int(value) > 0 else default
 
     def request_run_now() -> None:
-        index_limit = selected_limit(index_limit_var, "20")
+        index_limit = selected_limit(index_limit_var, "0")
         detail_limit = selected_limit(detail_limit_var, "99")
         mode = run_mode_var.get()
         if mode == "test":
@@ -864,10 +974,10 @@ def run_tk() -> int:
             return
         if mode == "manual":
             subprocess.Popen([str(BASE_DIR / "pc_run_all_now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            button_status_var.set(f"Manual run started with index limit {index_limit}, detail limit {detail_limit}.")
+            button_status_var.set(f"Manual run started with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
             return
         subprocess.Popen([str(BASE_DIR / "pc_request_run_all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set(f"Restart-pending run requested with index limit {index_limit}, detail limit {detail_limit}.")
+        button_status_var.set(f"Restart-pending run requested with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
 
     def stop_run_now() -> None:
         # Halt the active collection but keep this monitor (and the timer/webhook)
@@ -890,7 +1000,7 @@ def run_tk() -> int:
     manual_radio.grid(row=1, column=3, sticky="w")
     test_radio = ttk.Radiobutton(controls, text="test run", value="test", variable=run_mode_var, style="Card.TRadiobutton")
     test_radio.grid(row=1, column=4, sticky="w", padx=(0, 16))
-    ttk.Label(controls, text="Index limit:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
+    ttk.Label(controls, text="Index page cap:", style="Card.TLabel").grid(row=2, column=0, sticky="e")
     index_limit_entry = ttk.Entry(controls, textvariable=index_limit_var, width=8)
     index_limit_entry.grid(row=2, column=1, sticky="w", padx=(6, 12))
     ttk.Label(controls, text="Detail limit:", style="Card.TLabel").grid(row=2, column=2, sticky="e")
@@ -905,7 +1015,7 @@ def run_tk() -> int:
     add_tooltip(live_radio, "run pending only = queue the normal collector pipeline (real archive).")
     add_tooltip(manual_radio, "manual run = start the worker immediately from this monitor.")
     add_tooltip(test_radio, "test run = the isolated test zone (records_test/), real archive untouched.")
-    add_tooltip(index_limit_entry, "Maximum index pages per status group to collect/process.")
+    add_tooltip(index_limit_entry, "Optional cap for index pages per status group. 0 = all pages until the portal has no Next page.")
     add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
     add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
@@ -976,14 +1086,20 @@ def run_tk() -> int:
     _truthy = {"1", "true", "yes", "on"}
     interval_var = tk.StringVar(value=setting("PC_NEXT_RUN_INTERVAL_MINUTES", "30"))
     soon_days_var = tk.StringVar(value=setting("PC_MONITOR_DEADLINE_SOON_DAYS", "7"))
-    webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "20")))
-    webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "99"))
+    webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "0")))
+    webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "0"))
     within_days_var = tk.StringVar(value=setting("PC_NOTIFY_WITHIN_DAYS", ""))
     retries_var = tk.StringVar(value=setting("PC_WAHA_RETRIES", "2"))
     waha_base_var = tk.StringVar(value=setting("PC_WAHA_BASE_URL", "http://127.0.0.1:3000"))
     waha_session_var = tk.StringVar(value=setting("PC_WAHA_SESSION", "default"))
     waha_events_var = tk.StringVar(value=setting("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update,new,none"))
     test_limit_var = tk.StringVar(value=setting("PC_TEST_ZONE_LIMIT", "5"))
+    timer_width_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_WIDTH", "380"))
+    timer_height_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_HEIGHT", "360"))
+    timer_top_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_TOP", "30"))
+    timer_records_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_RECORDS", "20"))
+    timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
+    monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
@@ -1022,8 +1138,8 @@ def run_tk() -> int:
     ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
     field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
-    field(14, 0, "Webhook index limit:", webhook_index_var, 8, "Index pages per status group for automatic (changedetection) AUTO runs. Env: PC_WEBHOOK_INDEX_LIMIT.")
-    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. Env: PC_WEBHOOK_DETAIL_LIMIT.")
+    field(14, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
+    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. 0 = every pending detail row. Env: PC_WEBHOOK_DETAIL_LIMIT.")
     field(15, 0, "WhatsApp within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
     field(15, 2, "WhatsApp send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
     field(16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
@@ -1033,14 +1149,21 @@ def run_tk() -> int:
     events_entry.grid(row=17, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
     field(18, 0, "Test-zone records:", test_limit_var, 8, "How many recent records the idle test zone re-runs in the sandbox. Env: PC_TEST_ZONE_LIMIT.")
+    field(18, 2, "Monitor stale seconds:", monitor_stale_var, 8, "Seconds before stale RUNNING progress unlocks controls when no worker process is active. Env: PC_MONITOR_STALE_SECONDS.")
+    ttk.Label(settings, text="Next-run timer window settings", style="Title.TLabel").grid(row=19, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    field(20, 0, "Timer width:", timer_width_var, 8, "Next-run timer window width in pixels. Env: PC_NEXT_RUN_TIMER_WIDTH.")
+    field(20, 2, "Timer height:", timer_height_var, 8, "Next-run timer window height in pixels. Env: PC_NEXT_RUN_TIMER_HEIGHT.")
+    field(21, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
+    field(21, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
+    field(22, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
     waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
-    waha_enabled_check.grid(row=19, column=0, columnspan=2, sticky="w", pady=3)
+    waha_enabled_check.grid(row=23, column=0, columnspan=2, sticky="w", pady=3)
     skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
-    skip_expired_check.grid(row=19, column=2, columnspan=2, sticky="w", pady=3)
+    skip_expired_check.grid(row=23, column=2, columnspan=2, sticky="w", pady=3)
     test_autorun_check = ttk.Checkbutton(settings, text="Auto-run test zone when no new records", variable=test_autorun_var, style="Card.TCheckbutton")
-    test_autorun_check.grid(row=20, column=0, columnspan=2, sticky="w", pady=3)
+    test_autorun_check.grid(row=24, column=0, columnspan=2, sticky="w", pady=3)
     update_before_check = ttk.Checkbutton(settings, text="Update local copy before each run", variable=update_before_var, style="Card.TCheckbutton")
-    update_before_check.grid(row=20, column=2, columnspan=2, sticky="w", pady=3)
+    update_before_check.grid(row=24, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
     add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
     add_tooltip(test_autorun_check, "When a run finds no new records, exercise the current code on the last N records in the sandbox. Env: PC_TEST_ZONE_AUTORUN.")
@@ -1087,14 +1210,20 @@ def run_tk() -> int:
             "PC_RECORDS_TEST_DIR": records_test_dir_var.get().strip() or str(BASE_DIR / "records_test"),
             "PC_NEXT_RUN_INTERVAL_MINUTES": interval_var.get().strip() or "30",
             "PC_MONITOR_DEADLINE_SOON_DAYS": soon_days_var.get().strip() or "7",
-            "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "20",
-            "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "99",
+            "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "0",
+            "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "0",
             "PC_NOTIFY_WITHIN_DAYS": within_days_var.get().strip(),
             "PC_WAHA_RETRIES": retries_var.get().strip() or "2",
             "PC_WAHA_BASE_URL": waha_base_var.get().strip() or "http://127.0.0.1:3000",
             "PC_WAHA_SESSION": waha_session_var.get().strip() or "default",
             "PC_WAHA_NOTIFY_EVENTS": waha_events_var.get().strip() or "info,start,done,failed,timeout,resume,update,new,none",
             "PC_TEST_ZONE_LIMIT": test_limit_var.get().strip() or "5",
+            "PC_NEXT_RUN_TIMER_WIDTH": timer_width_var.get().strip() or "380",
+            "PC_NEXT_RUN_TIMER_HEIGHT": timer_height_var.get().strip() or "360",
+            "PC_NEXT_RUN_TIMER_TOP": timer_top_var.get().strip() or "30",
+            "PC_NEXT_RUN_TIMER_RECORDS": timer_records_var.get().strip() or "20",
+            "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
+            "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1116,7 +1245,7 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=22, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1140,7 +1269,7 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("ETA", "ETA"), ("Index limit", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("ETA", "ETA"), ("Index page cap", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),
@@ -1207,7 +1336,7 @@ def run_tk() -> int:
         pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
         s = db_review_stats()
         end_dates = "; ".join(
-            f"{num} ends {finish or 'no date'}"
+            f"{num} ends {(finish or 'no date').replace('T', ' ').replace('_', ' ')}"
             for num, finish, _desc in s.get("completed_recent", [])[:3]
         ) or "No completed end dates yet"
         completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
@@ -1236,9 +1365,13 @@ def run_tk() -> int:
         frame.columnconfigure(1, weight=1)
         ttk.Label(frame, text=title, style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
         filter_var = tk.StringVar(value="")
+        order_var = tk.StringVar(value="Newest first")
         ttk.Label(frame, text="Search:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6))
         filter_entry = ttk.Entry(frame, textvariable=filter_var)
-        filter_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=3)
+        filter_entry.grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(frame, text="Order:", style="Card.TLabel").grid(row=1, column=2, sticky="e", padx=(8, 6))
+        order_box = ttk.Combobox(frame, textvariable=order_var, values=("Newest first", "Oldest first"), width=13, state="readonly")
+        order_box.grid(row=1, column=3, sticky="w", pady=3)
         listbox = tk.Listbox(frame, height=6, activestyle="none", exportselection=False,
                              bg="#020617", fg="#e5e7eb", selectbackground="#2563eb",
                              selectforeground="#ffffff", highlightthickness=0, borderwidth=0, font=("Sans", 9))
@@ -1260,7 +1393,8 @@ def run_tk() -> int:
                 if (rec.get("detail_status") or "").lower() == detail_status
                 and (not needle or needle in label(rec).lower())
             ]
-            records.sort(key=lambda rec: (parse_deadline(rec) or datetime.max))
+            newest_first = order_var.get() != "Oldest first"
+            records.sort(key=lambda rec: parse_record_order_date(rec) or datetime.min, reverse=newest_first)
             listbox.delete(0, "end")
             for rec in records:
                 listbox.insert("end", label(rec))
@@ -1292,7 +1426,9 @@ def run_tk() -> int:
         portal_btn = ttk.Button(frame, text="Open portal", command=open_portal_for_selection)
         portal_btn.grid(row=3, column=2, sticky="w", padx=(0, 8))
         add_tooltip(filter_entry, f"Filter records in {title} by NUMERO, deadline or description.")
+        add_tooltip(order_box, f"Order {title} by when the record was first seen/downloaded locally.")
         filter_var.trace_add("write", refresh_list)
+        order_var.trace_add("write", refresh_list)
         refresh_list()
         add_section_toggle(frame, button_column=3)
 
@@ -1320,6 +1456,8 @@ def run_tk() -> int:
     index_filter_var = tk.StringVar(value="")
     index_status_var = tk.StringVar(value="All")
     index_detail_status_var = tk.StringVar(value="All")
+    index_order_var = tk.StringVar(value="Newest first")
+    index_order_field_var = tk.StringVar(value="Downloaded date")
     index_mindate_var = tk.StringVar(value="")
     index_maxdate_var = tk.StringVar(value="")
     index_start_mindate_var = tk.StringVar(value="")
@@ -1347,6 +1485,11 @@ def run_tk() -> int:
     ttk.Label(dates_row, text="Detail status:", style="Card.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
     index_detail_status_box = ttk.Combobox(dates_row, textvariable=index_detail_status_var, values=DETAIL_STATUS_FILTER_CHOICES, width=18, state="readonly")
     index_detail_status_box.grid(row=0, column=3, sticky="w", padx=(0, 12))
+    ttk.Label(dates_row, text="Order by:", style="Card.TLabel").grid(row=0, column=4, sticky="e", padx=(0, 6))
+    index_order_field_box = ttk.Combobox(dates_row, textvariable=index_order_field_var, values=("Downloaded date", "End date", "Start date"), width=15, state="readonly")
+    index_order_field_box.grid(row=0, column=5, sticky="w", padx=(0, 8))
+    index_order_box = ttk.Combobox(dates_row, textvariable=index_order_var, values=("Newest first", "Oldest first"), width=13, state="readonly")
+    index_order_box.grid(row=0, column=6, sticky="w", padx=(0, 8))
 
     ttk.Label(dates_row, text="DTEND on/after:", style="Card.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
     index_mindate_entry = ttk.Entry(dates_row, textvariable=index_mindate_var, width=16)
@@ -1372,6 +1515,8 @@ def run_tk() -> int:
     _date_hint = " Format YYYY-MM-DD or YYYY-MM-DD HH:MM; leave blank for no limit."
     add_tooltip(index_status_box, "Filter by deadline: Next to expire = DTEND within the next few days, Expired = DTEND already passed, Upcoming = further out.")
     add_tooltip(index_detail_status_box, "Filter the selector between pending records, completed/saved records, failed records or all records.")
+    add_tooltip(index_order_field_box, "Choose whether newest/oldest ordering uses downloaded date, end/deadline date, or start date.")
+    add_tooltip(index_order_box, "Choose newest first or oldest first for the selected order-by date.")
     add_tooltip(index_mindate_entry, "Show only records whose DTEND (deadline) is on or after this date/time." + _date_hint)
     add_tooltip(index_maxdate_entry, "Show only records whose DTEND (deadline) is on or before this date/time (a bare date covers the whole day)." + _date_hint)
     add_tooltip(index_start_mindate_entry, "Show only records whose DTSTART (start) is on or after this date/time." + _date_hint)
@@ -1495,9 +1640,12 @@ def run_tk() -> int:
                 continue
             records.append(rec)
 
-        # Show the soonest deadlines first so "next to expire" floats to the top;
-        # records without a DTEND sink to the bottom.
-        records.sort(key=lambda r: (parse_deadline(r) or datetime.max))
+        newest_first = index_order_var.get() != "Oldest first"
+        order_field = index_order_field_var.get()
+        if newest_first:
+            records.sort(key=lambda rec: parse_record_order_date(rec, order_field) or datetime.min, reverse=True)
+        else:
+            records.sort(key=lambda rec: parse_record_order_date(rec, order_field) or datetime.max)
         populate_listbox(records)
         if not records:
             set_index_detail("No records match the filter." if index_records else
@@ -1562,6 +1710,8 @@ def run_tk() -> int:
     index_filter_var.trace_add("write", apply_filter)
     index_status_var.trace_add("write", apply_filter)
     index_detail_status_var.trace_add("write", apply_filter)
+    index_order_var.trace_add("write", apply_filter)
+    index_order_field_var.trace_add("write", apply_filter)
     index_mindate_var.trace_add("write", apply_filter)
     index_maxdate_var.trace_add("write", apply_filter)
     index_start_mindate_var.trace_add("write", apply_filter)
@@ -1788,6 +1938,7 @@ def run_tk() -> int:
         meta_var.set(f"Time: {snap['time']} · Transparency: {runtime['alpha']:.2f} · Refresh: {active_delay}s · Progress: {percent}%")
         message_var.set(str(progress.get("MESSAGE", "")))
         update_process_chips(snap["processes"])
+        update_queue_panel(snap.get("queue", {}) or {})
         update_run_controls(snap)
         update_records_overview(progress)
 

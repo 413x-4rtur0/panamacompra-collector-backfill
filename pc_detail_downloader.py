@@ -329,8 +329,10 @@ def row_archive_is_current(row):
 
 
 def detail_pending_rows(conn, limit, max_attempts):
-    if limit <= 0:
-        return []
+    # limit <= 0 means no batch cap: process every pending/currentness-missing
+    # detail row. Manual/test controls pass positive limits when a bounded run is
+    # desired; automatic changedetection runs use 0 so one index row can flow to
+    # its detail without an artificial cap.
 
     # Skip rows that have already failed too many times, so a permanently broken
     # URL is not retried forever and cannot starve newer rows. Rows with fewer
@@ -350,7 +352,7 @@ def detail_pending_rows(conn, limit, max_attempts):
     for row in candidates:
         if row["detail_status"] != "saved" or not row_archive_is_current(row):
             pending.append(row)
-            if len(pending) >= limit:
+            if limit > 0 and len(pending) >= limit:
                 break
     return pending
 
@@ -637,9 +639,9 @@ def main():
             "DETAIL",
             "DONE",
             100,
-            "Step 2/5 complete. No pending detail rows.",
+            "Step 2/6 complete. No pending detail rows.",
             step_current=2,
-            step_total=5,
+            step_total=6,
             item_current=0,
             item_total=0,
             records_pending=0,
@@ -678,9 +680,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 percent,
-                f"Step 2/5: downloading detail {index}/{total_rows}: {row['numero']}",
+                f"Step 2/6: downloading detail {index}/{total_rows}: {row['numero']}",
                 step_current=2,
-                step_total=5,
+                step_total=6,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -702,9 +704,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 55 + int(40 * index / max(total_rows, 1)),
-                f"Step 2/5: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
+                f"Step 2/6: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
                 step_current=2,
-                step_total=5,
+                step_total=6,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -723,9 +725,9 @@ def main():
         "DETAIL",
         "DONE",
         98,
-        f"Step 2/5 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
+        f"Step 2/6 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
         step_current=2,
-        step_total=5,
+        step_total=6,
         item_current=len(rows),
         item_total=len(rows),
         records_saved=saved + skipped,

@@ -71,9 +71,10 @@ pc_run_all_worker.sh        single locked worker
         ├─ STEP 1  pc_index_collector.py   scans Programadas + Abiertas + pagination
         ├─ STEP 2  pc_detail_downloader.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
         ├─ STEP 3  pc_build_detail_views.py --apply  refreshes summary/items/calendar sections + per-record .ics
-        ├─ STEP 4  pc_build_calendar.py     writes timestamped .ics import packages for new events
-        ├─ STEP 5  pc_notify_new_records.py --announce  sends WhatsApp only after index/detail/calendar/package steps
-        └─ STEP 6  pc_test_zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
+        ├─ STEP 4  verification/repair      py_compile check + retry failed/missing-deadline records
+        ├─ STEP 5  pc_build_calendar.py     writes timestamped .ics import packages for new events
+        ├─ STEP 6  pc_notify_new_records.py --announce  sends WhatsApp only after index/detail/calendar/package steps
+        └─ STEP 7  pc_test_zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
         │
         ▼
 records/YY-MM-DD/(finish)-(NUMERO)-(desc)/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
@@ -127,11 +128,12 @@ flowchart TD
     G --> H[detail JSON, HTML, text, tables, per-record ICS]
     H --> I[STEP 3: pc_build_detail_views.py --apply]
     I --> V[summary/items/calendar views + per-record .ics]
-    V --> J[STEP 4: pc_build_calendar.py creates data/calendar/YY-MM-DD packages]
-    J --> P[STEP 5: pc_notify_new_records.py --announce]
+    V --> R[STEP 4: verification: py_compile + failed/missing-deadline repair]
+    R --> J[STEP 5: pc_build_calendar.py creates data/calendar/YY-MM-DD packages]
+    J --> P[STEP 6: pc_notify_new_records.py --announce]
     P --> Q[WhatsApp messages sent one by one via WAHA, PHASE=MESSAGING]
     D --> K{No pending new details AND PC_TEST_ZONE_AUTORUN=1?}
-    K -- yes --> L[STEP 6: pc_test_zone.py]
+    K -- yes --> L[STEP 7: pc_test_zone.py]
     L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
     D --> N[data/logs/run_all_progress.env]
     N --> O[pc_monitor_tk.py / pc_monitor_server.py]
@@ -356,7 +358,7 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_webhook_diagnostic.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
 | `pc_migrate_apps_layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `pc_monitor_tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons and test-sandbox folder opening after test-zone completion. |
-| `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **latest collected records** (newest NUMERO + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
+| `pc_next_run_timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
 | `pc_monitor_server.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same locked automatic/restart/manual/test controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, and auto-closes only after completed collector runs. |
 | `pc_monitor_window.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `pc_open_monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
@@ -369,8 +371,9 @@ PC_DETAIL_LIMIT=5 ./pc_detail_downloader.py   # download up to 5 pending details
 | `pc_db_maintenance.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
 | `pc_build_detail_views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
 | `pc_update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 4 after the per-record detail view/calendar rebuild; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
-| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 6 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
+| `pc_retry_missing_deadlines.py` | Finds records/folders with no `DTEND`/deadline (blank `finish_date_guess` or `(NO-DATE)` folder), force re-downloads their details, recalculates the close window, and renames folders when a deadline is recovered. Dry-run by default; `--apply` to act. |
+| `pc_build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 5 after per-record detail views and the verification/repair step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
+| `pc_test_zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 7 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review_panamacompra_system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update_local_copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
 | `pc_update_loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after the update finishes successfully** so the monitor reflects the already-updated code; failed updates keep the loader open with the log path and do not open the monitor. Stopping a worker for update/manual stop does not recreate the pending/recover request flag, so an update launcher will not silently restart failed or pending work. |
@@ -383,10 +386,12 @@ Behavior is controlled with environment variables (all optional):
 
 | Variable | Default | Used by | Meaning |
 |----------|---------|---------|---------|
-| `PC_INDEX_LIMIT` | `PC_MAX_PAGES_PER_GROUP` / `20` | worker/index collector | Max index pages crawled per status group for a run. Monitor run controls pass this separately from detail limit. |
-| `PC_MAX_PAGES_PER_GROUP` | `20` | index collector | Legacy/default max pages crawled per status group when `PC_INDEX_LIMIT` is not set. |
-| `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
+| `PC_INDEX_LIMIT` | `PC_MAX_PAGES_PER_GROUP` / `0` | worker/index collector | Optional index page cap per status group. `0`, `auto`, or `all` means no normal cap: crawl until PanamaCompra has no Next page. |
+| `PC_MAX_PAGES_PER_GROUP` | `0` | index collector | Legacy alias for `PC_INDEX_LIMIT`; keep unset/`0` for all available pages. |
+| `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per direct/manual detail run. Automatic changedetection/webhook runs set the worker detail cap to `0` (all pending rows). |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
+| `PC_WEBHOOK_INDEX_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection index page cap. `0` = all pages until no Next page. |
+| `PC_WEBHOOK_DETAIL_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection detail cap. `0` = every pending detail row. |
 | `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `(description)` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `(finish)-(numero)-(desc)` after a successful detail save. Parentheses replace the older square-bracket style to stay readable on network shares without shell/glob bracket surprises. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
@@ -395,15 +400,17 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
 | `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
 | `PC_NOTIFY_WHATSAPP` | `1` | run-all worker / monitor | Set to `0` (or uncheck **Notify by WhatsApp**) to skip automatic post-detail WhatsApp announcements while still collecting data and building calendars. |
-| `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before calendar packages and WhatsApp. Set `0` only for troubleshooting. |
+| `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before verification, calendar packages and WhatsApp. Set `0` only for troubleshooting. |
+| `PC_REPAIR_FAILED_AND_MISSING_DEADLINES` | `1` | run-all worker | STEP 4 verification runs `py_compile`, then retries failed rows and records/folders missing `DTEND` using `pc_retry_missing_deadlines.py --include-failed --apply`. Set `0` to skip automatic repair. |
+| `PC_MISSING_DEADLINE_REPAIR_LIMIT` | `0` | run-all worker | Max failed/missing-deadline rows to repair in STEP 4. `0` = all matching rows. |
 | `PC_RECORDS_DIR` | `records/` | archive paths | Normal record archive root. Set from monitor Settings when the archive should live outside the checkout. Relative paths resolve from the checkout root. |
 | `PC_CALENDAR_DIR` | `data/calendar/` | calendar paths | Timestamped calendar package output root. Set from monitor Settings when calendar packages should be stored elsewhere. |
 | `PC_RECORDS_TEST_DIR` | `records_test/` | test paths | Isolated test-zone sandbox root. Set from monitor Settings when test output should live elsewhere. |
 | `PC_DATA_DIR` | `data/` | data paths | Optional root for logs/config/database/CSV defaults. Path-specific variables above override their individual targets. |
-| `PC_WEBHOOK_INDEX_LIMIT` | `PC_INDEX_LIMIT` / `20` | `run_collector.sh` | Index pages per status group for webhook-triggered AUTO runs. |
-| `PC_WEBHOOK_DETAIL_LIMIT` | `99` | `run_collector.sh` | Detail limit per webhook-triggered AUTO run. |
-| `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 6) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
-| `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 6) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
+| automatic changedetection index cap | `0` | `run_collector.sh` | AUTO runs do not use the manual/test page cap; they crawl all available index pages until no Next page. |
+| automatic changedetection detail cap | `0` | `run_collector.sh` / detail downloader | AUTO runs do not use the manual/test detail cap; `0` means download every pending detail row. |
+| `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 7) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
+| `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 7) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `pc_update_before_run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update_local_copy.sh` and `pc_update_before_run.sh`. |
 | `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update_local_copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `pc_update_before_run.sh` uses it (or the current branch) for its lightweight refresh. |
@@ -429,8 +436,9 @@ Behavior is controlled with environment variables (all optional):
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
 | `PC_NEXT_RUN_TIMER_TOP` | `30` | next-run timer | Pixels from the top edge of the screen for the timer window. |
-| `PC_NEXT_RUN_TIMER_WIDTH` / `PC_NEXT_RUN_TIMER_HEIGHT` | `340` / `258` | next-run timer | Fixed timer window size (the window is not resizable). |
-| `PC_NEXT_RUN_TIMER_RECORDS` | `3` | next-run timer | How many of the latest collected records to list in the timer. |
+| `PC_NEXT_RUN_TIMER_WIDTH` / `PC_NEXT_RUN_TIMER_HEIGHT` | `380` / `360` | next-run timer | Fixed timer window size (the window is not resizable). Editable from monitor Settings. |
+| `PC_NEXT_RUN_TIMER_RECORDS` | `20` | next-run timer | How many latest collected records to list in the timer. The timer now shows end date/status when available. |
+| `PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS` | `10` | next-run timer | How often the timer refreshes git/database/queue details. Editable from Settings. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
 | `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
@@ -438,6 +446,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MONITOR_WEB_AUTO_CLOSE_SECONDS` | `20` | web monitor | Seconds to wait after completion before the web monitor tries to close its tab/window. Use `0` to disable. |
 | `PC_MONITOR_REFRESH_SECONDS` | `5` | terminal monitor | Poll interval for process/log changes. The screen only redraws when state changes or the force-redraw interval elapses. |
 | `PC_MONITOR_FORCE_REDRAW_SECONDS` | `30` | monitor | Maximum seconds between redraws while the monitor is open, even if no state changed. |
+| `PC_MONITOR_STALE_SECONDS` | `120` | monitor | Seconds before stale `RUNNING` progress unlocks controls when no worker process is active. Editable from Settings. |
 | `PC_MONITOR_IDLE_CLOSE_SECONDS` | `8` | monitor | Delay before auto-closing once idle. |
 | `PC_MONITOR_STABLE_DONE_CYCLES` | `3` | monitor | Idle cycles required before closing. |
 | `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If `PC_WAHA_CHAT_ID` is not configured, notifications are skipped safely. |
@@ -455,22 +464,23 @@ Behavior is controlled with environment variables (all optional):
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally: `./pc_request_run_all.sh 5`. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
+The detail limit can also be passed positionally for manual runs: `./pc_request_run_all.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Native monitor layout
 
 The native Tk monitor is organized top-to-bottom into clear sections:
 
-1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `run pending only` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index limit and Detail limit are separate: index controls pages per status group; detail controls saved detail pages or sandbox records.
+1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `run pending only` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index page cap and Detail limit are separate: the index cap is normally `0` (all pages until no Next page; use a positive number only for testing), while detail controls saved detail pages or sandbox records.
 2. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row. Placed directly under Run controls so the live run status is visible without scrolling. The worker writes an estimated time remaining (`ETA`) while a phase is running, and while the WhatsApp MESSAGING step runs, a `messaging` process pill lights up and the Phase/Step/Item fields track each message being sent. Every section after the top progress card has a **Hide/Show** control so the monitor can stay compact during long runs.
-3. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
+3. **Queue process** — shows whether a collector request or an Update + Monitor request is pending/running, when the queue flag was written, and the recent collector/update queue logs.
+4. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
    - WhatsApp source label, destination chat id, and keyword filter.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
-   - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier.
+   - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier. Settings are grouped into readable blocks, including timer-window sizing/position, refresh/stale timing, WAHA, and test-zone controls.
 4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `(DL local-download timestamp | DTSTART start | DTEND deadline status) NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/start date/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
 5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `pc_start_webhook_listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
@@ -509,10 +519,10 @@ private alert group controlled by you.
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
 new opportunities are announced one message per record. By default the run-all
-worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 5):
-after index, all details, per-record calendar/detail-view rebuilds, and calendar packages it runs `pc_notify_new_records.py --announce`,
+worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 6):
+after index, all details, per-record calendar/detail-view rebuilds, verification/repair, and calendar packages it runs `pc_notify_new_records.py --announce`,
 which sends one WhatsApp message per new index entry **one at a time** and
-publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 5/5`,
+publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 6/6`,
 `Item i/N`, and a one-line preview of the message in the **Extra** field — so you
 can watch each opportunity go out. The detail downloader does not send WhatsApp
 messages mid-download; notifications are emitted only after detail and calendar
@@ -680,6 +690,22 @@ disk, run the tool below (reads only saved files, no network):
 It is idempotent (already-named folders are skipped) and never overwrites an existing
 target. Inner files keep their `NUMERO.*` names.
 
+If folders still show `(NO-DATE)` or the database has blank `finish_date_guess`, use
+the deadline repair tool to go back to the live portal, re-download the detail,
+recompute `DTSTART`/`DTEND`, and rename the folder when a close date is recovered:
+
+```bash
+./pc_retry_missing_deadlines.py           # dry-run: list missing-deadline folders/rows
+./pc_retry_missing_deadlines.py --apply   # re-download details and rename fixed folders
+./pc_retry_missing_deadlines.py --limit 20 --apply
+```
+
+The native and web monitors expose the same action as **Repair missing deadlines**
+in their manual/data tools section. Before `--apply` mutates any row or folder, the
+script checks DNS/HTTPS reachability for `www.panamacompra.gob.pa`; if Playwright
+would hit `NS_ERROR_UNKNOWN_HOST`, it aborts with a network/DNS message so the
+operator can fix DNS/VPN/connectivity and run it again.
+
 #### Keeping new and previous records in the same format
 
 There are two supported paths, and both converge on the same
@@ -785,7 +811,7 @@ and `DESCRIPTION` is a `LINK :` line, a `DESCR:` line, then an `ITEMS:` list
 Thunderbird renders as a clickable link. (Commas in ICS text are written `\,` per
 the spec and display unescaped in calendar apps.)
 
-**Calendar import packages.** After each run, `pc_build_detail_views.py --apply` refreshes the structured detail sections/per-record `.ics`, then `pc_build_calendar.py` (STEP 4)
+**Calendar import packages.** After each run, `pc_build_detail_views.py --apply` refreshes the structured detail sections/per-record `.ics`, then `pc_build_calendar.py` (STEP 5)
 exports only the new/changed record calendars from that run into timestamped files:
 
 ```text
@@ -867,7 +893,7 @@ them.
   shows `LIVE` vs `TEST`), with a *Test records* count, so it is clearly distinct from
   new (live) records.
 - The run-all worker does **not** launch it automatically by default. Set
-  `PC_TEST_ZONE_AUTORUN=1` to have it run as **STEP 6** when a run had no new records
+  `PC_TEST_ZONE_AUTORUN=1` to have it run as **STEP 7** when a run had no new records
   to process; `PC_TEST_ZONE_LIMIT` then controls how many records are re-run (`0`
   disables it). With the default `PC_TEST_ZONE_AUTORUN=0` the autostart never runs it.
 
@@ -962,6 +988,16 @@ bind-mounted checkout. A tiny **host** runner then performs the actual collectio
 # On the host checkout, run the watcher (or install it as a user service below):
 ./pc_run_all_flag_watcher.sh
 ```
+
+If another **Update + Monitor** request arrives while a changedetection-triggered
+collector is still active, the updater is queued instead of interrupting the
+run. The request is recorded in `data/queue/update_monitor_requested.flag`, the
+monitor is opened/reused so the active run remains visible, and the queued update
+starts only after the current worker exits cleanly. `pc_run_all_worker.sh`
+launches `pc_update_loader.py --open-monitor-after` when it consumes the queued
+update; the host flag watcher performs the same handoff if it sees the update
+queue while no collector/updater is active. Use `./pc_queue_status.sh` to list
+both queues: collector requests and pending/running Update + Monitor requests.
 
 In the changedetection.io UI, set the watch **notification URL** to reach the
 webhook container on the compose network (no `host.docker.internal` needed):
@@ -1151,7 +1187,7 @@ systemctl --user restart panamacompra-webhook.service
 The default monitor is now the native Tk window (`pc_monitor_tk.py`). Run
 `./pc_open_monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update_local_copy.sh`. The shortcut opens a separate updater loader (`pc_update_loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
