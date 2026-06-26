@@ -9,7 +9,10 @@ the last run (new/saved counts and total archive size).
 """
 from __future__ import annotations
 
+import json
 import os
+import re
+import shlex
 import sqlite3
 import subprocess
 import tkinter as tk
@@ -20,17 +23,53 @@ BASE_DIR = Path(__file__).resolve().parent
 PROGRESS_FILE = BASE_DIR / "data" / "logs" / "run_all_progress.env"
 LAST_SUMMARY_FILE = BASE_DIR / "data" / "logs" / "run_all_last_summary.env"
 ARCHIVE_DB = BASE_DIR / "data" / "panamacompra_archive.db"
-INTERVAL_MINUTES = max(1, int(os.environ.get("PC_NEXT_RUN_INTERVAL_MINUTES", "30")))
+SETTINGS_PATH = BASE_DIR / "data" / "config" / "monitor_settings.env"
+REQUEST_FLAG = BASE_DIR / "data" / "queue" / "run_all_requested.flag"
+UPDATE_QUEUE_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_requested.flag"
+UPDATE_IN_PROGRESS_FLAG = BASE_DIR / "data" / "queue" / "update_monitor_in_progress.flag"
+
+
+def settings_file() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not SETTINGS_PATH.exists():
+        return values
+    for line in SETTINGS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, raw = line.split("=", 1)
+        try:
+            parsed = shlex.split(raw, posix=True)
+            values[key.strip()] = parsed[0] if parsed else ""
+        except ValueError:
+            values[key.strip()] = raw.strip().strip("\'\"")
+    return values
+
+
+_SETTINGS = settings_file()
+
+
+def setting(name: str, default: str) -> str:
+    return os.environ.get(name) or _SETTINGS.get(name) or default
+
+
+def setting_int(name: str, default: str, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(setting(name, default)))
+    except ValueError:
+        return max(minimum, int(default))
+
+
+INTERVAL_MINUTES = setting_int("PC_NEXT_RUN_INTERVAL_MINUTES", "30", 1)
 # Fixed window size. Bigger by default than the old timer because it now carries
 # the branch, latest records and last-run summary; still pinned (resizable off).
-WINDOW_WIDTH = int(os.environ.get("PC_NEXT_RUN_TIMER_WIDTH", "340"))
-WINDOW_HEIGHT = int(os.environ.get("PC_NEXT_RUN_TIMER_HEIGHT", "300"))
-WINDOW_TOP = int(os.environ.get("PC_NEXT_RUN_TIMER_TOP", "30"))
+WINDOW_WIDTH = setting_int("PC_NEXT_RUN_TIMER_WIDTH", "380", 240)
+WINDOW_HEIGHT = setting_int("PC_NEXT_RUN_TIMER_HEIGHT", "360", 220)
+WINDOW_TOP = setting_int("PC_NEXT_RUN_TIMER_TOP", "30", 0)
 # How many of the most recent records to list. The "Latest records" field is
 # scrollable, so this can comfortably be larger than the few rows that fit.
-RECORDS_SHOWN = max(1, int(os.environ.get("PC_NEXT_RUN_TIMER_RECORDS", "15")))
+RECORDS_SHOWN = max(1, setting_int("PC_NEXT_RUN_TIMER_RECORDS", "20", 1))
 # Refresh the cheap countdown every second; the heavier git/DB reads less often.
-DATA_REFRESH_TICKS = max(1, int(os.environ.get("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10")))
+DATA_REFRESH_TICKS = max(1, setting_int("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10", 1))
 
 ACTIVE_PHASES = {"STARTING", "UPDATE", "INDEX", "DETAIL", "CALENDAR", "MESSAGING", "TEST"}
 ACTIVE_STATUSES = {"RUNNING"}
@@ -153,35 +192,70 @@ def git_branch() -> str:
         return "-"
 
 
-def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, list[tuple[str, str, str]]]:
-    """Return (total_records, [(date, numero, short_description), ...]) newest first.
+def finish_stamp_from_folder(record_folder: str) -> str:
+    name = os.path.basename((record_folder or "").rstrip("/"))
+    if name.startswith("(") and ")" in name:
+        name = name[1:name.index(")")]
+    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
+    if not match:
+        return ""
+    return f"{match.group(1)} {match.group(2)}:{match.group(3)}" if match.group(2) and match.group(3) else match.group(1)
 
-    ``date`` is the local download date (``first_seen``) shown as ``YY-MM-DD`` so
-    the operator can see, latest to oldest, when each record entered the archive.
-    Read-only and defensive: a missing/locked/empty DB yields (0, [])."""
+
+def finish_stamp_from_detail_json(detail_json_path: str) -> str:
+    if not detail_json_path:
+        return ""
+    try:
+        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    return str(calendar.get("dtend") or data.get("finish_date_guess") or data.get("date_end_opportunity") or summary.get("date_end_opportunity") or "")
+
+
+def queue_text() -> str:
+    collector = "pending" if REQUEST_FLAG.exists() else "none"
+    if UPDATE_IN_PROGRESS_FLAG.exists():
+        update = "running"
+    elif UPDATE_QUEUE_FLAG.exists():
+        update = "pending"
+    else:
+        update = "none"
+    return f"Queue: collector {collector} · update {update}"
+
+def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, dict[str, int], list[tuple[str, str, str, str, str]]]:
+    """Return archive totals and latest records with end date/status."""
+    empty_counts = {"saved": 0, "pending": 0, "failed": 0}
     if not ARCHIVE_DB.exists():
-        return 0, []
+        return 0, empty_counts, []
     try:
         conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
     except sqlite3.Error:
-        return 0, []
+        return 0, empty_counts, []
     try:
         conn.row_factory = sqlite3.Row
         total = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+        counts = {
+            "saved": conn.execute("SELECT COUNT(*) FROM opportunities WHERE detail_status = 'saved'").fetchone()[0],
+            "pending": conn.execute("SELECT COUNT(*) FROM opportunities WHERE detail_status = 'pending'").fetchone()[0],
+            "failed": conn.execute("SELECT COUNT(*) FROM opportunities WHERE detail_status = 'failed'").fetchone()[0],
+        }
         rows = conn.execute(
-            "SELECT numero, first_seen, "
+            "SELECT numero, first_seen, finish_date_guess, record_folder, detail_json_path, detail_status, "
             "COALESCE(NULLIF(short_description, ''), descripcion, '') AS d "
             "FROM opportunities ORDER BY first_seen DESC, numero DESC LIMIT ?",
             (limit,),
         ).fetchall()
     except sqlite3.Error:
-        return 0, []
+        return 0, empty_counts, []
     finally:
         conn.close()
-    return total, [
-        (_short_date(r["first_seen"]), str(r["numero"] or ""), str(r["d"] or ""))
-        for r in rows
-    ]
+    latest = []
+    for r in rows:
+        end = str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")) or "no end"
+        latest.append((_short_date(r["first_seen"]), str(r["numero"] or ""), end[:16].replace("_", " "), str(r["detail_status"] or ""), str(r["d"] or "")))
+    return total, counts, latest
 
 
 def _short_date(first_seen: str) -> str:
@@ -280,20 +354,20 @@ def main() -> int:
         state["branch"] = git_branch()
         branch_var.set(f"Branch: {_truncate(state['branch'], 38)}")
         values = progress_values()
-        total, latest = archive_snapshot()
+        total, counts, latest = archive_snapshot()
         new = values.get("RECORDS_NEW", "-")
         saved = values.get("RECORDS_SAVED", "-")
-        summary_var.set(f"New: {new}   ·   Saved: {saved}   ·   Archive: {total}")
+        summary_var.set(f"New: {new} · Saved this run: {saved} · Archive: {total}")
         last_start = values.get("STARTED_AT", "") or "—"
         last_status = values.get("STATUS", "") or "—"
-        lastrun_var.set(f"Last run: {last_start}  ·  {last_status}")
-        duration_var.set(_truncate(duration_parts_text(last_summary_values()), 96))
+        lastrun_var.set(f"Last run: {last_start} · {last_status} · DB saved/pending/failed: {counts['saved']}/{counts['pending']}/{counts['failed']}")
+        duration_var.set(_truncate(duration_parts_text(last_summary_values()) + " · " + queue_text(), 110))
         if latest:
             # Newest first: each entry leads with its download date (YY-MM-DD) so
             # the list reads latest -> oldest at a glance.
             set_latest("\n".join(
-                f"{date}  {num}\n        {_truncate(desc, 38) or '(sin descripción)'}"
-                for date, num, desc in latest
+                f"{date}  {num}  end {end}  {status}\n        {_truncate(desc, 34) or '(sin descripción)'}"
+                for date, num, end, status, desc in latest
             ))
         else:
             set_latest("(sin registros todavía)")

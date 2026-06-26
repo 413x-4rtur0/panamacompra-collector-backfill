@@ -232,6 +232,25 @@ def finish_stamp_from_folder(record_folder: str) -> str:
     return match.group(1)
 
 
+def finish_stamp_from_detail_json(detail_json_path: str) -> str:
+    """Fallback DTEND from saved detail JSON calendar/summary fields."""
+    if not detail_json_path:
+        return ""
+    try:
+        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    return str(
+        calendar.get("dtend")
+        or data.get("finish_date_guess")
+        or data.get("date_end_opportunity")
+        or summary.get("date_end_opportunity")
+        or ""
+    )
+
+
 def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     """Read collected records (NUMERO + description + folder/link) from the
     archive DB for the monitor's record-index selector. Newest first.
@@ -256,6 +275,7 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "COALESCE(link, '') AS link, "
             "COALESCE(detail_status, '') AS detail_status, "
             "COALESCE(detail_saved_at, '') AS detail_saved_at, "
+            "COALESCE(detail_json_path, '') AS detail_json_path, "
             "COALESCE(first_seen, '') AS first_seen, "
             "COALESCE(finish_date_guess, '') AS finish_date_guess, "
             f"{start_expr} AS start_date_guess "
@@ -277,7 +297,12 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
             "detail_status": str(row["detail_status"] or ""),
             "detail_saved_at": str(row["detail_saved_at"] or ""),
             "first_seen": str(row["first_seen"] or ""),
-            "finish_date_guess": str(row["finish_date_guess"] or "") or finish_stamp_from_folder(str(row["record_folder"] or "")),
+            "detail_json_path": str(row["detail_json_path"] or ""),
+            "finish_date_guess": (
+                str(row["finish_date_guess"] or "")
+                or finish_stamp_from_folder(str(row["record_folder"] or ""))
+                or finish_stamp_from_detail_json(str(row["detail_json_path"] or ""))
+            ),
             "start_date_guess": str(row["start_date_guess"] or ""),
         }
         for row in rows
@@ -342,9 +367,9 @@ def db_review_stats() -> dict[str, object]:
                 ).fetchall()
             ],
             "completed_recent": [
-                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")), str(r["descripcion"] or r["short_description"] or ""))
+                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), str(r["descripcion"] or r["short_description"] or ""))
                 for r in conn.execute(
-                    "SELECT numero, finish_date_guess, record_folder, descripcion, short_description FROM opportunities "
+                    "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
                     "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
                 ).fetchall()
             ],
@@ -576,7 +601,7 @@ def progress_stale(processes: dict[str, bool], progress: dict[str, str]) -> bool
         updated = datetime.strptime(progress.get("UPDATED_AT", ""), "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return True
-    return (datetime.now() - updated).total_seconds() > int(os.environ.get("PC_MONITOR_STALE_SECONDS", "120"))
+    return (datetime.now() - updated).total_seconds() > int(setting("PC_MONITOR_STALE_SECONDS", "120"))
 
 
 def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
@@ -1060,6 +1085,12 @@ def run_tk() -> int:
     waha_session_var = tk.StringVar(value=setting("PC_WAHA_SESSION", "default"))
     waha_events_var = tk.StringVar(value=setting("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update,new,none"))
     test_limit_var = tk.StringVar(value=setting("PC_TEST_ZONE_LIMIT", "5"))
+    timer_width_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_WIDTH", "380"))
+    timer_height_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_HEIGHT", "360"))
+    timer_top_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_TOP", "30"))
+    timer_records_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_RECORDS", "20"))
+    timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
+    monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
@@ -1109,14 +1140,21 @@ def run_tk() -> int:
     events_entry.grid(row=17, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
     field(18, 0, "Test-zone records:", test_limit_var, 8, "How many recent records the idle test zone re-runs in the sandbox. Env: PC_TEST_ZONE_LIMIT.")
+    field(18, 2, "Monitor stale seconds:", monitor_stale_var, 8, "Seconds before stale RUNNING progress unlocks controls when no worker process is active. Env: PC_MONITOR_STALE_SECONDS.")
+    ttk.Label(settings, text="Next-run timer window settings", style="Title.TLabel").grid(row=19, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    field(20, 0, "Timer width:", timer_width_var, 8, "Next-run timer window width in pixels. Env: PC_NEXT_RUN_TIMER_WIDTH.")
+    field(20, 2, "Timer height:", timer_height_var, 8, "Next-run timer window height in pixels. Env: PC_NEXT_RUN_TIMER_HEIGHT.")
+    field(21, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
+    field(21, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
+    field(22, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
     waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
-    waha_enabled_check.grid(row=19, column=0, columnspan=2, sticky="w", pady=3)
+    waha_enabled_check.grid(row=23, column=0, columnspan=2, sticky="w", pady=3)
     skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
-    skip_expired_check.grid(row=19, column=2, columnspan=2, sticky="w", pady=3)
+    skip_expired_check.grid(row=23, column=2, columnspan=2, sticky="w", pady=3)
     test_autorun_check = ttk.Checkbutton(settings, text="Auto-run test zone when no new records", variable=test_autorun_var, style="Card.TCheckbutton")
-    test_autorun_check.grid(row=20, column=0, columnspan=2, sticky="w", pady=3)
+    test_autorun_check.grid(row=24, column=0, columnspan=2, sticky="w", pady=3)
     update_before_check = ttk.Checkbutton(settings, text="Update local copy before each run", variable=update_before_var, style="Card.TCheckbutton")
-    update_before_check.grid(row=20, column=2, columnspan=2, sticky="w", pady=3)
+    update_before_check.grid(row=24, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
     add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
     add_tooltip(test_autorun_check, "When a run finds no new records, exercise the current code on the last N records in the sandbox. Env: PC_TEST_ZONE_AUTORUN.")
@@ -1171,6 +1209,12 @@ def run_tk() -> int:
             "PC_WAHA_SESSION": waha_session_var.get().strip() or "default",
             "PC_WAHA_NOTIFY_EVENTS": waha_events_var.get().strip() or "info,start,done,failed,timeout,resume,update,new,none",
             "PC_TEST_ZONE_LIMIT": test_limit_var.get().strip() or "5",
+            "PC_NEXT_RUN_TIMER_WIDTH": timer_width_var.get().strip() or "380",
+            "PC_NEXT_RUN_TIMER_HEIGHT": timer_height_var.get().strip() or "360",
+            "PC_NEXT_RUN_TIMER_TOP": timer_top_var.get().strip() or "30",
+            "PC_NEXT_RUN_TIMER_RECORDS": timer_records_var.get().strip() or "20",
+            "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
+            "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1192,7 +1236,7 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=22, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
