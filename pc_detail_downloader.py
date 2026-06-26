@@ -18,6 +18,13 @@ except Exception:  # noqa: BLE001 - notifications are strictly optional
 
 DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
+# Content-sanity floor for a rendered detail page. A real PanamaCompra detail
+# page produces long body text AND structured data (tables / detected fields).
+# When the body is shorter than this AND nothing structured was extracted, the
+# portal almost certainly returned an error or blank shell with a 200 status (or
+# the render was cut short), so the page is failed and retried instead of being
+# saved as a hollow "complete" record. Set PC_DETAIL_MIN_TEXT_CHARS=0 to disable.
+DETAIL_MIN_TEXT_CHARS = env_int("PC_DETAIL_MIN_TEXT_CHARS", "400", minimum=0)
 
 # Bump when the link/table cleaning rules change so existing archives are
 # refreshed from their saved HTML on the next run instead of keeping old noise.
@@ -490,6 +497,23 @@ def process_detail(browser, conn, row, force=False):
         summary, items, calendar, fields_detected = build_detail_views(
             text, tables, numero, dtstamp=saved_at, link=row["link"]
         )
+
+        # Content-sanity gate. Only fail when every signal says the page is empty
+        # (short body AND no tables AND no label values AND no parsed fields), so a
+        # genuine record — which always yields tables and/or fields — is never
+        # rejected. This catches the "200 with an error/blank shell" case that
+        # would otherwise be persisted as a hollow, never-revisited record; the
+        # raise routes into the existing failure path (error file + status=failed),
+        # so the record is retried next run and by the STEP 4 repair.
+        body_chars = len((text or "").strip())
+        if (DETAIL_MIN_TEXT_CHARS and body_chars < DETAIL_MIN_TEXT_CHARS
+                and not tables and not label_values and not fields_detected):
+            raise ValueError(
+                f"detail page looks empty for {numero}: {body_chars} body chars, "
+                f"0 tables, no fields detected (min {DETAIL_MIN_TEXT_CHARS}); "
+                "not saving, will retry"
+            )
+
         start_date_guess = calendar.get("dtstart") or ""
         # Keep the DB deadline coherent with the folder finish-stamp and the
         # per-record .ics: all three derive from the same calendar close window.

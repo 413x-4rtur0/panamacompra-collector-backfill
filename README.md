@@ -390,6 +390,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_MAX_PAGES_PER_GROUP` | `0` | index collector | Legacy alias for `PC_INDEX_LIMIT`; keep unset/`0` for all available pages. |
 | `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per direct/manual detail run. Automatic changedetection/webhook runs set the worker detail cap to `0` (all pending rows). |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
+| `PC_DETAIL_MIN_TEXT_CHARS` | `400` | detail downloader | Content-sanity floor: a rendered detail page with fewer body characters **and** no tables/fields detected is treated as an empty/error shell (a 200 with no real content) and marked failed for retry instead of saved. `0` disables the check. |
 | `PC_WEBHOOK_INDEX_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection index page cap. `0` = all pages until no Next page. |
 | `PC_WEBHOOK_DETAIL_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection detail cap. `0` = every pending detail row. |
 | `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `(description)` token in the record-folder name. |
@@ -439,6 +440,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_NEXT_RUN_TIMER_WIDTH` / `PC_NEXT_RUN_TIMER_HEIGHT` | `380` / `360` | next-run timer | Fixed timer window size (the window is not resizable). Editable from monitor Settings. |
 | `PC_NEXT_RUN_TIMER_RECORDS` | `20` | next-run timer | How many latest collected records to list in the timer. The timer now shows end date/status when available. |
 | `PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS` | `10` | next-run timer | How often the timer refreshes git/database/queue details. Editable from Settings. |
+| `PC_NEXT_RUN_TIMER_ALPHA` | `0.9` | next-run timer | Window opacity (`1.0` = fully opaque). Best-effort: X11 sessions without a compositor may ignore it. Clamped to `[0.2, 1.0]` so the countdown can never be made invisible. |
+| `PC_NEXT_RUN_TIMER_TOPMOST` | `1` | next-run timer | Keep the timer above other windows. Set `0` to let it fall behind the focused window. |
 | `PC_MONITOR_HOST` | `127.0.0.1` | web monitor | Bind address for the local web monitor. |
 | `PC_MONITOR_PORT` | `8766` | web monitor | Port for the local web monitor. |
 | `PC_MONITOR_WEB_REFRESH_SECONDS` | `3` | web monitor | Lightweight JSON polling interval while a run is active. Minimum is 3 seconds. |
@@ -456,8 +459,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
-| `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label shown as `📌 Fuente:` in the rich opportunity / “sin nuevas entradas” messages. |
+| `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label used in the rich opportunity message headings (e.g. `Nueva Oportunidad - <source>`) and shown as `📌 Fuente:` in the “sin nuevas entradas” status. |
+| `PC_WAHA_TIMEOUT_SECONDS` | `30` | WAHA notifier | Per-attempt HTTP timeout (seconds) for each WAHA `sendText` call. Raise it for a slow/remote WAHA; lower it to detect an unreachable endpoint faster. |
 | `PC_WAHA_RETRIES` | `2` | WAHA notifier | Extra send retries (with short 1s/2s/… backoff) before giving up on a WhatsApp send. After several outright failures in one run the retries stop automatically, to bound latency during a WAHA outage. Run-outcome alerts also include a `Run:` line naming the run mode (Automático / Reinicio / Manual / Prueba). |
+| `PC_WAHA_BREAKER_THRESHOLD` | `3` | WAHA notifier | Consecutive failed sends in one run before retries are suppressed (each message still gets a single attempt; one success re-arms retries). Raise it to keep retrying longer through a flaky WAHA. |
 | `PC_NOTIFY_SKIP_EXPIRED` | `0` | new-record notifier | Set `1` to skip announcing opportunities whose deadline (DTEND) has already passed. Records with no detectable deadline are never suppressed. |
 | `PC_NOTIFY_WITHIN_DAYS` | unset | new-record notifier | When set to an integer N, only announce opportunities whose deadline is within the next N days; records further out are deferred and re-checked on later runs as their deadline approaches. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
@@ -705,6 +710,12 @@ in their manual/data tools section. Before `--apply` mutates any row or folder, 
 script checks DNS/HTTPS reachability for `www.panamacompra.gob.pa`; if Playwright
 would hit `NS_ERROR_UNKNOWN_HOST`, it aborts with a network/DNS message so the
 operator can fix DNS/VPN/connectivity and run it again.
+
+To find these records quickly, both monitors' record list has a **No date / needs
+repair** choice in the deadline filter (records with no `DTEND`/close date — the
+same set this tool repairs), and the database summary shows a **Needs deadline
+repair** count alongside an **Awaiting WhatsApp (backlog)** count (saved records
+not yet announced, which the next run's messaging step or a `--flush` will send).
 
 #### Keeping new and previous records in the same format
 

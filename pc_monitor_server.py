@@ -312,7 +312,8 @@ def db_review_stats() -> dict[str, object]:
     per-group breakdown. Never raises; a missing/locked DB yields zeros."""
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
-        "failed": 0, "notified": 0, "with_detail_json": 0, "groups": [],
+        "failed": 0, "notified": 0, "notify_backlog": 0, "needs_deadline": 0,
+        "with_detail_json": 0, "groups": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [],
     }
     if not ARCHIVE_DB.exists():
@@ -343,6 +344,16 @@ def db_review_stats() -> dict[str, object]:
                 "SELECT detail_status, COUNT(*) AS c FROM opportunities GROUP BY detail_status ORDER BY c DESC"
             ).fetchall()
         ]
+        # Records the "Repair missing deadlines" action would act on: blank
+        # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
+        # pc_retry_missing_deadlines so the count matches what that tool processes.
+        deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
+                               "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
+        if "record_folder_leaf" in columns:
+            deadline_predicates.insert(1, "UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'")
+        needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
+                                + " OR ".join(deadline_predicates) + ")")
+
         return {
             "db_exists": True,
             "total": count(),
@@ -350,6 +361,8 @@ def db_review_stats() -> dict[str, object]:
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
+            "notify_backlog": count("detail_status = 'saved' AND notified_at IS NULL") if has_notified else 0,
+            "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
             "recent": [
                 {"numero": str(r["numero"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or ""), "detail_status": str(r["detail_status"] or "")}
@@ -531,6 +544,14 @@ ACTIONS_JSON = json.dumps([
     for action in MANUAL_ACTIONS
 ], ensure_ascii=False)
 
+# Honour the operator's "deadline soon" window in the web record list, matching
+# the native monitor. Resolved once at startup, so a changed setting applies on
+# the next monitor restart (same as PC_MONITOR_DEADLINE_SOON_DAYS elsewhere).
+try:
+    RECORD_SOON_DAYS = max(1, int(load_monitor_settings().get("PC_MONITOR_DEADLINE_SOON_DAYS", "7")))
+except (TypeError, ValueError):
+    RECORD_SOON_DAYS = 7
+
 HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -607,7 +628,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs pc_reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -733,7 +754,7 @@ function saveAdvancedSettings() {{
 }}
 let recordIndex = [];
 let recordFiltered = [];
-const RECORD_SOON_DAYS = 7;  // DTEND within this many days = "next to expire".
+const RECORD_SOON_DAYS = {RECORD_SOON_DAYS};  // DTEND within this many days = "next to expire" (PC_MONITOR_DEADLINE_SOON_DAYS).
 const STATUS_COLOR = {{expired: '#fca5a5', soon: '#fcd34d', upcoming: '#86efac', unknown: '#94a3b8'}};
 const STATUS_TAG = {{expired: 'EXPIRED', soon: 'SOON', upcoming: 'ok', unknown: 'no date'}};
 function parseDeadline(rec) {{
@@ -940,6 +961,7 @@ async function refreshDbReview(targetId = 'db-review') {{
       `Total records: ${{s.total}}\n` +
       `Records Completed (saved): ${{s.saved}}   ·   Records Pendings: ${{s.pending}}   ·   Failed: ${{s.failed}}\n` +
       `Detail JSON on record: ${{s.with_detail_json}}   ·   Notified (WAHA): ${{s.notified}}\n` +
+      `Awaiting WhatsApp (backlog): ${{s.notify_backlog}}   ·   Needs deadline repair: ${{s.needs_deadline}}\n` +
       `Detail statuses: ${{statuses}}\n` +
       `By group: ${{groups}}\n` +
       `DB elements / columns with data: ${{columns}}\n` +
