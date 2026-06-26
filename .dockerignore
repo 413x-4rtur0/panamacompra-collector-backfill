@@ -1,0 +1,25 @@
+# Keep Docker build context self-contained but free of secrets/runtime bulk.
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.webhook_token
+
+# Runtime/user data must be mounted, not baked into images.
+data
+records
+records_test
+var/data
+var/log
+var/records
+var/run
+integrations
+
+# Local logs/databases/cache
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.cache

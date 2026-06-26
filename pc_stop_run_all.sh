@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
+ROOT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+cd "$ROOT" || exit 1
+# shellcheck source=lib/env.sh
+source "$ROOT/lib/env.sh"
 
-mkdir -p data/logs data/queue
+mkdir -p "$PC_LOG_DIR" "$PC_QUEUE_DIR"
 
 echo "Stopping all PanamaCompra runners and background processes..."
 
 # Clear request flags first to prevent restarts
-touch data/queue/run_all_stop_no_resume.flag
-rm -f data/queue/run_all_requested.flag
+touch "$PC_QUEUE_DIR/run_all_stop_no_resume.flag"
+rm -f "$PC_QUEUE_DIR/run_all_requested.flag"
 
 # ============================================================================
 # STEP 1: Stop main collector workers (run-all pipeline)
 # ============================================================================
 echo "1) Stopping run-all worker and collector processes..."
 pkill -TERM -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -TERM -f "[p]c_run_all_flag_watcher.sh" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 pkill -TERM -f "[t]imeout .*pc_index_collector.py" 2>/dev/null || true
@@ -69,6 +73,7 @@ sleep 2
 # Force kill any remaining processes that didn't respond to TERM
 echo "Force-killing any remaining stubborn processes..."
 pkill -9 -f "[p]c_run_all_worker.sh" 2>/dev/null || true
+pkill -9 -f "[p]c_run_all_flag_watcher.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_index_collector.py" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u ./pc_detail_downloader.py" 2>/dev/null || true
 pkill -9 -f "[p]c_test_zone.py" 2>/dev/null || true
@@ -81,13 +86,13 @@ sleep 1
 
 # Clear in-progress flag after all workers have had time to exit
 # Manual stops are intentional, not resumable abrupt exits
-rm -f data/queue/run_all_requested.flag data/queue/run_all_in_progress.flag data/queue/run_all_stop_no_resume.flag
+rm -f "$PC_QUEUE_DIR/run_all_requested.flag" "$PC_QUEUE_DIR/run_all_in_progress.flag" "$PC_QUEUE_DIR/run_all_stop_no_resume.flag"
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | All runners stopped manually." >> data/logs/run_all_worker.log
+echo "$(date '+%Y-%m-%d %H:%M:%S') | All runners stopped manually." >> "$PC_LOG_DIR/run_all_worker.log"
 
 echo ""
 echo "============================================================"
 echo "All PanamaCompra processes stopped."
 echo "============================================================"
 echo "Remaining related processes (should be empty):"
-pgrep -af "pc_run_all|pc_test_zone|pc_build_calendar|pc_monitor|webhook_listener|update_local" || echo "  None found - all stopped successfully."
+pgrep -af "pc_run_all|pc_run_all_flag_watcher|pc_test_zone|pc_build_calendar|pc_monitor|webhook_listener|update_local" || echo "  None found - all stopped successfully."
