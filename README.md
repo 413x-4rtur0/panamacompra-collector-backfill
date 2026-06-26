@@ -386,8 +386,10 @@ Behavior is controlled with environment variables (all optional):
 |----------|---------|---------|---------|
 | `PC_INDEX_LIMIT` | `PC_MAX_PAGES_PER_GROUP` / `0` | worker/index collector | Optional index page cap per status group. `0`, `auto`, or `all` means no normal cap: crawl until PanamaCompra has no Next page. |
 | `PC_MAX_PAGES_PER_GROUP` | `0` | index collector | Legacy alias for `PC_INDEX_LIMIT`; keep unset/`0` for all available pages. |
-| `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per run. |
+| `PC_DETAIL_LIMIT` | `10` | detail downloader | Max detail pages per direct/manual detail run. Automatic changedetection/webhook runs set the worker detail cap to `0` (all pending rows). |
 | `PC_MAX_DETAIL_ATTEMPTS` | `5` | detail downloader | A record that fails this many times is no longer retried. |
+| `PC_WEBHOOK_INDEX_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection index page cap. `0` = all pages until no Next page. |
+| `PC_WEBHOOK_DETAIL_LIMIT` | `0` | flag watcher / monitors | Automatic changedetection detail cap. `0` = every pending detail row. |
 | `PC_DESC_SLUG_MAX` | `24` | folder naming | Max length of the `(description)` token in the record-folder name. |
 | `PC_RENAME_AFTER_DETAIL` | `1` | detail downloader | Auto-rename each folder to `(finish)-(numero)-(desc)` after a successful detail save. Parentheses replace the older square-bracket style to stay readable on network shares without shell/glob bracket surprises. Set `0` to keep `<numero>`. |
 | `PC_CALENDAR_TZ` | `America/Panama` | detail views | Timezone recorded in each record's `calendar` event. |
@@ -458,7 +460,7 @@ Behavior is controlled with environment variables (all optional):
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `pc_waha_notify.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally for manual runs: `./pc_request_run_all.sh 5`. Manual/test controls can cap index pages or details for troubleshooting, but changedetection/AUTO starts ignore those limiters and use `0` (all): all available index pages and every pending detail row. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
+The detail limit can also be passed positionally for manual runs: `./pc_request_run_all.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Native monitor layout
 

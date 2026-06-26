@@ -397,9 +397,13 @@ def _resolve_close_datetimes(key_values, text):
         if date:
             return m.group(1), f"{date}T12:00:00", f"{date}T12:00:00"
 
-    date = _parse_ddmmyyyy(text)
-    if date:
-        return text, f"{date}T12:00:00", f"{date}T12:00:00"
+    # Last-resort broad text parsing should still preserve a visible date range
+    # instead of collapsing it to noon on the first date. This catches details
+    # whose labels were not parsed into key/value fields but whose body contains
+    # forms like "23-06-2026 a 26-06-2026".
+    dtstart, dtend = _window_datetimes_from_text(text)
+    if dtend:
+        return text, dtstart, dtend
     return "", "", ""
 
 def compute_finish_stamp(key_values, text):
@@ -746,7 +750,10 @@ def _field_pairs_on_line(raw):
     if ":" in line:
         key, value = line.split(":", 1)
         key, value = clean(key), clean(value)
-        if key and value:
+        # Do not mistake the colon inside a clock time for a label separator,
+        # e.g. "Fecha y hora presentación ... 23-06-2026 08:00 a ...".
+        # Real labels should not already contain a DD-MM-YYYY date.
+        if key and value and not re.search(r"\d{1,2}[-/]\d{1,2}[-/]\d{4}", key):
             return [(key, value)]
     return []
 

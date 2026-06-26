@@ -429,7 +429,7 @@ def main():
     summary_lines = [
         f"INDEX RUN started: {run_started}",
         f"INDEX RUN finished: {now_iso()}",
-        f"MAX_PAGES_PER_GROUP: {MAX_PAGES_PER_GROUP}",
+        f"INDEX_PAGE_CAP: {MAX_PAGES_PER_GROUP or 'all'}",
         f"Stop reasons: {' | '.join(stop_reasons)}",
         "",
         f"Rows extracted total from site: {extracted_total}",
@@ -465,7 +465,7 @@ def main():
         step_current=1,
         step_total=5,
         item_current=len(page_counts),
-        item_total=len(GROUPS) * MAX_PAGES_PER_GROUP,
+        item_total=(len(GROUPS) * MAX_PAGES_PER_GROUP) if MAX_PAGES_PER_GROUP else len(page_counts),
         records_found=extracted_total,
         records_new=new_records,
         records_existing=existing_records,

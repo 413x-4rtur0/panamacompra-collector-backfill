@@ -1087,7 +1087,7 @@ def run_tk() -> int:
     interval_var = tk.StringVar(value=setting("PC_NEXT_RUN_INTERVAL_MINUTES", "30"))
     soon_days_var = tk.StringVar(value=setting("PC_MONITOR_DEADLINE_SOON_DAYS", "7"))
     webhook_index_var = tk.StringVar(value=setting("PC_WEBHOOK_INDEX_LIMIT", setting("PC_INDEX_LIMIT", "0")))
-    webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "99"))
+    webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "0"))
     within_days_var = tk.StringVar(value=setting("PC_NOTIFY_WITHIN_DAYS", ""))
     retries_var = tk.StringVar(value=setting("PC_WAHA_RETRIES", "2"))
     waha_base_var = tk.StringVar(value=setting("PC_WAHA_BASE_URL", "http://127.0.0.1:3000"))
@@ -1139,7 +1139,7 @@ def run_tk() -> int:
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
     field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
     field(14, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
-    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. Env: PC_WEBHOOK_DETAIL_LIMIT.")
+    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. 0 = every pending detail row. Env: PC_WEBHOOK_DETAIL_LIMIT.")
     field(15, 0, "WhatsApp within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
     field(15, 2, "WhatsApp send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
     field(16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
@@ -1211,7 +1211,7 @@ def run_tk() -> int:
             "PC_NEXT_RUN_INTERVAL_MINUTES": interval_var.get().strip() or "30",
             "PC_MONITOR_DEADLINE_SOON_DAYS": soon_days_var.get().strip() or "7",
             "PC_WEBHOOK_INDEX_LIMIT": webhook_index_var.get().strip() or "0",
-            "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "99",
+            "PC_WEBHOOK_DETAIL_LIMIT": webhook_detail_var.get().strip() or "0",
             "PC_NOTIFY_WITHIN_DAYS": within_days_var.get().strip(),
             "PC_WAHA_RETRIES": retries_var.get().strip() or "2",
             "PC_WAHA_BASE_URL": waha_base_var.get().strip() or "http://127.0.0.1:3000",

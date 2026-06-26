@@ -18,11 +18,21 @@ FLAG="data/queue/run_all_requested.flag"
 UPDATE_QUEUE_FLAG="data/queue/update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG="data/queue/update_monitor_in_progress.flag"
 REQUEST_LOG="data/logs/run_all_requests.log"
-DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-99}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-POLL_SECONDS="${PC_RUNNER_POLL_SECONDS:-5}"
+MONITOR_SETTINGS="data/config/monitor_settings.env"
 
 mkdir -p data/logs data/queue
+
+if [ -f "$MONITOR_SETTINGS" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MONITOR_SETTINGS"
+  set +a
+fi
+
+DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-0}"
+INDEX_LIMIT="${PC_WEBHOOK_INDEX_LIMIT:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+POLL_SECONDS="${PC_RUNNER_POLL_SECONDS:-5}"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | flag-watcher | $1" | tee -a "$REQUEST_LOG"
@@ -49,7 +59,7 @@ launch_queued_update_monitor() {
   fi
 }
 
-log "started (poll ${POLL_SECONDS}s, detail_limit ${DETAIL_LIMIT}); watching $FLAG"
+log "started (poll ${POLL_SECONDS}s, index_page_cap ${INDEX_LIMIT}, detail_limit ${DETAIL_LIMIT}); watching $FLAG"
 
 while true; do
   launch_queued_update_monitor
@@ -57,7 +67,7 @@ while true; do
     log "request flag detected; launching host collector"
     # pc_request_run_all.sh keeps/refreshes the flag and starts the host worker,
     # which consumes the request. Never let one failure stop the watcher.
-    ./pc_request_run_all.sh "$DETAIL_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "pc_request_run_all.sh returned non-zero"
+    PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" ./pc_request_run_all.sh "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "pc_request_run_all.sh returned non-zero"
   fi
   sleep "$POLL_SECONDS"
 done
