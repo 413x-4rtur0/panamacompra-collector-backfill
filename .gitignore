@@ -15,6 +15,7 @@ venv/
 /var/data/
 /var/log/
 /var/records/
+/var/records_test/
 /var/run/
 
 # Logs and databases

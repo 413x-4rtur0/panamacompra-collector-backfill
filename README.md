@@ -9,24 +9,51 @@ the full detail page into a local archive.
 The project targets a **low-resource Linux workstation**: it never runs parallel
 browser sessions and performs the index scan and detail download sequentially.
 
+> **Linux only.** Every script, the systemd units, and the installer assume a
+> Linux host (GNU coreutils, `bash`, `flock`, `systemd --user`, `xdg-open`, ...).
+> It is not tested or supported on macOS or Windows (WSL2 running a real Linux
+> userspace should work, but is untested).
+
+## Quick start
+
+```bash
+git clone <this-repository-url> panamacompra-collector
+# or: download and extract a ZIP of this repository instead of cloning
+cd panamacompra-collector
+
+./setup.sh                    # system packages (apt) + .venv + Python deps + Firefox + copies .env.example -> .env
+./bin/pcc start 5              # small test run: index scan + up to 5 detail pages
+./bin/pcc monitor               # open the native monitor (falls back to a background log follower if there is no display)
+```
+
+A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
+and runs the collector identically. The only features that need a real Git
+remote are the optional self-update commands (`./update-local-copy.sh`, the
+pre-run auto-update step, and the desktop **Update + Monitor** launcher) — the
+worker treats a failed pre-run update as a warning and still collects with the
+code already on disk, so a ZIP checkout is never blocked by it. See
+[Installation](#installation) for the full walkthrough and
+[Troubleshooting](#troubleshooting) if something does not start.
+
 ---
 
 ## Table of contents
 
-1. [What it does](#what-it-does)
-2. [How it works](#how-it-works)
-3. [Design decisions](#design-decisions)
-4. [Installation](#installation)
-5. [Usage](#usage)
-6. [Scripts reference](#scripts-reference)
-7. [Configuration](#configuration)
-8. [Data and storage](#data-and-storage)
-9. [changedetection.io and the webhook](#changedetectionio-and-the-webhook)
-   - [Run the stack with Docker Compose](#run-the-stack-with-docker-compose)
-10. [Monitoring and logs](#monitoring-and-logs)
-11. [Troubleshooting](#troubleshooting)
-12. [Security notes](#security-notes)
-13. [Development](#development)
+1. [Quick start](#quick-start)
+2. [What it does](#what-it-does)
+3. [How it works](#how-it-works)
+4. [Design decisions](#design-decisions)
+5. [Installation](#installation)
+6. [Usage](#usage)
+7. [Scripts reference](#scripts-reference)
+8. [Configuration](#configuration)
+9. [Data and storage](#data-and-storage)
+10. [changedetection.io and the webhook](#changedetectionio-and-the-webhook)
+    - [Run the stack with Docker Compose](#run-the-stack-with-docker-compose)
+11. [Monitoring and logs](#monitoring-and-logs)
+12. [Troubleshooting](#troubleshooting)
+13. [Security notes](#security-notes)
+14. [Development](#development)
 
 ---
 
@@ -191,12 +218,12 @@ The scripts resolve their own location, so the project can live in **any directo
 
 ### Requirements
 
-- Linux (Debian / Ubuntu / Linux Mint recommended)
+- **Linux** (Debian / Ubuntu / Linux Mint recommended). Not tested on macOS or Windows.
 - Python 3.10+ (3.12 used in development)
-- Playwright Firefox browser — install it in the active virtualenv with
-  `python -m playwright install firefox`
+- Playwright Firefox browser — installed automatically by `./setup.sh`, or manually in the active virtualenv with `python -m playwright install firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`, and a desktop opener such as `xdg-open` for opening the test sandbox folder after monitor-launched tests
 - Optional: `sqlite3` CLI for manual inspection
+- Optional: `git` — only required for the self-update commands (`./update-local-copy.sh`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
 
 
 ### Updating an existing local copy
@@ -288,11 +315,16 @@ cd ~/Apps/panamacompra-collector
 ```
 
 `setup.sh` installs Debian/Ubuntu Python system packages when `apt-get` is
-available, creates `.venv`, installs Python dependencies, installs the Playwright
-Firefox browser, creates runtime directories, and finishes by running
-`./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when system
-packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for CI/offline
-validation.
+available, copies `.env.example` to `.env` on first run if `.env` does not
+already exist, creates `.venv`, installs Python dependencies, installs the
+Playwright Firefox browser, creates runtime directories, and finishes by
+running `./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when
+system packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for
+CI/offline validation — these must be set as real environment variables
+(`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
+environment variable always takes precedence over `.env`/`config/defaults.env`
+values, matching this project's usual "environment variable > file > default"
+precedence.
 
 ### Manual setup
 
