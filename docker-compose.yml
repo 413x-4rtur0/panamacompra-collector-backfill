@@ -6,12 +6,12 @@
 #   changedetection.io  watches the PanamaCompra table (rendered by sockpuppetbrowser)
 #   sockpuppetbrowser   headless Chromium used by changedetection for JS pages
 #   waha                self-hosted WhatsApp HTTP API for the alerts
-#   webhook             webhook_listener.py in ENQUEUE-ONLY mode
+#   webhook             src/webhook/listener.py in ENQUEUE-ONLY mode
 #
 # IMPORTANT — why "enqueue only": the actual collector (Playwright Firefox writing
 # to the host ./records and ./data) runs on the HOST, not in a container. So the
 # containerized listener only *records the request* into the shared ./data/queue
-# volume; a tiny host service (./pc_run_all_flag_watcher.sh, or the existing
+# volume; a tiny host service (./src/webhook/watch-queue-flag.sh, or the existing
 # systemd webhook unit) then launches the real run. See the README "Run the stack
 # with Docker Compose" section.
 #
@@ -75,7 +75,7 @@ services:
       - PC_WEBHOOK_PORT=8765
       # Containerized listener cannot launch the host browser pipeline, so it only
       # writes the run request into the shared ./data/queue volume. The host runner
-      # (pc_run_all_flag_watcher.sh / systemd) performs the actual collection.
+      # (src/webhook/watch-queue-flag.sh / systemd) performs the actual collection.
       - PC_WEBHOOK_ENQUEUE_ONLY=1
     volumes:
       # Bind-mount the checkout so the listener writes the request flag and reads

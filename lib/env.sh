@@ -5,6 +5,10 @@ set -euo pipefail
 _env_source="${BASH_SOURCE[0]}"
 _env_dir="$(cd "$(dirname "$_env_source")" && pwd)"
 export APP_ROOT="${APP_ROOT:-$(cd "$_env_dir/.." && pwd)}"
+# So any "python -" heredoc or `python -c` invoked from a bash script (not just
+# the *.py files, which insert this themselves) can `import common` / `from
+# common import ...` regardless of which src/<category>/ directory it runs from.
+export PYTHONPATH="$APP_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -64,5 +68,6 @@ export PC_QUEUE_DIR="${PC_QUEUE_DIR:-$PC_DATA_DIR/queue}"
 export PC_ARCHIVE_DB_PATH="${PC_ARCHIVE_DB_PATH:-$PC_DATA_DIR/panamacompra_archive.db}"
 export PC_INDEX_CSV_PATH="${PC_INDEX_CSV_PATH:-$PC_DATA_DIR/panamacompra_index.csv}"
 export PC_CALENDAR_DIR="${PC_CALENDAR_DIR:-$PC_DATA_DIR/calendar}"
+export PC_RECORDS_TEST_DIR="${PC_RECORDS_TEST_DIR:-$PC_STATE_DIR/records_test}"
 
-mkdir -p "$PC_DATA_DIR" "$PC_RECORDS_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR"
+mkdir -p "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR"

@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 Environment=APP_MODE=installed
 WorkingDirectory=%h/.local/share/panamacompra
-ExecStart=%h/.local/share/panamacompra/pc_start_webhook_listener.sh
+ExecStart=%h/.local/share/panamacompra/bin/pcc webhook start --replace-port-owner --foreground
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

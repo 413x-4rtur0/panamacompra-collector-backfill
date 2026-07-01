@@ -27,21 +27,21 @@ USAGE
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 case "$cmd" in
-  start|run) exec "$APP_ROOT/pc_request_run_all.sh" "$@" ;;
-  stop) exec "$APP_ROOT/pc_stop_run_all.sh" "$@" ;;
-  status) exec "$APP_ROOT/pc_queue_status.sh" "$@" ;;
-  monitor) exec "$APP_ROOT/pc_open_monitor.sh" "$@" ;;
+  start|run) exec "$APP_ROOT/src/pipeline/request-run-all.sh" "$@" ;;
+  stop) exec "$APP_ROOT/src/pipeline/stop-run-all.sh" "$@" ;;
+  status) exec "$APP_ROOT/src/pipeline/queue-status.sh" "$@" ;;
+  monitor) exec "$APP_ROOT/src/monitor/open-monitor.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
     case "$sub" in
-      start) exec "$APP_ROOT/pc_start_webhook_listener.sh" "$@" ;;
-      diag|diagnostic) exec "$APP_ROOT/pc_webhook_diagnostic.sh" "$@" ;;
+      start) exec "$APP_ROOT/src/webhook/start-listener.sh" "$@" ;;
+      diag|diagnostic) exec "$APP_ROOT/src/webhook/diagnose.sh" "$@" ;;
       *) echo "Unknown webhook command: $sub" >&2; exit 2 ;;
     esac ;;
-  migrate) exec "$APP_ROOT/pc_migrate_apps_layout.sh" "$@" ;;
+  migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
-  launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install_desktop_launcher.sh" "$@" ;;
+  launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install-desktop-launcher.sh" "$@" ;;
   env) env | sort | sed -n '/^APP_MODE=/p;/^APP_ROOT=/p;/^PC_/p;/^XDG_/p' ;;
   -h|--help|help) usage ;;
   -v|--version|version) echo "panamacompra-collector ${APP_VERSION:-unknown}" ;;
