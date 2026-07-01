@@ -16,6 +16,7 @@ venv/
 /var/log/
 /var/records/
 /var/run/
+/integrations/
 
 # Logs and databases
 *.log

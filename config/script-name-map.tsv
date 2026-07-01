@@ -1,0 +1,12 @@
+# phase	legacy_entrypoint	ordered_task	canonical_command	purpose
+000	-	scripts/tasks/000-review-legacy-and-new-names.sh	./bin/pcc review-names	Review old root entrypoints vs ordered task wrappers.
+000b	-	scripts/tasks/000b-fresh-install-doctor.sh	./bin/pcc doctor	Evaluate from-zero clone/install readiness.
+001a	setup.sh	scripts/tasks/001a-setup-development.sh	./setup.sh	Bootstrap dependencies for development/portable checkout.
+001b	-	scripts/tasks/001b-install-update-monitor-launcher.sh	./bin/pcc launcher install	Install Update + Monitor desktop launcher.
+002	pc_install_webhook_service.sh	scripts/tasks/002-install-user-services.sh	./bin/pcc service install --enable	Install user systemd services for collector/webhook.
+010	update_local_copy.sh	scripts/tasks/010-update-local-copy.sh	./update_local_copy.sh	Update local checkout before monitor use.
+020	pc_request_run_all.sh	scripts/tasks/020-start-collector.sh	./bin/pcc start	Queue/start collector run.
+021	pc_open_monitor.sh	scripts/tasks/021-open-monitor.sh	./bin/pcc monitor	Open monitor UI.
+030	pc_queue_status.sh	scripts/tasks/030-status.sh	./bin/pcc status	Inspect queue/status/logs.
+040	pc_stop_run_all.sh	scripts/tasks/040-stop-all.sh	./bin/pcc stop	Stop host collector/monitor/updater/webhook processes.
+090	-	scripts/tasks/090-uninstall-or-purge.sh	./bin/pcc uninstall	Uninstall/shutdown services and optionally purge state.

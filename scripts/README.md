@@ -34,8 +34,11 @@ Rules:
 
 | Ordered wrapper | Canonical command | Purpose |
 | --- | --- | --- |
+| `tasks/000-review-legacy-and-new-names.sh` | `./bin/pcc review-names` | Review old root names against ordered wrappers. |
+| `tasks/000b-fresh-install-doctor.sh` | `./bin/pcc doctor` | Evaluate a fresh clone/install before running. |
 | `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout. |
 | `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor desktop launcher. |
+| `tasks/002-install-user-services.sh` | `./bin/pcc service install --enable` | Install user systemd services. |
 | `tasks/010-update-local-copy.sh` | `./update_local_copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
 | `tasks/021-open-monitor.sh` | `./bin/pcc monitor` | Open the monitor independently. |
@@ -43,5 +46,24 @@ Rules:
 | `tasks/040-stop-all.sh` | `./bin/pcc stop` | Stop host processes. |
 | `tasks/090-uninstall-or-purge.sh` | `./bin/pcc uninstall` | Stop services/containers and optionally purge state. |
 
-This gives the visible hierarchy you asked for without breaking existing users
+The authoritative old-to-new map lives in `config/script-name-map.tsv`. This gives the visible hierarchy you asked for without breaking existing users
 or systemd/desktop integrations that still call the historical filenames.
+
+
+## Full script reorder surface
+
+For a broader reviewed/sorted surface, `scripts/ordered/` contains ordered aliases
+for every shell entrypoint that still exists in the repository. The source map is
+`config/ordered-script-map.tsv`; run `./bin/pcc review-names` to validate both the
+phase task wrappers and the full ordered alias set. Run `./bin/pcc doctor` before
+redoing a clone/install from zero to verify required files, syntax, and runtime
+path resolution. Run `./bin/pcc self-contained` to verify the repository is self-contained while secrets/runtime data remain excluded and Docker Compose ports/project names are safe.
+
+
+## Persistent data during reinstall/uninstall
+
+Use `./bin/pcc data summary` to review persistent locations, `./bin/pcc data export`
+to create a migration bundle, and `./bin/pcc data import <bundle.tar.gz>` after a
+fresh clone. `./bin/pcc uninstall` can also ask what to do with persistent data
+when run interactively, or use `--export-data <bundle.tar.gz>` / `--purge-data`
+for non-interactive flows.

@@ -1,0 +1,33 @@
+# ordered_name	current_entrypoint	purpose
+000-review-panamacompra-system.sh	review_panamacompra_system.sh	Review repository/system health.
+001-setup-development.sh	setup.sh	Bootstrap dependencies and local setup.
+002-setup-git-credentials.sh	pc_setup_git_credentials.sh	Configure Git credentials for updater/desktop usage.
+003-validate-installation.sh	scripts/validate_installation.sh	Validate installation prerequisites.
+004-fresh-install-doctor.sh	scripts/fresh_install_doctor.sh	Evaluate fresh clone/install readiness.
+005-self-contained-doctor.sh	scripts/self_contained_doctor.sh	Check self-contained Docker/secret policy.
+006-persistent-data.sh	scripts/persistent_data.sh	Export/import persistent downloaded data.
+010-install-desktop-launcher.sh	scripts/install_desktop_launcher.sh	Install/remove Update + Monitor launcher.
+011-install-user-services.sh	scripts/install_user_services.sh	Install/remove user systemd services.
+012-install-webhook-service-legacy.sh	pc_install_webhook_service.sh	Install legacy webhook user service.
+020-migrate-apps-layout.sh	pc_migrate_apps_layout.sh	Migrate older split app folders into this checkout.
+021-migrate-previous-records.sh	migrate_previous_records.sh	Migrate older records into current layout.
+030-update-local-copy.sh	update_local_copy.sh	Update checkout/dependencies before monitor.
+031-update-before-run.sh	pc_update_before_run.sh	Refresh checkout before worker run.
+040-run-collector-trigger.sh	run_collector.sh	Changedetection webhook trigger entrypoint.
+041-request-run-all.sh	pc_request_run_all.sh	Queue a full run-all request.
+042-run-all-now.sh	pc_run_all_now.sh	Run collector immediately.
+043-run-all-worker.sh	pc_run_all_worker.sh	Internal run-all worker.
+044-run-all-flag-watcher.sh	pc_run_all_flag_watcher.sh	Watch queue flags and launch host worker.
+045-follow-run-all.sh	pc_follow_run_all.sh	Follow run-all logs/progress.
+046-run-all-status.sh	pc_run_all_status.sh	Show run-all status.
+050-open-monitor.sh	pc_open_monitor.sh	Open default monitor.
+051-monitor-window.sh	pc_monitor_window.sh	Open terminal/window monitor.
+052-queue-status.sh	pc_queue_status.sh	Show queue status.
+053-queue-status-wrapper.sh	scripts/queue_status.sh	Environment-aware queue-status wrapper.
+060-start-webhook-listener.sh	pc_start_webhook_listener.sh	Start host webhook listener.
+061-webhook-diagnostic.sh	pc_webhook_diagnostic.sh	Diagnose webhook setup.
+070-stop-collectors-only.sh	pc_stop_collectors.sh	Stop active collector pipeline only.
+071-stop-all-host-processes.sh	pc_stop_run_all.sh	Stop all host PanamaCompra processes.
+080-run-worker-wrapper.sh	scripts/run_worker.sh	Environment-aware worker wrapper.
+081-review-entrypoint-names.sh	scripts/review_entrypoint_names.sh	Review old/new entrypoint names.
+090-uninstall-or-purge.sh	scripts/uninstall.sh	Uninstall/shutdown and optionally purge.

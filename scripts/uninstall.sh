@@ -13,6 +13,7 @@ PURGE_DATA=0
 PURGE_CONFIG=0
 PURGE_INTEGRATIONS=0
 PURGE_DOCKER_VOLUMES=0
+EXPORT_DATA_BUNDLE=""
 
 usage() {
   cat <<'USAGE'
@@ -26,6 +27,7 @@ processes/containers, but keeps data, records, integrations, and configuration.
 Options:
   -y, --yes              Do not prompt before uninstall actions
       --dry-run          Print actions without changing anything
+      --export-data PATH  Export persistent data/records/integrations before uninstall
       --purge-data       Delete resolved runtime data/records/run/log directories
       --purge-config     Delete resolved config dir and repo-local .env/.webhook_token
       --purge-integrations
@@ -60,7 +62,20 @@ EOF_CONFIRM
     log "Refusing to prompt without a TTY; rerun with --yes or --dry-run."
     return 1
   fi
-  read -r -p "Continue? [y/N] " reply
+  echo "Persistent data options:"
+  echo "  1) Keep data in place (default)"
+  echo "  2) Export data bundle, then keep data in place"
+  echo "  3) Export data bundle, then purge data"
+  echo "  4) Purge data without export"
+  read -r -p "Choose persistent data handling [1-4, default 1]: " data_reply
+  case "${data_reply:-1}" in
+    1) ;;
+    2) read -r -p "Bundle path [default ./panamacompra-persistent-<timestamp>.tar.gz]: " EXPORT_DATA_BUNDLE ;;
+    3) read -r -p "Bundle path [default ./panamacompra-persistent-<timestamp>.tar.gz]: " EXPORT_DATA_BUNDLE; PURGE_DATA=1 ;;
+    4) PURGE_DATA=1 ;;
+    *) log "Unknown choice; keeping data in place." ;;
+  esac
+  read -r -p "Continue uninstall/shutdown? [y/N] " reply
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
@@ -152,6 +167,17 @@ stop_compose_stack() {
   run "${compose_cmd[@]}" "${down_args[@]}" || true
 }
 
+export_persistent_data() {
+  if [[ -n "$EXPORT_DATA_BUNDLE" || "${PC_UNINSTALL_EXPORT_DATA:-0}" == "1" ]]; then
+    local bundle="$EXPORT_DATA_BUNDLE"
+    if [[ -z "$bundle" ]]; then
+      bundle="$APP_ROOT/panamacompra-persistent-$(date +%Y%m%d_%H%M%S).tar.gz"
+    fi
+    log "Exporting persistent data before uninstall: $bundle"
+    run "$APP_ROOT/scripts/persistent_data.sh" export "$bundle"
+  fi
+}
+
 purge_paths() {
   if [[ "$PURGE_DATA" == "1" ]]; then
     log "Purging runtime data, records, logs, and run directories."
@@ -182,6 +208,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -y|--yes) ASSUME_YES=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --export-data) EXPORT_DATA_BUNDLE="$2"; shift ;;
     --purge-data) PURGE_DATA=1 ;;
     --purge-config) PURGE_CONFIG=1 ;;
     --purge-integrations) PURGE_INTEGRATIONS=1 ;;
@@ -196,6 +223,7 @@ confirm || { log "Cancelled."; exit 1; }
 stop_user_services
 stop_host_processes
 stop_compose_stack
+export_persistent_data
 purge_paths
 print_remaining
 log "Uninstall/shutdown complete."
