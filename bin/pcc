@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/env.sh
+source "$SCRIPT_DIR/../lib/env.sh"
+cd "$APP_ROOT"
+
+usage() {
+  cat <<'USAGE'
+Usage: pcc <command> [args]
+
+Commands:
+  start [detail_limit] [mode] [index_limit]  Queue/start the full collector run
+  stop                                      Stop collector, monitor, updater, and webhook processes
+  status                                    Show queue and process status
+  monitor                                   Open the monitor UI
+  webhook start|diag                        Start or diagnose the webhook listener
+  migrate [args]                            Run the existing layout migration helper
+  setup [args]                              Run repository setup
+  uninstall [options]                       Stop services/containers and optionally purge state
+  launcher [install|remove|path]            Manage Update + Monitor desktop launcher
+  env                                       Print resolved runtime environment
+  help                                      Show this help
+USAGE
+}
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+case "$cmd" in
+  start|run) exec "$APP_ROOT/pc_request_run_all.sh" "$@" ;;
+  stop) exec "$APP_ROOT/pc_stop_run_all.sh" "$@" ;;
+  status) exec "$APP_ROOT/pc_queue_status.sh" "$@" ;;
+  monitor) exec "$APP_ROOT/pc_open_monitor.sh" "$@" ;;
+  webhook)
+    sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
+    case "$sub" in
+      start) exec "$APP_ROOT/pc_start_webhook_listener.sh" "$@" ;;
+      diag|diagnostic) exec "$APP_ROOT/pc_webhook_diagnostic.sh" "$@" ;;
+      *) echo "Unknown webhook command: $sub" >&2; exit 2 ;;
+    esac ;;
+  migrate) exec "$APP_ROOT/pc_migrate_apps_layout.sh" "$@" ;;
+  setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
+  uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
+  launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install_desktop_launcher.sh" "$@" ;;
+  env) env | sort | sed -n '/^APP_MODE=/p;/^APP_ROOT=/p;/^PC_/p;/^XDG_/p' ;;
+  -h|--help|help) usage ;;
+  -v|--version|version) echo "panamacompra-collector ${APP_VERSION:-unknown}" ;;
+  *) echo "Unknown command: $cmd" >&2; usage >&2; exit 2 ;;
+esac

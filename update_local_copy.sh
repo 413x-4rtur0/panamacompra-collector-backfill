@@ -115,49 +115,10 @@ install_desktop_shortcut() {
     return 0
   fi
 
-  local desktop_file_name="panamacompra-manual-monitor.desktop"
-  local app_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-  local app_path="$app_dir/$desktop_file_name"
-  local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
-  local desktop_path="$desktop_dir/$desktop_file_name"
-  local icon_path="$BASE_DIR/data/panamacompra-monitor-icon.svg"
-
-  mkdir -p "$app_dir" "$BASE_DIR/data"
-  cat > "$icon_path" <<'SVG'
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="24" fill="#0f172a"/>
-  <rect x="18" y="24" width="92" height="62" rx="8" fill="#111827" stroke="#38bdf8" stroke-width="6"/>
-  <path d="M34 68h16l10-24 14 36 10-18h12" fill="none" stroke="#22c55e" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="42" y="94" width="44" height="8" rx="4" fill="#38bdf8"/>
-</svg>
-SVG
-
-  cat > "$app_path" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=PanamaCompra Update + Monitor
-Comment=Open the centered updater loader, update PanamaCompra Collector, then open the manual monitor
-Exec=$BASE_DIR/pc_update_loader.py --open-monitor-after
-Icon=$icon_path
-Terminal=false
-Categories=Utility;Monitor;
-StartupNotify=false
-DESKTOP
-  chmod +x "$app_path"
-  echo "Installed application shortcut: $app_path"
-  echo "The shortcut starts pc_update_loader.py, whose Tk updater window is centered before the monitor opens."
-
-  if [ -d "$desktop_dir" ]; then
-    cp "$app_path" "$desktop_path"
-    chmod +x "$desktop_path"
-    echo "Installed desktop shortcut: $desktop_path"
-    echo "If your desktop asks, choose 'Allow Launching' or 'Trust and Launch' once."
+  if [ -x "$BASE_DIR/scripts/install_desktop_launcher.sh" ]; then
+    "$BASE_DIR/scripts/install_desktop_launcher.sh" install
   else
-    echo "Desktop folder not found ($desktop_dir); application-menu shortcut was installed only."
-  fi
-
-  if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database "$app_dir" >/dev/null 2>&1 || true
+    echo "WARNING: desktop launcher creator missing: $BASE_DIR/scripts/install_desktop_launcher.sh"
   fi
 }
 
