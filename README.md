@@ -96,11 +96,11 @@ src/pipeline/run-worker.sh        single locked worker
         │
         ├─ STEP 0  src/pipeline/000-update-before-run.sh fast-forwards local checkout before each run
         ├─ STEP 1  src/pipeline/010-collect-index.py   scans Programadas + Abiertas + pagination
-        ├─ STEP 2  src/pipeline/collect_detail.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
-        ├─ STEP 3  src/pipeline/030-build-detail-views.py --apply  refreshes summary/items/calendar sections + per-record .ics
-        ├─ STEP 4  verification/repair      py_compile check + retry failed/missing-deadline records
-        ├─ STEP 5  src/pipeline/build_calendar.py     writes timestamped .ics import packages for new events
-        ├─ STEP 6  src/pipeline/notify_new_records.py --announce  sends WhatsApp only after index/detail/calendar/package steps
+        ├─ STEP 2  src/pipeline/notify_new_records.py --announce  sends WhatsApp right after the index, BEFORE downloads (items shown as pending)
+        ├─ STEP 3  src/pipeline/collect_detail.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
+        ├─ STEP 4  src/pipeline/030-build-detail-views.py --apply  refreshes summary/items/calendar sections + per-record .ics
+        ├─ STEP 5  verification/repair      py_compile check + retry failed/missing-deadline records
+        ├─ STEP 6  src/pipeline/build_calendar.py     writes timestamped .ics import packages for new events + silent WhatsApp snapshot sync
         └─ STEP 7  src/pipeline/070-test-zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
         │
         ▼
@@ -123,23 +123,24 @@ Example: changedetection sees a new PanamaCompra row OC-2026-000123
 [3 Index] src/pipeline/010-collect-index.py records the index row in SQLite
       │
       ▼
-[4 Download] src/pipeline/collect_detail.py downloads ALL detail fields + items first
-      │
-      ▼
-[5 Compare] src/pipeline/notify_new_records.py compares against the last notified snapshot
+[4 Compare + Notify] src/pipeline/notify_new_records.py compares against the last notified snapshot
       │
       ├─ No change ───────────────► no WhatsApp message
       │
-      └─ New/status/items changed ─► one complete WhatsApp message for OC-2026-000123
-                                      + data/calendar_exports/YYYY/MM/OC-2026-000123.ics
+      └─ New/status/items changed ─► one WhatsApp message for OC-2026-000123 sent
+                                      IMMEDIATELY (items marked "pendiente" until downloaded)
       │
       ▼
-[6 Summary] worker sends one final run summary after messaging finishes
+[5 Download] src/pipeline/collect_detail.py downloads ALL detail fields + items
+      │                                     + data/calendar_exports/YYYY/MM/OC-2026-000123.ics
+      ▼
+[6 Summary] worker sends one final run summary after all steps finish
 ```
 
-Key point: the webhook only starts/queues the run. WhatsApp is not sent from the
-webhook and is not sent while detail rows are still downloading; messages are sent
-after the collector has a complete record and can compare it safely.
+Key point: the webhook only starts/queues the run. WhatsApp is sent right after the
+index step — before the long download phase — so subscribers hear about a new
+opportunity immediately; the downloaded items are folded into the record's snapshot
+afterwards without sending a duplicate message.
 
 ### Process diagram and test visibility
 
@@ -151,14 +152,14 @@ flowchart TD
     D --> U[STEP 0: src/pipeline/000-update-before-run.sh]
     U --> E[STEP 1: src/pipeline/010-collect-index.py]
     E --> F[SQLite + records/YY-MM-DD/NUMERO index JSON]
-    F --> G[STEP 2: src/pipeline/collect_detail.py]
-    G --> H[detail JSON, HTML, text, tables, per-record ICS]
-    H --> I[STEP 3: src/pipeline/030-build-detail-views.py --apply]
-    I --> V[summary/items/calendar views + per-record .ics]
-    V --> R[STEP 4: verification: py_compile + failed/missing-deadline repair]
-    R --> J[STEP 5: src/pipeline/build_calendar.py creates data/calendar/YY-MM-DD packages]
-    J --> P[STEP 6: src/pipeline/notify_new_records.py --announce]
+    F --> P[STEP 2: src/pipeline/notify_new_records.py --announce]
     P --> Q[WhatsApp messages sent one by one via WAHA, PHASE=MESSAGING]
+    Q --> G[STEP 3: src/pipeline/collect_detail.py]
+    G --> H[detail JSON, HTML, text, tables, per-record ICS]
+    H --> I[STEP 4: src/pipeline/030-build-detail-views.py --apply]
+    I --> V[summary/items/calendar views + per-record .ics]
+    V --> R[STEP 5: verification: py_compile + failed/missing-deadline repair]
+    R --> J[STEP 6: src/pipeline/build_calendar.py creates data/calendar/YY-MM-DD packages + WhatsApp snapshot sync]
     D --> K{No pending new details AND PC_TEST_ZONE_AUTORUN=1?}
     K -- yes --> L[STEP 7: src/pipeline/070-test-zone.py]
     L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
@@ -413,10 +414,10 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/pipeline/010-collect-index.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
 | `src/pipeline/collect_detail.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `src/pipeline/request-run-all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `src/pipeline/run-worker.sh` | Locked sequential worker: pre-run update, **index → details/downloads → storing/per-record calendars/detail views → calendar packages → WhatsApp**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
+| `src/pipeline/run-worker.sh` | Locked sequential worker: pre-run update, **index → WhatsApp messaging → details/downloads → storing/per-record calendars/detail views → verification → calendar packages (+ silent WhatsApp snapshot sync)**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
 | `src/pipeline/000-update-before-run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `src/notify/waha_client.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
-| `src/pipeline/notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step to send one “🟢 NUEVA OPORTUNIDAD DETECTADA” message per new record with per-message monitor progress; `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
+| `src/pipeline/notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step **right after the index, before detail downloads**, sending one “🔔 Nueva Oportunidad” message per new record with per-message monitor progress (items shown as pending until downloaded); `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends; `--sync-snapshots --since TS` runs after the downloads so the fresh items are not re-announced next run. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `src/pipeline/run-now.sh` | Runs the worker in the foreground for interactive use. |
 | `src/webhook/run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `src/webhook/listener.py` | Local HTTP listener for changedetection.io notifications. Runs `src/webhook/run-collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
@@ -598,14 +599,16 @@ private alert group controlled by you.
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
 new opportunities are announced one message per record. By default the run-all
-worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 6):
-after index, all details, per-record calendar/detail-view rebuilds, verification/repair, and calendar packages it runs `src/pipeline/notify_new_records.py --announce`,
+worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 2):
+right after the index scan — and BEFORE the detail downloads — it runs
+`src/pipeline/notify_new_records.py --announce`,
 which sends one WhatsApp message per new index entry **one at a time** and
-publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 6/6`,
+publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 2/6`,
 `Item i/N`, and a one-line preview of the message in the **Extra** field — so you
-can watch each opportunity go out. The detail downloader does not send WhatsApp
-messages mid-download; notifications are emitted only after detail and calendar
-processing complete for the run. New-record messages use the full 9-field record
+can watch each opportunity go out. Because the detail page is not downloaded yet,
+the message shows the items as `⏳ pendiente`; once the downloads finish, the
+worker runs `--sync-snapshots` so the fresh items update the record's notified
+snapshot silently instead of firing a duplicate message on the next run. New-record messages use the full 9-field record
 template (status, number, description, location, date range, up to 10 items,
 link, created time, and downloaded time):
 

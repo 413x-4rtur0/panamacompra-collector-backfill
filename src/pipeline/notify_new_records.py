@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Send rich PanamaCompra "what is new" notifications to WhatsApp via WAHA.
 
-The run-all worker calls this script after detail and calendar processing.
-``--announce`` sends one rich "🟢 NUEVA OPORTUNIDAD DETECTADA" message per saved
-record with monitor-visible progress; ``--idle`` sends one "⚪ Sin nuevas
-entradas" status; ``--flush`` retries saved records that still have no
-``notified_at`` timestamp.
+The run-all worker calls this script right after the index step, BEFORE detail
+downloads, so subscribers hear about new opportunities immediately instead of
+after the (potentially hours-long) download phase. ``--announce`` sends one rich
+"🔔 Nueva Oportunidad" message per new record with monitor-visible progress
+(item details show as pending when the detail page is not downloaded yet);
+``--idle`` sends one "⚪ Sin nuevas entradas" status; ``--flush`` retries
+records that still have no ``notified_at`` timestamp; ``--sync-snapshots
+--since TS`` is called by the worker after the downloads finish so the freshly
+downloaded items do not fire a duplicate "items updated" message on the next
+run.
 
 Design notes
 ------------
@@ -307,13 +312,14 @@ def date_range(row, summary: dict) -> str:
 
 
 def build_record_message(row, summary: dict, *, variant: str, previous_status: str | None = None, match_line: str | None = None) -> str:
+    detail_pending = row["detail_status"] != "saved"
     items = load_detail_items(row["detail_json_path"])
     status = status_value(row)
     title = clean_field(row["descripcion"] or row["short_description"] or summary.get("descripcion"))
     location = record_location(summary)
     url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
     created = fmt_dt(row["first_seen"] or row["fecha"])
-    downloaded = fmt_dt(row["detail_saved_at"] or now_str())
+    downloaded = fmt_dt(row["detail_saved_at"]) if row["detail_saved_at"] else ("⏳ En descarga" if detail_pending else fmt_dt(now_str()))
     numero = clean_field(row["numero"])
 
     if variant == "new":
@@ -341,7 +347,7 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         f"📍 *Ubicación:* {location}",
         f"📅 *Rango Fechas:* {date_range(row, summary)}",
         "",
-        format_items(items),
+        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso" if detail_pending else format_items(items),
     ]
     if match_line:
         parts.extend(["", f"🔎 *Coincidencia:* {match_line}"])
@@ -466,8 +472,10 @@ def ensure_baseline(conn) -> bool:
     """Mark the records that already existed when WAHA was first enabled as
     already-announced. Returns True if the baseline was established on this call.
 
-    Called once at the start of a detail-download run (before new records are
-    saved), so only records saved afterwards are announced."""
+    Called once at the start of a run (right after the index step), so only
+    records the index finds afterwards are announced. Covers every existing
+    record regardless of detail status: the announce step now runs before the
+    detail downloads, so old pending records must not look "new" either."""
     if BASELINE_MARKER.exists():
         return False
     if not (waha_enabled() and waha_destination()):
@@ -475,10 +483,10 @@ def ensure_baseline(conn) -> bool:
         # state the first time messages can actually be sent.
         return False
     existing_rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL"
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL"
     ).fetchall()
     conn.execute(
-        "UPDATE opportunities SET notified_at = ? WHERE detail_status = 'saved' AND notified_at IS NULL",
+        "UPDATE opportunities SET notified_at = ? WHERE notified_at IS NULL",
         (now_str(),),
     )
     conn.commit()
@@ -486,7 +494,7 @@ def ensure_baseline(conn) -> bool:
         mark_snapshot(conn, row["numero"])
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
-    print("WAHA baseline established; existing saved records will not be announced.")
+    print("WAHA baseline established; existing records will not be announced.")
     return True
 
 
@@ -514,9 +522,11 @@ def notify_manual_record(conn, numero: str, *, force: bool = False) -> bool:
         return False
 
 def notify_saved_record(conn, numero: str) -> bool:
-    """Announce a single saved record. Idempotent: a record is sent at most
-    once (guarded by notified_at). Returns True if a message was sent. Never
-    raises, so messaging failures do not break collection runs."""
+    """Announce a single new record. Runs right after the index step, so the
+    record's detail page may not be downloaded yet (the message then shows the
+    items as pending). Idempotent: a record is sent at most once (guarded by
+    notified_at). Returns True if a message was sent. Never raises, so
+    messaging failures do not break collection runs."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
@@ -525,7 +535,7 @@ def notify_saved_record(conn, numero: str) -> bool:
             # avoid mistaking a pre-existing record for a new one.
             return False
         row = fetch_row(conn, numero)
-        if row is None or row["detail_status"] != "saved" or row["notified_at"]:
+        if row is None or row["notified_at"]:
             return False
         decision = deadline_decision(row)
         if decision == "expired":
@@ -646,12 +656,40 @@ def notify_items_change(conn, numero: str) -> bool:
         print(f"WAHA items-change notify error for {numero}: {exc}", file=sys.stderr)
         return False
 
-def flush_unannounced(conn) -> int:
-    """Announce any saved records that were not yet sent (for example because
-    WAHA was briefly unreachable). Returns the number sent."""
+def sync_snapshots(conn, since: str) -> int:
+    """After the detail downloads, refresh the stored status/items snapshot for
+    records announced since ``since`` (this run's early MESSAGING step), and
+    export their per-record calendars. Without this, the items downloaded right
+    after the announcement would fire a spurious "items updated" message on the
+    next run. Sends nothing. Returns the number of snapshots refreshed."""
     rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
-        "ORDER BY detail_saved_at, first_seen"
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' "
+        "AND notified_at IS NOT NULL AND notified_at >= ?",
+        (since,),
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        try:
+            full = fetch_row(conn, row["numero"])
+            if full is None:
+                continue
+            _status, _items_hash, signature = signature_for(full)
+            if full["last_notified_signature"] == signature:
+                continue
+            export_record_calendar(conn, full)
+            mark_snapshot(conn, full["numero"])
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 - never break a run
+            print(f"WAHA snapshot sync error for {row['numero']}: {exc}", file=sys.stderr)
+    return updated
+
+
+def flush_unannounced(conn) -> int:
+    """Announce any records that were not yet sent (for example because WAHA
+    was briefly unreachable). Returns the number sent."""
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL "
+        "ORDER BY first_seen, last_seen"
     ).fetchall()
     sent = 0
     for row in rows:
@@ -674,22 +712,35 @@ def _one_line_preview(text: str, limit: int = 160) -> str:
     return (flat[: limit - 1] + "…") if len(flat) > limit else flat
 
 
-def announce_with_progress(conn) -> int:
-    """Visible MESSAGING step. After the detail download, send — one by one with
-    per-message monitor progress — a message for every:
+def _percent_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
 
-      * new entry (🟢 NUEVA OPORTUNIDAD DETECTADA), and
-      * status change (🔄 OPORTUNIDAD ACTUALIZADA, e.g. Programada → Abierta).
+
+def announce_with_progress(conn) -> int:
+    """Visible MESSAGING step. Right after the index step (before detail
+    downloads), send — one by one with per-message monitor progress — a message
+    for every:
+
+      * new entry (🔔 Nueva Oportunidad, items shown as pending download), and
+      * status change (e.g. Programada → Abierta) or item change detected on
+        records downloaded in previous runs.
 
     When there is nothing to send it publishes the "Sin nuevas entradas" status.
     Returns the number of messages actually sent. Never raises."""
-    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "6")
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "2")
     step_total = os.environ.get("PC_MSG_STEP_TOTAL", "6")
+    # Progress percent window for this step, set by the worker to match its
+    # position in the run (defaults keep the old end-of-run scale).
+    percent_base = _percent_int("PC_MSG_PERCENT_BASE", 96)
+    percent_done = max(percent_base + 1, _percent_int("PC_MSG_PERCENT_DONE", 99))
 
     # ("new", numero), then status updates, then item-only changes, oldest first.
     new_rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
-        "ORDER BY detail_saved_at, first_seen"
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL "
+        "ORDER BY first_seen, last_seen"
     ).fetchall()
     update_rows = conn.execute(
         "SELECT numero FROM opportunities WHERE pending_status_change IS NOT NULL "
@@ -726,8 +777,8 @@ def announce_with_progress(conn) -> int:
         total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
         send_text("none", build_empty_message(total_records))
         pc_common.write_run_progress(
-            "MESSAGING", "RUNNING", 98,
-            "Step 6/6: no new opportunities or status changes to send.",
+            "MESSAGING", "RUNNING", percent_done - 1,
+            f"Step {step_current}/{step_total}: no new opportunities or status changes to send.",
             step_current=step_current, step_total=step_total,
             item_current=0, item_total=0, records_new=0,
         )
@@ -756,8 +807,8 @@ def announce_with_progress(conn) -> int:
             )
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING",
-            min(99, 96 + int(3 * index / total)),
-            f"Step 6/6: sending WhatsApp {index}/{total} ({kind}): {label}",
+            min(percent_done, percent_base + int((percent_done - percent_base) * index / total)),
+            f"Step {step_current}/{step_total}: sending WhatsApp {index}/{total} ({kind}): {label}",
             step_current=step_current, step_total=step_total,
             item_current=index, item_total=total,
             records_new=total, records_saved=sent,
@@ -777,8 +828,8 @@ def announce_with_progress(conn) -> int:
             skipped += 1
 
     pc_common.write_run_progress(
-        "MESSAGING", "RUNNING", 99,
-        f"Step 6/6: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
+        "MESSAGING", "RUNNING", percent_done,
+        f"Step {step_current}/{step_total}: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
         step_current=step_current, step_total=step_total,
         item_current=total, item_total=total,
         records_new=len(new_rows), records_saved=sent,
@@ -790,8 +841,10 @@ def announce_with_progress(conn) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
-    parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent (safety net)")
-    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
+    parser.add_argument("--flush", action="store_true", help="announce any records not yet sent (safety net)")
+    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step, right after the index)")
+    parser.add_argument("--sync-snapshots", action="store_true", help="silently refresh notified snapshots (and export calendars) for records announced since --since; called after the detail downloads")
+    parser.add_argument("--since", default="", help="timestamp (YYYY-MM-DD HH:MM:SS) limiting --sync-snapshots to records notified at/after it")
     parser.add_argument("--record", action="append", default=[], help="manually send notification for a specific record NUMERO; repeat for several records")
     parser.add_argument("--force", action="store_true", help="with --record, send even if the record was already notified")
     args = parser.parse_args(argv)
@@ -812,6 +865,11 @@ def main(argv=None) -> int:
             if notify_manual_record(conn, numero, force=args.force):
                 sent += 1
         print(f"WAHA manual record notification complete: {sent} record(s) sent.")
+        return 0
+
+    if args.sync_snapshots:
+        updated = sync_snapshots(conn, args.since or "1970-01-01 00:00:00")
+        print(f"WAHA snapshot sync complete: {updated} record(s) refreshed.")
         return 0
 
     if args.idle:

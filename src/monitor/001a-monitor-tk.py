@@ -868,7 +868,7 @@ def run_tk() -> int:
     # Process status used to be one long wrapped line ("normal_run: off  test_run:
     # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
     # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
-    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 2)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 3)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
     process_frame = ttk.Frame(header, style="Card.TFrame")
     process_frame.grid(row=6, column=0, sticky="ew")
     process_chips: dict[str, tk.Label] = {}
