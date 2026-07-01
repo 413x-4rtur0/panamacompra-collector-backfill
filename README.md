@@ -219,8 +219,8 @@ The scripts resolve their own location, so the project can live in **any directo
 ### Requirements
 
 - **Linux** (Debian / Ubuntu / Linux Mint recommended). Not tested on macOS or Windows.
-- Python 3.10+ (3.12 used in development)
-- Playwright Firefox browser — installed automatically by `./setup.sh`, or manually in the active virtualenv with `python -m playwright install firefox`
+- Python 3.10+ (the installer checks this before creating `.venv`; 3.12 is used in development)
+- Playwright Firefox browser — installed automatically by `./setup.sh`, including Debian/Ubuntu browser libraries when apt is available; or manually in the active virtualenv with `python -m playwright install --with-deps firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`, and a desktop opener such as `xdg-open` for opening the test sandbox folder after monitor-launched tests
 - Optional: `sqlite3` CLI for manual inspection
 - Optional: `git` — only required for the self-update commands (`./update-local-copy.sh`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
@@ -315,10 +315,12 @@ cd ~/Apps/panamacompra-collector
 ```
 
 `setup.sh` installs Debian/Ubuntu Python system packages when `apt-get` is
-available, copies `.env.example` to `.env` on first run if `.env` does not
-already exist, creates `.venv`, installs Python dependencies, installs the
-Playwright Firefox browser, creates runtime directories, and finishes by
-running `./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when
+available, verifies that the selected `PYTHON_BIN` is Python 3.10+ with working
+`venv`/`ensurepip` support, copies `.env.example` to `.env` on first run if
+`.env` does not already exist, creates `.venv`, installs Python dependencies,
+installs the Playwright Firefox browser (plus Linux browser dependencies on
+Debian/Ubuntu/Linux Mint when apt is not skipped), creates runtime directories,
+and finishes by running `./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when
 system packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for
 CI/offline validation — these must be set as real environment variables
 (`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
@@ -332,7 +334,7 @@ precedence.
 cd ~/Apps/panamacompra-collector
 
 # System packages: browser + complete Python venv support + optional Tk monitor
-sudo apt update && sudo apt install -y python3-venv python3-full python3-tk
+sudo apt update && sudo apt install -y python3-venv python3-full python3-tk ca-certificates curl
 
 # Python environment
 python3 -m venv .venv
@@ -341,9 +343,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
 # Browser engine used by the collectors
-python -m playwright install firefox
+python -m playwright install --with-deps firefox
 
-# Validate the checkout and create runtime directories
+# Validate the checkout and create runtime directories. This compiles all Python
+# sources, syntax-checks shell wrappers, verifies required executables, and
+# confirms Playwright is importable unless --skip-browser is used.
 ./scripts/validate-installation.sh
 ```
 
