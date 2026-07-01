@@ -88,4 +88,29 @@ PY
   "$PYTHON_CMD" -m playwright install --dry-run firefox >/dev/null
 fi
 
+# Informational (never fails validation): report whether WhatsApp notifications
+# are ready to send, since enabling them takes manual steps setup.sh cannot do
+# (pairing the WAHA session by QR and choosing the destination group).
+MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+WAHA_ENABLED="${PC_WAHA_ENABLED:-}"
+if [[ -z "$WAHA_ENABLED" && -f "$MONITOR_SETTINGS" ]]; then
+  WAHA_ENABLED="$(sed -n "s/^PC_WAHA_ENABLED=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$MONITOR_SETTINGS" | tail -n 1)"
+fi
+WAHA_CHAT="${PC_WAHA_CHAT_ID:-}"
+if [[ -z "$WAHA_CHAT" && -s "$PC_DATA_DIR/config/waha_chat_id.txt" ]]; then
+  WAHA_CHAT="$(head -n 1 "$PC_DATA_DIR/config/waha_chat_id.txt")"
+fi
+case "${WAHA_ENABLED,,}" in
+  1|true|yes|on)
+    if [[ -n "$WAHA_CHAT" ]]; then
+      echo "WhatsApp notifications: enabled, destination chat id configured."
+    else
+      echo "WhatsApp notifications: enabled but NO destination chat id yet. Set PC_WAHA_CHAT_ID or save it from the monitor Settings panel."
+    fi
+    ;;
+  *)
+    echo "WhatsApp notifications: disabled (default). To enable: docker compose up -d waha, pair the session (QR), then set PC_WAHA_ENABLED=1 and the chat id (see .env.example)."
+    ;;
+esac
+
 echo "PanamaCompra Collector installation validation passed."

@@ -17,9 +17,17 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+# Resolve the runtime config directory through common.py so the chat id and
+# saved message live in the same data/config folder the monitors write to
+# (var/data/config in development/portable mode, XDG state dir when installed).
+_SRC_DIR = Path(__file__).resolve().parent.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+import common as pc_common
+
 DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 DEFAULT_SESSION = "default"
-CONFIG_DIR = Path(__file__).resolve().parent / "data" / "config"
+CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 
