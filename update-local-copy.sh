@@ -327,8 +327,8 @@ fi
 
 # shellcheck disable=SC1091
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip || { echo "ERROR: Unable to upgrade pip. Check network/proxy access or retry with a reachable Python package index." >&2; exit 1; }
+python -m pip install -r requirements.txt || { echo "ERROR: Unable to install Python dependencies from requirements.txt. Check network/proxy access, then rerun ./update-local-copy.sh." >&2; exit 1; }
 
 echo ""
 echo "6) Verify Playwright Firefox browser"
@@ -338,7 +338,19 @@ elif [ "${PC_UPDATE_SKIP_BROWSER_INSTALL:-0}" = "1" ]; then
   echo "Skipped Playwright Firefox install because PC_UPDATE_SKIP_BROWSER_INSTALL=1."
   echo "WARNING: Playwright Firefox is not currently launchable."
 else
-  python -m playwright install firefox
+  if [ -r /etc/os-release ] && grep -qiE 'debian|ubuntu|linuxmint' /etc/os-release; then
+    python -m playwright install --with-deps firefox || {
+      echo "ERROR: Unable to install Playwright Firefox and OS dependencies." >&2
+      echo "Retry after fixing apt/network access, or set PC_UPDATE_SKIP_BROWSER_INSTALL=1 to skip temporarily." >&2
+      exit 1
+    }
+  else
+    python -m playwright install firefox || {
+      echo "ERROR: Unable to install Playwright Firefox." >&2
+      echo "If launch later reports missing libraries, run: python -m playwright install-deps firefox" >&2
+      exit 1
+    }
+  fi
   if ! playwright_firefox_available; then
     echo "ERROR: Playwright Firefox installed but could not be launched." >&2
     echo "Install missing system browser dependencies, then retry:" >&2

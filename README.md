@@ -320,8 +320,11 @@ available, verifies that the selected `PYTHON_BIN` is Python 3.10+ with working
 `.env` does not already exist, creates `.venv`, installs Python dependencies,
 installs the Playwright Firefox browser (plus Linux browser dependencies on
 Debian/Ubuntu/Linux Mint when apt is not skipped), creates runtime directories,
-and finishes by running `./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when
-system packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for
+and finishes by running `./scripts/validate-installation.sh`. The validator
+automatically uses `.venv/bin/python` when that virtual environment exists, so
+standalone validation checks the same interpreter the collector will use. Set
+`PC_SETUP_SKIP_APT=1` when system packages are managed separately, or
+`PC_SETUP_SKIP_BROWSER=1` for
 CI/offline validation — these must be set as real environment variables
 (`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
 environment variable always takes precedence over `.env`/`config/defaults.env`
@@ -347,7 +350,7 @@ python -m playwright install --with-deps firefox
 
 # Validate the checkout and create runtime directories. This compiles all Python
 # sources, syntax-checks shell wrappers, verifies required executables, and
-# confirms Playwright is importable unless --skip-browser is used.
+# confirms Playwright is importable from `.venv` unless --skip-browser is used.
 ./scripts/validate-installation.sh
 ```
 

@@ -11,7 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/env.sh"
 cd "$APP_ROOT"
 
-PYTHON_CMD="${PYTHON_CMD:-python3}"
+if [[ -n "${PYTHON_CMD:-}" ]]; then
+  PYTHON_CMD="$PYTHON_CMD"
+elif [[ -x "$APP_ROOT/.venv/bin/python" ]]; then
+  PYTHON_CMD="$APP_ROOT/.venv/bin/python"
+else
+  PYTHON_CMD="python3"
+fi
 
 require_file() {
   [[ -e "$1" ]] || { echo "missing required path: $1" >&2; exit 1; }
