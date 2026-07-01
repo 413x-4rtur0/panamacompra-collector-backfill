@@ -19,7 +19,7 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Validate repository installation surface
-        run: ./scripts/validate_installation.sh --skip-browser
+        run: ./scripts/validate-installation.sh --skip-browser
       - name: Shell syntax checks
         run: |
-          while IFS= read -r file; do bash -n "$file"; done < <(find . -maxdepth 2 -type f -name '*.sh' -not -path './.git/*')
+          while IFS= read -r file; do bash -n "$file"; done < <(find . -maxdepth 4 -type f -name '*.sh' -not -path './.git/*' -not -path './.venv/*')

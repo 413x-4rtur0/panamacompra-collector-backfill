@@ -14,8 +14,8 @@ Thank you for improving PanamaCompra Collector. This project favors small, revie
 
 ```bash
 python -m compileall -q .
-./scripts/validate_installation.sh --skip-browser
-while IFS= read -r file; do bash -n "$file"; done < <(find . -maxdepth 2 -type f -name '*.sh' -not -path './.git/*')
+./scripts/validate-installation.sh --skip-browser
+while IFS= read -r file; do bash -n "$file"; done < <(find . -maxdepth 4 -type f -name '*.sh' -not -path './.git/*' -not -path './.venv/*')
 ```
 
 ## Review standards

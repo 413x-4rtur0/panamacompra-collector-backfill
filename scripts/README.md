@@ -1,34 +1,62 @@
 # Script organization and ordered task names
 
-The repository keeps the historical `pc_*.sh` entrypoints in the root for
-backward compatibility, but new operational entrypoints should live under
-`scripts/` and be reachable from `bin/pcc`.
+Engine scripts live under `src/`, grouped by concern:
+
+- `src/pipeline/` — the run-all worker and its sequential steps.
+- `src/webhook/` — the changedetection.io webhook listener and its helpers.
+- `src/monitor/` — the Tk/web/terminal monitor UIs and the updater loader.
+- `src/notify/` — the low-level WAHA HTTP client.
+- `src/tools/` — one-off maintenance/migration utilities.
+
+`bin/pcc` is the stable command-line entrypoint; `scripts/tasks/` holds thin,
+numbered wrappers around it for a visible install/operate lifecycle. Prefer
+`bin/pcc <command>` or a numbered task wrapper over calling a `src/` script
+directly, except for the manual single-phase runs documented in the main
+README (e.g. running just the index or detail step by hand).
 
 ## Naming methodology
 
 Use ordered names when the filename should communicate workflow hierarchy:
 
 ```text
-NNN[-letter]-short-description.sh
+NNN[-letter]-short-description.ext
 ```
 
 Examples:
 
-- `001a-setup-development.sh` — first bootstrap path for development/portable use.
-- `001b-install-update-monitor-launcher.sh` — alternate/conditional first-time desktop step.
-- `020-start-collector.sh` — normal run step after setup/update.
-- `090-uninstall-or-purge.sh` — late/destructive lifecycle step.
+- `scripts/tasks/001a-setup-development.sh` — first bootstrap path for development/portable use.
+- `scripts/tasks/001b-install-update-monitor-launcher.sh` — alternate/conditional first-time desktop step.
+- `src/pipeline/010-collect-index.py` — STEP 1 of the run-all worker sequence.
+- `src/monitor/001a-monitor-tk.py` / `001b-monitor-web.py` / `001c-monitor-terminal.sh` — mutually exclusive monitor UI choices, selected by `PC_MONITOR_MODE`.
 
 Rules:
 
-1. `NNN` is the lifecycle phase. Lower numbers happen earlier.
-2. Optional letters (`001a`, `001b`) are mutually exclusive or conditional
-   variants inside the same phase.
-3. The description is lowercase kebab-case and starts with a verb when possible.
-4. Numbered task files should be thin wrappers; implementation belongs in
-   reusable scripts or the `bin/pcc` command dispatcher.
-5. Do not rename root-level legacy scripts until all README, desktop, systemd,
-   and user workflows have migrated. Add ordered wrappers first, then deprecate.
+1. `NNN` communicates lifecycle/sequence order. In `scripts/tasks/`, lower
+   numbers happen earlier (install → update → run → status → stop →
+   uninstall). In `src/pipeline/`, the numbers mirror the run-all worker's
+   documented STEP 0-7 sequence in the main README.
+2. Optional letters (`001a`, `001b`, `001c`, ...) mark mutually exclusive or
+   conditional variants inside the same phase/step (e.g. the three monitor
+   UIs, chosen by `PC_MONITOR_MODE`).
+3. The description is lowercase kebab-case and starts with a verb when
+   possible. Scripts that are daemons/programs rather than actions (e.g.
+   `listener.py`, `common.py`) may be a plain noun instead.
+4. Numbered task files under `scripts/tasks/` should be thin wrappers;
+   implementation belongs in `src/` or the `bin/pcc` command dispatcher.
+5. **Exception — Python import constraints:** a handful of `src/pipeline/`
+   scripts are imported as real Python modules by sibling steps (not just
+   executed as standalone scripts), e.g. `070-test-zone.py` does
+   `from build_calendar import write_packages` and `from collect_detail import
+   process_detail`. Python's `import` statement cannot reference a filename
+   that starts with a digit or contains a hyphen, so these specific files keep
+   plain `snake_case` names with no numeric prefix instead:
+   `src/pipeline/collect_detail.py` (STEP 2), `src/pipeline/build_calendar.py`
+   (STEP 5), `src/pipeline/notify_new_records.py` (STEP 6), and
+   `src/tools/update_day_folder.py`. `src/common.py` and
+   `src/notify/waha_client.py` are also imported by many other scripts and
+   follow the same underscore-only rule. The STEP order for these is
+   documented in the main README's Scripts reference table and pipeline
+   diagram, not encoded in the filename.
 
 ## Current lifecycle map
 
@@ -36,12 +64,27 @@ Rules:
 | --- | --- | --- |
 | `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout. |
 | `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor desktop launcher. |
-| `tasks/010-update-local-copy.sh` | `./update_local_copy.sh` | Update code/dependencies before monitor use. |
+| `tasks/010-update-local-copy.sh` | `./update-local-copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
 | `tasks/021-open-monitor.sh` | `./bin/pcc monitor` | Open the monitor independently. |
 | `tasks/030-status.sh` | `./bin/pcc status` | Inspect queues, progress, logs, and process state. |
 | `tasks/040-stop-all.sh` | `./bin/pcc stop` | Stop host processes. |
 | `tasks/090-uninstall-or-purge.sh` | `./bin/pcc uninstall` | Stop services/containers and optionally purge state. |
 
-This gives the visible hierarchy you asked for without breaking existing users
-or systemd/desktop integrations that still call the historical filenames.
+## Run-all pipeline map (`src/pipeline/`)
+
+| Step | Script | Purpose |
+| --- | --- | --- |
+| 0 | `000-update-before-run.sh` | Pre-run git/dependency refresh. |
+| 1 | `010-collect-index.py` | Index scan (Programadas + Abiertas). |
+| 2 | `collect_detail.py` | Detail download (imported by STEP 4/7 tools; see naming exception above). |
+| 3 | `030-build-detail-views.py` | Rebuild summary/items/calendar views. |
+| 4 | `040-repair-missing-deadlines.py` | Verify/repair failed + missing-deadline records. |
+| 5 | `build_calendar.py` | Build timestamped `.ics` packages (imported by STEP 7; naming exception). |
+| 6 | `notify_new_records.py` | WhatsApp announcements (imported by `src/tools/import-selected-calendars.py`; naming exception). |
+| 7 | `070-test-zone.py` | Optional sandbox re-run of the last N records. |
+
+Un-numbered helpers in the same folder (`run-worker.sh`, `request-run-all.sh`,
+`run-now.sh`, `queue-status.sh`, `run-all-status.sh`, `follow-run-all.sh`,
+`stop-run-all.sh`, `stop-collectors.sh`) orchestrate or inspect the sequence
+above rather than being a step in it.

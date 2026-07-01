@@ -3,7 +3,7 @@
 
 ## Validation
 - [ ] `python -m compileall -q .`
-- [ ] `./scripts/validate_installation.sh --skip-browser`
+- [ ] `./scripts/validate-installation.sh --skip-browser`
 - [ ] Relevant collector/monitor smoke test documented
 
 ## Agile checklist

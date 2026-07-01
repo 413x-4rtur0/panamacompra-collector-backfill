@@ -89,26 +89,26 @@ stop_user_services() {
 
 stop_host_processes() {
   log "Stopping host runners, collectors, monitors, updater, and webhook listener."
-  if [[ -x "$APP_ROOT/pc_stop_run_all.sh" ]]; then
-    run "$APP_ROOT/pc_stop_run_all.sh" || true
+  if [[ -x "$APP_ROOT/src/pipeline/stop-run-all.sh" ]]; then
+    run "$APP_ROOT/src/pipeline/stop-run-all.sh" || true
   fi
 
   local patterns=(
-    '[p]c_run_all_flag_watcher.sh'
-    '[s]cripts/run_worker.sh'
-    '[p]ython3? -u ./pc_index_collector.py'
-    '[p]ython3? -u ./pc_detail_downloader.py'
-    '[p]ython3? -u ./pc_test_zone.py'
-    '[p]ython3? -u ./pc_build_calendar.py'
-    '[p]ython3? -u ./pc_monitor_tk.py'
-    '[p]ython3? -u ./pc_monitor_server.py'
-    '[p]c_next_run_timer.py'
-    '[p]c_follow_run_all.sh'
-    '[u]pdate_local_copy.sh'
-    '[p]c_update_loader.py'
-    '[p]c_update_before_run.sh'
-    '[p]ython3? -u ./webhook_listener.py'
-    '[w]ebhook_listener.py'
+    '[w]atch-queue-flag.sh'
+    '[r]un-worker.sh'
+    '[p]ython3? -u .*010-collect-index.py'
+    '[p]ython3? -u .*collect_detail.py'
+    '[p]ython3? -u .*070-test-zone.py'
+    '[p]ython3? -u .*build_calendar.py'
+    '[p]ython3? -u .*001a-monitor-tk.py'
+    '[p]ython3? -u .*001b-monitor-web.py'
+    '[n]ext-run-timer.py'
+    '[f]ollow-run-all.sh'
+    '[u]pdate-local-copy.sh'
+    '[u]pdate-loader.py'
+    '[0]00-update-before-run.sh'
+    '[p]ython3? -u .*src/webhook/listener.py'
+    '[s]rc/webhook/listener.py'
   )
   for pattern in "${patterns[@]}"; do
     run pkill -TERM -f "$pattern" 2>/dev/null || true
@@ -170,7 +170,7 @@ purge_paths() {
 
 print_remaining() {
   log "Remaining related host processes:"
-  pgrep -af 'pc_run_all|pc_index_collector|pc_detail_downloader|pc_test_zone|pc_build_calendar|pc_monitor|webhook_listener|update_local|changedetection|waha' || true
+  pgrep -af 'run-worker|010-collect-index|collect_detail|070-test-zone|build_calendar|monitor-tk|monitor-web|src/webhook/listener|update-local-copy|changedetection|waha' || true
   detect_compose
   if [[ "${#compose_cmd[@]}" -gt 0 && -f "$APP_ROOT/docker-compose.yml" ]]; then
     log "Remaining compose services:"
