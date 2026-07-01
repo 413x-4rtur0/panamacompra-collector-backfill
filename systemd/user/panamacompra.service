@@ -1,0 +1,18 @@
+[Unit]
+Description=PanamaCompra Collector Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=APP_MODE=installed
+WorkingDirectory=%h/.local/share/panamacompra
+ExecStart=%h/.local/share/panamacompra/bin/pcc start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=panamacompra
+
+[Install]
+WantedBy=default.target
