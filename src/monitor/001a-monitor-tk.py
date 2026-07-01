@@ -319,7 +319,7 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0,
+        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
         "needs_deadline": 0, "with_detail_json": 0,
         "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
@@ -373,7 +373,10 @@ def db_review_stats() -> dict[str, object]:
             "new_records": count("detail_status = 'pending'"),
             "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
-            "notify_backlog": count("detail_status = 'saved' AND notified_at IS NULL") if has_notified else 0,
+            "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
+            "detail_notify_backlog": count(
+                "detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL"
+            ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
             "recent": [
@@ -1091,6 +1094,7 @@ def run_tk() -> int:
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
     keywords_var = tk.StringVar(value=", ".join(existing_keywords))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
+    notify_details_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS", "1") != "0")
     import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
     records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(pc_common.RECORDS_DIR)))
     calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(pc_common.CALENDAR_DIR)))
@@ -1132,7 +1136,7 @@ def run_tk() -> int:
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic announcements are sent later in the post-detail MESSAGING step when enabled.")
+    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
@@ -1144,12 +1148,27 @@ def run_tk() -> int:
     field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
     field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
     field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
-    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
     notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
     calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
-    add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
+    add_tooltip(notify_check, "Master switch for automatic WhatsApp MESSAGING. The index alert is sent right after the index scan, before downloads. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
+    notify_details_check = ttk.Checkbutton(settings, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
+    notify_details_check.grid(row=10, column=0, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_details_check, "Second notifier phase: after each announced record's detail page downloads, send the '📥 Detalles Completos' message with the real items, location and full date range. Env: PC_NOTIFY_DETAILS. Off = items are absorbed silently (no duplicate messages).")
+
+    def send_test_whatsapp() -> None:
+        subprocess.Popen(
+            [str(BASE_DIR / "src/notify/waha_client.py"), "--event", "info", "--status", "TEST",
+             "--message", "Prueba de notificación desde el monitor PanamaCompra."],
+            cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        button_status_var.set("WhatsApp test message requested (uses the saved WAHA settings; check the group and data/logs).")
+
+    test_whatsapp_button = ttk.Button(settings, text="Send test WhatsApp", command=send_test_whatsapp)
+    test_whatsapp_button.grid(row=10, column=2, sticky="w", pady=3)
+    add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
 
     ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
@@ -1220,6 +1239,7 @@ def run_tk() -> int:
             "PC_MONITOR_TK_IDLE_REFRESH_SECONDS": str(runtime["idle_refresh"]),
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
             "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
+            "PC_NOTIFY_DETAILS": "1" if notify_details_var.get() else "0",
             "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(pc_common.RECORDS_DIR),
             "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(pc_common.CALENDAR_DIR),
@@ -1261,7 +1281,7 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1367,7 +1387,7 @@ def run_tk() -> int:
             "Previous database data / all records summary\n"
             f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
             f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
-            f"Awaiting WhatsApp (backlog): {s['notify_backlog']} · Needs deadline repair: {s['needs_deadline']}\n"
+            f"Awaiting WhatsApp index alert: {s['notify_backlog']} · Awaiting item-details WhatsApp: {s['detail_notify_backlog']} · Needs deadline repair: {s['needs_deadline']}\n"
             f"Detail statuses: {statuses}\n"
             f"Groups: {groups}\n"
             f"DB elements/columns with data: {columns}\n"
@@ -1827,7 +1847,7 @@ def run_tk() -> int:
             f"Total records: {s['total']}\n"
             f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
             f"Detail JSON on record: {s['with_detail_json']}   ·   Notified (WAHA): {s['notified']}\n"
-            f"Awaiting WhatsApp (backlog): {s['notify_backlog']}   ·   Needs deadline repair: {s['needs_deadline']}\n"
+            f"Awaiting WhatsApp index alert: {s['notify_backlog']}   ·   Awaiting item-details WhatsApp: {s['detail_notify_backlog']}   ·   Needs deadline repair: {s['needs_deadline']}\n"
             f"By group   ·   {groups}"
         )
 

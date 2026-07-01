@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """Send rich PanamaCompra "what is new" notifications to WhatsApp via WAHA.
 
-The run-all worker calls this script right after the index step, BEFORE detail
-downloads, so subscribers hear about new opportunities immediately instead of
-after the (potentially hours-long) download phase. ``--announce`` sends one rich
-"🔔 Nueva Oportunidad" message per new record with monitor-visible progress
-(item details show as pending when the detail page is not downloaded yet);
+Two notifier phases, called by the run-all worker:
+
+* ``--announce`` (index phase) runs right after the index step, BEFORE detail
+  downloads, so subscribers hear about new opportunities immediately instead of
+  after the (potentially hours-long) download phase. It sends one rich
+  "🔔 Nueva Oportunidad" message per new record with monitor-visible progress;
+  item details show as pending because the detail page is not downloaded yet.
+* ``--announce-details`` (detail phase) runs after the downloads and detail
+  views finish. For every record announced from the index it sends the
+  follow-up "📥 Detalles Completos" message in the full rich format — real
+  items, location, complete date range — and exports the record's calendar.
+  Guarded by ``detail_notified_at`` so each record gets exactly one follow-up.
+
 ``--idle`` sends one "⚪ Sin nuevas entradas" status; ``--flush`` retries
 records that still have no ``notified_at`` timestamp; ``--sync-snapshots
---since TS`` is called by the worker after the downloads finish so the freshly
-downloaded items do not fire a duplicate "items updated" message on the next
-run.
+--since TS`` is the silent fallback used when the detail phase is disabled
+(PC_NOTIFY_DETAILS=0) so the downloaded items do not fire a duplicate "items
+updated" message on the next run.
 
 Design notes
 ------------
@@ -45,6 +53,7 @@ CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 CALENDAR_EXPORT_DIR = pc_common.CALENDAR_EXPORT_DIR
 KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 BASELINE_MARKER = CONFIG_DIR / "waha_notify_initialized"
+DETAIL_BASELINE_MARKER = CONFIG_DIR / "waha_detail_notify_initialized"
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
 
 DASH = "—"
@@ -334,6 +343,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     elif variant == "items":
         heading = f"🔄 *Actualización de Items - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status} (Sin cambios)"
+    elif variant == "details":
+        heading = f"📥 *Detalles Completos - {SOURCE_NAME}*"
+        status_line = f"📊 *Estado:* {status}"
     else:
         heading = f"🔔 *Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
@@ -414,6 +426,14 @@ def mark_notified(conn, numero: str) -> None:
         "UPDATE opportunities SET notified_at = ?, last_notified_status = ?, "
         "last_notified_items_hash = ?, last_notified_signature = ? WHERE numero = ?",
         (now_str(), status, items_hash, signature, numero),
+    )
+    conn.commit()
+
+
+def mark_detail_notified(conn, numero: str) -> None:
+    conn.execute(
+        "UPDATE opportunities SET detail_notified_at = ? WHERE numero = ?",
+        (now_str(), numero),
     )
     conn.commit()
 
@@ -516,6 +536,9 @@ def notify_manual_record(conn, numero: str, *, force: bool = False) -> bool:
             return False
         export_record_calendar(conn, row)
         mark_notified(conn, numero)
+        # Manual messages already carry the downloaded items, so no follow-up
+        # detail message is owed.
+        mark_detail_notified(conn, numero)
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"WAHA manual notify error for {numero}: {exc}", file=sys.stderr)
@@ -541,6 +564,7 @@ def notify_saved_record(conn, numero: str) -> bool:
         if decision == "expired":
             # Past its deadline: never actionable, so mark done and stay quiet.
             mark_notified(conn, numero)
+            mark_detail_notified(conn, numero)
             return False
         if decision == "too_far":
             # Beyond the announce window for now; leave it unmarked so a later
@@ -551,12 +575,17 @@ def notify_saved_record(conn, numero: str) -> bool:
         if match_line is None:
             # Filtered out by keywords: remember it so it is not rechecked.
             mark_notified(conn, numero)
+            mark_detail_notified(conn, numero)
             return False
         if not send_text("new", build_opportunity_message(row, summary, match_line)):
             # Leave notified_at unset so a later --flush retries it.
             return False
         export_record_calendar(conn, row)
         mark_notified(conn, numero)
+        if row["detail_status"] == "saved":
+            # The message already carried the real items (detail downloaded in a
+            # previous run), so no follow-up detail message is owed.
+            mark_detail_notified(conn, numero)
         return True
     except Exception as exc:  # noqa: BLE001 - defensive: never break a download
         print(f"WAHA record notify error for {numero}: {exc}", file=sys.stderr)
@@ -656,6 +685,138 @@ def notify_items_change(conn, numero: str) -> bool:
         print(f"WAHA items-change notify error for {numero}: {exc}", file=sys.stderr)
         return False
 
+def ensure_detail_baseline(conn, since: str) -> bool:
+    """First-use baseline for the detail (second) notifier phase: mark records
+    announced before this feature existed as already detail-notified, so an
+    upgraded install does not burst follow-up messages for the whole archive.
+
+    ``since`` is the current run's start time: records announced during THIS run
+    stay eligible for their detail follow-up. Exception: when the main baseline
+    itself was established during this run, nothing was actually messaged, so
+    everything is marked."""
+    if DETAIL_BASELINE_MARKER.exists():
+        return False
+    if not (waha_enabled() and waha_destination()):
+        return False
+    main_baseline_time = waha.read_saved_text(BASELINE_MARKER)
+    cutoff = since
+    if not since or (main_baseline_time and main_baseline_time >= since):
+        cutoff = ""
+    if cutoff:
+        conn.execute(
+            "UPDATE opportunities SET detail_notified_at = notified_at "
+            "WHERE notified_at IS NOT NULL AND detail_notified_at IS NULL AND notified_at < ?",
+            (cutoff,),
+        )
+    else:
+        conn.execute(
+            "UPDATE opportunities SET detail_notified_at = notified_at "
+            "WHERE notified_at IS NOT NULL AND detail_notified_at IS NULL"
+        )
+    conn.commit()
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DETAIL_BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
+    print("WAHA detail-notify baseline established; previously announced records will not get follow-up detail messages.")
+    return True
+
+
+def notify_detail_ready(conn, numero: str) -> bool:
+    """Second notifier phase: send the follow-up '📥 Detalles Completos' message
+    (real items, location, full date range) for a record that was announced from
+    the index and whose detail page has now been downloaded. Idempotent via
+    detail_notified_at. Returns True only when a message was sent. Never
+    raises."""
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or row["detail_status"] != "saved" or not row["notified_at"] or row["detail_notified_at"]:
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        match_line = match_line_for(row, summary, load_keywords())
+        if match_line is None:
+            # Same keyword filter as the index phase: settle it silently.
+            mark_detail_notified(conn, numero)
+            mark_snapshot(conn, numero)
+            return False
+        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line)):
+            # Leave detail_notified_at unset so the next run retries.
+            return False
+        export_record_calendar(conn, row)
+        mark_detail_notified(conn, numero)
+        # Absorb the downloaded items into the notified snapshot so the next
+        # run's change detection does not re-announce them as an item change.
+        mark_snapshot(conn, numero)
+        return True
+    except Exception as exc:  # noqa: BLE001 - never break a run
+        print(f"WAHA detail notify error for {numero}: {exc}", file=sys.stderr)
+        return False
+
+
+def announce_details_with_progress(conn) -> int:
+    """Visible second MESSAGING step. After the detail downloads and view
+    rebuilds, send — one by one with per-message monitor progress — the
+    follow-up detail message for every record announced from the index whose
+    detail page is now saved. Returns the number sent. Never raises."""
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "5")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "7")
+    percent_base = _percent_int("PC_MSG_PERCENT_BASE", 80)
+    percent_done = max(percent_base + 1, _percent_int("PC_MSG_PERCENT_DONE", 83))
+
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' "
+        "AND notified_at IS NOT NULL AND detail_notified_at IS NULL "
+        "ORDER BY detail_saved_at, first_seen"
+    ).fetchall()
+    total = len(rows)
+
+    if total == 0:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", percent_done - 1,
+            f"Step {step_current}/{step_total}: no detail follow-up messages to send.",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=0, records_new=0,
+        )
+        print("WAHA detail announce: nothing to send.")
+        return 0
+
+    sent = 0
+    skipped = 0
+    for index, row in enumerate(rows, start=1):
+        full_row = fetch_row(conn, row["numero"])
+        label = _short_label(full_row) if full_row is not None else row["numero"]
+        summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
+        match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+        preview = (
+            _one_line_preview(build_record_message(full_row, summary, variant="details", match_line=match_line))
+            if (full_row is not None and match_line is not None)
+            else f"{label} (sin coincidencia de palabra clave)"
+        )
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING",
+            min(percent_done, percent_base + int((percent_done - percent_base) * index / total)),
+            f"Step {step_current}/{step_total}: sending WhatsApp details {index}/{total}: {label}",
+            step_current=step_current, step_total=step_total,
+            item_current=index, item_total=total,
+            records_new=total, records_saved=sent,
+            extra=preview,
+        )
+        if notify_detail_ready(conn, row["numero"]):
+            sent += 1
+        else:
+            skipped += 1
+
+    pc_common.write_run_progress(
+        "MESSAGING", "RUNNING", percent_done,
+        f"Step {step_current}/{step_total}: WhatsApp details done — {sent} sent, {skipped} skipped of {total}.",
+        step_current=step_current, step_total=step_total,
+        item_current=total, item_total=total,
+        records_new=total, records_saved=sent,
+    )
+    print(f"WAHA detail announce complete: {sent} sent, {skipped} skipped of {total}.")
+    return sent
+
+
 def sync_snapshots(conn, since: str) -> int:
     """After the detail downloads, refresh the stored status/items snapshot for
     records announced since ``since`` (this run's early MESSAGING step), and
@@ -731,7 +892,7 @@ def announce_with_progress(conn) -> int:
     When there is nothing to send it publishes the "Sin nuevas entradas" status.
     Returns the number of messages actually sent. Never raises."""
     step_current = os.environ.get("PC_MSG_STEP_CURRENT", "2")
-    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "6")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "7")
     # Progress percent window for this step, set by the worker to match its
     # position in the run (defaults keep the old end-of-run scale).
     percent_base = _percent_int("PC_MSG_PERCENT_BASE", 96)
@@ -757,6 +918,11 @@ def announce_with_progress(conn) -> int:
             continue
         full = fetch_row(conn, row["numero"])
         if full is None:
+            continue
+        if full["detail_notified_at"] is None:
+            # The detail (second) notifier phase still owes this record its
+            # follow-up message with the downloaded items; do not report the
+            # empty→downloaded items transition as an "items updated" change.
             continue
         status, items_hash, signature = signature_for(full)
         if full["last_notified_signature"] == signature:
@@ -843,7 +1009,8 @@ def main(argv=None) -> int:
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
     parser.add_argument("--flush", action="store_true", help="announce any records not yet sent (safety net)")
     parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step, right after the index)")
-    parser.add_argument("--sync-snapshots", action="store_true", help="silently refresh notified snapshots (and export calendars) for records announced since --since; called after the detail downloads")
+    parser.add_argument("--announce-details", action="store_true", help="send the follow-up detail message (real items) for records announced from the index whose detail page is now downloaded (second MESSAGING step)")
+    parser.add_argument("--sync-snapshots", action="store_true", help="silently refresh notified snapshots (and export calendars) for records announced since --since; fallback when the detail phase is disabled")
     parser.add_argument("--since", default="", help="timestamp (YYYY-MM-DD HH:MM:SS) limiting --sync-snapshots to records notified at/after it")
     parser.add_argument("--record", action="append", default=[], help="manually send notification for a specific record NUMERO; repeat for several records")
     parser.add_argument("--force", action="store_true", help="with --record, send even if the record was already notified")
@@ -870,6 +1037,12 @@ def main(argv=None) -> int:
     if args.sync_snapshots:
         updated = sync_snapshots(conn, args.since or "1970-01-01 00:00:00")
         print(f"WAHA snapshot sync complete: {updated} record(s) refreshed.")
+        return 0
+
+    if args.announce_details:
+        ensure_detail_baseline(conn, args.since)
+        if not just_baselined:
+            announce_details_with_progress(conn)
         return 0
 
     if args.idle:

@@ -12,7 +12,7 @@ so it is clearly distinct from new (live) records.
     ./src/pipeline/070-test-zone.py                 # list the last 5, then ask
     ./src/pipeline/070-test-zone.py --limit 5 --apply
 
-The run-all worker invokes this automatically (optional STEP 7) only when a normal run
+The run-all worker invokes this automatically (optional STEP 8) only when a normal run
 found no new records, so a "nothing new" run still exercises the latest code.
 Disable by setting PC_TEST_ZONE_LIMIT=0.
 """

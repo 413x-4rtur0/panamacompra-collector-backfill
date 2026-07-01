@@ -1157,6 +1157,10 @@ def ensure_db_schema(conn):
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
         # notify_new_records.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
+        # Timestamp of the follow-up WhatsApp message with the downloaded item
+        # details (second notifier phase). NULL = full-detail message still owed
+        # for a record already announced from the index.
+        "detail_notified_at": "ALTER TABLE opportunities ADD COLUMN detail_notified_at TEXT",
         # Pending status-change announcement (e.g. "abierta" when a record already
         # announced as Programada moves to the Abiertas list). Cleared once the
         # MESSAGING step sends the update message.
