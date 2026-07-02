@@ -27,12 +27,12 @@ UPDATE_IN_PROGRESS_FLAG="$PC_QUEUE_DIR/update_monitor_in_progress.flag"
 UPDATE_LOCK_FILE="/tmp/panamacompra_update_local.lock"
 
 collector_pipeline_running() {
-  pgrep -f "[r]un-worker.sh|[p]ython3? -u .*010-collect-index.py|[p]ython3? -u .*collect_detail.py|[p]ython3? -u .*build_calendar.py|[p]ython3? -u .*notify_new_records.py" >/dev/null 2>&1
+  pgrep -f "[r]un-worker.sh|[p]ython3? -u .*010-collect-index.py|[p]ython3? -u .*030-collect-details.py|[p]ython3? -u .*060-build-calendar.py|[p]ython3? -u .*020-notify-whatsapp.py" >/dev/null 2>&1
 }
 
 open_monitor_best_effort() {
-  if [ "${PC_UPDATE_OPEN_MONITOR_WHEN_QUEUED:-1}" != "0" ] && [ -x ./src/monitor/open-monitor.sh ]; then
-    ./src/monitor/open-monitor.sh >/dev/null 2>&1 || true
+  if [ "${PC_UPDATE_OPEN_MONITOR_WHEN_QUEUED:-1}" != "0" ] && [ -x ./src/monitor/000-open-monitor.sh ]; then
+    ./src/monitor/000-open-monitor.sh >/dev/null 2>&1 || true
   fi
 }
 
@@ -47,7 +47,7 @@ queue_update_monitor_request() {
 }
 
 webhook_listener_running() {
-  pgrep -f "[s]rc/webhook/listener.py" >/dev/null 2>&1
+  pgrep -f "[s]rc/webhook/010-webhook-listener.py" >/dev/null 2>&1
 }
 
 restart_webhook_listener() {
@@ -94,7 +94,7 @@ restart_webhook_listener() {
     return 0
   fi
 
-  if ./src/webhook/start-listener.sh --replace-port-owner; then
+  if ./src/webhook/020-start-listener.sh --replace-port-owner; then
     echo "Webhook listener is available after update."
   else
     echo "WARNING: webhook listener did not start; check $PC_LOG_DIR/webhook_listener.out.log."
@@ -132,7 +132,7 @@ fi
 # Serialize manual/automatic Update + Monitor launchers. If changedetection (or
 # a user) asks for another update while the collector is still processing a
 # previous change, do NOT kill the active pipeline and do NOT start a second
-# updater. Leave a durable queue flag; src/pipeline/run-worker.sh consumes it
+# updater. Leave a durable queue flag; src/pipeline/100-run-worker.sh consumes it
 # after the current run finishes cleanly.
 exec 8>"$UPDATE_LOCK_FILE"
 if ! flock -n 8; then
@@ -180,7 +180,7 @@ trap restore_webhook_on_exit EXIT
 # converted into a queued Update + Monitor request instead. We only pause the
 # webhook listener during the actual update window so a fresh notification is
 # enqueued for after the update instead of racing code/dependency changes.
-pkill -TERM -f "[s]rc/webhook/listener.py" 2>/dev/null || true
+pkill -TERM -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
 
 echo ""
 echo "2) Preserve any local changes to tracked files so the update always proceeds"
@@ -327,8 +327,8 @@ fi
 
 # shellcheck disable=SC1091
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip || { echo "ERROR: Unable to upgrade pip. Check network/proxy access or retry with a reachable Python package index." >&2; exit 1; }
+python -m pip install -r requirements.txt || { echo "ERROR: Unable to install Python dependencies from requirements.txt. Check network/proxy access, then rerun ./update-local-copy.sh." >&2; exit 1; }
 
 echo ""
 echo "6) Verify Playwright Firefox browser"
@@ -338,7 +338,19 @@ elif [ "${PC_UPDATE_SKIP_BROWSER_INSTALL:-0}" = "1" ]; then
   echo "Skipped Playwright Firefox install because PC_UPDATE_SKIP_BROWSER_INSTALL=1."
   echo "WARNING: Playwright Firefox is not currently launchable."
 else
-  python -m playwright install firefox
+  if [ -r /etc/os-release ] && grep -qiE 'debian|ubuntu|linuxmint' /etc/os-release; then
+    python -m playwright install --with-deps firefox || {
+      echo "ERROR: Unable to install Playwright Firefox and OS dependencies." >&2
+      echo "Retry after fixing apt/network access, or set PC_UPDATE_SKIP_BROWSER_INSTALL=1 to skip temporarily." >&2
+      exit 1
+    }
+  else
+    python -m playwright install firefox || {
+      echo "ERROR: Unable to install Playwright Firefox." >&2
+      echo "If launch later reports missing libraries, run: python -m playwright install-deps firefox" >&2
+      exit 1
+    }
+  fi
   if ! playwright_firefox_available; then
     echo "ERROR: Playwright Firefox installed but could not be launched." >&2
     echo "Install missing system browser dependencies, then retry:" >&2
@@ -349,7 +361,7 @@ fi
 
 echo ""
 echo "7) Review and update archive database metadata"
-python -u ./src/tools/maintain-database.py --apply
+python -u ./src/tools/050-maintain-database.py --apply
 
 echo ""
 echo "8) Run repository health checks"
@@ -360,12 +372,12 @@ echo "9) Refresh already-downloaded records (optional, manual)"
 echo "   A normal run only processes NEW records; it never re-pulls previously"
 echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
 echo "   and the per-section split-table layout, run one of these manually:"
-echo "     ./src/pipeline/030-build-detail-views.py --apply         # rebuild views/.ics + split tables (no browser)"
-echo "     ./src/tools/update_day_folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
+echo "     ./src/pipeline/040-build-detail-views.py --apply         # rebuild views/.ics + split tables (no browser)"
+echo "     ./src/tools/080-update-day-folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
 echo "   Then rebuild calendar import packages if needed:"
-echo "     ./src/pipeline/build_calendar.py --all              # data/calendar/YY-MM-DD packages, default 10 events each"
-echo "     PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/build_calendar.py --all"
-echo "     ./src/pipeline/build_calendar.py --all --flat       # optional old parent-only package location"
+echo "     ./src/pipeline/060-build-calendar.py --all              # data/calendar/YY-MM-DD packages, default 10 events each"
+echo "     PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/060-build-calendar.py --all"
+echo "     ./src/pipeline/060-build-calendar.py --all --flat       # optional old parent-only package location"
 echo "   To verify the current code when there are no new opportunities, run the"
 echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; monitor MODE=TEST/test_run):"
 echo "     ./src/pipeline/070-test-zone.py --limit 5 --apply"
@@ -379,9 +391,9 @@ echo "11) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   # The updater loader is responsible for opening the monitor after this script
-  # exits successfully. Suppress request-run-all.sh's normal monitor opener so
+  # exits successfully. Suppress 110a-request-run.sh's normal monitor opener so
   # an optional smoke request cannot show the monitor before steps 12/final done.
-  PC_REQUEST_OPEN_MONITOR=0 ./src/pipeline/request-run-all.sh "$DETAIL_LIMIT"
+  PC_REQUEST_OPEN_MONITOR=0 ./src/pipeline/110a-request-run.sh "$DETAIL_LIMIT"
 else
   echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to queue one during the update without opening the monitor early."
 fi

@@ -6,10 +6,10 @@ button per operation instead of a single ambiguous "reset" button. The two most
 destructive actions (``wipe-db`` / ``wipe-all``) refuse to run unless ``--yes``
 is passed, so an accidental click cannot erase the archive.
 
-    ./src/tools/reset.py requeue-details   # re-download every detail page next run
-    ./src/tools/reset.py reset-notify      # re-announce every record from zero (WAHA)
-    ./src/tools/reset.py wipe-db    --yes  # delete the tracking DB (keeps record files)
-    ./src/tools/reset.py wipe-all   --yes  # delete DB + every downloaded record/calendar
+    ./src/tools/110-reset.py requeue-details   # re-download every detail page next run
+    ./src/tools/110-reset.py reset-notify      # re-announce every record from zero (WAHA)
+    ./src/tools/110-reset.py wipe-db    --yes  # delete the tracking DB (keeps record files)
+    ./src/tools/110-reset.py wipe-all   --yes  # delete DB + every downloaded record/calendar
 
 All actions print a one-line summary and append it to the manual-action log so
 the operator can see what happened from either monitor.

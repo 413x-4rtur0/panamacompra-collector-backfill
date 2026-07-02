@@ -49,7 +49,7 @@ find . -maxdepth 4 \( -name "*.sh" -o -name "*.py" \) -not -path "./.venv/*" -ex
 chmod +x ./bin/pcc
 
 echo "Reviewing/updating archive DB metadata after code refresh."
-python -u ./src/tools/maintain-database.py --apply || echo "WARNING: DB maintenance failed; continuing pre-run update."
+python -u ./src/tools/050-maintain-database.py --apply || echo "WARNING: DB maintenance failed; continuing pre-run update."
 
 if [ -d .venv ]; then
   # shellcheck disable=SC1091

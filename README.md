@@ -26,6 +26,25 @@ cd panamacompra-collector
 ./bin/pcc monitor               # open the native monitor (falls back to a background log follower if there is no display)
 ```
 
+Everything the GUI monitors configure is also available headless through the CLI —
+useful on servers/SSH sessions with no display:
+
+```bash
+./bin/pcc watch                                  # live terminal monitor
+./bin/pcc db                                     # record + WhatsApp backlog counters
+./bin/pcc set PC_WAHA_ENABLED 1                  # any monitor setting (same file the GUIs use)
+./bin/pcc chat index 120363...@g.us              # WhatsApp destinations (default|index|details|status)
+./bin/pcc keywords set "salud, medicamentos"     # keyword filter (blank = announce everything)
+./bin/pcc test-whatsapp                          # one WAHA test message with the saved settings
+./bin/pcc notify OC-2026-000123 --force          # manual WhatsApp send for specific record(s)
+./bin/pcc docker up                              # manage the changedetection + WAHA containers
+./bin/pcc templates select oferta.docx          # work templates copied into each record folder
+./bin/pcc calendar week                          # opportunities by day/week/month/year (deadlines)
+./bin/pcc format preview index                   # customize the WhatsApp message texts
+./bin/pcc keywords index set "salud + panama, -construccion"   # per-destination filters (AND/OR/NOT)
+./bin/pcc keywords index test "Compra de medicinas"            # dry-test a filter against sample text
+```
+
 A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
 and runs the collector identically. The only features that need a real Git
 remote are the optional self-update commands (`./update-local-copy.sh`, the
@@ -80,28 +99,29 @@ new opportunities are inserted at the top of the table.
 changedetection.io          detects a change in the PanamaCompra table (Docker)
         │
         ▼
-src/webhook/listener.py         receives the webhook
-        │                     • host/systemd mode → runs src/webhook/run-collector.sh directly
+src/webhook/010-webhook-listener.py         receives the webhook
+        │                     • host/systemd mode → runs src/webhook/060-run-collector.sh directly
         │                     • docker enqueue mode (PC_WEBHOOK_ENQUEUE_ONLY=1) →
         │                       only writes data/queue/run_all_requested.flag, then
-        │                       src/webhook/watch-queue-flag.sh (host) picks it up
+        │                       src/webhook/050-watch-queue-flag.sh (host) picks it up
         ▼
-src/webhook/run-collector.sh            requests the full collector sequence
+src/webhook/060-run-collector.sh            requests the full collector sequence
         │
         ▼
-src/pipeline/request-run-all.sh       creates data/queue/run_all_requested.flag
+src/pipeline/110a-request-run.sh       creates data/queue/run_all_requested.flag
         │
         ▼
-src/pipeline/run-worker.sh        single locked worker
+src/pipeline/100-run-worker.sh        single locked worker
         │
         ├─ STEP 0  src/pipeline/000-update-before-run.sh fast-forwards local checkout before each run
         ├─ STEP 1  src/pipeline/010-collect-index.py   scans Programadas + Abiertas + pagination
-        ├─ STEP 2  src/pipeline/collect_detail.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
-        ├─ STEP 3  src/pipeline/030-build-detail-views.py --apply  refreshes summary/items/calendar sections + per-record .ics
-        ├─ STEP 4  verification/repair      py_compile check + retry failed/missing-deadline records
-        ├─ STEP 5  src/pipeline/build_calendar.py     writes timestamped .ics import packages for new events
-        ├─ STEP 6  src/pipeline/notify_new_records.py --announce  sends WhatsApp only after index/detail/calendar/package steps
-        └─ STEP 7  src/pipeline/070-test-zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
+        ├─ STEP 2  src/pipeline/020-notify-whatsapp.py --announce  sends WhatsApp index alerts right after the index, BEFORE downloads (items shown as pending)
+        ├─ STEP 3  src/pipeline/030-collect-details.py  downloads all pending detail pages, saves detail JSON/HTML/TXT, renames folders
+        ├─ STEP 4  src/pipeline/040-build-detail-views.py --apply  refreshes summary/items/calendar sections + per-record .ics
+        ├─ STEP 5  src/pipeline/020-notify-whatsapp.py --announce-details  sends the follow-up WhatsApp per record with the real downloaded items
+        ├─ STEP 6  verification/repair      py_compile check + retry failed/missing-deadline records
+        ├─ STEP 7  src/pipeline/060-build-calendar.py     writes timestamped .ics import packages for new events
+        └─ STEP 8  src/pipeline/070-test-zone.py          OPTIONAL, off by default: set PC_TEST_ZONE_AUTORUN=1 to re-run the last 5 in a sandbox when no new records
         │
         ▼
 records/YY-MM-DD/(finish)-(NUMERO)-(desc)/    NUMERO.json, NUMERO.detail.{json,html,txt}, NUMERO.calendar.ics, tables/*.json
@@ -117,48 +137,56 @@ Example: changedetection sees a new PanamaCompra row OC-2026-000123
 [1 Detect] changedetection.io notices the table changed
       │
       ▼
-[2 Queue] src/webhook/listener.py accepts /panamacompra/<token> and queues one run
+[2 Queue] src/webhook/010-webhook-listener.py accepts /panamacompra/<token> and queues one run
       │
       ▼
 [3 Index] src/pipeline/010-collect-index.py records the index row in SQLite
       │
       ▼
-[4 Download] src/pipeline/collect_detail.py downloads ALL detail fields + items first
-      │
-      ▼
-[5 Compare] src/pipeline/notify_new_records.py compares against the last notified snapshot
+[4 Compare + Notify] src/pipeline/020-notify-whatsapp.py compares against the last notified snapshot
       │
       ├─ No change ───────────────► no WhatsApp message
       │
-      └─ New/status/items changed ─► one complete WhatsApp message for OC-2026-000123
-                                      + data/calendar_exports/YYYY/MM/OC-2026-000123.ics
+      └─ New/status/items changed ─► one WhatsApp message for OC-2026-000123 sent
+                                      IMMEDIATELY (items marked "pendiente" until downloaded)
       │
       ▼
-[6 Summary] worker sends one final run summary after messaging finishes
+[5 Download] src/pipeline/030-collect-details.py downloads ALL detail fields + items
+      │
+      ▼
+[6 Notify details] one follow-up WhatsApp per record with the real items
+      │                                     + data/calendar_exports/YYYY/MM/OC-2026-000123.ics
+      ▼
+[7 Summary] worker sends one final run summary after all steps finish
 ```
 
-Key point: the webhook only starts/queues the run. WhatsApp is not sent from the
-webhook and is not sent while detail rows are still downloading; messages are sent
-after the collector has a complete record and can compare it safely.
+Key point: the webhook only starts/queues the run. Two notifier phases: the index
+alert is sent right after the index step — before the long download phase — so
+subscribers hear about a new opportunity immediately, and once its detail page is
+downloaded a follow-up message delivers the full record (items, location, dates)
+in the rich format. Disable the follow-up with **PC_NOTIFY_DETAILS=0** to fold the
+items into the snapshot silently instead.
 
 ### Process diagram and test visibility
 
 ```mermaid
 flowchart TD
-    A[changedetection.io or manual request] --> B[src/pipeline/request-run-all.sh]
+    A[changedetection.io or manual request] --> B[src/pipeline/110a-request-run.sh]
     B --> C[data/queue/run_all_requested.flag]
-    C --> D[src/pipeline/run-worker.sh with flock lock]
+    C --> D[src/pipeline/100-run-worker.sh with flock lock]
     D --> U[STEP 0: src/pipeline/000-update-before-run.sh]
     U --> E[STEP 1: src/pipeline/010-collect-index.py]
     E --> F[SQLite + records/YY-MM-DD/NUMERO index JSON]
-    F --> G[STEP 2: src/pipeline/collect_detail.py]
-    G --> H[detail JSON, HTML, text, tables, per-record ICS]
-    H --> I[STEP 3: src/pipeline/030-build-detail-views.py --apply]
-    I --> V[summary/items/calendar views + per-record .ics]
-    V --> R[STEP 4: verification: py_compile + failed/missing-deadline repair]
-    R --> J[STEP 5: src/pipeline/build_calendar.py creates data/calendar/YY-MM-DD packages]
-    J --> P[STEP 6: src/pipeline/notify_new_records.py --announce]
+    F --> P[STEP 2: src/pipeline/020-notify-whatsapp.py --announce]
     P --> Q[WhatsApp messages sent one by one via WAHA, PHASE=MESSAGING]
+    Q --> G[STEP 3: src/pipeline/030-collect-details.py]
+    G --> H[detail JSON, HTML, text, tables, per-record ICS]
+    H --> I[STEP 4: src/pipeline/040-build-detail-views.py --apply]
+    I --> V[summary/items/calendar views + per-record .ics]
+    V --> W[STEP 5: src/pipeline/020-notify-whatsapp.py --announce-details]
+    W --> X[follow-up WhatsApp per record with real items, PHASE=MESSAGING]
+    X --> R[STEP 6: verification: py_compile + failed/missing-deadline repair]
+    R --> J[STEP 7: src/pipeline/060-build-calendar.py creates data/calendar/YY-MM-DD packages]
     D --> K{No pending new details AND PC_TEST_ZONE_AUTORUN=1?}
     K -- yes --> L[STEP 7: src/pipeline/070-test-zone.py]
     L --> M[records_test/latest_5 + records_test/calendar/YY-MM-DD, MODE=TEST]
@@ -174,7 +202,7 @@ The workflow has two phases run back-to-back by the worker:
 |-------|--------|------|
 | **Pre-run update** | `src/pipeline/000-update-before-run.sh` | Before each worker iteration, auto-stash any local edits to tracked files, fast-forward the local Git checkout (reset to remote if diverged), refresh installed Python requirements when `.venv` exists, and fix executable bits. Untracked runtime files never block it. If the update fails (e.g. no network), the worker logs a warning and **still runs** the collection with the current code instead of skipping. Set `PC_RUN_UPDATE_BEFORE_RUN=0` to skip the update entirely. |
 | **Index scan** | `src/pipeline/010-collect-index.py` | Open the table, select *Programadas*, set 50 rows/page, crawl all pages, repeat for *Abiertas*. Save lightweight index JSON + DB records. |
-| **Detail download** | `src/pipeline/collect_detail.py` | Read pending records from SQLite, visit each detail URL, save HTML / text / metadata / table JSON, mark as saved. |
+| **Detail download** | `src/pipeline/030-collect-details.py` | Read pending records from SQLite, visit each detail URL, save HTML / text / metadata / table JSON, mark as saved. |
 
 > The current architecture is **run-all only**. The older queue-based system is
 > deprecated and is not part of this repository.
@@ -204,7 +232,7 @@ changing the collector's local-first operating model.
   trigger arrives while it is running, a request flag is left behind and the worker
   runs one more full sequence after it finishes — no duplicate Firefox sessions.
   If the worker exits before a clean shutdown, it restores the request flag so the
-  next `src/pipeline/request-run-all.sh` start resumes pending database work instead of
+  next `src/pipeline/110a-request-run.sh` start resumes pending database work instead of
   losing the interrupted task.
 - **Immutable archive.** Existing JSON / HTML / text files are never overwritten;
   completed folders are skipped.
@@ -219,8 +247,8 @@ The scripts resolve their own location, so the project can live in **any directo
 ### Requirements
 
 - **Linux** (Debian / Ubuntu / Linux Mint recommended). Not tested on macOS or Windows.
-- Python 3.10+ (3.12 used in development)
-- Playwright Firefox browser — installed automatically by `./setup.sh`, or manually in the active virtualenv with `python -m playwright install firefox`
+- Python 3.10+ (the installer checks this before creating `.venv`; 3.12 is used in development)
+- Playwright Firefox browser — installed automatically by `./setup.sh`, including Debian/Ubuntu browser libraries when apt is available; or manually in the active virtualenv with `python -m playwright install --with-deps firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`, and a desktop opener such as `xdg-open` for opening the test sandbox folder after monitor-launched tests
 - Optional: `sqlite3` CLI for manual inspection
 - Optional: `git` — only required for the self-update commands (`./update-local-copy.sh`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
@@ -315,12 +343,23 @@ cd ~/Apps/panamacompra-collector
 ```
 
 `setup.sh` installs Debian/Ubuntu Python system packages when `apt-get` is
-available, copies `.env.example` to `.env` on first run if `.env` does not
-already exist, creates `.venv`, installs Python dependencies, installs the
-Playwright Firefox browser, creates runtime directories, and finishes by
-running `./scripts/validate-installation.sh`. Set `PC_SETUP_SKIP_APT=1` when
-system packages are managed separately, or `PC_SETUP_SKIP_BROWSER=1` for
-CI/offline validation — these must be set as real environment variables
+available, verifies that the selected `PYTHON_BIN` is Python 3.10+ with working
+`venv`/`ensurepip` support, copies `.env.example` to `.env` on first run if
+`.env` does not already exist, creates `.venv`, installs Python dependencies,
+installs the Playwright Firefox browser (plus Linux browser dependencies on
+Debian/Ubuntu/Linux Mint when apt is not skipped), creates runtime directories,
+and finishes by running `./scripts/validate-installation.sh`. The validator
+automatically uses `.venv/bin/python` when that virtual environment exists, so
+standalone validation checks the same interpreter the collector will use. Set
+`PC_SETUP_SKIP_APT=1` when system packages are managed separately,
+`PC_SETUP_SKIP_BROWSER=1` for
+CI/offline validation, or `PC_SETUP_SKIP_DOCKER=1` to skip the Docker step at
+the end of setup. That step installs the Docker engine + compose plugin with
+apt when missing (Debian/Ubuntu/Linux Mint), enables the service, adds your
+user to the `docker` group (re-login to use it without sudo), and brings the
+changedetection + WAHA + webhook stack up with `./src/tools/010-docker-stack.sh up`
+(bootstrapping the first start with sudo when needed; container data lives in
+`var/integrations`, override with `PC_INTEGRATIONS_DIR`) — these must be set as real environment variables
 (`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
 environment variable always takes precedence over `.env`/`config/defaults.env`
 values, matching this project's usual "environment variable > file > default"
@@ -332,7 +371,7 @@ precedence.
 cd ~/Apps/panamacompra-collector
 
 # System packages: browser + complete Python venv support + optional Tk monitor
-sudo apt update && sudo apt install -y python3-venv python3-full python3-tk
+sudo apt update && sudo apt install -y python3-venv python3-full python3-tk ca-certificates curl
 
 # Python environment
 python3 -m venv .venv
@@ -341,9 +380,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
 # Browser engine used by the collectors
-python -m playwright install firefox
+python -m playwright install --with-deps firefox
 
-# Validate the checkout and create runtime directories
+# Validate the checkout and create runtime directories. This compiles all Python
+# sources, syntax-checks shell wrappers, verifies required executables, and
+# confirms Playwright is importable from `.venv` unless --skip-browser is used.
 ./scripts/validate-installation.sh
 ```
 
@@ -369,23 +410,23 @@ All commands assume you are in the project directory.
 
 ```bash
 # Run a small full sequence (index + 5 detail pages) and open the native monitor
-./src/pipeline/request-run-all.sh 5
-./src/monitor/open-monitor.sh   # native Tk window; no Firefox/web browser
+./src/pipeline/110a-request-run.sh 5
+./src/monitor/000-open-monitor.sh   # native Tk window; no Firefox/web browser
 
 # Run the full sequence (index + all pending detail pages)
-./src/pipeline/request-run-all.sh
+./src/pipeline/110a-request-run.sh
 
 # Run the worker in the foreground (this terminal)
-./src/pipeline/run-now.sh 5
+./src/pipeline/110b-run-now.sh 5
 
 # Check status
-./src/pipeline/run-all-status.sh
+./src/pipeline/130b-run-status.sh
 
 # Follow the logs live
-./src/pipeline/follow-run-all.sh
+./src/pipeline/130c-follow-run.sh
 
 # Emergency stop (use only if a browser step is frozen)
-./src/pipeline/stop-run-all.sh
+./src/pipeline/120a-stop-everything.sh
 ```
 
 You can also run a single phase manually:
@@ -393,7 +434,7 @@ You can also run a single phase manually:
 ```bash
 source .venv/bin/activate
 ./src/pipeline/010-collect-index.py                 # index scan only
-PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending details
+PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pending details
 ```
 
 ---
@@ -404,46 +445,51 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 |--------|------|
 | `src/common.py` | Shared module: paths, DB schema, JSON helpers, URL/date detection. **Not run directly.** |
 | `src/pipeline/010-collect-index.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
-| `src/pipeline/collect_detail.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
-| `src/pipeline/request-run-all.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
-| `src/pipeline/run-worker.sh` | Locked sequential worker: pre-run update, **index → details/downloads → storing/per-record calendars/detail views → calendar packages → WhatsApp**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
+| `src/pipeline/030-collect-details.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
+| `src/pipeline/110a-request-run.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
+| `src/pipeline/100-run-worker.sh` | Locked sequential worker: pre-run update, **index → WhatsApp index alerts → details/downloads → storing/per-record calendars/detail views → WhatsApp item-detail follow-ups → verification → calendar packages**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
 | `src/pipeline/000-update-before-run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
-| `src/notify/waha_client.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
-| `src/pipeline/notify_new_records.py` | WhatsApp (WAHA) notifier helpers and entry point. The worker calls `--announce` in the visible MESSAGING step to send one “🟢 NUEVA OPORTUNIDAD DETECTADA” message per new record with per-message monitor progress; `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
-| `src/pipeline/run-now.sh` | Runs the worker in the foreground for interactive use. |
-| `src/webhook/run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
-| `src/webhook/listener.py` | Local HTTP listener for changedetection.io notifications. Runs `src/webhook/run-collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
-| `src/webhook/start-listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup` or `--foreground` for systemd, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
-| `src/webhook/install-service.sh` | Installs/repairs the persistent user `panamacompra-webhook.service` with the safe foreground starter, so stale port owners are replaced before binding. |
-| `src/webhook/watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/request-run-all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
+| `src/notify/010-waha-client.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
+| `src/pipeline/020-notify-whatsapp.py` | WhatsApp (WAHA) notifier helpers and entry point. Two notifier phases. The worker calls `--announce` in the first MESSAGING step **right after the index, before detail downloads**, sending one “🔔 Nueva Oportunidad” message per new record with per-message monitor progress (items shown as pending); after downloads + views it calls `--announce-details`, which sends the follow-up “📥 Detalles Completos” message per record with the real items and exports its calendar. `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends; `--sync-snapshots --since TS` is the silent fallback when `PC_NOTIFY_DETAILS=0`. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
+| `src/pipeline/110b-run-now.sh` | Runs the worker in the foreground for interactive use. |
+| `src/webhook/060-run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
+| `src/webhook/010-webhook-listener.py` | Local HTTP listener for changedetection.io notifications. Runs `src/webhook/060-run-collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
+| `src/webhook/020-start-listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup` or `--foreground` for systemd, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
+| `src/webhook/030-install-service.sh` | Installs/repairs the persistent user `panamacompra-webhook.service` with the safe foreground starter, so stale port owners are replaced before binding. |
+| `src/webhook/050-watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/110a-request-run.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
-| `src/webhook/diagnose.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
-| `src/tools/migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
+| `src/webhook/040-diagnose-webhook.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `src/tools/040-message-formats.py` | Customizable WhatsApp message formats: the operator can rewrite the text of the **index alert**, the **detail follow-up**, and the **status-change** messages with `{placeholder}` templates (`pcc format show/preview/set/reset/placeholders`; unknown placeholders stay literal so a typo never breaks a send). Also editable from both monitors; stored in `data/config/waha_format_<kind>.txt`. Blank/absent = built-in layout. |
+| `src/tools/030-opportunity-calendar.py` | Opportunity calendar: collected opportunities by **day / week / month / year**, driven by deadline (default), start, or local-download dates. Month view is a grid with per-day counts plus the day-by-day listing; year view shows per-month totals. Backs `pcc calendar` and the **Opportunity calendar** panels in both monitors (all three share this renderer). |
+| `src/tools/020-record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. Also manageable from both monitors (source folder, file selection, apply-to-all, copy-to-selected-records). |
+| `src/tools/010-docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
+| `src/tools/100-migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `src/monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons and test-sandbox folder opening after test-zone completion. |
-| `src/monitor/next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
+| `src/monitor/002-next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
 | `src/monitor/001b-monitor-web.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same locked automatic/restart/manual/test controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, and auto-closes only after completed collector runs. |
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
-| `src/monitor/open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
-| `src/pipeline/run-all-status.sh` | One-shot status snapshot. |
-| `src/pipeline/queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
+| `src/monitor/000-open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
+| `src/pipeline/130b-run-status.sh` | One-shot status snapshot. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), archive + WhatsApp backlog counters (`db`), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
+| `src/pipeline/130a-queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
-| `src/pipeline/stop-run-all.sh` | Emergency stop for stuck index/detail/worker processes. |
-| `src/pipeline/stop-collectors.sh` | Stops only the active collection (worker/index/detail/test/calendar) and marks it as an intentional no-resume stop, but leaves the monitor, next-run timer, and webhook listener running. Used by the monitor's **Stop** button. |
-| `src/pipeline/follow-run-all.sh` | `tail -f` of the worker and current-run logs. |
-| `src/tools/migrate-previous-records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `<finish>--<numero>--<desc>`. |
-| `src/tools/rename-record-folders.py` | Rename record folders to `<finish>--<numero>--<desc>` from already-saved data. Dry-run by default; `--apply` to act. |
-| `src/tools/reset.py` | Reset/"review from zero" helpers shared by both monitors, one subcommand per action: `requeue-details`, `reset-notify`, `wipe-db`, `wipe-all`. The two destructive actions refuse to run without `--yes`. Used by the monitors' Reset panel. |
-| `src/tools/import-selected-calendars.py` | Export/open `.ics` calendar files for one or more selected record NUMEROs; used by the monitors' **Import selected calendars** action. |
-| `src/tools/setup-git-credentials.sh` | One-time helper that points this checkout's Git credential helper at `store` (instead of the desktop keyring) and optionally pre-seeds a GitHub token, so the desktop updater launcher never has to prompt for a password. |
-| `src/tools/maintain-database.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
-| `src/pipeline/030-build-detail-views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
-| `src/tools/update_day_folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
-| `src/pipeline/040-repair-missing-deadlines.py` | Finds records/folders with no `DTEND`/deadline (blank `finish_date_guess` or `(NO-DATE)` folder), force re-downloads their details, recalculates the close window, and renames folders when a deadline is recovered. Dry-run by default; `--apply` to act. |
-| `src/pipeline/build_calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 5 after per-record detail views and the verification/repair step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
+| `src/pipeline/120a-stop-everything.sh` | Emergency stop for stuck index/detail/worker processes. |
+| `src/pipeline/120b-stop-collectors.sh` | Stops only the active collection (worker/index/detail/test/calendar) and marks it as an intentional no-resume stop, but leaves the monitor, next-run timer, and webhook listener running. Used by the monitor's **Stop** button. |
+| `src/pipeline/130c-follow-run.sh` | `tail -f` of the worker and current-run logs. |
+| `src/tools/090b-migrate-previous-records.py` / `.sh` | Migrate old flat `records/NUMERO/` folders into dated archive folders; detail download then renames them to `<finish>--<numero>--<desc>`. |
+| `src/tools/070-rename-record-folders.py` | Rename record folders to `<finish>--<numero>--<desc>` from already-saved data. Dry-run by default; `--apply` to act. |
+| `src/tools/110-reset.py` | Reset/"review from zero" helpers shared by both monitors, one subcommand per action: `requeue-details`, `reset-notify`, `wipe-db`, `wipe-all`. The two destructive actions refuse to run without `--yes`. Used by the monitors' Reset panel. |
+| `src/tools/060-import-selected-calendars.py` | Export/open `.ics` calendar files for one or more selected record NUMEROs; used by the monitors' **Import selected calendars** action. |
+| `src/tools/120-setup-git-credentials.sh` | One-time helper that points this checkout's Git credential helper at `store` (instead of the desktop keyring) and optionally pre-seeds a GitHub token, so the desktop updater launcher never has to prompt for a password. |
+| `src/tools/050-maintain-database.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
+| `src/pipeline/040-build-detail-views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
+| `src/tools/080-update-day-folder.py` | Manually **re-download** every record in a `YY-MM-DD` day folder from the live portal (overwriting saved HTML/text/detail JSON/calendar ICS/tables) to refresh records pulled under an earlier portal version. Prompts for the day (default today) or takes `--date`; lists and asks before downloading, or `--apply` to skip the prompt. |
+| `src/pipeline/050-repair-missing-deadlines.py` | Finds records/folders with no `DTEND`/deadline (blank `finish_date_guess` or `(NO-DATE)` folder), force re-downloads their details, recalculates the close window, and renames folders when a deadline is recovered. Dry-run by default; `--apply` to act. |
+| `src/pipeline/060-build-calendar.py` | Build timestamped `.ics` import packages from new/changed detail calendars under `data/calendar/YY-MM-DD/`, defaulting to 10 events per file. Runs automatically as STEP 5 after per-record detail views and the verification/repair step; use `--all` to package every saved record, `--flat` for the old parent-only layout, or `--legacy-combined` to also write the old single combined file. |
 | `src/pipeline/070-test-zone.py` | **Testing zone.** Re-run the last N records (default 5) through the full pipeline in an isolated sandbox (`records_test/latest_5/`, throwaway DB, test calendar packages under `records_test/calendar/YY-MM-DD/`), leaving the real archive untouched. It does **not** run automatically anymore; opt in with `PC_TEST_ZONE_AUTORUN=1` to have STEP 7 run it when a run finds no new records, or launch it from the monitor's manual actions. The monitor shows `MODE=TEST` and the `test_run` flag. |
 | `review-system.sh` | Health check: required scripts, compile/syntax checks, process and status review. |
 | `update-local-copy.sh` | In-place updater for an existing checkout that always brings it up to date: stop **only the collector pipeline + webhook trigger** (never the updater/loader/monitor themselves, which previously caused the update to freeze or close on itself), auto-stash local tracked edits (kept for recovery), **auto-select the branch** (track `main` when the most recently updated remote branch is already merged into `main`, otherwise switch to that latest branch), reset to the remote, refresh dependencies, run health checks, and install the Update + Monitor desktop shortcut. Runtime data (`data/`, `records/`, `.venv`) is protected by `.gitignore` so the reset/`git clean` can never delete the archive or database. |
-| `src/monitor/update-loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after the update finishes successfully** so the monitor reflects the already-updated code; failed updates keep the loader open with the log path and do not open the monitor. Stopping a worker for update/manual stop does not recreate the pending/recover request flag, so an update launcher will not silently restart failed or pending work. |
+| `src/monitor/003-update-loader.py` | Separate centered Tk updater loader window for desktop/manual updates. Appears first with a step-based progress bar, tails the update output, and opens the monitor only **after the update finishes successfully** so the monitor reflects the already-updated code; failed updates keep the loader open with the log path and do not open the monitor. Stopping a worker for update/manual stop does not recreate the pending/recover request flag, so an update launcher will not silently restart failed or pending work. |
 
 ---
 
@@ -467,16 +513,19 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_PACKAGE_SIZE` | `10` | calendar builder | Maximum events per timestamped import package. Smaller packages reduce calendar-import reminder/edit overload. |
 | `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
 | `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
-| `PC_NOTIFY_WHATSAPP` | `1` | run-all worker / monitor | Set to `0` (or uncheck **Notify by WhatsApp**) to skip automatic post-detail WhatsApp announcements while still collecting data and building calendars. |
+| `PC_NOTIFY_WHATSAPP` | `1` | run-all worker / monitor | Master switch. Set to `0` (or uncheck **Notify by WhatsApp**) to skip all automatic WhatsApp announcements while still collecting data and building calendars. |
+| `PC_TEMPLATES_SRC_DIR` | `$PC_STATE_DIR/templates` | record templates | Folder holding the operator's reusable work templates; manage with `pcc templates source/list/select`. |
+| `PC_TEMPLATES_AUTO` | `1` | run-all worker | Set `0` to stop the worker from copying the selected templates into the record folders downloaded in each run. |
+| `PC_NOTIFY_DETAILS` | `1` | run-all worker / monitor | Second notifier phase. Set to `0` (or uncheck **Follow-up WhatsApp with item details**) to skip the per-record “📥 Detalles Completos” message after the downloads; the downloaded items are then folded into the notified snapshot silently so no duplicate fires later. |
 | `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before verification, calendar packages and WhatsApp. Set `0` only for troubleshooting. |
-| `PC_REPAIR_FAILED_AND_MISSING_DEADLINES` | `1` | run-all worker | STEP 4 verification runs `py_compile`, then retries failed rows and records/folders missing `DTEND` using `src/pipeline/040-repair-missing-deadlines.py --include-failed --apply`. Set `0` to skip automatic repair. |
+| `PC_REPAIR_FAILED_AND_MISSING_DEADLINES` | `1` | run-all worker | STEP 4 verification runs `py_compile`, then retries failed rows and records/folders missing `DTEND` using `src/pipeline/050-repair-missing-deadlines.py --include-failed --apply`. Set `0` to skip automatic repair. |
 | `PC_MISSING_DEADLINE_REPAIR_LIMIT` | `0` | run-all worker | Max failed/missing-deadline rows to repair in STEP 4. `0` = all matching rows. |
 | `PC_RECORDS_DIR` | `records/` | archive paths | Normal record archive root. Set from monitor Settings when the archive should live outside the checkout. Relative paths resolve from the checkout root. |
 | `PC_CALENDAR_DIR` | `data/calendar/` | calendar paths | Timestamped calendar package output root. Set from monitor Settings when calendar packages should be stored elsewhere. |
 | `PC_RECORDS_TEST_DIR` | `records_test/` | test paths | Isolated test-zone sandbox root. Set from monitor Settings when test output should live elsewhere. |
 | `PC_DATA_DIR` | `data/` | data paths | Optional root for logs/config/database/CSV defaults. Path-specific variables above override their individual targets. |
-| automatic changedetection index cap | `0` | `src/webhook/run-collector.sh` | AUTO runs do not use the manual/test page cap; they crawl all available index pages until no Next page. |
-| automatic changedetection detail cap | `0` | `src/webhook/run-collector.sh` / detail downloader | AUTO runs do not use the manual/test detail cap; `0` means download every pending detail row. |
+| automatic changedetection index cap | `0` | `src/webhook/060-run-collector.sh` | AUTO runs do not use the manual/test page cap; they crawl all available index pages until no Next page. |
+| automatic changedetection detail cap | `0` | `src/webhook/060-run-collector.sh` / detail downloader | AUTO runs do not use the manual/test detail cap; `0` means download every pending detail row. |
 | `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 7) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 7) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `src/pipeline/000-update-before-run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
@@ -485,21 +534,21 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update-local-copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update-local-copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut. The shortcut opens the separate updater loader first, then starts the native monitor only after the updater exits successfully. Set to `0` to skip. |
-| `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update-local-copy.sh` | Controls whether the updater restores `src/webhook/listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
-| `PC_REQUEST_OPEN_MONITOR` | `1` | `src/pipeline/request-run-all.sh` | When `0`, queue/start the worker without opening the monitor. `update-local-copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |
+| `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update-local-copy.sh` | Controls whether the updater restores `src/webhook/010-webhook-listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
+| `PC_REQUEST_OPEN_MONITOR` | `1` | `src/pipeline/110a-request-run.sh` | When `0`, queue/start the worker without opening the monitor. `update-local-copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
 | `PC_WEBHOOK_PORT` | `8765` | webhook listener | Listen port. |
-| `PC_WEBHOOK_REPLACE_PORT_OWNER` | `0` | `src/webhook/start-listener.sh` | Set to `1` (or pass `--replace-port-owner`) to stop an old process that is still listening on the webhook port before starting the current listener. |
-| `PC_WEBHOOK_PUBLIC_HOST` | `host.docker.internal` | `src/webhook/start-listener.sh` | Hostname printed in the changedetection `json://` notification URL for a host-run listener. |
-| `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `src/webhook/run-collector.sh`, so a host runner performs the actual collection. |
-| `PC_RUNNER_POLL_SECONDS` | `5` | `src/webhook/watch-queue-flag.sh` | How often the host runner polls for an enqueued run request. |
+| `PC_WEBHOOK_REPLACE_PORT_OWNER` | `0` | `src/webhook/020-start-listener.sh` | Set to `1` (or pass `--replace-port-owner`) to stop an old process that is still listening on the webhook port before starting the current listener. |
+| `PC_WEBHOOK_PUBLIC_HOST` | `host.docker.internal` | `src/webhook/020-start-listener.sh` | Hostname printed in the changedetection `json://` notification URL for a host-run listener. |
+| `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `src/webhook/060-run-collector.sh`, so a host runner performs the actual collection. |
+| `PC_RUNNER_POLL_SECONDS` | `5` | `src/webhook/050-watch-queue-flag.sh` | How often the host runner polls for an enqueued run request. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
 | `PC_MONITOR_TK_AUTO_CLOSE_SECONDS` | `20` | native monitor | Seconds to count down (centered on screen) after a LIVE run finishes before the native monitor closes itself. The countdown only starts once the monitor has actually watched a run go active→done, never when opening straight into an idle state, and never for test-zone runs. Set `0` to keep the window open until you close it manually. |
 | `PC_MONITOR_TK_GEOMETRY` | `980x760` | native monitor | Initial native monitor window size; the window is centered automatically. |
 | `PC_MONITOR_TK_ALPHA` | `0.85` | native monitor | Native monitor whole-window opacity (text shares it; Tk has no per-widget transparency). `0.85` is lightly translucent but readable; lower toward `0.30` for a more see-through window (clamped to 0.30–1.00). Editable live from the monitor's Settings panel; re-applied after the window is visible so it works on X11 WMs. |
-| `src/tools/maintain-database.py --apply` | manual / update scripts | Updates DB schema and metadata after code changes: `record_folder_leaf`, `files_layout_version`, `detail_sections_count`, `tables_count`, `db_reviewed_at`. |
+| `src/tools/050-maintain-database.py --apply` | manual / update scripts | Updates DB schema and metadata after code changes: `record_folder_leaf`, `files_layout_version`, `detail_sections_count`, `tables_count`, `db_reviewed_at`. |
 | settings file | `data/config/monitor_settings.env` | native/web monitor / worker / WAHA notifier | `KEY=VALUE` file written by the monitors' Settings panels (transparency, auto-close/refresh seconds, path settings, `PC_NOTIFY_WHATSAPP`, WAHA source label). Read at startup and by the worker/notifier. Precedence: environment variable > this file > built-in default. |
 | `PC_NEXT_RUN_TIMER` | `1` | monitor opener | Starts the tiny next-run timer together with the Tk monitor. Set to `0` to disable. |
 | `PC_NEXT_RUN_INTERVAL_MINUTES` | `30` | next-run timer | Countdown interval for scheduled live runs. |
@@ -522,8 +571,11 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If `PC_WAHA_CHAT_ID` is not configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
-| `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
-| `PC_WAHA_API_KEY` | unset | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. |
+| `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | **Default** destination WhatsApp group/channel chat id, used by every message type that has no per-purpose destination. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
+| `PC_WAHA_CHAT_ID_INDEX` | `data/config/waha_chat_id_index.txt` fallback | WAHA notifier | Optional destination for the **index alerts** (immediate “🔔 Nueva Oportunidad” messages and the “⚪ Sin nuevas entradas” status). Blank = default destination. |
+| `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
+| `PC_WAHA_CHAT_ID_STATUS` | `data/config/waha_chat_id_status.txt` fallback | WAHA notifier | Optional destination for **status-change messages** (Programada → Abierta, cancellations, “🔄 Actualización de Items”). Blank = default destination. |
+| `PC_WAHA_API_KEY` | `WAHA_API_KEY` fallback | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. When unset, `lib/env.sh` defaults it to the container-side `WAHA_API_KEY` from `.env`, so one value protects the server and authenticates the notifier. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label used in the rich opportunity message headings (e.g. `Nueva Oportunidad - <source>`) and shown as `📌 Fuente:` in the “sin nuevas entradas” status. |
@@ -532,11 +584,14 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_BREAKER_THRESHOLD` | `3` | WAHA notifier | Consecutive failed sends in one run before retries are suppressed (each message still gets a single attempt; one success re-arms retries). Raise it to keep retrying longer through a flaky WAHA. |
 | `PC_NOTIFY_SKIP_EXPIRED` | `0` | new-record notifier | Set `1` to skip announcing opportunities whose deadline (DTEND) has already passed. Records with no detectable deadline are never suppressed. |
 | `PC_NOTIFY_WITHIN_DAYS` | unset | new-record notifier | When set to an integer N, only announce opportunities whose deadline is within the next N days; records further out are deferred and re-checked on later runs as their deadline approaches. |
-| keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
+| message formats | `data/config/waha_format_{index,details,status}.txt` | notifier / monitors / CLI | Optional custom `{placeholder}` templates replacing the built-in WhatsApp layouts; delete (or `pcc format reset`) to restore the defaults. |
+| template selection | `data/config/templates_selected.txt` | record templates | One selected template file per line (relative to the source folder), written by `pcc templates select/unselect`. |
+| keyword filters | `data/config/waha_keywords.txt` + `waha_keywords_{index,details,status}.txt` | notifier / monitors / CLI | Optional per-destination rules deciding which opportunities are announced. One rule per line (commas also separate rules); **OR** between rules, **AND** inside a rule with `+` (`salud + panama`), **NOT** with a leading `-` (`-construccion` excludes even when another rule matches; `-obra + calle` excludes only when both words appear). Matching is accent/case-insensitive over description, entity, dependency and modality. A destination without rules falls back to the shared file; everything blank announces all. Matched rules appear in `🔎 Coincidencia`. Manage with `pcc keywords [global|index|details|status] list|set|clear|test` or from either monitor. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
-| saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `src/notify/waha_client.py --save-message`; used on later notifications when no one-off message is passed. |
+| detail-notify baseline | `data/config/waha_detail_notify_initialized` | new-record notifier | Marker for the second (item-details) notifier phase so previously announced records do not get a burst of follow-up messages when upgrading. Delete it to re-baseline the detail phase. |
+| saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `src/notify/010-waha-client.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally for manual runs: `./src/pipeline/request-run-all.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
+The detail limit can also be passed positionally for manual runs: `./src/pipeline/110a-request-run.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Native monitor layout
 
@@ -548,13 +603,17 @@ The native Tk monitor is organized top-to-bottom into clear sections:
 4. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
-   - WhatsApp source label, destination chat id, and keyword filter.
+   - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
+   - Per-destination WhatsApp filters: shared + index/details/status rule fields with AND (`+`), OR (commas) and NOT (`-`) operators (native monitor Settings; web monitor **WhatsApp filters** card backed by `/api/waha-filters`).
+   - WhatsApp message formats editor: pick index/details/status, edit the `{placeholder}` template, Preview with sample data, Save or Reset (native monitor Settings block; web monitor card backed by `/api/waha-format`).
+   - Opportunity calendar panel: day/week/month/year views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor section; web monitor card backed by `/api/calendar`).
+   - Work templates: source folder plus a multi-select list of template files (native monitor Settings panel; the web monitor has a dedicated **Work templates** card with checkboxes). Selection is shared with `pcc templates`; both monitors also offer **Apply work templates** (all records) and **Copy templates to selected** in the record selector.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier. Settings are grouped into readable blocks, including timer-window sizing/position, refresh/stale timing, WAHA, and test-zone controls.
 4. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `(DL local-download timestamp | DTSTART start | DTEND deadline status) NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/start date/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
-5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `src/webhook/start-listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
+5. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `src/webhook/020-start-listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 6. **Recent worker / current action logs**.
 
 Transparency, refresh cadence, WhatsApp/calendar toggles, section Hide/Show state and the auto-close countdown can all be changed from the monitor without restarting a run. The web monitor (`src/monitor/001b-monitor-web.py`) exposes the same ETA, toggles, path settings, multi-select record-index actions, downloaded-date filter and `/api/record-index` endpoint.
@@ -580,7 +639,7 @@ export PC_WAHA_API_KEY="your-waha-api-key"
 Test the notifier without running the collector:
 
 ```bash
-./src/notify/waha_client.py --event info --status TEST --message "PanamaCompra WAHA test"
+./src/notify/010-waha-client.py --event info --status TEST --message "PanamaCompra WAHA test"
 ```
 
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
@@ -591,14 +650,16 @@ private alert group controlled by you.
 
 In addition to the short operational alerts above (`start`/`done`/`failed`/…),
 new opportunities are announced one message per record. By default the run-all
-worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 6):
-after index, all details, per-record calendar/detail-view rebuilds, verification/repair, and calendar packages it runs `src/pipeline/notify_new_records.py --announce`,
+worker sends them in a **dedicated, monitor-visible MESSAGING step** (STEP 2):
+right after the index scan — and BEFORE the detail downloads — it runs
+`src/pipeline/020-notify-whatsapp.py --announce`,
 which sends one WhatsApp message per new index entry **one at a time** and
-publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 6/6`,
+publishes per-message progress to the monitor — `PHASE=MESSAGING`, `Step 2/6`,
 `Item i/N`, and a one-line preview of the message in the **Extra** field — so you
-can watch each opportunity go out. The detail downloader does not send WhatsApp
-messages mid-download; notifications are emitted only after detail and calendar
-processing complete for the run. New-record messages use the full 9-field record
+can watch each opportunity go out. Because the detail page is not downloaded yet,
+the message shows the items as `⏳ pendiente`; once the downloads finish, the
+worker runs `--sync-snapshots` so the fresh items update the record's notified
+snapshot silently instead of firing a duplicate message on the next run. New-record messages use the full 9-field record
 template (status, number, description, location, date range, up to 10 items,
 link, created time, and downloaded time):
 
@@ -623,7 +684,7 @@ link, created time, and downloaded time):
 ```
 
 When a run completes with no new records, the worker sends a single status
-message instead (`src/pipeline/notify_new_records.py --idle`):
+message instead (`src/pipeline/020-notify-whatsapp.py --idle`):
 
 ```text
 ⚪ Sin nuevas entradas
@@ -677,11 +738,15 @@ Behavior notes:
   time and aggregate archive counts.
 - **Never blocks a run.** Any notifier or network failure is caught and logged;
   records whose send failed keep `notified_at` empty and are retried by the
-  end-of-run flush (`src/pipeline/notify_new_records.py --flush`) or the next run.
+  end-of-run flush (`src/pipeline/020-notify-whatsapp.py --flush`) or the next run.
 - **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
   `http://127.0.0.1:3000`) and a destination chat id. Set
   `PC_WAHA_CHAT_ID` or save the destination from either monitor, which writes
-  `data/config/waha_chat_id.txt` for the notifier to read. If messages do not
+  `data/config/waha_chat_id.txt` for the notifier to read. Each message type can
+  also go to its own group: set `PC_WAHA_CHAT_ID_INDEX`, `PC_WAHA_CHAT_ID_DETAILS`
+  and/or `PC_WAHA_CHAT_ID_STATUS` (or fill the per-purpose fields in either
+  monitor, saved to `data/config/waha_chat_id_{index,details,status}.txt`);
+  anything left blank uses the default destination. If messages do not
   send, verify `PC_WAHA_ENABLED=1`, the WAHA server/session is running,
   `PC_NOTIFY_WHATSAPP` is not `0`, and `PC_WAHA_NOTIFY_EVENTS` includes
   `new`, `update`, `none`, and `done` as needed.
@@ -698,7 +763,7 @@ panamacompra-collector/
 ├── data/                                      # runtime data (gitignored)
 │   ├── panamacompra_archive.db                # SQLite database
 │   ├── panamacompra_index.csv                 # append-only "first seen" log
-│   ├── config/                                # monitor_settings.env, waha_chat_id.txt, waha_keywords.txt
+│   ├── config/                                # monitor_settings.env, waha_chat_id*.txt (default + index/details/status), waha_keywords.txt
 │   ├── index/                                 # lightweight per-day index JSON
 │   ├── calendar/                              # YY-MM-DD timestamped .ics import packages
 │   ├── logs/                                  # worker / monitor / webhook logs + run_all_progress.env
@@ -755,8 +820,8 @@ save (disable with `PC_RENAME_AFTER_DETAIL=0`). To rename folders that already e
 disk, run the tool below (reads only saved files, no network):
 
 ```bash
-./src/tools/rename-record-folders.py            # dry-run: preview every planned rename
-./src/tools/rename-record-folders.py --apply    # rename folders and update the database
+./src/tools/070-rename-record-folders.py            # dry-run: preview every planned rename
+./src/tools/070-rename-record-folders.py --apply    # rename folders and update the database
 ```
 
 It is idempotent (already-named folders are skipped) and never overwrites an existing
@@ -767,9 +832,9 @@ the deadline repair tool to go back to the live portal, re-download the detail,
 recompute `DTSTART`/`DTEND`, and rename the folder when a close date is recovered:
 
 ```bash
-./src/pipeline/040-repair-missing-deadlines.py           # dry-run: list missing-deadline folders/rows
-./src/pipeline/040-repair-missing-deadlines.py --apply   # re-download details and rename fixed folders
-./src/pipeline/040-repair-missing-deadlines.py --limit 20 --apply
+./src/pipeline/050-repair-missing-deadlines.py           # dry-run: list missing-deadline folders/rows
+./src/pipeline/050-repair-missing-deadlines.py --apply   # re-download details and rename fixed folders
+./src/pipeline/050-repair-missing-deadlines.py --limit 20 --apply
 ```
 
 The native and web monitors expose the same action as **Repair missing deadlines**
@@ -791,13 +856,13 @@ There are two supported paths, and both converge on the same
 
 1. **New records** — run the normal collector. The index scan first creates a
    temporary `records/YY-MM-DD/NUMERO/` folder; once detail data is downloaded,
-   `src/pipeline/collect_detail.py` computes the finish stamp and description from the
+   `src/pipeline/030-collect-details.py` computes the finish stamp and description from the
    detail text/tables and automatically renames the folder.
-2. **Previous records already on disk** — run `src/tools/rename-record-folders.py`. It
+2. **Previous records already on disk** — run `src/tools/070-rename-record-folders.py`. It
    reads the saved `NUMERO.detail.txt` and `tables/*.json`, previews the same
    target name in dry-run mode, and applies the rename only with `--apply`.
    If a previous folder only has the index `NUMERO.json`, run
-   `src/tools/update_day_folder.py --date YY-MM-DD --apply` to fetch its detail page
+   `src/tools/080-update-day-folder.py --date YY-MM-DD --apply` to fetch its detail page
    first; the day updater syncs those index-only folders into SQLite before it
    lists records to download.
 
@@ -805,23 +870,23 @@ Recommended review/test commands before and after applying updates:
 
 ```bash
 # 1) Preview old-folder renames without changing files
-./src/tools/rename-record-folders.py --limit 20
+./src/tools/070-rename-record-folders.py --limit 20
 
 # 2) Apply old-folder renames after the preview looks right
-./src/tools/rename-record-folders.py --apply
+./src/tools/070-rename-record-folders.py --apply
 
 # 3) Preview detail view/calendar backfill for previous records
-./src/pipeline/030-build-detail-views.py
+./src/pipeline/040-build-detail-views.py
 
 # 4) Apply detail view/calendar backfill for previous records
-./src/pipeline/030-build-detail-views.py --apply
+./src/pipeline/040-build-detail-views.py --apply
 
 # 5) Test new records with a small live run, then check the resulting folder name
-./src/pipeline/request-run-all.sh 5
-./src/pipeline/run-all-status.sh
+./src/pipeline/110a-request-run.sh 5
+./src/pipeline/130b-run-status.sh
 ```
 
-Use `src/tools/update_day_folder.py --date YY-MM-DD --apply` when previous records
+Use `src/tools/080-update-day-folder.py --date YY-MM-DD --apply` when previous records
 need to be **fetched/re-fetched from the live portal** instead of just renamed
 or rebuilt from saved detail files. This includes index-only folders that have
 `NUMERO.json` but do not yet have `NUMERO.detail.json`, `NUMERO.detail.html`,
@@ -870,15 +935,15 @@ New records get these automatically when first downloaded. A normal run only pro
 even after the parsing rules change. Refresh previously-downloaded records **manually**:
 
 ```bash
-./src/pipeline/030-build-detail-views.py            # dry-run: preview every record
-./src/pipeline/030-build-detail-views.py --apply    # rebuild views + .ics from saved files (no browser)
-./src/tools/update_day_folder.py --date <YY-MM-DD> --apply   # re-download a day from the portal
+./src/pipeline/040-build-detail-views.py            # dry-run: preview every record
+./src/pipeline/040-build-detail-views.py --apply    # rebuild views + .ics from saved files (no browser)
+./src/tools/080-update-day-folder.py --date <YY-MM-DD> --apply   # re-download a day from the portal
 ```
 
 Calendar timezone and attendees are configurable with `PC_CALENDAR_TZ` and
 `PC_CALENDAR_ATTENDEES`. The JSON calendar view is the source of truth; the
 `.calendar.ics` file is a portable review/import copy generated during detail
-downloads, day-folder refreshes, and `src/pipeline/030-build-detail-views.py --apply`. In the
+downloads, day-folder refreshes, and `src/pipeline/040-build-detail-views.py --apply`. In the
 ICS export, each event's `ATTENDEE:MAILTO:...` lines sit inside its `VEVENT`,
 `DTSTART` / `DTEND` use `TZID=<timezone>;VALUE=DATE-TIME` (e.g.
 `DTSTART;TZID=America/Panama;VALUE=DATE-TIME:20260619T100000`), `DTSTAMP` ends
@@ -889,7 +954,7 @@ and `DESCRIPTION` is a `LINK :` line, a `DESCR:` line, then an `ITEMS:` list
 Thunderbird renders as a clickable link. (Commas in ICS text are written `\,` per
 the spec and display unescaped in calendar apps.)
 
-**Calendar import packages.** After each run, `src/pipeline/030-build-detail-views.py --apply` refreshes the structured detail sections/per-record `.ics`, then `src/pipeline/build_calendar.py` (STEP 5)
+**Calendar import packages.** After each run, `src/pipeline/040-build-detail-views.py --apply` refreshes the structured detail sections/per-record `.ics`, then `src/pipeline/060-build-calendar.py` (STEP 5)
 exports only the new/changed record calendars from that run into timestamped files:
 
 ```text
@@ -908,11 +973,11 @@ open **Properties**, and mark it **read-only**.
 Manual examples:
 
 ```bash
-./src/pipeline/build_calendar.py                         # package only this run's new/changed records when PC_RUN_STARTED_AT exists
-./src/pipeline/build_calendar.py --all                   # package every saved record under data/calendar/YY-MM-DD/
-PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/build_calendar.py --all
-./src/pipeline/build_calendar.py --all --flat            # write packages directly in data/calendar/
-./src/pipeline/build_calendar.py --all --legacy-combined # also write data/calendar/panamacompra.ics
+./src/pipeline/060-build-calendar.py                         # package only this run's new/changed records when PC_RUN_STARTED_AT exists
+./src/pipeline/060-build-calendar.py --all                   # package every saved record under data/calendar/YY-MM-DD/
+PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/060-build-calendar.py --all
+./src/pipeline/060-build-calendar.py --all --flat            # write packages directly in data/calendar/
+./src/pipeline/060-build-calendar.py --all --legacy-combined # also write data/calendar/panamacompra.ics
 ```
 
 > **Portal versions.** The collector reads the current
@@ -923,16 +988,16 @@ PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/build_calendar.py --all
 
 ### Re-downloading a day folder
 
-`src/pipeline/030-build-detail-views.py` and the automatic schema-version refresh only re-parse
+`src/pipeline/040-build-detail-views.py` and the automatic schema-version refresh only re-parse
 **saved** HTML — they never go back to the portal. To actually re-fetch records from
 the live site (for example, a day's records first captured under an earlier portal
 version that you now want pulled as the current one), use:
 
 ```bash
-./src/tools/update_day_folder.py                  # prompt for the day (default: today), then confirm
-./src/tools/update_day_folder.py --date 26-06-18  # a specific day folder (YY-MM-DD or YYYY-MM-DD)
-./src/tools/update_day_folder.py --date yesterday --apply
-./src/tools/update_day_folder.py --apply          # today's folder, no confirmation
+./src/tools/080-update-day-folder.py                  # prompt for the day (default: today), then confirm
+./src/tools/080-update-day-folder.py --date 26-06-18  # a specific day folder (YY-MM-DD or YYYY-MM-DD)
+./src/tools/080-update-day-folder.py --date yesterday --apply
+./src/tools/080-update-day-folder.py --apply          # today's folder, no confirmation
 ```
 
 It selects every record whose `date_folder` matches (the day it was first seen),
@@ -1003,6 +1068,7 @@ SQLite database at `data/panamacompra_archive.db`, table `opportunities`
 | `detail_attempts`, `detail_saved_at`, `detail_json_path` | Detail tracking. |
 | `start_date_guess`, `finish_date_guess` | Opportunity start/end date guesses extracted from detail/calendar data. These are important monitor/filter/calendar values and are preserved separately from folder names. |
 | `notified_at` | Timestamp of the first WAHA “nueva oportunidad” WhatsApp message for this record (empty = not yet announced). |
+| `detail_notified_at` | Timestamp of the follow-up WhatsApp message with the downloaded item details (empty = follow-up still owed for an announced record). |
 | `last_notified_status`, `last_notified_items_hash`, `last_notified_signature` | Last successfully notified record snapshot, used to suppress unchanged records and detect status/item updates. |
 | `last_calendar_export_path` | Per-record `.ics` path written after a successful WhatsApp notification. |
 
@@ -1045,16 +1111,43 @@ into one reproducible stack:
 | `changedetection` | `dgtlmoon/changedetection.io` | Watches the PanamaCompra table and fires the webhook. UI on `http://localhost:5000`. |
 | `sockpuppetbrowser` | `dgtlmoon/sockpuppetbrowser` | Headless Chromium that renders the JavaScript watch page for changedetection. |
 | `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:${WAHA_PORT:-3000}` (scan the QR once to log in). |
-| `webhook` | built from `docker/Dockerfile.webhook` | `src/webhook/listener.py` in **enqueue-only** mode on port `8765`. |
+| `webhook` | built from `docker/Dockerfile.webhook` | `src/webhook/010-webhook-listener.py` in **enqueue-only** mode on port `8765`. |
+
+`./setup.sh` installs the Docker engine when missing (via apt on
+Debian/Ubuntu/Linux Mint) and starts this stack automatically (set
+`PC_SETUP_SKIP_DOCKER=1` to skip). Setup recognizes what is already installed —
+existing Python, `.venv`, `.env` and Docker are reported and reused, never
+reinstalled — and before starting containers the helper runs a preflight: if a
+previous/other installation already holds the needed ports (for example a WAHA
+or changedetection started from another folder), it lists the offending
+containers with their origin path and asks whether to stop them (interactive) or
+warns and continues (unattended); it also points old `/Apps`-style data at
+`./src/tools/100-migrate-apps-layout.sh` and legacy `./integrations` data is migrated
+automatically. To remove a previous installation, run `./scripts/uninstall.sh`
+from that installation's folder (interactive; add `--purge-*` flags to delete
+data). The recommended way to manage it afterwards is
+the helper — also available as buttons in both monitors' **Integrations** zone:
 
 ```bash
 cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
 printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
-docker compose up -d webhook changedetection   # webhook + changedetection + browser
-docker compose up -d waha                      # add WAHA if host port 3000 is free
-# If another WAHA already owns port 3000: WAHA_PORT=3001 docker compose up -d waha
-# Runtime volumes live under ./integrations/changedetection and ./integrations/waha
+./src/tools/010-docker-stack.sh up       # pull/start changedetection + browser + WAHA + webhook
+./src/tools/010-docker-stack.sh status   # container states + UI URLs
+./src/tools/010-docker-stack.sh down     # stop the containers (data is kept)
+# If another WAHA already owns port 3000: save "WAHA server port" in the monitor
+# Settings (or WAHA_PORT in .env) and restart the stack.
 ```
+
+Container data stays **inside the self-contained state directory** —
+`var/integrations/changedetection` and `var/integrations/waha` in
+development/portable mode, the XDG state dir in installed mode; override with
+`PC_INTEGRATIONS_DIR`. A legacy repo-root `./integrations/` folder is moved there
+automatically on the first `010-docker-stack.sh` run (a compatibility symlink is left
+behind). The helper also applies the container settings saved from the monitors'
+Settings panels (`CHANGEDETECTION_BASE_URL`, `WAHA_PORT`, `WAHA_API_KEY`) on the
+next `up`/`restart`, so changedetection and WAHA can be adjusted without editing
+`.env`. Raw `docker compose up -d` still works from the checkout root and uses
+the same `var/integrations` default.
 
 **Why the webhook container only “enqueues”.** The real collector (Playwright
 Firefox writing to the host `./records` and `./data`) runs on the **host**, not in
@@ -1064,17 +1157,17 @@ bind-mounted checkout. A tiny **host** runner then performs the actual collectio
 
 ```bash
 # On the host checkout, run the watcher (or install it as a user service below):
-./src/webhook/watch-queue-flag.sh
+./src/webhook/050-watch-queue-flag.sh
 ```
 
 If another **Update + Monitor** request arrives while a changedetection-triggered
 collector is still active, the updater is queued instead of interrupting the
 run. The request is recorded in `data/queue/update_monitor_requested.flag`, the
 monitor is opened/reused so the active run remains visible, and the queued update
-starts only after the current worker exits cleanly. `src/pipeline/run-worker.sh`
-launches `src/monitor/update-loader.py --open-monitor-after` when it consumes the queued
+starts only after the current worker exits cleanly. `src/pipeline/100-run-worker.sh`
+launches `src/monitor/003-update-loader.py --open-monitor-after` when it consumes the queued
 update; the host flag watcher performs the same handoff if it sees the update
-queue while no collector/updater is active. Use `./src/pipeline/queue-status.sh` to list
+queue while no collector/updater is active. Use `./src/pipeline/130a-queue-status.sh` to list
 both queues: collector requests and pending/running Update + Monitor requests.
 
 In the changedetection.io UI, set the watch **notification URL** to reach the
@@ -1097,7 +1190,7 @@ If Apprise/changedetection still logs a huge payload (`message` length near
 If you previously split the stack into separate folders such as
 `~/Apps/panamacompra-monitor`, `~/Apps/panamacompra-webhook-receiver`,
 `~/Apps/waha`, or the same names under `/Apps`, consolidate them into the
-collector checkout's `integrations/` folder so Docker volumes, `.webhook_token`,
+collector's integrations folder (now `var/integrations/`, see `PC_INTEGRATIONS_DIR`) so Docker volumes, `.webhook_token`,
 queue files, and the updated listener all refer to the same checkout. The helper
 defaults to the `Apps` directory that contains the script (for example
 `~/Apps/panamacompra-collector` stays under `~/Apps`, not `/Apps`) and also
@@ -1105,16 +1198,16 @@ supports compatibility symlinks for the old paths:
 
 ```bash
 # Review first; no files are changed.
-./src/tools/migrate-apps-layout.sh
+./src/tools/100-migrate-apps-layout.sh
 
 # Copy legacy data into this repo layout.
-./src/tools/migrate-apps-layout.sh --apply
+./src/tools/100-migrate-apps-layout.sh --apply
 
 # Optional: replace old folders with symlinks after backing them up.
-./src/tools/migrate-apps-layout.sh --apply --link-legacy
+./src/tools/100-migrate-apps-layout.sh --apply --link-legacy
 
 # Override only when the target is really /Apps instead of ~/Apps.
-./src/tools/migrate-apps-layout.sh --apply --apps-root /Apps --collector /Apps/panamacompra-collector
+./src/tools/100-migrate-apps-layout.sh --apply --apps-root /Apps --collector /Apps/panamacompra-collector
 ```
 
 Run the host runner as a user service so requests are always picked up:
@@ -1128,7 +1221,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Apps/panamacompra-collector
-ExecStart=%h/Apps/panamacompra-collector/src/webhook/watch-queue-flag.sh
+ExecStart=%h/Apps/panamacompra-collector/src/webhook/050-watch-queue-flag.sh
 Restart=always
 RestartSec=5
 
@@ -1141,9 +1234,9 @@ systemctl --user enable --now panamacompra-runner.service
 ```
 
 > Prefer the all-host setup instead? Skip the `webhook` compose service and run
-> `src/webhook/listener.py` on the host (see [Persistent webhook listener with
+> `src/webhook/010-webhook-listener.py` on the host (see [Persistent webhook listener with
 > systemd](#persistent-webhook-listener-with-systemd)). In that mode the listener
-> runs `src/webhook/run-collector.sh` itself and no flag watcher is needed.
+> runs `src/webhook/060-run-collector.sh` itself and no flag watcher is needed.
 
 ### Watch and webhook configuration
 
@@ -1168,7 +1261,7 @@ changedetection notifies the local listener. Create the token first:
 ```bash
 printf 'YOUR_SECRET_TOKEN' > .webhook_token
 source .venv/bin/activate
-python src/webhook/listener.py
+python src/webhook/010-webhook-listener.py
 ```
 
 The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
@@ -1177,7 +1270,7 @@ The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
 intentionally targeting a listener running on the host. If
 `curl http://127.0.0.1:8765/health` returns JSON naming the old
 `panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
-host listener. Run `./src/webhook/start-listener.sh --replace-port-owner` to stop
+host listener. Run `./src/webhook/020-start-listener.sh --replace-port-owner` to stop
 the process on that port and start the current listener, then copy the printed
 `json://...` URL into changedetection. Choose a free `PC_WEBHOOK_PORT` only when
 you intentionally want the listener on a different port.
@@ -1187,7 +1280,7 @@ Local:        http://127.0.0.1:8765/panamacompra/YOUR_TOKEN
 From Docker:  http://host.docker.internal:8765/panamacompra/YOUR_TOKEN
 ```
 
-On a valid request it runs `src/webhook/run-collector.sh`, which requests the full sequence. It
+On a valid request it runs `src/webhook/060-run-collector.sh`, which requests the full sequence. It
 does not start a browser session directly.
 
 ### Webhook reachability diagnostic
@@ -1201,11 +1294,11 @@ to the wrong interface, or unreachable from Docker.
 Run the bundled diagnostic from the checkout:
 
 ```bash
-./src/webhook/diagnose.sh
+./src/webhook/040-diagnose-webhook.sh
 ```
 
 The script ensures `.webhook_token` exists with mode `600`, restarts
-`src/webhook/listener.py` on `PC_WEBHOOK_HOST` / `PC_WEBHOOK_PORT` (defaults
+`src/webhook/010-webhook-listener.py` on `PC_WEBHOOK_HOST` / `PC_WEBHOOK_PORT` (defaults
 `0.0.0.0:8765`), confirms the port is listening, tests
 `http://127.0.0.1:8765/panamacompra/<TOKEN>`, and then attempts the same request
 from the detected changedetection.io Docker container using
@@ -1238,7 +1331,7 @@ closures and restarts automatically:
 ```bash
 mkdir -p ~/.config/systemd/user
 
-./src/webhook/install-service.sh
+./src/webhook/030-install-service.sh
 systemctl --user status panamacompra-webhook.service --no-pager
 ```
 
@@ -1255,7 +1348,7 @@ journalctl --user -u panamacompra-webhook.service -n 80 --no-pager
 systemctl --user restart panamacompra-webhook.service
 # If you previously created a direct ExecStart=python service and it restart-loops
 # with "Address already in use", repair it with:
-./src/webhook/install-service.sh
+./src/webhook/030-install-service.sh
 ```
 
 ---
@@ -1263,7 +1356,7 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`src/monitor/001a-monitor-tk.py`). Run
-`./src/monitor/open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update-local-copy.sh` or explicitly with `./bin/pcc launcher install`. The shortcut opens a separate updater loader (`src/monitor/update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
+`./src/monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./update-local-copy.sh` or explicitly with `./bin/pcc launcher install`. The shortcut opens a separate updater loader (`src/monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
 
 Launcher maintenance commands:
 
@@ -1280,15 +1373,15 @@ diagnostics counters, process status, recent log tails, run-mode/limit selectors
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
-python src/monitor/next-run-timer.py
+python src/monitor/002-next-run-timer.py
 ```
-This mini-monitor counts down to the next run, anchored to the last live run's start time (read from `data/logs/run_all_progress.env`) plus `PC_NEXT_RUN_INTERVAL_MINUTES`, so it tracks the real cadence and rolls forward when a run is overdue; before any run is recorded it falls back to clock boundaries (:00 and :30 past each hour by default). `src/monitor/open-monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen.
+This mini-monitor counts down to the next run, anchored to the last live run's start time (read from `data/logs/run_all_progress.env`) plus `PC_NEXT_RUN_INTERVAL_MINUTES`, so it tracks the real cadence and rolls forward when a run is overdue; before any run is recorded it falls back to clock boundaries (:00 and :30 past each hour by default). `src/monitor/000-open-monitor.sh` starts it automatically with the Tk monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws/closes from view; when the live run finishes, it reappears and starts counting down again. Its default position is centered horizontally and about 30 px below the top of the screen.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
-remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh`,
+remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh`,
 then open `http://127.0.0.1:8766/`; the web monitor mirrors the Tk monitor zones, stop button, test-sandbox folder opening, and live-run-only auto-close behavior. The terminal UI is still available with
-`PC_MONITOR_MODE=terminal ./src/monitor/open-monitor.sh`. If no GUI can be opened, use
-`./src/pipeline/run-all-status.sh` or `./src/pipeline/follow-run-all.sh` from any terminal.
+`PC_MONITOR_MODE=terminal ./src/monitor/000-open-monitor.sh`. If no GUI can be opened, use
+`./src/pipeline/130b-run-status.sh` or `./src/pipeline/130c-follow-run.sh` from any terminal.
 
 Key logs under `data/logs/`:
 
@@ -1326,7 +1419,7 @@ pgrep -af "run-worker|010-collect-index|collect_detail|timeout .*src/pipeline" |
 
 ```bash
 tail -120 data/logs/run_all_current.log
-./src/pipeline/stop-run-all.sh
+./src/pipeline/120a-stop-everything.sh
 ```
 
 **"No pending detail rows."** — every record has `detail_status = saved`:
@@ -1343,9 +1436,9 @@ sqlite3 data/panamacompra_archive.db \
 tail -80 data/logs/monitor_open.log
 source .venv/bin/activate
 python src/monitor/001a-monitor-tk.py --snapshot
-PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh  # optional browser monitor
-./src/pipeline/run-all-status.sh
-./src/pipeline/follow-run-all.sh
+PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh  # optional browser monitor
+./src/pipeline/130b-run-status.sh
+./src/pipeline/130c-follow-run.sh
 ```
 
 **Webhook does not trigger the collector** — first distinguish reachability, token
@@ -1361,11 +1454,11 @@ instance is already using port 3000; either keep that instance and start only
 check logs:
 
 ```bash
-./src/webhook/diagnose.sh
+./src/webhook/040-diagnose-webhook.sh
 tail -80 data/logs/webhook_listener.log
 tail -80 data/logs/collector_triggered.log
 tail -80 data/logs/run_all_requests.log
-./src/pipeline/queue-status.sh
+./src/pipeline/130a-queue-status.sh
 ```
 
 **Fast recovery sequence for the current Docker setup** — when the compose run
@@ -1387,10 +1480,10 @@ printf 'json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=tru
 
 # 4) If host port 8765 is held by the old receiver, replace it with this checkout.
 #    Copy the json:// URL printed by this command into changedetection.
-./src/webhook/start-listener.sh --replace-port-owner
+./src/webhook/020-start-listener.sh --replace-port-owner
 
 # 5) Check whether the enqueue flag/runner/logs are moving.
-./src/pipeline/queue-status.sh
+./src/pipeline/130a-queue-status.sh
 ```
 
 If local curl returns `202` but the Docker test fails, add
@@ -1437,7 +1530,7 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 ### System is healthy when
 
 - All Python files compile and all shell scripts pass `bash -n`
-- `src/pipeline/run-all-status.sh` shows no stuck process
+- `src/pipeline/130b-run-status.sh` shows no stuck process
 - The webhook creates a run-all request
 - The index scan reports zero duplicate `NUMERO`
 - The detail downloader reports no pending rows after completion
@@ -1447,3 +1540,7 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 ### Date fields retained in detail and database records
 
 The collector stores the important dates with explicit names: `date_start_opportunity` / `start_date_guess` for the opportunity start, `date_end_opportunity` / `finish_date_guess` for the opportunity end or deadline, `date_downloaded_local` / `detail_saved_at` for the local download time, and `date_name_finish_stamp` for the date token used in the record folder name. The monitor displays downloaded/start/end values together so filtering and review do not depend on the folder name alone.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

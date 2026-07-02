@@ -20,7 +20,7 @@ Type=simple
 WorkingDirectory=$APP_ROOT
 Environment=PC_WEBHOOK_HOST=${PC_WEBHOOK_HOST:-0.0.0.0}
 Environment=PC_WEBHOOK_PORT=${PC_WEBHOOK_PORT:-8765}
-ExecStart=$APP_ROOT/src/webhook/start-listener.sh --replace-port-owner --foreground
+ExecStart=$APP_ROOT/src/webhook/020-start-listener.sh --replace-port-owner --foreground
 Restart=on-failure
 RestartSec=5
 

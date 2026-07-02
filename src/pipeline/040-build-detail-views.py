@@ -9,9 +9,9 @@ expressed as JSON), and writes them back into the detail JSON.
 Browser-free and safe to re-run. The normal detail downloader produces the same
 views for new records; this tool is for archives already on disk.
 
-    ./src/pipeline/030-build-detail-views.py                 # dry-run: preview what would change
-    ./src/pipeline/030-build-detail-views.py --apply         # write the views into detail.json
-    ./src/pipeline/030-build-detail-views.py --records-dir /path --apply
+    ./src/pipeline/040-build-detail-views.py                 # dry-run: preview what would change
+    ./src/pipeline/040-build-detail-views.py --apply         # write the views into detail.json
+    ./src/pipeline/040-build-detail-views.py --records-dir /path --apply
 """
 import argparse
 import json

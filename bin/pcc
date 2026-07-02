@@ -9,12 +9,42 @@ usage() {
   cat <<'USAGE'
 Usage: pcc <command> [args]
 
-Commands:
+Run control:
   start [detail_limit] [mode] [index_limit]  Queue/start the full collector run
   stop                                      Stop collector, monitor, updater, and webhook processes
   status                                    Show queue and process status
-  monitor                                   Open the monitor UI
+  watch                                     Live terminal monitor (no GUI needed)
+  db                                        Archive/notification counters (records, backlogs)
+  calendar [day|week|month|year] [--date D] [--field end|start|downloaded]
+                                            Opportunities calendar (deadlines by default)
+
+Monitors & services:
+  monitor                                   Open the monitor UI (native/web)
   webhook start|diag                        Start or diagnose the webhook listener
+  docker up|down|restart|status|logs        Manage the changedetection + WAHA container stack
+
+Settings (same files the GUI monitors use):
+  get [KEY]                                 Show one or all monitor settings
+  set KEY VALUE                             Save a monitor setting (e.g. set PC_WAHA_ENABLED 1)
+  chat [default|index|details|status] [ID]  Show or save WhatsApp destination chat id(s)
+  keywords [global|index|details|status] [list|set "..."|clear|test "text"]
+                                            Per-destination filters. Rules: OR between
+                                            comma/line-separated rules, AND with '+'
+                                            (salud + panama), NOT with '-' (-construccion)
+
+WhatsApp:
+  test-whatsapp [message]                   Send one WAHA test message with the saved settings
+  notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
+  format [list|show|preview|set|reset|placeholders] [index|details|status]
+                                            Customize the WhatsApp message formats
+
+Work templates (copied into templates/ inside each record folder):
+  templates source [PATH]                   Show or set the template source folder
+  templates list                            List source files, marking selected ones
+  templates select|unselect FILE...         Choose which templates to use
+  templates apply [--numero N] [--overwrite] [--apply]   Copy into record folders (dry-run without --apply)
+
+Maintenance:
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
@@ -24,21 +54,193 @@ Commands:
 USAGE
 }
 
+PY_BIN="$APP_ROOT/.venv/bin/python"
+[[ -x "$PY_BIN" ]] || PY_BIN="python3"
+SETTINGS_FILE="$PC_DATA_DIR/config/monitor_settings.env"
+
+# Export the monitor-saved settings so notifier commands behave exactly like
+# they do when launched from the GUI monitors.
+load_monitor_settings() {
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$SETTINGS_FILE"
+    set +a
+  fi
+}
+
+chat_file_for() {
+  case "$1" in
+    default|"") echo "$PC_DATA_DIR/config/waha_chat_id.txt" ;;
+    index|details|status) echo "$PC_DATA_DIR/config/waha_chat_id_$1.txt" ;;
+    *) echo ""; return 1 ;;
+  esac
+}
+
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 case "$cmd" in
-  start|run) exec "$APP_ROOT/src/pipeline/request-run-all.sh" "$@" ;;
-  stop) exec "$APP_ROOT/src/pipeline/stop-run-all.sh" "$@" ;;
-  status) exec "$APP_ROOT/src/pipeline/queue-status.sh" "$@" ;;
-  monitor) exec "$APP_ROOT/src/monitor/open-monitor.sh" "$@" ;;
+  start|run) exec "$APP_ROOT/src/pipeline/110a-request-run.sh" "$@" ;;
+  stop) exec "$APP_ROOT/src/pipeline/120a-stop-everything.sh" "$@" ;;
+  status) exec "$APP_ROOT/src/pipeline/130a-queue-status.sh" "$@" ;;
+  monitor) exec "$APP_ROOT/src/monitor/000-open-monitor.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
     case "$sub" in
-      start) exec "$APP_ROOT/src/webhook/start-listener.sh" "$@" ;;
-      diag|diagnostic) exec "$APP_ROOT/src/webhook/diagnose.sh" "$@" ;;
+      start) exec "$APP_ROOT/src/webhook/020-start-listener.sh" "$@" ;;
+      diag|diagnostic) exec "$APP_ROOT/src/webhook/040-diagnose-webhook.sh" "$@" ;;
       *) echo "Unknown webhook command: $sub" >&2; exit 2 ;;
     esac ;;
-  migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
+  watch) exec "$APP_ROOT/src/monitor/001c-monitor-terminal.sh" "$@" ;;
+  docker|stack) exec "$APP_ROOT/src/tools/010-docker-stack.sh" "$@" ;;
+  db|stats)
+    exec "$PY_BIN" - <<'PY'
+import sys
+sys.path.insert(0, __import__("os").environ["APP_ROOT"] + "/src")
+from common import init_db
+conn = init_db()
+cols = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
+def count(where=""):
+    return conn.execute("SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")).fetchone()[0]
+print(f"Total records:                     {count()}")
+print(f"Details saved:                     {count('detail_status = %r' % 'saved')}")
+print(f"Details pending:                   {count('detail_status != %r' % 'saved')}")
+print(f"Details failed:                    {count('detail_status = %r' % 'failed')}")
+if "notified_at" in cols:
+    print(f"Notified (WhatsApp):               {count('notified_at IS NOT NULL')}")
+    print(f"Awaiting WhatsApp index alert:     {count('notified_at IS NULL')}")
+if "detail_notified_at" in cols:
+    print(f"Awaiting item-details WhatsApp:    {count('detail_status = %r AND notified_at IS NOT NULL AND detail_notified_at IS NULL' % 'saved')}")
+PY
+    ;;
+  get)
+    key="${1:-}"
+    if [[ -n "$key" ]]; then
+      KEY="$key" "$PY_BIN" - <<'PY'
+import os, shlex
+from pathlib import Path
+path = Path(os.environ["PC_DATA_DIR"]) / "config" / "monitor_settings.env"
+key = os.environ["KEY"]
+data = {}
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            try:
+                data[k.strip()] = " ".join(shlex.split(v)) if v.strip() else ""
+            except ValueError:
+                data[k.strip()] = v.strip()
+print(data.get(key, os.environ.get(key, "")))
+PY
+    else
+      [[ -f "$SETTINGS_FILE" ]] && grep -v '^#' "$SETTINGS_FILE" | sed '/^$/d' || echo "No monitor settings saved yet ($SETTINGS_FILE)."
+    fi
+    ;;
+  set)
+    key="${1:-}"; value="${2-}"
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ && $# -ge 2 ]] || { echo "Usage: pcc set KEY VALUE (e.g. pcc set PC_WAHA_ENABLED 1)" >&2; exit 2; }
+    KEY="$key" VALUE="$value" "$PY_BIN" - <<'PY'
+import os, shlex
+from pathlib import Path
+path = Path(os.environ["PC_DATA_DIR"]) / "config" / "monitor_settings.env"
+data = {}
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            data[k.strip()] = v
+data[os.environ["KEY"]] = shlex.quote(os.environ["VALUE"])
+lines = [
+    "# PanamaCompra monitor settings (KEY=VALUE).",
+    "# Edited from the monitor Settings panel or `pcc set`; same-named",
+    "# environment variables override these at startup.",
+]
+lines += [f"{k}={data[k]}" for k in sorted(data)]
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+print(f"Saved {os.environ['KEY']}={os.environ['VALUE']} to {path}")
+PY
+    ;;
+  chat)
+    purpose="${1:-}"
+    if [[ -z "$purpose" ]]; then
+      for p in default index details status; do
+        file="$(chat_file_for "$p")"
+        printf '%-8s %s\n' "$p:" "$( [[ -s "$file" ]] && head -n 1 "$file" || echo '(not set)')"
+      done
+      echo "Set with: pcc chat [default|index|details|status] 12036...@g.us (empty id clears)"
+    else
+      file="$(chat_file_for "$purpose")" || { echo "Unknown destination: $purpose (use default|index|details|status)" >&2; exit 2; }
+      if [[ $# -ge 2 ]]; then
+        mkdir -p "$(dirname "$file")"
+        printf '%s\n' "${2:-}" > "$file"
+        echo "Saved '$purpose' WhatsApp destination to $file"
+      else
+        [[ -s "$file" ]] && head -n 1 "$file" || echo "(not set)"
+      fi
+    fi
+    ;;
+  keywords)
+    kw_purpose="global"
+    case "${1:-}" in global|index|details|status) kw_purpose="$1"; shift ;; esac
+    if [[ "$kw_purpose" == "global" ]]; then
+      kw_file="$PC_DATA_DIR/config/waha_keywords.txt"
+    else
+      kw_file="$PC_DATA_DIR/config/waha_keywords_$kw_purpose.txt"
+    fi
+    sub="${1:-list}"
+    case "$sub" in
+      list)
+        echo "# $kw_purpose filter ($kw_file)"
+        if [[ -s "$kw_file" ]]; then cat "$kw_file"; else
+          echo "(no rules — $( [[ "$kw_purpose" == global ]] && echo 'every record is announced' || echo 'falls back to the global filter'))"
+        fi
+        echo "# Rules: OR between lines/commas · AND with '+' (salud + panama) · NOT with '-' (-construccion)"
+        ;;
+      set)
+        [[ $# -ge 2 ]] || { echo "Usage: pcc keywords [$kw_purpose] set \"salud + panama, medicinas, -construccion\"" >&2; exit 2; }
+        mkdir -p "$(dirname "$kw_file")"
+        printf '%s\n' "$2" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d' > "$kw_file"
+        echo "Saved $(wc -l < "$kw_file") rule(s) to $kw_file"
+        ;;
+      clear) rm -f "$kw_file"; echo "$kw_purpose filter cleared." ;;
+      test)
+        [[ $# -ge 2 ]] || { echo "Usage: pcc keywords [$kw_purpose] test \"texto de la oportunidad\"" >&2; exit 2; }
+        KW_PURPOSE="$kw_purpose" KW_TEXT="$2" "$PY_BIN" - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "notify_new_records", os.environ["APP_ROOT"] + "/src/pipeline/020-notify-whatsapp.py")
+nnr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(nnr)
+purpose = os.environ["KW_PURPOSE"]
+purpose = "" if purpose == "global" else purpose
+includes, excludes = nnr.load_filter_rules(purpose)
+result = nnr.evaluate_filter(os.environ["KW_TEXT"], includes, excludes)
+print(f"rules: {len(includes)} include, {len(excludes)} exclude")
+print(f"WOULD NOTIFY — Coincidencia: {result}" if result else "WOULD NOT NOTIFY (excluded or no include rule matched)")
+PYEOF
+        ;;
+      *) echo "Usage: pcc keywords [global|index|details|status] [list|set \"...\"|clear|test \"...\"]" >&2; exit 2 ;;
+    esac
+    ;;
+  test-whatsapp)
+    load_monitor_settings
+    exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST \
+      --message "${1:-Prueba de notificación desde la CLI pcc.}"
+    ;;
+  notify)
+    [[ $# -ge 1 ]] || { echo "Usage: pcc notify NUMERO [NUMERO...] [--force]" >&2; exit 2; }
+    load_monitor_settings
+    args=()
+    for arg in "$@"; do
+      if [[ "$arg" == "--force" ]]; then args+=("--force"); else args+=("--record" "$arg"); fi
+    done
+    exec "$PY_BIN" "$APP_ROOT/src/pipeline/020-notify-whatsapp.py" "${args[@]}"
+    ;;
+  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/020-record-templates.py" "$@" ;;
+  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/030-opportunity-calendar.py" "$@" ;;
+  format|formats) exec "$PY_BIN" "$APP_ROOT/src/tools/040-message-formats.py" "$@" ;;
+  migrate) exec "$APP_ROOT/src/tools/100-migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
   launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install-desktop-launcher.sh" "$@" ;;

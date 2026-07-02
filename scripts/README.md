@@ -50,10 +50,10 @@ Rules:
    process_detail`. Python's `import` statement cannot reference a filename
    that starts with a digit or contains a hyphen, so these specific files keep
    plain `snake_case` names with no numeric prefix instead:
-   `src/pipeline/collect_detail.py` (STEP 2), `src/pipeline/build_calendar.py`
-   (STEP 5), `src/pipeline/notify_new_records.py` (STEP 6), and
-   `src/tools/update_day_folder.py`. `src/common.py` and
-   `src/notify/waha_client.py` are also imported by many other scripts and
+   `src/pipeline/030-collect-details.py` (STEP 2), `src/pipeline/060-build-calendar.py`
+   (STEP 5), `src/pipeline/020-notify-whatsapp.py` (STEP 6), and
+   `src/tools/080-update-day-folder.py`. `src/common.py` and
+   `src/notify/010-waha-client.py` are also imported by many other scripts and
    follow the same underscore-only rule. The STEP order for these is
    documented in the main README's Scripts reference table and pipeline
    diagram, not encoded in the filename.
@@ -66,7 +66,7 @@ Rules:
 | `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor desktop launcher. |
 | `tasks/010-update-local-copy.sh` | `./update-local-copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
-| `tasks/021-open-monitor.sh` | `./bin/pcc monitor` | Open the monitor independently. |
+| `tasks/021-000-open-monitor.sh` | `./bin/pcc monitor` | Open the monitor independently. |
 | `tasks/030-status.sh` | `./bin/pcc status` | Inspect queues, progress, logs, and process state. |
 | `tasks/040-stop-all.sh` | `./bin/pcc stop` | Stop host processes. |
 | `tasks/090-uninstall-or-purge.sh` | `./bin/pcc uninstall` | Stop services/containers and optionally purge state. |
@@ -77,14 +77,14 @@ Rules:
 | --- | --- | --- |
 | 0 | `000-update-before-run.sh` | Pre-run git/dependency refresh. |
 | 1 | `010-collect-index.py` | Index scan (Programadas + Abiertas). |
-| 2 | `collect_detail.py` | Detail download (imported by STEP 4/7 tools; see naming exception above). |
-| 3 | `030-build-detail-views.py` | Rebuild summary/items/calendar views. |
-| 4 | `040-repair-missing-deadlines.py` | Verify/repair failed + missing-deadline records. |
-| 5 | `build_calendar.py` | Build timestamped `.ics` packages (imported by STEP 7; naming exception). |
-| 6 | `notify_new_records.py` | WhatsApp announcements (imported by `src/tools/import-selected-calendars.py`; naming exception). |
+| 2 | `030-collect-details.py` | Detail download (imported by STEP 4/7 tools; see naming exception above). |
+| 3 | `040-build-detail-views.py` | Rebuild summary/items/calendar views. |
+| 4 | `050-repair-missing-deadlines.py` | Verify/repair failed + missing-deadline records. |
+| 5 | `060-build-calendar.py` | Build timestamped `.ics` packages (imported by STEP 7; naming exception). |
+| 6 | `020-notify-whatsapp.py` | WhatsApp announcements (imported by `src/tools/060-import-selected-calendars.py`; naming exception). |
 | 7 | `070-test-zone.py` | Optional sandbox re-run of the last N records. |
 
-Un-numbered helpers in the same folder (`run-worker.sh`, `request-run-all.sh`,
-`run-now.sh`, `queue-status.sh`, `run-all-status.sh`, `follow-run-all.sh`,
-`stop-run-all.sh`, `stop-collectors.sh`) orchestrate or inspect the sequence
+Numbered runner/inspector helpers in the same folder (`100-run-worker.sh`, `110a-request-run.sh`,
+`110b-run-now.sh`, `130a-queue-status.sh`, `130b-run-status.sh`, `130c-follow-run.sh`,
+`120a-stop-everything.sh`, `120b-stop-collectors.sh`) orchestrate or inspect the sequence
 above rather than being a step in it.

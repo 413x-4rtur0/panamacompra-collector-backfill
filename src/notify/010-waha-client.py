@@ -17,21 +17,61 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+# Resolve the runtime config directory through common.py so the chat id and
+# saved message live in the same data/config folder the monitors write to
+# (var/data/config in development/portable mode, XDG state dir when installed).
+_SRC_DIR = Path(__file__).resolve().parent.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+import common as pc_common
+
 DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 DEFAULT_SESSION = "default"
-CONFIG_DIR = Path(__file__).resolve().parent / "data" / "config"
+CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 
+# Per-purpose destinations, so the index alerts, the item-detail follow-ups and
+# the status-change messages can each go to a different group/channel. Every
+# purpose falls back to the default destination when not configured.
+CHAT_PURPOSES = ("index", "details", "status")
 
-def configured_chat_id() -> str:
-    """Destination chat id: env first, then the monitor-saved file."""
+
+def chat_id_path(purpose: str = "") -> Path:
+    """Monitor-saved chat id file for a purpose ('' = default destination)."""
+    if purpose in CHAT_PURPOSES:
+        return CONFIG_DIR / f"waha_chat_id_{purpose}.txt"
+    return CHAT_ID_PATH
+
+
+def _read_chat_file(path: Path) -> str:
+    if path.exists():
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    return ""
+
+
+def configured_chat_id(purpose: str = "") -> str:
+    """Destination chat id for a purpose: PC_WAHA_CHAT_ID_<PURPOSE> env first,
+    then the monitor-saved per-purpose file, then the default destination
+    (PC_WAHA_CHAT_ID env, then waha_chat_id.txt)."""
+    if purpose in CHAT_PURPOSES:
+        env_value = os.environ.get(f"PC_WAHA_CHAT_ID_{purpose.upper()}", "").strip()
+        if env_value:
+            return env_value
+        file_value = _read_chat_file(chat_id_path(purpose))
+        if file_value:
+            return file_value
     chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
     if chat_id:
         return chat_id
-    if CHAT_ID_PATH.exists():
-        return CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip()
-    return ""
+    return _read_chat_file(CHAT_ID_PATH)
+
+
+def any_destination_configured() -> bool:
+    """True when the default destination or any per-purpose destination is set."""
+    if configured_chat_id():
+        return True
+    return any(configured_chat_id(purpose) for purpose in CHAT_PURPOSES)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -120,16 +160,16 @@ def _breaker_threshold() -> int:
         return 3
 
 
-def send_text(text: str) -> None:
+def send_text(text: str, purpose: str = "") -> None:
     global _send_failures
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
-    chat_id = configured_chat_id()
+    chat_id = configured_chat_id(purpose)
     api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 
     if not chat_id:
-        print("WAHA notification skipped: PC_WAHA_CHAT_ID is not set.")
+        print(f"WAHA notification skipped: no destination configured{f' for {purpose!r}' if purpose else ''} (PC_WAHA_CHAT_ID).")
         return
 
     payload = json.dumps({"session": session, "chatId": chat_id, "text": text}).encode("utf-8")

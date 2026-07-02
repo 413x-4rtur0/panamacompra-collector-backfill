@@ -59,24 +59,24 @@ if [ -z "$TOKEN" ]; then
 fi
 
 section "3) Check if webhook listener is running"
-pgrep -af "src/webhook/listener.py" || echo "No src/webhook/listener.py process found."
+pgrep -af "src/webhook/010-webhook-listener.py" || echo "No src/webhook/010-webhook-listener.py process found."
 
 section "4) Check if port $PORT is listening"
 ss -ltnp | grep ":$PORT" || echo "Port $PORT is not listening."
 
 section "5) Stop broken direct systemd webhook service and old listener if any"
-# A direct ExecStart=python src/webhook/listener.py service will restart-loop when an
+# A direct ExecStart=python src/webhook/010-webhook-listener.py service will restart-loop when an
 # older receiver owns the port. Stop it before replacing the port owner.
 systemctl --user stop panamacompra-webhook.service 2>/dev/null || true
-pkill -f "[p]ython.*src/webhook/listener.py" 2>/dev/null || true
+pkill -f "[p]ython.*src/webhook/010-webhook-listener.py" 2>/dev/null || true
 sleep 1
 
 section "6) Start webhook listener bound to $HOST:$PORT"
-PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" "$ROOT/src/webhook/start-listener.sh" --replace-port-owner
+PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" "$ROOT/src/webhook/020-start-listener.sh" --replace-port-owner
 sleep 2
 
 section "7) Confirm listener process"
-pgrep -af "src/webhook/listener.py" || fail_tail "webhook listener did not start."
+pgrep -af "src/webhook/010-webhook-listener.py" || fail_tail "webhook listener did not start."
 
 section "8) Confirm port $PORT is listening"
 ss -ltnp | grep ":$PORT" || fail_tail "port $PORT is still not listening."
@@ -134,5 +134,5 @@ echo
 echo "============================================================"
 echo " Done."
 echo " If step 11 passed with HTTP 202, changedetection.io can reach the webhook."
-echo " To install a persistent user service, run: ./src/webhook/install-service.sh"
+echo " To install a persistent user service, run: ./src/webhook/030-install-service.sh"
 echo "============================================================"

@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
 """Send rich PanamaCompra "what is new" notifications to WhatsApp via WAHA.
 
-The run-all worker calls this script after detail and calendar processing.
-``--announce`` sends one rich "🟢 NUEVA OPORTUNIDAD DETECTADA" message per saved
-record with monitor-visible progress; ``--idle`` sends one "⚪ Sin nuevas
-entradas" status; ``--flush`` retries saved records that still have no
-``notified_at`` timestamp.
+Two notifier phases, called by the run-all worker:
+
+* ``--announce`` (index phase) runs right after the index step, BEFORE detail
+  downloads, so subscribers hear about new opportunities immediately instead of
+  after the (potentially hours-long) download phase. It sends one rich
+  "🔔 Nueva Oportunidad" message per new record with monitor-visible progress;
+  item details show as pending because the detail page is not downloaded yet.
+* ``--announce-details`` (detail phase) runs after the downloads and detail
+  views finish. For every record announced from the index it sends the
+  follow-up "📥 Detalles Completos" message in the full rich format — real
+  items, location, complete date range — and exports the record's calendar.
+  Guarded by ``detail_notified_at`` so each record gets exactly one follow-up.
+
+``--idle`` sends one "⚪ Sin nuevas entradas" status; ``--flush`` retries
+records that still have no ``notified_at`` timestamp; ``--sync-snapshots
+--since TS`` is the silent fallback used when the detail phase is disabled
+(PC_NOTIFY_DETAILS=0) so the downloaded items do not fire a duplicate "items
+updated" message on the next run.
 
 Design notes
 ------------
@@ -32,14 +45,15 @@ from pathlib import Path
 
 _SRC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SRC_DIR))
-sys.path.insert(0, str(_SRC_DIR / "notify"))
 import common as pc_common
-import waha_client as waha
+
+waha = pc_common.load_script("src/notify/010-waha-client.py", "waha_client")
 
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 CALENDAR_EXPORT_DIR = pc_common.CALENDAR_EXPORT_DIR
 KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 BASELINE_MARKER = CONFIG_DIR / "waha_notify_initialized"
+DETAIL_BASELINE_MARKER = CONFIG_DIR / "waha_detail_notify_initialized"
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
 
 DASH = "—"
@@ -157,34 +171,76 @@ def waha_enabled() -> bool:
     return waha.env_bool("PC_WAHA_ENABLED", False)
 
 
-def waha_destination() -> str:
-    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
-    if chat_id:
-        return chat_id
-    path = CONFIG_DIR / "waha_chat_id.txt"
-    if path.exists():
-        return path.read_text(encoding="utf-8", errors="replace").strip()
-    return ""
+def waha_destination() -> bool:
+    """True when any WhatsApp destination is configured (the default chat id or
+    any of the per-purpose index/details/status destinations)."""
+    return waha.any_destination_configured()
 
 
-def load_keywords() -> list[str]:
-    if not KEYWORDS_PATH.exists():
-        return []
-    keywords = []
-    for line in KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
-        token = line.strip()
-        if token and not token.startswith("#"):
-            keywords.append(token)
-    return keywords
+FILTER_PURPOSES = ("index", "details", "status")
 
 
-def matched_keywords(haystack: str, keywords: list[str]) -> list[str]:
+def keywords_path(purpose: str = "") -> Path:
+    """Filter file for a WhatsApp destination ('' = the shared/global filter)."""
+    if purpose in FILTER_PURPOSES:
+        return CONFIG_DIR / f"waha_keywords_{purpose}.txt"
+    return KEYWORDS_PATH
+
+
+def parse_filter_rules(text: str) -> tuple[list[list[str]], list[list[str]]]:
+    """Parse filter rules from a file/entry.
+
+    One rule per line (commas also separate rules). Operators:
+      * OR  between rules: a record is announced when ANY rule matches.
+      * AND inside a rule with '+': ``salud + panama`` requires both words.
+      * NOT with a leading '-': ``-construccion`` excludes matching records
+        even when an include rule matched. ``-obra + calle`` excludes only
+        records containing both words.
+    Matching is accent- and case-insensitive substring search over the record's
+    description, entity, dependency, modality and detail summary. Returns
+    (include_rules, exclude_rules) as lists of term lists."""
+    import re as _re
+    includes: list[list[str]] = []
+    excludes: list[list[str]] = []
+    for raw in _re.split(r"[,\n]", text or ""):
+        token = raw.strip()
+        if not token or token.startswith("#"):
+            continue
+        negate = token.startswith("-")
+        if negate:
+            token = token[1:].strip()
+        terms = [term.strip() for term in token.split("+") if term.strip()]
+        if terms:
+            (excludes if negate else includes).append(terms)
+    return includes, excludes
+
+
+def load_filter_rules(purpose: str = "") -> tuple[list[list[str]], list[list[str]]]:
+    """Rules for a destination: its own file when it has rules, else the
+    shared filter file, else no filter (everything announced)."""
+    candidates = [keywords_path(purpose)] if purpose in FILTER_PURPOSES else []
+    candidates.append(KEYWORDS_PATH)
+    for path in candidates:
+        if path.exists():
+            includes, excludes = parse_filter_rules(path.read_text(encoding="utf-8", errors="replace"))
+            if includes or excludes:
+                return includes, excludes
+    return [], []
+
+
+def evaluate_filter(haystack: str, includes: list[list[str]], excludes: list[list[str]]) -> str | None:
+    """The '🔎 Coincidencia' line, or None when the record must not be sent."""
     normalized = pc_common.strip_accents(haystack).lower()
-    matches = []
-    for keyword in keywords:
-        if pc_common.strip_accents(keyword).lower() in normalized:
-            matches.append(keyword)
-    return matches
+
+    def rule_matches(terms: list[str]) -> bool:
+        return all(pc_common.strip_accents(term).lower() in normalized for term in terms)
+
+    if any(rule_matches(rule) for rule in excludes):
+        return None
+    if not includes:
+        return "Sin filtro (todas las entradas)" if not excludes else "Pasa las exclusiones"
+    matched = [" + ".join(rule) for rule in includes if rule_matches(rule)]
+    return ", ".join(matched) if matched else None
 
 
 def load_detail_data(detail_json_path: str | None) -> dict:
@@ -307,13 +363,14 @@ def date_range(row, summary: dict) -> str:
 
 
 def build_record_message(row, summary: dict, *, variant: str, previous_status: str | None = None, match_line: str | None = None) -> str:
+    detail_pending = row["detail_status"] != "saved"
     items = load_detail_items(row["detail_json_path"])
     status = status_value(row)
     title = clean_field(row["descripcion"] or row["short_description"] or summary.get("descripcion"))
     location = record_location(summary)
     url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
     created = fmt_dt(row["first_seen"] or row["fecha"])
-    downloaded = fmt_dt(row["detail_saved_at"] or now_str())
+    downloaded = fmt_dt(row["detail_saved_at"]) if row["detail_saved_at"] else ("⏳ En descarga" if detail_pending else fmt_dt(now_str()))
     numero = clean_field(row["numero"])
 
     if variant == "new":
@@ -328,9 +385,49 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     elif variant == "items":
         heading = f"🔄 *Actualización de Items - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status} (Sin cambios)"
+    elif variant == "details":
+        heading = f"📥 *Detalles Completos - {SOURCE_NAME}*"
+        status_line = f"📊 *Estado:* {status}"
     else:
         heading = f"🔔 *Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
+
+    items_block = (
+        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
+        if detail_pending else format_items(items)
+    )
+    fechas = date_range(row, summary)
+
+    deadline_dt = parse_finish_date(row)
+    dias_restantes = str((deadline_dt.date() - datetime.now().date()).days) if deadline_dt else DASH
+
+    # Operator-customized layout for this message family, when saved.
+    custom = load_custom_format(kind_for_variant(variant))
+    if custom:
+        return custom.format_map(_SafeDict({
+            "heading": heading,
+            "fuente": SOURCE_NAME,
+            "estado": status,
+            "estado_linea": status_line,
+            "estado_anterior": clean_field(previous_status),
+            "numero": numero,
+            "descripcion": title,
+            "entidad": clean_field(row["entidad"]),
+            "ubicacion": location,
+            "rango_fechas": fechas,
+            "items": items_block,
+            "coincidencia": match_line or DASH,
+            "enlace": url,
+            "creado": created,
+            "descargado": downloaded,
+            "modalidad": clean_field(row["modalidad"]),
+            "dependencia": clean_field(row["dependencia"]),
+            "grupo": clean_field(row["grupo"]),
+            "fecha_inicio": fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion")),
+            "fecha_limite": fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion")),
+            "items_total": "⏳" if detail_pending else str(len(items)),
+            "dias_restantes": dias_restantes,
+        }))
 
     parts = [
         heading,
@@ -339,9 +436,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         f"🔢 *Número:* {numero}",
         f"📝 *Descripción:* {title}",
         f"📍 *Ubicación:* {location}",
-        f"📅 *Rango Fechas:* {date_range(row, summary)}",
+        f"📅 *Rango Fechas:* {fechas}",
         "",
-        format_items(items),
+        items_block,
     ]
     if match_line:
         parts.extend(["", f"🔎 *Coincidencia:* {match_line}"])
@@ -370,6 +467,131 @@ def build_empty_message(records_checked: int) -> str:
         f"📊 Registros revisados: {records_checked}\n"
         "✅ Monitor activo"
     )
+
+
+# ---------------------------------------------------------------------------
+# Customizable message formats. Each message family (index alert / detail
+# follow-up / status change) can be reformatted by the operator: a template
+# saved to data/config/waha_format_<kind>.txt (via `pcc format` or either
+# monitor) replaces the built-in layout. Templates use {placeholder} fields;
+# unknown placeholders are left literally so a typo never breaks a send.
+FORMAT_KINDS = ("index", "details", "status")
+
+PLACEHOLDERS = {
+    "heading": "message heading with emoji (varies per message type)",
+    "fuente": "source label (PC_WAHA_SOURCE, default 'Panamá Compra')",
+    "estado": "current record status (e.g. Abierta)",
+    "estado_linea": "the built-in '📊 Estado:' line (includes previous→current on status changes)",
+    "estado_anterior": "previous status on status-change messages",
+    "numero": "record number (NUMERO)",
+    "descripcion": "record title/description",
+    "entidad": "contracting entity",
+    "ubicacion": "delivery province/place",
+    "rango_fechas": "start–deadline range",
+    "items": "formatted items block (or the 'pendiente' note before download)",
+    "coincidencia": "matched keywords line",
+    "enlace": "portal link",
+    "creado": "first-seen/publication timestamp",
+    "descargado": "local download timestamp",
+    "modalidad": "procurement modality",
+    "dependencia": "entity dependency/office",
+    "grupo": "portal list the record came from (Programadas/Abiertas)",
+    "fecha_inicio": "start/publication date on its own",
+    "fecha_limite": "deadline date on its own",
+    "items_total": "number of items (⏳ before the detail download)",
+    "dias_restantes": "whole days until the deadline (negative = expired)",
+}
+
+DEFAULT_FORMATS = {
+    "index": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔎 *Coincidencia:* {coincidencia}\n\n🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "details": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔎 *Coincidencia:* {coincidencia}\n\n🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "status": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+}
+
+
+class _SafeDict(dict):
+    """format_map helper: unknown {placeholders} stay literal instead of raising."""
+
+    def __missing__(self, key):  # noqa: D105
+        return "{" + key + "}"
+
+
+def format_path(kind: str) -> Path:
+    return CONFIG_DIR / f"waha_format_{kind}.txt"
+
+
+def load_custom_format(kind: str) -> str:
+    """Operator-saved template for a message kind, or '' for the built-in layout."""
+    path = format_path(kind)
+    if path.exists():
+        text = path.read_text(encoding="utf-8", errors="replace").strip("\n")
+        if text.strip():
+            return text
+    return ""
+
+
+def kind_for_variant(variant: str) -> str:
+    if variant == "new":
+        return "index"
+    if variant in ("details", "manual"):
+        return "details"
+    return "status"  # status / cancelled / items
+
+
+def sample_context(kind: str) -> dict[str, str]:
+    """Fabricated values so templates can be previewed without a real record."""
+    headings = {
+        "index": f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*",
+        "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
+        "status": f"⚠️ *Cambio de Estado - {SOURCE_NAME}*",
+    }
+    items = (
+        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
+        if kind == "index"
+        else "📦 *Items (2):*\n• Item 1: Guantes de nitrilo - Qty: 100 - Unit: caja\n• Item 2: Mascarillas N95 - Qty: 50 - Unit: caja"
+    )
+    return {
+        "heading": headings[kind],
+        "fuente": SOURCE_NAME,
+        "estado": "Abierta",
+        "estado_linea": "📊 *Estado:* [ANTERIOR: Programada] ➡️ [ACTUAL: Abierta]" if kind == "status" else "📊 *Estado:* Abierta",
+        "estado_anterior": "Programada",
+        "numero": "OC-2026-000123",
+        "descripcion": "Adquisición de insumos médicos para el centro de salud",
+        "entidad": "Ministerio de Salud",
+        "ubicacion": "Panamá, Ciudad de Panamá",
+        "rango_fechas": "2026-07-01 09:00 al 2026-07-15 16:00",
+        "items": items,
+        "coincidencia": "salud",
+        "enlace": "https://www.panamacompra.gob.pa/…/OC-2026-000123",
+        "creado": "2026-07-01 09:12",
+        "descargado": "2026-07-01 09:45",
+        "modalidad": "Cotización en línea",
+        "dependencia": "Dirección de Compras",
+        "grupo": "Abiertas",
+        "fecha_inicio": "2026-07-01 09:00",
+        "fecha_limite": "2026-07-15 16:00",
+        "items_total": "⏳" if kind == "index" else "2",
+        "dias_restantes": "13",
+    }
+
+
+def render_format(kind: str, template: str | None = None) -> str:
+    """Render a template (given, custom, or default) with the sample context."""
+    text = template if template is not None else (load_custom_format(kind) or DEFAULT_FORMATS[kind])
+    return text.format_map(_SafeDict(sample_context(kind)))
 
 
 # Human-readable label for a pending_status_change code stored by the index step.
@@ -412,6 +634,14 @@ def mark_notified(conn, numero: str) -> None:
     conn.commit()
 
 
+def mark_detail_notified(conn, numero: str) -> None:
+    conn.execute(
+        "UPDATE opportunities SET detail_notified_at = ? WHERE numero = ?",
+        (now_str(), numero),
+    )
+    conn.commit()
+
+
 def mark_snapshot(conn, numero: str) -> None:
     row = fetch_row(conn, numero)
     if row is None:
@@ -429,10 +659,13 @@ def fetch_row(conn, numero: str):
     return conn.execute("SELECT * FROM opportunities WHERE numero = ?", (numero,)).fetchone()
 
 
-def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
-    """Return the '🔎 Coincidencia' line, or None when a keyword filter is active
-    and this record matched nothing (so it should not be announced)."""
-    if not keywords:
+def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
+    """Return the '🔎 Coincidencia' line for a destination's filter, or None
+    when the record must not be announced (no include rule matched, or an
+    exclude rule matched). Each WhatsApp destination (index/details/status) can
+    have its own rules, falling back to the shared filter file."""
+    includes, excludes = load_filter_rules(purpose)
+    if not includes and not excludes:
         return "Sin filtro (todas las entradas)"
     haystack = " ".join(
         str(value)
@@ -440,22 +673,29 @@ def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
             row["descripcion"],
             row["short_description"],
             row["entidad"],
+            row["dependencia"],
+            row["modalidad"],
             summary.get("descripcion"),
         )
         if value
     )
-    matches = matched_keywords(haystack, keywords)
-    return ", ".join(matches) if matches else None
+    return evaluate_filter(haystack, includes, excludes)
 
 
-def send_text(event: str, text: str) -> bool:
-    """Send through WAHA respecting the per-event enable list. Returns True only
-    when the message was actually sent."""
+def send_text(event: str, text: str, purpose: str = "") -> bool:
+    """Send through WAHA respecting the per-event enable list, routed to the
+    per-purpose destination ('index', 'details', 'status'; '' = default chat).
+    Returns True only when the message was actually sent."""
     if not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
+    if not waha.configured_chat_id(purpose):
+        # No destination for this purpose and no default to fall back to: leave
+        # the record unmarked so it sends once a destination is configured.
+        print(f"WAHA notification skipped: no destination configured{f' for {purpose!r}' if purpose else ''}.")
+        return False
     try:
-        waha.send_text(text)
+        waha.send_text(text, purpose=purpose)
         return True
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
@@ -466,8 +706,10 @@ def ensure_baseline(conn) -> bool:
     """Mark the records that already existed when WAHA was first enabled as
     already-announced. Returns True if the baseline was established on this call.
 
-    Called once at the start of a detail-download run (before new records are
-    saved), so only records saved afterwards are announced."""
+    Called once at the start of a run (right after the index step), so only
+    records the index finds afterwards are announced. Covers every existing
+    record regardless of detail status: the announce step now runs before the
+    detail downloads, so old pending records must not look "new" either."""
     if BASELINE_MARKER.exists():
         return False
     if not (waha_enabled() and waha_destination()):
@@ -475,10 +717,10 @@ def ensure_baseline(conn) -> bool:
         # state the first time messages can actually be sent.
         return False
     existing_rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL"
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL"
     ).fetchall()
     conn.execute(
-        "UPDATE opportunities SET notified_at = ? WHERE detail_status = 'saved' AND notified_at IS NULL",
+        "UPDATE opportunities SET notified_at = ? WHERE notified_at IS NULL",
         (now_str(),),
     )
     conn.commit()
@@ -486,7 +728,7 @@ def ensure_baseline(conn) -> bool:
         mark_snapshot(conn, row["numero"])
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
-    print("WAHA baseline established; existing saved records will not be announced.")
+    print("WAHA baseline established; existing records will not be announced.")
     return True
 
 
@@ -508,15 +750,20 @@ def notify_manual_record(conn, numero: str, *, force: bool = False) -> bool:
             return False
         export_record_calendar(conn, row)
         mark_notified(conn, numero)
+        # Manual messages already carry the downloaded items, so no follow-up
+        # detail message is owed.
+        mark_detail_notified(conn, numero)
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"WAHA manual notify error for {numero}: {exc}", file=sys.stderr)
         return False
 
 def notify_saved_record(conn, numero: str) -> bool:
-    """Announce a single saved record. Idempotent: a record is sent at most
-    once (guarded by notified_at). Returns True if a message was sent. Never
-    raises, so messaging failures do not break collection runs."""
+    """Announce a single new record. Runs right after the index step, so the
+    record's detail page may not be downloaded yet (the message then shows the
+    items as pending). Idempotent: a record is sent at most once (guarded by
+    notified_at). Returns True if a message was sent. Never raises, so
+    messaging failures do not break collection runs."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
@@ -525,28 +772,34 @@ def notify_saved_record(conn, numero: str) -> bool:
             # avoid mistaking a pre-existing record for a new one.
             return False
         row = fetch_row(conn, numero)
-        if row is None or row["detail_status"] != "saved" or row["notified_at"]:
+        if row is None or row["notified_at"]:
             return False
         decision = deadline_decision(row)
         if decision == "expired":
             # Past its deadline: never actionable, so mark done and stay quiet.
             mark_notified(conn, numero)
+            mark_detail_notified(conn, numero)
             return False
         if decision == "too_far":
             # Beyond the announce window for now; leave it unmarked so a later
             # run re-checks it once the deadline moves into range.
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, load_keywords())
+        match_line = match_line_for(row, summary, "index")
         if match_line is None:
             # Filtered out by keywords: remember it so it is not rechecked.
             mark_notified(conn, numero)
+            mark_detail_notified(conn, numero)
             return False
-        if not send_text("new", build_opportunity_message(row, summary, match_line)):
+        if not send_text("new", build_opportunity_message(row, summary, match_line), purpose="index"):
             # Leave notified_at unset so a later --flush retries it.
             return False
         export_record_calendar(conn, row)
         mark_notified(conn, numero)
+        if row["detail_status"] == "saved":
+            # The message already carried the real items (detail downloaded in a
+            # previous run), so no follow-up detail message is owed.
+            mark_detail_notified(conn, numero)
         return True
     except Exception as exc:  # noqa: BLE001 - defensive: never break a download
         print(f"WAHA record notify error for {numero}: {exc}", file=sys.stderr)
@@ -569,11 +822,11 @@ def notify_status_change(conn, numero: str) -> bool:
         if row is None or not row["pending_status_change"]:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        # Respect the same keyword filter as new records.
-        if match_line_for(row, summary, load_keywords()) is None:
+        # Respect the status destination's keyword filter.
+        if match_line_for(row, summary, "status") is None:
             clear_status_change(conn, numero)
             return False
-        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]))
+        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -599,7 +852,7 @@ def notify_detected_status_change(conn, numero: str) -> bool:
         if row["last_notified_signature"] == current_signature or row["last_notified_status"] == current_status:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, load_keywords()) is None:
+        if match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
         sent = send_text("update", build_record_message(
@@ -607,7 +860,7 @@ def notify_detected_status_change(conn, numero: str) -> bool:
             summary,
             variant="cancelled" if is_cancelled_status(current_status) else "status",
             previous_status=row["last_notified_status"],
-        ))
+        ), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -634,10 +887,10 @@ def notify_items_change(conn, numero: str) -> bool:
             mark_snapshot(conn, numero)
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, load_keywords()) is None:
+        if match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
-        sent = send_text("update", build_items_changed_message(row, summary))
+        sent = send_text("update", build_items_changed_message(row, summary), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -646,12 +899,172 @@ def notify_items_change(conn, numero: str) -> bool:
         print(f"WAHA items-change notify error for {numero}: {exc}", file=sys.stderr)
         return False
 
-def flush_unannounced(conn) -> int:
-    """Announce any saved records that were not yet sent (for example because
-    WAHA was briefly unreachable). Returns the number sent."""
+def ensure_detail_baseline(conn, since: str) -> bool:
+    """First-use baseline for the detail (second) notifier phase: mark records
+    announced before this feature existed as already detail-notified, so an
+    upgraded install does not burst follow-up messages for the whole archive.
+
+    ``since`` is the current run's start time: records announced during THIS run
+    stay eligible for their detail follow-up. Exception: when the main baseline
+    itself was established during this run, nothing was actually messaged, so
+    everything is marked."""
+    if DETAIL_BASELINE_MARKER.exists():
+        return False
+    if not (waha_enabled() and waha_destination()):
+        return False
+    main_baseline_time = waha.read_saved_text(BASELINE_MARKER)
+    cutoff = since
+    if not since or (main_baseline_time and main_baseline_time >= since):
+        cutoff = ""
+    if cutoff:
+        conn.execute(
+            "UPDATE opportunities SET detail_notified_at = notified_at "
+            "WHERE notified_at IS NOT NULL AND detail_notified_at IS NULL AND notified_at < ?",
+            (cutoff,),
+        )
+    else:
+        conn.execute(
+            "UPDATE opportunities SET detail_notified_at = notified_at "
+            "WHERE notified_at IS NOT NULL AND detail_notified_at IS NULL"
+        )
+    conn.commit()
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DETAIL_BASELINE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
+    print("WAHA detail-notify baseline established; previously announced records will not get follow-up detail messages.")
+    return True
+
+
+def notify_detail_ready(conn, numero: str) -> bool:
+    """Second notifier phase: send the follow-up '📥 Detalles Completos' message
+    (real items, location, full date range) for a record that was announced from
+    the index and whose detail page has now been downloaded. Idempotent via
+    detail_notified_at. Returns True only when a message was sent. Never
+    raises."""
+    try:
+        if not (waha_enabled() and waha_destination()):
+            return False
+        row = fetch_row(conn, numero)
+        if row is None or row["detail_status"] != "saved" or not row["notified_at"] or row["detail_notified_at"]:
+            return False
+        summary = load_detail_summary(row["detail_json_path"])
+        match_line = match_line_for(row, summary, "details")
+        if match_line is None:
+            # Filtered out for the details destination: settle it silently.
+            mark_detail_notified(conn, numero)
+            mark_snapshot(conn, numero)
+            return False
+        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line), purpose="details"):
+            # Leave detail_notified_at unset so the next run retries.
+            return False
+        export_record_calendar(conn, row)
+        mark_detail_notified(conn, numero)
+        # Absorb the downloaded items into the notified snapshot so the next
+        # run's change detection does not re-announce them as an item change.
+        mark_snapshot(conn, numero)
+        return True
+    except Exception as exc:  # noqa: BLE001 - never break a run
+        print(f"WAHA detail notify error for {numero}: {exc}", file=sys.stderr)
+        return False
+
+
+def announce_details_with_progress(conn) -> int:
+    """Visible second MESSAGING step. After the detail downloads and view
+    rebuilds, send — one by one with per-message monitor progress — the
+    follow-up detail message for every record announced from the index whose
+    detail page is now saved. Returns the number sent. Never raises."""
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "5")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "7")
+    percent_base = _percent_int("PC_MSG_PERCENT_BASE", 80)
+    percent_done = max(percent_base + 1, _percent_int("PC_MSG_PERCENT_DONE", 83))
+
     rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' "
+        "AND notified_at IS NOT NULL AND detail_notified_at IS NULL "
         "ORDER BY detail_saved_at, first_seen"
+    ).fetchall()
+    total = len(rows)
+
+    if total == 0:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", percent_done - 1,
+            f"Step {step_current}/{step_total}: no detail follow-up messages to send.",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=0, records_new=0,
+        )
+        print("WAHA detail announce: nothing to send.")
+        return 0
+
+    sent = 0
+    skipped = 0
+    for index, row in enumerate(rows, start=1):
+        full_row = fetch_row(conn, row["numero"])
+        label = _short_label(full_row) if full_row is not None else row["numero"]
+        summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
+        match_line = match_line_for(full_row, summary, "details") if full_row is not None else None
+        preview = (
+            _one_line_preview(build_record_message(full_row, summary, variant="details", match_line=match_line))
+            if (full_row is not None and match_line is not None)
+            else f"{label} (sin coincidencia de palabra clave)"
+        )
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING",
+            min(percent_done, percent_base + int((percent_done - percent_base) * index / total)),
+            f"Step {step_current}/{step_total}: sending WhatsApp details {index}/{total}: {label}",
+            step_current=step_current, step_total=step_total,
+            item_current=index, item_total=total,
+            records_new=total, records_saved=sent,
+            extra=preview,
+        )
+        if notify_detail_ready(conn, row["numero"]):
+            sent += 1
+        else:
+            skipped += 1
+
+    pc_common.write_run_progress(
+        "MESSAGING", "RUNNING", percent_done,
+        f"Step {step_current}/{step_total}: WhatsApp details done — {sent} sent, {skipped} skipped of {total}.",
+        step_current=step_current, step_total=step_total,
+        item_current=total, item_total=total,
+        records_new=total, records_saved=sent,
+    )
+    print(f"WAHA detail announce complete: {sent} sent, {skipped} skipped of {total}.")
+    return sent
+
+
+def sync_snapshots(conn, since: str) -> int:
+    """After the detail downloads, refresh the stored status/items snapshot for
+    records announced since ``since`` (this run's early MESSAGING step), and
+    export their per-record calendars. Without this, the items downloaded right
+    after the announcement would fire a spurious "items updated" message on the
+    next run. Sends nothing. Returns the number of snapshots refreshed."""
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE detail_status = 'saved' "
+        "AND notified_at IS NOT NULL AND notified_at >= ?",
+        (since,),
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        try:
+            full = fetch_row(conn, row["numero"])
+            if full is None:
+                continue
+            _status, _items_hash, signature = signature_for(full)
+            if full["last_notified_signature"] == signature:
+                continue
+            export_record_calendar(conn, full)
+            mark_snapshot(conn, full["numero"])
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 - never break a run
+            print(f"WAHA snapshot sync error for {row['numero']}: {exc}", file=sys.stderr)
+    return updated
+
+
+def flush_unannounced(conn) -> int:
+    """Announce any records that were not yet sent (for example because WAHA
+    was briefly unreachable). Returns the number sent."""
+    rows = conn.execute(
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL "
+        "ORDER BY first_seen, last_seen"
     ).fetchall()
     sent = 0
     for row in rows:
@@ -674,22 +1087,35 @@ def _one_line_preview(text: str, limit: int = 160) -> str:
     return (flat[: limit - 1] + "…") if len(flat) > limit else flat
 
 
-def announce_with_progress(conn) -> int:
-    """Visible MESSAGING step. After the detail download, send — one by one with
-    per-message monitor progress — a message for every:
+def _percent_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
 
-      * new entry (🟢 NUEVA OPORTUNIDAD DETECTADA), and
-      * status change (🔄 OPORTUNIDAD ACTUALIZADA, e.g. Programada → Abierta).
+
+def announce_with_progress(conn) -> int:
+    """Visible MESSAGING step. Right after the index step (before detail
+    downloads), send — one by one with per-message monitor progress — a message
+    for every:
+
+      * new entry (🔔 Nueva Oportunidad, items shown as pending download), and
+      * status change (e.g. Programada → Abierta) or item change detected on
+        records downloaded in previous runs.
 
     When there is nothing to send it publishes the "Sin nuevas entradas" status.
     Returns the number of messages actually sent. Never raises."""
-    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "6")
-    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "6")
+    step_current = os.environ.get("PC_MSG_STEP_CURRENT", "2")
+    step_total = os.environ.get("PC_MSG_STEP_TOTAL", "7")
+    # Progress percent window for this step, set by the worker to match its
+    # position in the run (defaults keep the old end-of-run scale).
+    percent_base = _percent_int("PC_MSG_PERCENT_BASE", 96)
+    percent_done = max(percent_base + 1, _percent_int("PC_MSG_PERCENT_DONE", 99))
 
     # ("new", numero), then status updates, then item-only changes, oldest first.
     new_rows = conn.execute(
-        "SELECT numero FROM opportunities WHERE detail_status = 'saved' AND notified_at IS NULL "
-        "ORDER BY detail_saved_at, first_seen"
+        "SELECT numero FROM opportunities WHERE notified_at IS NULL "
+        "ORDER BY first_seen, last_seen"
     ).fetchall()
     update_rows = conn.execute(
         "SELECT numero FROM opportunities WHERE pending_status_change IS NOT NULL "
@@ -706,6 +1132,11 @@ def announce_with_progress(conn) -> int:
             continue
         full = fetch_row(conn, row["numero"])
         if full is None:
+            continue
+        if full["detail_notified_at"] is None:
+            # The detail (second) notifier phase still owes this record its
+            # follow-up message with the downloaded items; do not report the
+            # empty→downloaded items transition as an "items updated" change.
             continue
         status, items_hash, signature = signature_for(full)
         if full["last_notified_signature"] == signature:
@@ -724,10 +1155,10 @@ def announce_with_progress(conn) -> int:
 
     if total == 0:
         total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records))
+        send_text("none", build_empty_message(total_records), purpose="index")
         pc_common.write_run_progress(
-            "MESSAGING", "RUNNING", 98,
-            "Step 6/6: no new opportunities or status changes to send.",
+            "MESSAGING", "RUNNING", percent_done - 1,
+            f"Step {step_current}/{step_total}: no new opportunities or status changes to send.",
             step_current=step_current, step_total=step_total,
             item_current=0, item_total=0, records_new=0,
         )
@@ -748,7 +1179,7 @@ def announce_with_progress(conn) -> int:
         elif kind == "items":
             preview = f"🔵 {label} (items modificados)"
         else:
-            match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+            match_line = match_line_for(full_row, summary, "index") if full_row is not None else None
             preview = (
                 _one_line_preview(build_opportunity_message(full_row, summary, match_line))
                 if (full_row is not None and match_line is not None)
@@ -756,8 +1187,8 @@ def announce_with_progress(conn) -> int:
             )
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING",
-            min(99, 96 + int(3 * index / total)),
-            f"Step 6/6: sending WhatsApp {index}/{total} ({kind}): {label}",
+            min(percent_done, percent_base + int((percent_done - percent_base) * index / total)),
+            f"Step {step_current}/{step_total}: sending WhatsApp {index}/{total} ({kind}): {label}",
             step_current=step_current, step_total=step_total,
             item_current=index, item_total=total,
             records_new=total, records_saved=sent,
@@ -777,8 +1208,8 @@ def announce_with_progress(conn) -> int:
             skipped += 1
 
     pc_common.write_run_progress(
-        "MESSAGING", "RUNNING", 99,
-        f"Step 6/6: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
+        "MESSAGING", "RUNNING", percent_done,
+        f"Step {step_current}/{step_total}: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
         step_current=step_current, step_total=step_total,
         item_current=total, item_total=total,
         records_new=len(new_rows), records_saved=sent,
@@ -790,8 +1221,11 @@ def announce_with_progress(conn) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="PanamaCompra WAHA new-record notifier")
     parser.add_argument("--idle", action="store_true", help="send the 'Sin nuevas entradas' status (run found no new records)")
-    parser.add_argument("--flush", action="store_true", help="announce any saved records not yet sent (safety net)")
-    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step)")
+    parser.add_argument("--flush", action="store_true", help="announce any records not yet sent (safety net)")
+    parser.add_argument("--announce", action="store_true", help="announce every new record one by one, publishing per-message monitor progress (the visible MESSAGING step, right after the index)")
+    parser.add_argument("--announce-details", action="store_true", help="send the follow-up detail message (real items) for records announced from the index whose detail page is now downloaded (second MESSAGING step)")
+    parser.add_argument("--sync-snapshots", action="store_true", help="silently refresh notified snapshots (and export calendars) for records announced since --since; fallback when the detail phase is disabled")
+    parser.add_argument("--since", default="", help="timestamp (YYYY-MM-DD HH:MM:SS) limiting --sync-snapshots to records notified at/after it")
     parser.add_argument("--record", action="append", default=[], help="manually send notification for a specific record NUMERO; repeat for several records")
     parser.add_argument("--force", action="store_true", help="with --record, send even if the record was already notified")
     args = parser.parse_args(argv)
@@ -814,12 +1248,23 @@ def main(argv=None) -> int:
         print(f"WAHA manual record notification complete: {sent} record(s) sent.")
         return 0
 
+    if args.sync_snapshots:
+        updated = sync_snapshots(conn, args.since or "1970-01-01 00:00:00")
+        print(f"WAHA snapshot sync complete: {updated} record(s) refreshed.")
+        return 0
+
+    if args.announce_details:
+        ensure_detail_baseline(conn, args.since)
+        if not just_baselined:
+            announce_details_with_progress(conn)
+        return 0
+
     if args.idle:
         if just_baselined:
             # Right after establishing the baseline, do not claim "no new entries".
             return 0
         total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records))
+        send_text("none", build_empty_message(total_records), purpose="index")
         return 0
 
     if just_baselined:

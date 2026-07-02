@@ -13,11 +13,11 @@
 # and do not require an additional pip dependency.
 #
 # System packages are not installable by pip. On Debian/Ubuntu/Linux Mint install:
-#   sudo apt install -y python3-venv python3-full python3-tk
+#   sudo apt install -y python3-venv python3-full python3-tk ca-certificates curl
 # If pip fails with ModuleNotFoundError: _posixsubprocess, recreate .venv with a
 # complete system Python after installing python3-venv/python3-full.
 # Install Playwright's Firefox browser once for the active virtualenv:
-#   python -m playwright install firefox
+#   python -m playwright install --with-deps firefox
 playwright>=1.40
 
 # No extra pip dependency is required for calendar packaging or monitor button zones; ICS files are generated with the standard library, including normal and test calendar packages. Monitor-launched folder opening uses the host desktop opener (for example xdg-open), not pip.

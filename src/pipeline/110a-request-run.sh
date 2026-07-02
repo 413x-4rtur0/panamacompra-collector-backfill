@@ -26,12 +26,12 @@ touch "$REQUEST_FLAG"
 if pgrep -f "[r]un-worker.sh" >/dev/null 2>&1; then
   echo "Worker already active. Request flag left for active worker."
 else
-  PC_RUN_MODE="$RUN_MODE" PC_INDEX_LIMIT="$INDEX_LIMIT" nohup "$SCRIPT_DIR/run-worker.sh" "$DETAIL_LIMIT" "$INDEX_LIMIT" >/dev/null 2>&1 &
+  PC_RUN_MODE="$RUN_MODE" PC_INDEX_LIMIT="$INDEX_LIMIT" nohup "$SCRIPT_DIR/100-run-worker.sh" "$DETAIL_LIMIT" "$INDEX_LIMIT" >/dev/null 2>&1 &
   echo "Worker started."
 fi
 
-if [ "${PC_REQUEST_OPEN_MONITOR:-1}" != "0" ] && [ -x "$APP_ROOT/src/monitor/open-monitor.sh" ]; then
-  "$APP_ROOT/src/monitor/open-monitor.sh" >/dev/null 2>&1 || true
+if [ "${PC_REQUEST_OPEN_MONITOR:-1}" != "0" ] && [ -x "$APP_ROOT/src/monitor/000-open-monitor.sh" ]; then
+  "$APP_ROOT/src/monitor/000-open-monitor.sh" >/dev/null 2>&1 || true
 fi
 
 echo "Run-all request submitted."

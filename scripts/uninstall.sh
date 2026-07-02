@@ -89,26 +89,26 @@ stop_user_services() {
 
 stop_host_processes() {
   log "Stopping host runners, collectors, monitors, updater, and webhook listener."
-  if [[ -x "$APP_ROOT/src/pipeline/stop-run-all.sh" ]]; then
-    run "$APP_ROOT/src/pipeline/stop-run-all.sh" || true
+  if [[ -x "$APP_ROOT/src/pipeline/120a-stop-everything.sh" ]]; then
+    run "$APP_ROOT/src/pipeline/120a-stop-everything.sh" || true
   fi
 
   local patterns=(
     '[w]atch-queue-flag.sh'
     '[r]un-worker.sh'
     '[p]ython3? -u .*010-collect-index.py'
-    '[p]ython3? -u .*collect_detail.py'
+    '[p]ython3? -u .*030-collect-details.py'
     '[p]ython3? -u .*070-test-zone.py'
-    '[p]ython3? -u .*build_calendar.py'
+    '[p]ython3? -u .*060-build-calendar.py'
     '[p]ython3? -u .*001a-monitor-tk.py'
     '[p]ython3? -u .*001b-monitor-web.py'
     '[n]ext-run-timer.py'
-    '[f]ollow-run-all.sh'
+    '[1]30c-follow-run.sh'
     '[u]pdate-local-copy.sh'
     '[u]pdate-loader.py'
     '[0]00-update-before-run.sh'
-    '[p]ython3? -u .*src/webhook/listener.py'
-    '[s]rc/webhook/listener.py'
+    '[p]ython3? -u .*src/webhook/010-webhook-listener.py'
+    '[s]rc/webhook/010-webhook-listener.py'
   )
   for pattern in "${patterns[@]}"; do
     run pkill -TERM -f "$pattern" 2>/dev/null || true

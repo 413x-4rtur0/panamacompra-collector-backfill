@@ -131,7 +131,7 @@ def main() -> int:
     stamp = datetime.now().strftime("%y-%m-%d_%H-%M")
     prefix = f"{stamp}_panamacompra_calendar"
 
-    write_run_progress("CALENDAR", "RUNNING", 96, "Step 5/6: collecting new calendar events for ICS packages...", step_current=5, step_total=6, extra=f"package_size={package_size}")
+    write_run_progress("CALENDAR", "RUNNING", 96, "Step 7/7: collecting new calendar events for ICS packages...", step_current=7, step_total=7, extra=f"package_size={package_size}")
     calendars = iter_calendars(args.records_dir, since=since)
     out_dir = Path(args.out_dir)
     date_subdir = None if args.flat else date_folder_name()
@@ -153,7 +153,7 @@ def main() -> int:
     else:
         print("No new calendar events found for this run; no import package written.")
 
-    write_run_progress("CALENDAR", "DONE", 98, f"Step 5/6 complete. Wrote {len(written)} calendar package(s) with {count} new event(s).", step_current=5, step_total=6, item_current=count, item_total=count, extra=f"out_dir={out_dir}")
+    write_run_progress("CALENDAR", "DONE", 98, f"Step 7/7 complete. Wrote {len(written)} calendar package(s) with {count} new event(s).", step_current=7, step_total=7, item_current=count, item_total=count, extra=f"out_dir={out_dir}")
     return 0
 
 

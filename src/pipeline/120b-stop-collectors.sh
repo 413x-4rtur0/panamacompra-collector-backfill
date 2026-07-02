@@ -4,7 +4,7 @@
 # button in the monitor Run controls: it halts the current run immediately and
 # prevents an automatic resume, but leaves the monitor open so the operator can
 # see the stopped state and start a new run. For a full teardown that also closes
-# the monitors and webhook, use src/pipeline/stop-run-all.sh instead.
+# the monitors and webhook, use src/pipeline/120a-stop-everything.sh instead.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -29,10 +29,10 @@ rm -f "$PC_QUEUE_DIR/run_all_requested.flag"
 # Graceful TERM to the collection pipeline only (NOT monitors/timer/webhook).
 pkill -TERM -f "[r]un-worker.sh" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u .*010-collect-index.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u .*collect_detail.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -TERM -f "[t]imeout .*010-collect-index.py" 2>/dev/null || true
-pkill -TERM -f "[t]imeout .*collect_detail.py" 2>/dev/null || true
-pkill -TERM -f "[0]30-build-detail-views.py" 2>/dev/null || true
+pkill -TERM -f "[t]imeout .*030-collect-details.py" 2>/dev/null || true
+pkill -TERM -f "[0]40-build-detail-views.py" 2>/dev/null || true
 pkill -TERM -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -TERM -f "[0]70-test-zone.py" 2>/dev/null || true
 pkill -TERM -f "[0]00-update-before-run.sh" 2>/dev/null || true
@@ -41,8 +41,8 @@ pkill -TERM -f "[0]00-update-before-run.sh" 2>/dev/null || true
 sleep 2
 pkill -9 -f "[r]un-worker.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u .*010-collect-index.py" 2>/dev/null || true
-pkill -9 -f "[p]ython3? -u .*collect_detail.py" 2>/dev/null || true
-pkill -9 -f "[0]30-build-detail-views.py" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
+pkill -9 -f "[0]40-build-detail-views.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
 sleep 1

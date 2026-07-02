@@ -31,7 +31,50 @@ UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
+# Work-templates helper imported as a module so the web monitor lists/saves the
+# same source folder and selection the CLI and native monitor use.
+import importlib.util as _importlib_util
+
+_rt_spec = _importlib_util.spec_from_file_location(
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "020-record-templates.py"))
+record_templates = _importlib_util.module_from_spec(_rt_spec)
+_rt_spec.loader.exec_module(record_templates)
+
+_cal_spec = _importlib_util.spec_from_file_location(
+    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "030-opportunity-calendar.py"))
+opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
+_cal_spec.loader.exec_module(opportunity_calendar)
+
+_nnr_spec = _importlib_util.spec_from_file_location(
+    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "020-notify-whatsapp.py"))
+notify_formats = _importlib_util.module_from_spec(_nnr_spec)
+_nnr_spec.loader.exec_module(notify_formats)
+
 WAHA_CHAT_ID_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id.txt"
+# Optional per-purpose destinations; each falls back to the default chat id.
+WAHA_CHAT_ID_INDEX_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id_index.txt"
+WAHA_CHAT_ID_DETAILS_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id_details.txt"
+WAHA_CHAT_ID_STATUS_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id_status.txt"
+
+
+def read_chat_file(path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace").strip() if path.exists() else ""
+
+
+FILTER_FILES = {
+    "global": pc_common.DATA_CONFIG_DIR / "waha_keywords.txt",
+    "index": pc_common.DATA_CONFIG_DIR / "waha_keywords_index.txt",
+    "details": pc_common.DATA_CONFIG_DIR / "waha_keywords_details.txt",
+    "status": pc_common.DATA_CONFIG_DIR / "waha_keywords_status.txt",
+}
+
+
+def read_filter_rules(name: str) -> str:
+    path = FILTER_FILES[name]
+    if not path.exists():
+        return ""
+    rules = [k.strip() for k in path.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
+    return ", ".join(rules)
 MONITOR_SETTINGS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
 MANUAL_ACTION_LOG = pc_common.LOG_DIR / "manual_actions.log"
 ARCHIVE_DB = pc_common.DB_PATH
@@ -65,9 +108,16 @@ VALUE_SETTING_DEFAULTS = {
     "PC_NEXT_RUN_TIMER_RECORDS": "20",
     "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": "10",
     "PC_MONITOR_STALE_SECONDS": "120",
+    # Container-side settings applied by src/tools/010-docker-stack.sh on the next
+    # stack restart (non-empty values win over .env).
+    "CHANGEDETECTION_BASE_URL": "http://localhost:5000",
+    "PC_TEMPLATES_SRC_DIR": "",
+    "WAHA_PORT": "3000",
+    "WAHA_API_KEY": "",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
+    "PC_NOTIFY_DETAILS": "1",
     "PC_CALENDAR_AUTO_IMPORT": "0",
     "PC_WAHA_ENABLED": "0",
     "PC_NOTIFY_SKIP_EXPIRED": "0",
@@ -91,23 +141,28 @@ class ManualAction(tuple):
 
 RECORDS_TEST_PARENT = pc_common.RECORDS_TEST_DIR
 MANUAL_ACTIONS = [
-    ManualAction("Runners", "Run full collector", ("./src/pipeline/request-run-all.sh", "99", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
-    ManualAction("Runners", "Run collector now", ("./src/pipeline/run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages."),
-    ManualAction("Runners", "Stop active run", ("./src/pipeline/stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
-    ManualAction("Runners", "Show run status", ("./src/pipeline/run-all-status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Runners", "Run full collector", ("./src/pipeline/110a-request-run.sh", "99", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./src/pipeline/110b-run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages."),
+    ManualAction("Runners", "Stop active run", ("./src/pipeline/120b-stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
+    ManualAction("Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary."),
-    ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
+    ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
     ManualAction("Updater / Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
-    ManualAction("Updater / Migration", "Rename folders", ("./src/tools/rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
-    ManualAction("Updater / Migration", "Migrate records", ("./src/tools/migrate-previous-records.sh",), "Imports/migrates previous record archives."),
-    ManualAction("Settings", "Build detail views", ("./src/pipeline/030-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
-    ManualAction("Settings", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
-    ManualAction("Settings", "Build calendars", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds calendar import packages."),
-    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
-    ManualAction("Settings", "Webhook listener", ("./src/webhook/start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
-    ManualAction("Settings", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
-    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the browser monitor."),
+    ManualAction("Updater / Migration", "Rename folders", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
+    ManualAction("Updater / Migration", "Migrate records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives."),
+    ManualAction("Integrations", "Start/refresh docker stack", ("./src/tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers; data stays in var/integrations."),
+    ManualAction("Integrations", "Docker stack status", ("./src/tools/010-docker-stack.sh", "status"), "Writes container states plus the changedetection/WAHA URLs to the manual action log."),
+    ManualAction("Integrations", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved below (changedetection URL, WAHA port/API key)."),
+    ManualAction("Integrations", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Settings", "Apply work templates", ("./src/tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder (existing files kept)."),
+    ManualAction("Settings", "Build detail views", ("./src/pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
+    ManualAction("Settings", "Repair missing deadlines", ("./src/pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
+    ManualAction("Settings", "Build calendars", ("./src/pipeline/060-build-calendar.py", "--all"), "Rebuilds calendar import packages."),
+    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/060-build-calendar.py --all"), "Rebuilds and opens generated ICS files."),
+    ManualAction("Settings", "Webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
+    ManualAction("Settings", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
+    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the browser monitor."),
 ]
 
 DEFAULT_PROGRESS = {
@@ -316,7 +371,7 @@ def db_review_stats() -> dict[str, object]:
     per-group breakdown. Never raises; a missing/locked DB yields zeros."""
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
-        "failed": 0, "notified": 0, "notify_backlog": 0, "needs_deadline": 0,
+        "failed": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0, "needs_deadline": 0,
         "with_detail_json": 0, "groups": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [],
     }
@@ -350,7 +405,7 @@ def db_review_stats() -> dict[str, object]:
         ]
         # Records the "Repair missing deadlines" action would act on: blank
         # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 040-repair-missing-deadlines.py so the count matches what that tool processes.
+        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
         deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
                                "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
         if "record_folder_leaf" in columns:
@@ -365,7 +420,10 @@ def db_review_stats() -> dict[str, object]:
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
-            "notify_backlog": count("detail_status = 'saved' AND notified_at IS NULL") if has_notified else 0,
+            "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
+            "detail_notify_backlog": count(
+                "detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL"
+            ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
             "recent": [
@@ -399,7 +457,7 @@ def db_review_stats() -> dict[str, object]:
 
 
 # Reset actions exposed as separate buttons (per operator request). Maps the
-# button action to (src/tools/reset.py subcommand, is_destructive). The destructive
+# button action to (src/tools/110-reset.py subcommand, is_destructive). The destructive
 # wipes are confirmed in the browser and run with --yes.
 RESET_ACTIONS = {
     "requeue-details": False,
@@ -414,7 +472,7 @@ def running(pattern: str) -> bool:
 
 
 def webhook_running() -> bool:
-    if running("[s]rc/webhook/listener.py") or running("[p]ython3? -u .*src/webhook/listener.py"):
+    if running("[s]rc/webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/webhook/010-webhook-listener.py"):
         return True
     try:
         result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
@@ -431,9 +489,9 @@ def process_snapshot() -> dict[str, bool]:
         "test_run": test,
         "worker": worker,
         "index": running("[p]ython(3)? -u .*010-collect-index.py"),
-        "detail": running("[p]ython(3)? -u .*collect_detail.py"),
-        "calendar": running("[p]ython(3)? -u .*(030-build-detail-views|build_calendar).py"),
-        "messaging": running("[n]otify_new_records.py"),
+        "detail": running("[p]ython(3)? -u .*030-collect-details.py"),
+        "calendar": running("[p]ython(3)? -u .*(040-build-detail-views|060-build-calendar).py"),
+        "messaging": running("[0]20-notify-whatsapp.py"),
         "webhook": webhook,
         "request": REQUEST_FLAG.exists(),
     }
@@ -539,7 +597,10 @@ def status_payload() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 20),
         "current_log": tail(CURRENT_LOG, 35),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
+        "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
+        "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
+        "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
+        "waha_chat_id_status": read_chat_file(WAHA_CHAT_ID_STATUS_PATH),
         "settings": load_monitor_settings(),
     }
 
@@ -555,6 +616,10 @@ try:
     RECORD_SOON_DAYS = max(1, int(load_monitor_settings().get("PC_MONITOR_DEADLINE_SOON_DAYS", "7")))
 except (TypeError, ValueError):
     RECORD_SOON_DAYS = 7
+
+_startup_settings = parse_settings_file()
+CHANGEDETECTION_URL = (os.environ.get("CHANGEDETECTION_BASE_URL") or _startup_settings.get("CHANGEDETECTION_BASE_URL") or "http://localhost:5000").rstrip("/")
+WAHA_DASHBOARD_URL = "http://localhost:" + (os.environ.get("WAHA_PORT") or _startup_settings.get("WAHA_PORT") or "3000")
 
 HTML = f"""<!doctype html>
 <html lang="en">
@@ -624,17 +689,17 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
   <p id="done-note" class="done" hidden></p>
-  <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 2; webhook should stay RUNNING when the host listener is active.</p>
+  <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
 <div class="card"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination"></textarea><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp after detail/calendar</label> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
+<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination (default for all message types)"></textarea><p class="small">Per-purpose chat ids (blank = use the default destination above): <label class="small">Index alerts <input id="waha-index" size="26" placeholder="…@g.us"></label> <label class="small">Item details <input id="waha-details" size="26" placeholder="…@g.us"></label> <label class="small">Status changes <input id="waha-status" size="26" placeholder="…@g.us"></label></p><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts right after scan)</label> <label class="small"><input type="checkbox" id="notify-details" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Follow-up WhatsApp with item details after download</label> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
 <div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family with {{placeholder}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
-<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
+<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -677,16 +742,22 @@ function render(data) {{
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
   if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
+  [['waha-index','waha_chat_id_index'],['waha-details','waha_chat_id_details'],['waha-status','waha_chat_id_status']].forEach(([id, key]) => {{
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = data[key] || '';
+  }});
   const settings = data.settings || {{}};
   const notifyToggle = document.getElementById('notify-whatsapp');
   if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
+  const detailsToggle = document.getElementById('notify-details');
+  if (detailsToggle && document.activeElement !== detailsToggle) detailsToggle.checked = String(settings.PC_NOTIFY_DETAILS ?? '1') !== '0';
   const calendarToggle = document.getElementById('calendar-auto-import');
   if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
   [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const note = document.getElementById('done-note');
   if (data.done) {{
@@ -748,13 +819,88 @@ function renderActionZones() {{
   const zones = [...new Set(actionZones.map(a => a.zone))];
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
-function saveWaha() {{ postForm('/api/waha-destination', 'chat_id=' + encodeURIComponent(document.getElementById('waha-message').value)); }}
+function saveWaha() {{ const v = id => encodeURIComponent((document.getElementById(id) || {{value:''}}).value); postForm('/api/waha-destination', 'chat_id=' + v('waha-message') + '&chat_id_index=' + v('waha-index') + '&chat_id_details=' + v('waha-details') + '&chat_id_status=' + v('waha-status')); }}
+function sendTestWhatsapp() {{ postForm('/api/test-whatsapp', ''); }}
+function saveTemplatesSource() {{ saveMonitorSetting('PC_TEMPLATES_SRC_DIR', document.getElementById('set-PC_TEMPLATES_SRC_DIR').value); setTimeout(loadTemplates, 400); }}
+async function loadTemplates() {{
+  const wrap = document.getElementById('templates-files');
+  try {{
+    const response = await fetch('/api/templates', {{cache: 'no-store'}});
+    const data = await response.json();
+    if (!data.files.length) {{ wrap.textContent = 'No template files in ' + data.source + ' — drop your work files there and press Refresh files.'; return; }}
+    wrap.innerHTML = data.files.map(f => '<label class="small" style="margin-right:14px; white-space:nowrap"><input type="checkbox" class="tpl-file" value="' + encodeURIComponent(f) + '"' + (data.selected.includes(f) ? ' checked' : '') + '> ' + f + '</label>').join(' ');
+  }} catch (err) {{ wrap.textContent = 'Template list unavailable: ' + err; }}
+}}
+async function loadWahaFilters() {{
+  try {{
+    const response = await fetch('/api/waha-filters', {{cache: 'no-store'}});
+    const data = await response.json();
+    [['flt-global','global'],['flt-index','index'],['flt-details','details'],['flt-status','status']].forEach(([id, key]) => {{
+      const el = document.getElementById(id);
+      if (el && document.activeElement !== el) el.value = data[key] || '';
+    }});
+  }} catch (err) {{ /* filters card stays editable */ }}
+}}
+function saveWahaFilters() {{
+  const v = id => encodeURIComponent((document.getElementById(id) || {{value:''}}).value);
+  postForm('/api/waha-filters', 'global=' + v('flt-global') + '&index=' + v('flt-index') + '&details=' + v('flt-details') + '&status=' + v('flt-status'));
+  setTimeout(loadWahaFilters, 400);
+}}
+async function loadWahaFormat() {{
+  const kind = document.getElementById('fmt-kind').value;
+  try {{
+    const response = await fetch('/api/waha-format?kind=' + kind, {{cache: 'no-store'}});
+    const data = await response.json();
+    document.getElementById('fmt-template').value = data.template;
+    document.getElementById('fmt-state').textContent = data.custom ? '(custom format active)' : '(built-in default)';
+    document.getElementById('fmt-placeholders').textContent = 'Placeholders: ' + Object.keys(data.placeholders).map(k => '{{' + k + '}}').join(' ');
+    document.getElementById('fmt-preview').textContent = data.preview;
+  }} catch (err) {{ document.getElementById('fmt-state').textContent = 'Format unavailable: ' + err; }}
+}}
+async function previewWahaFormat() {{
+  const kind = document.getElementById('fmt-kind').value;
+  const template = document.getElementById('fmt-template').value;
+  const response = await fetch('/api/waha-format', {{method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'action=preview&kind=' + kind + '&template=' + encodeURIComponent(template)}});
+  document.getElementById('fmt-preview').textContent = await response.text();
+}}
+function saveWahaFormat() {{
+  const kind = document.getElementById('fmt-kind').value;
+  postForm('/api/waha-format', 'action=save&kind=' + kind + '&template=' + encodeURIComponent(document.getElementById('fmt-template').value));
+  setTimeout(loadWahaFormat, 400);
+}}
+function resetWahaFormat() {{
+  postForm('/api/waha-format', 'action=reset&kind=' + document.getElementById('fmt-kind').value);
+  setTimeout(loadWahaFormat, 400);
+}}
+let calendarAnchor = '';
+async function loadCalendar(shift) {{
+  const view = document.getElementById('cal-view').value;
+  const field = document.getElementById('cal-field').value;
+  const dateBox = document.getElementById('cal-date');
+  if (shift === 0) {{ calendarAnchor = ''; dateBox.value = ''; }}
+  const anchor = (dateBox.value || calendarAnchor).trim();
+  let params = 'view=' + view + '&field=' + field;
+  if (anchor) params += '&date=' + encodeURIComponent(anchor);
+  if (shift) params += '&shift=' + shift;
+  try {{
+    const response = await fetch('/api/calendar?' + params, {{cache: 'no-store'}});
+    const data = await response.json();
+    calendarAnchor = data.anchor;
+    if (document.activeElement !== dateBox) dateBox.value = data.anchor;
+    document.getElementById('calendar-text').textContent = data.text;
+  }} catch (err) {{ document.getElementById('calendar-text').textContent = 'Calendar unavailable: ' + err; }}
+}}
+function saveTemplatesSelection() {{
+  const files = Array.from(document.querySelectorAll('.tpl-file:checked')).map(el => 'file=' + el.value);
+  postForm('/api/templates-select', files.join('&'));
+  setTimeout(loadTemplates, 400);
+}}
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
 function saveAdvancedSettings() {{
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 let recordIndex = [];
 let recordFiltered = [];
@@ -898,6 +1044,11 @@ function notifySelectedRecords() {{
   if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
   postForm('/api/selected-record-action', 'action=notify&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
+function templatesSelectedRecords() {{
+  const numeros = selectedRecordNumeros();
+  if (!numeros.length) return;
+  postForm('/api/selected-record-action', 'action=templates&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
+}}
 function importSelectedCalendars() {{
   const numeros = selectedRecordNumeros();
   if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
@@ -965,7 +1116,7 @@ async function refreshDbReview(targetId = 'db-review') {{
       `Total records: ${{s.total}}\n` +
       `Records Completed (saved): ${{s.saved}}   ·   Records Pendings: ${{s.pending}}   ·   Failed: ${{s.failed}}\n` +
       `Detail JSON on record: ${{s.with_detail_json}}   ·   Notified (WAHA): ${{s.notified}}\n` +
-      `Awaiting WhatsApp (backlog): ${{s.notify_backlog}}   ·   Needs deadline repair: ${{s.needs_deadline}}\n` +
+      `Awaiting WhatsApp index alert: ${{s.notify_backlog}}   ·   Awaiting item-details WhatsApp: ${{s.detail_notify_backlog}}   ·   Needs deadline repair: ${{s.needs_deadline}}\n` +
       `Detail statuses: ${{statuses}}\n` +
       `By group: ${{groups}}\n` +
       `DB elements / columns with data: ${{columns}}\n` +
@@ -1010,6 +1161,10 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
 }});
 initCollapsibleSections();
 refreshRecordIndex();
+loadTemplates();
+loadCalendar();
+loadWahaFormat();
+loadWahaFilters();
 refreshDbReview();
 poll();
 </script>
@@ -1046,10 +1201,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
             if mode == "manual":
-                subprocess.Popen([str(BASE_DIR / "src/pipeline/run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([str(BASE_DIR / "src/pipeline/110b-run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Manual run started with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "src/pipeline/request-run-all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "src/pipeline/110a-request-run.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_text(202, f"Restart-pending run requested with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
@@ -1099,14 +1254,21 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(400, "Select one or more known records first.\n", "text/plain; charset=utf-8")
                 return
             if action_name == "notify":
-                cmd = [str(BASE_DIR / "src/pipeline/notify_new_records.py"), "--force"]
+                cmd = [str(BASE_DIR / "src/pipeline/020-notify-whatsapp.py"), "--force"]
                 for numero in selected:
                     cmd.extend(["--record", numero])
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"WhatsApp notification requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
+            if action_name == "templates":
+                cmd = [str(BASE_DIR / "src/tools/020-record-templates.py"), "apply", "--apply"]
+                for numero in selected:
+                    cmd.extend(["--numero", numero])
+                subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Work templates requested for {len(selected)} selected record(s) (existing files kept).\n", "text/plain; charset=utf-8")
+                return
             if action_name == "calendar":
-                cmd = [str(BASE_DIR / "src/tools/import-selected-calendars.py"), "--open", *selected]
+                cmd = [str(BASE_DIR / "src/tools/060-import-selected-calendars.py"), "--open", *selected]
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Calendar import requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
@@ -1117,7 +1279,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if action not in RESET_ACTIONS:
                 self.send_text(400, "Unknown reset action.\n", "text/plain; charset=utf-8")
                 return
-            command = [str(BASE_DIR / "src/tools/reset.py"), action]
+            command = [str(BASE_DIR / "src/tools/110-reset.py"), action]
             if RESET_ACTIONS[action]:  # destructive -> confirmed in the browser
                 command.append("--yes")
             MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1130,7 +1292,63 @@ class MonitorHandler(BaseHTTPRequestHandler):
             WAHA_CHAT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
             chat_id = form.get("chat_id", form.get("message", [""]))[0].strip()
             WAHA_CHAT_ID_PATH.write_text(chat_id + "\n", encoding="utf-8")
-            self.send_text(200, "WhatsApp destination saved.\n", "text/plain; charset=utf-8")
+            # Optional per-purpose destinations (blank clears → default is used).
+            for field_name, purpose_path in (
+                ("chat_id_index", WAHA_CHAT_ID_INDEX_PATH),
+                ("chat_id_details", WAHA_CHAT_ID_DETAILS_PATH),
+                ("chat_id_status", WAHA_CHAT_ID_STATUS_PATH),
+            ):
+                if field_name in form:
+                    purpose_path.write_text(form.get(field_name, [""])[0].strip() + "\n", encoding="utf-8")
+            self.send_text(200, "WhatsApp destination(s) saved.\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/waha-filters":
+            for name, filter_path in FILTER_FILES.items():
+                if name in form:
+                    rules = [k.strip() for k in form.get(name, [""])[0].replace("\n", ",").split(",") if k.strip()]
+                    filter_path.parent.mkdir(parents=True, exist_ok=True)
+                    filter_path.write_text(("\n".join(rules) + "\n") if rules else "", encoding="utf-8")
+            self.send_text(200, "WhatsApp filters saved.\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/waha-format":
+            kind = form.get("kind", ["index"])[0].strip().lower()
+            if kind not in notify_formats.FORMAT_KINDS:
+                self.send_text(400, "Unknown format kind.\n", "text/plain; charset=utf-8")
+                return
+            action = form.get("action", ["save"])[0].strip().lower()
+            template = form.get("template", [""])[0]
+            if action == "preview":
+                self.send_text(200, notify_formats.render_format(kind, template if template.strip() else None) + "\n", "text/plain; charset=utf-8")
+                return
+            if action == "reset":
+                notify_formats.format_path(kind).unlink(missing_ok=True)
+                self.send_text(200, f"{kind} format reset to the built-in layout.\n", "text/plain; charset=utf-8")
+                return
+            if not template.strip():
+                self.send_text(400, "Empty template; use action=reset to restore the default.\n", "text/plain; charset=utf-8")
+                return
+            path_out = notify_formats.format_path(kind)
+            path_out.parent.mkdir(parents=True, exist_ok=True)
+            path_out.write_text(template.strip("\n") + "\n", encoding="utf-8")
+            self.send_text(200, f"Custom {kind} format saved.\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/templates-select":
+            src = record_templates.source_dir()
+            available = set(record_templates.source_files(src))
+            requested = [f.strip() for f in form.get("file", []) if f.strip()]
+            selection = [f for f in requested if f in available]
+            record_templates.save_selection(selection)
+            self.send_text(200, f"Template selection saved: {len(selection)} file(s).\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/test-whatsapp":
+            # One WAHA test message with the saved settings, so the WhatsApp
+            # pipeline can be verified without waiting for a collector run.
+            subprocess.Popen(
+                [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
+                 "--message", "Prueba de notificación desde el monitor web PanamaCompra."],
+                cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.send_text(202, "WhatsApp test message requested (requires WAHA enabled + chat id).\n", "text/plain; charset=utf-8")
             return
         self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 
@@ -1141,6 +1359,64 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/waha-filters":
+            payload = {name: read_filter_rules(name) for name in FILTER_FILES}
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/waha-format":
+            params = parse_qs(urlparse(self.path).query)
+            kind = (params.get("kind", ["index"])[0] or "index").lower()
+            if kind not in notify_formats.FORMAT_KINDS:
+                kind = "index"
+            custom = notify_formats.load_custom_format(kind)
+            payload = {
+                "kind": kind,
+                "custom": bool(custom),
+                "template": custom or notify_formats.DEFAULT_FORMATS[kind],
+                "placeholders": notify_formats.PLACEHOLDERS,
+                "preview": notify_formats.render_format(kind),
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/calendar":
+            params = parse_qs(urlparse(self.path).query)
+            view = (params.get("view", ["month"])[0] or "month").lower()
+            if view not in opportunity_calendar.VIEWS:
+                view = "month"
+            field = (params.get("field", ["end"])[0] or "end").lower()
+            if field not in opportunity_calendar.FIELDS:
+                field = "end"
+            try:
+                anchor = opportunity_calendar.parse_anchor(params.get("date", [""])[0])
+            except SystemExit:
+                anchor = opportunity_calendar.parse_anchor("")
+            try:
+                shift = int(params.get("shift", ["0"])[0])
+            except (TypeError, ValueError):
+                shift = 0
+            if shift:
+                anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
+            try:
+                conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                conn.row_factory = sqlite3.Row
+                try:
+                    text = opportunity_calendar.render_view(conn, view, anchor, field)
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                text = "(archive database not available yet — run a collection first)"
+            payload = {"view": view, "field": field, "anchor": anchor.isoformat(), "text": text}
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/templates":
+            src = record_templates.source_dir()
+            payload = {
+                "source": str(src),
+                "files": record_templates.source_files(src),
+                "selected": record_templates.load_selection(),
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/record-index":
             self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")

@@ -14,7 +14,7 @@ from common import *
 # pre-existing archive before new detail rows are saved so later messaging can
 # distinguish genuinely new records from the historical baseline.
 try:
-    import notify_new_records as pc_notify
+    pc_notify = load_script("src/pipeline/020-notify-whatsapp.py", "notify_new_records")
 except Exception:  # noqa: BLE001 - notifications are strictly optional
     pc_notify = None
 
@@ -331,7 +331,7 @@ def extract_label_values_from_text(text):
 def row_archive_is_current(row):
     # A saved record counts as "current" once its archive files exist. Refreshing
     # already-saved ("previous") records to newer parsing/schema is intentionally
-    # manual-only (030-build-detail-views.py / update_day_folder.py), so a normal
+    # manual-only (040-build-detail-views.py / 080-update-day-folder.py), so a normal
     # run never re-pulls previous records just because a schema version changed —
     # it only completes saved rows whose files are actually missing on disk.
     return archive_complete(Path(row["record_folder"]), row["numero"])
@@ -366,7 +366,7 @@ def detail_pending_rows(conn, limit, max_attempts):
     return pending
 
 # save_table_jsons now lives in pc_common (browser-free, shared with
-# 030-build-detail-views.py) and is imported via `from common import *`.
+# 040-build-detail-views.py) and is imported via `from common import *`.
 
 def detail_archive_has_link_metadata(detail_json_path):
     try:
@@ -665,9 +665,9 @@ def main():
             "DETAIL",
             "DONE",
             100,
-            "Step 2/6 complete. No pending detail rows.",
-            step_current=2,
-            step_total=6,
+            "Step 3/7 complete. No pending detail rows.",
+            step_current=3,
+            step_total=7,
             item_current=0,
             item_total=0,
             records_pending=0,
@@ -706,9 +706,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 percent,
-                f"Step 2/6: downloading detail {index}/{total_rows}: {row['numero']}",
-                step_current=2,
-                step_total=6,
+                f"Step 3/7: downloading detail {index}/{total_rows}: {row['numero']}",
+                step_current=3,
+                step_total=7,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -730,9 +730,9 @@ def main():
                 "DETAIL",
                 "RUNNING",
                 55 + int(40 * index / max(total_rows, 1)),
-                f"Step 2/6: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
-                step_current=2,
-                step_total=6,
+                f"Step 3/7: processed detail {index}/{total_rows}. Saved/skipped={saved + skipped}, failed={failed}.",
+                step_current=3,
+                step_total=7,
                 item_current=index,
                 item_total=total_rows,
                 records_saved=saved + skipped,
@@ -751,9 +751,9 @@ def main():
         "DETAIL",
         "DONE",
         98,
-        f"Step 2/6 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
-        step_current=2,
-        step_total=6,
+        f"Step 3/7 complete. Saved/skipped={saved + skipped}, failed={failed}, remaining pending={pending}.",
+        step_current=3,
+        step_total=7,
         item_current=len(rows),
         item_total=len(rows),
         records_saved=saved + skipped,

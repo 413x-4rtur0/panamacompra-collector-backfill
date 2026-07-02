@@ -10,7 +10,7 @@ _SRC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SRC_DIR))
 sys.path.insert(0, str(_SRC_DIR / "pipeline"))
 import common as pc_common
-import notify_new_records as notifier
+notifier = pc_common.load_script("src/pipeline/020-notify-whatsapp.py", "notify_new_records")
 
 
 def main(argv=None) -> int:

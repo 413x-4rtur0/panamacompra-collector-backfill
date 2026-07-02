@@ -24,6 +24,25 @@ import common as pc_common
 
 BASE_DIR = pc_common.APP_ROOT
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
+
+# Work-templates helper (src/tools/020-record-templates.py) imported as a module so
+# the monitor lists/saves the same source folder and selection the CLI uses.
+import importlib.util as _importlib_util
+
+_rt_spec = _importlib_util.spec_from_file_location(
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "020-record-templates.py"))
+record_templates = _importlib_util.module_from_spec(_rt_spec)
+_rt_spec.loader.exec_module(record_templates)
+
+_cal_spec = _importlib_util.spec_from_file_location(
+    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "030-opportunity-calendar.py"))
+opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
+_cal_spec.loader.exec_module(opportunity_calendar)
+
+_nnr_spec = _importlib_util.spec_from_file_location(
+    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "020-notify-whatsapp.py"))
+notify_formats = _importlib_util.module_from_spec(_nnr_spec)
+_nnr_spec.loader.exec_module(notify_formats)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
@@ -33,6 +52,14 @@ UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+# Optional per-purpose destinations; each falls back to the default chat id.
+WAHA_CHAT_ID_INDEX_PATH = CONFIG_DIR / "waha_chat_id_index.txt"
+WAHA_CHAT_ID_DETAILS_PATH = CONFIG_DIR / "waha_chat_id_details.txt"
+WAHA_CHAT_ID_STATUS_PATH = CONFIG_DIR / "waha_chat_id_status.txt"
+
+
+def read_chat_file(path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace").strip() if path.exists() else ""
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = pc_common.LOG_DIR / "manual_actions.log"
 # Archive database read (read-only) to populate the record-index selector with
@@ -132,31 +159,40 @@ RECORDS_TEST_PARENT = pc_common.RECORDS_TEST_DIR
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./src/pipeline/request-run-all.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./src/pipeline/run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
-    ManualAction("Collector Runners", "Show run status", ("./src/pipeline/run-all-status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Collector Runners", "STOP all runners", ("./src/pipeline/stop-run-all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Collector Runners", "Request full collection", ("./src/pipeline/110a-request-run.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./src/pipeline/110b-run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Collector Runners", "STOP all runners", ("./src/pipeline/120a-stop-everything.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
-    ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
+    ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
     ManualAction("Updater & Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh used before worker iterations (no browser install)."),
-    ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
-    ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
+    ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
+    ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
 
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
-    ManualAction("Data Tools", "Rebuild detail views", ("./src/pipeline/030-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
-    ManualAction("Data Tools", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
-    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
-    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
-    ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
-    ManualAction("Data Tools", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
-    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
+    ManualAction("Data Tools", "Rebuild detail views", ("./src/pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
+    ManualAction("Data Tools", "Repair missing deadlines", ("./src/pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
+    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/pipeline/060-build-calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
+    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/060-build-calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
+    ManualAction("Data Tools", "Apply work templates", ("./src/tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
+    ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
+    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
-    # --- 4. Testing & Validation: sandbox runs and health checks -------------
+    # --- 4. Integrations: changedetection + WAHA Docker containers -----------
+    ManualAction("Integrations (Docker)", "Start/refresh docker stack", ("./src/tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers. Their data stays inside the self-contained var/integrations folder."),
+    ManualAction("Integrations (Docker)", "Docker stack status", ("./src/tools/010-docker-stack.sh", "status"), "Writes the container states plus the changedetection/WAHA URLs to the manual action log."),
+    ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
+    ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Integrations (Docker)", "Open changedetection UI", ("bash", "-lc", 'xdg-open "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"'), "Opens the changedetection.io web interface to configure the PanamaCompra watch and its trigger/webhook URL."),
+    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("bash", "-lc", 'xdg-open "http://localhost:${WAHA_PORT:-3000}"'), "Opens the WAHA dashboard to pair the WhatsApp session by QR and inspect the session state."),
+
+    # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
     ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary."),
 
-    # --- 5. Folder Management: open data storage locations -------------------
+    # --- 6. Folder Management: open data storage locations -------------------
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.DATA_DIR / 'index'))}"), "Opens the main index folder where collected records are stored."),
     ManualAction("Folder Management", "Open records folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.RECORDS_DIR))}"), "Opens the records archive folder containing organized record subfolders."),
     ManualAction("Folder Management", "Open logs folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.LOG_DIR))}"), "Opens the logs folder containing worker and action logs."),
@@ -319,7 +355,7 @@ def db_review_stats() -> dict[str, object]:
     DB yields zeros so the panel renders before the collector has ever run."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0,
+        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
         "needs_deadline": 0, "with_detail_json": 0,
         "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
     }
@@ -356,7 +392,7 @@ def db_review_stats() -> dict[str, object]:
 
         # Records the "Repair missing deadlines" action would act on: blank
         # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 040-repair-missing-deadlines.py so the count matches what that tool processes.
+        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
         deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
                                "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
         if "record_folder_leaf" in columns:
@@ -373,7 +409,10 @@ def db_review_stats() -> dict[str, object]:
             "new_records": count("detail_status = 'pending'"),
             "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
-            "notify_backlog": count("detail_status = 'saved' AND notified_at IS NULL") if has_notified else 0,
+            "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
+            "detail_notify_backlog": count(
+                "detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL"
+            ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
             "recent": [
@@ -533,7 +572,7 @@ def running(pattern: str) -> bool:
 
 
 def webhook_running() -> bool:
-    if running("[s]rc/webhook/listener.py") or running("[p]ython3? -u .*src/webhook/listener.py"):
+    if running("[s]rc/webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/webhook/010-webhook-listener.py"):
         return True
     try:
         result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
@@ -549,19 +588,19 @@ def process_snapshot() -> dict[str, bool]:
     webhook = webhook_running()
     monitor_tk = running("[0]01a-monitor-tk.py") or running("[p]ython3? -u .*001a-monitor-tk.py")
     monitor_server = running("[0]01b-monitor-web.py") or running("[p]ython3? -u .*001b-monitor-web.py")
-    timer = running("[n]ext-run-timer.py")
+    timer = running("[0]02-next-run-timer.py")
 
     return {
         "normal_run": worker and not test,
         "test_run": test,
         "worker": worker,
         "index": running("[p]ython(3)? -u .*010-collect-index.py"),
-        "detail": running("[p]ython(3)? -u .*collect_detail.py"),
-        "calendar": running("[p]ython(3)? -u .*(030-build-detail-views|build_calendar).py"),
+        "detail": running("[p]ython(3)? -u .*030-collect-details.py"),
+        "calendar": running("[p]ython(3)? -u .*(040-build-detail-views|060-build-calendar).py"),
         # WhatsApp MESSAGING step: visible while the notifier sends messages.
-        "messaging": running("[n]otify_new_records.py"),
+        "messaging": running("[0]20-notify-whatsapp.py"),
         "request": REQUEST_FLAG.exists(),
-        # Additional runners that should be stopped by src/pipeline/stop-run-all.sh
+        # Additional runners that should be stopped by src/pipeline/120a-stop-everything.sh
         "updater": updater,
         "webhook": webhook,
         "monitor_tk": monitor_tk,
@@ -657,7 +696,10 @@ def status_snapshot() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 18),
         "current_log": tail(CURRENT_LOG, 28),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
+        "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
+        "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
+        "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
+        "waha_chat_id_status": read_chat_file(WAHA_CHAT_ID_STATUS_PATH),
     }
 
 
@@ -868,7 +910,7 @@ def run_tk() -> int:
     # Process status used to be one long wrapped line ("normal_run: off  test_run:
     # off  …") that crowded into 2–3 dense rows. It is now a tidy grid of small
     # colored chips (green = RUNNING, gray = off) laid out in fixed columns.
-    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 2)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+    ttk.Label(header, text="Processes (off is normal when a step is idle; detail only runs during STEP 3)", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
     process_frame = ttk.Frame(header, style="Card.TFrame")
     process_frame.grid(row=6, column=0, sticky="ew")
     process_chips: dict[str, tk.Label] = {}
@@ -989,16 +1031,16 @@ def run_tk() -> int:
             button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
         if mode == "manual":
-            subprocess.Popen([str(BASE_DIR / "src/pipeline/run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "src/pipeline/110b-run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Manual run started with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "src/pipeline/request-run-all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/pipeline/110a-request-run.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Restart-pending run requested with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
 
     def stop_run_now() -> None:
         # Halt the active collection but keep this monitor (and the timer/webhook)
         # running. Stays enabled while a run is active — that is when it is needed.
-        subprocess.Popen([str(BASE_DIR / "src/pipeline/stop-collectors.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/pipeline/120b-stop-collectors.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Stop requested: halting the active collection (worker + collectors). Monitor stays open; request a new run to resume.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
@@ -1085,12 +1127,22 @@ def run_tk() -> int:
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
     idle_var = tk.StringVar(value=str(runtime["idle_refresh"]))
     source_var = tk.StringVar(value=setting("PC_WAHA_SOURCE", "Panamá Compra"))
-    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else ""))
-    existing_keywords = []
-    if WAHA_KEYWORDS_PATH.exists():
-        existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
-    keywords_var = tk.StringVar(value=", ".join(existing_keywords))
+    waha_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_PATH))
+    waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
+    waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
+    waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
+    def read_filter_file(path: Path) -> str:
+        if not path.exists():
+            return ""
+        rules = [k.strip() for k in path.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
+        return ", ".join(rules)
+
+    keywords_var = tk.StringVar(value=read_filter_file(WAHA_KEYWORDS_PATH))
+    keywords_index_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_index.txt"))
+    keywords_details_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_details.txt"))
+    keywords_status_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_status.txt"))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
+    notify_details_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS", "1") != "0")
     import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
     records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(pc_common.RECORDS_DIR)))
     calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(pc_common.CALENDAR_DIR)))
@@ -1116,6 +1168,9 @@ def run_tk() -> int:
     timer_records_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_RECORDS", "20"))
     timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
     monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
+    changedetection_url_var = tk.StringVar(value=setting("CHANGEDETECTION_BASE_URL", os.environ.get("CHANGEDETECTION_BASE_URL", "http://localhost:5000")))
+    waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
+    waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
@@ -1132,7 +1187,7 @@ def run_tk() -> int:
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
     field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic announcements are sent later in the post-detail MESSAGING step when enabled.")
+    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
     ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
     chat_entry = ttk.Entry(settings, textvariable=waha_var)
     chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
@@ -1140,16 +1195,44 @@ def run_tk() -> int:
     ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
+    add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
     field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
     field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
     field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
-    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp after detail/calendar", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
     notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
     calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
-    add_tooltip(notify_check, "Turn off to skip automatic WhatsApp MESSAGING after a run. Manual selected-record notification buttons remain available.")
+    add_tooltip(notify_check, "Master switch for automatic WhatsApp MESSAGING. The index alert is sent right after the index scan, before downloads. Manual selected-record notification buttons remain available.")
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
+    notify_details_check = ttk.Checkbutton(settings, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
+    notify_details_check.grid(row=10, column=0, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_details_check, "Second notifier phase: after each announced record's detail page downloads, send the '📥 Detalles Completos' message with the real items, location and full date range. Env: PC_NOTIFY_DETAILS. Off = items are absorbed silently (no duplicate messages).")
+
+    def send_test_whatsapp() -> None:
+        subprocess.Popen(
+            [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
+             "--message", "Prueba de notificación desde el monitor PanamaCompra."],
+            cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        button_status_var.set("WhatsApp test message requested (uses the saved WAHA settings; check the group and data/logs).")
+
+    test_whatsapp_button = ttk.Button(settings, text="Send test WhatsApp", command=send_test_whatsapp)
+    test_whatsapp_button.grid(row=10, column=2, sticky="w", pady=3)
+    add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
+
+    ttk.Label(settings, text="Per-purpose WhatsApp chat ids (blank = use the default destination above):", style="Card.TLabel").grid(row=11, column=0, sticky="w", pady=3)
+    purpose_frame = ttk.Frame(settings, style="Card.TFrame")
+    purpose_frame.grid(row=11, column=1, columnspan=3, sticky="ew", pady=3)
+    for _col, (_label, _var, _tip) in enumerate((
+        ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
+        ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
+        ("Status changes:", waha_status_var, "Group/channel that receives status-change/cancellation/items-updated messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
+    )):
+        ttk.Label(purpose_frame, text=_label, style="Card.TLabel").grid(row=0, column=_col * 2, sticky="w", padx=(0 if _col == 0 else 8, 4))
+        _entry = ttk.Entry(purpose_frame, textvariable=_var, width=22)
+        _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
+        add_tooltip(_entry, _tip)
 
     ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
@@ -1172,6 +1255,9 @@ def run_tk() -> int:
     field(21, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
     field(21, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
     field(22, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
+    field(25, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
+    field(25, 2, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(26, 0, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
     waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
     waha_enabled_check.grid(row=23, column=0, columnspan=2, sticky="w", pady=3)
     skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
@@ -1210,8 +1296,20 @@ def run_tk() -> int:
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
-        keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
-        WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
+        WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
+        def write_filter_file(path: Path, raw: str) -> None:
+            rules = [k.strip() for k in re.split(r"[,\n]", raw) if k.strip()]
+            path.write_text(("\n".join(rules) + "\n") if rules else "", encoding="utf-8")
+
+        write_filter_file(WAHA_KEYWORDS_PATH, keywords_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_index.txt", keywords_index_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_details.txt", keywords_details_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_status.txt", keywords_status_var.get())
+        available_templates = set(record_templates.source_files(record_templates.source_dir()))
+        selected_templates = [templates_listbox.get(i) for i in templates_listbox.curselection() if templates_listbox.get(i) in available_templates]
+        record_templates.save_selection(selected_templates)
 
         updates = {
             "PC_MONITOR_TK_ALPHA": f"{alpha:.2f}",
@@ -1220,6 +1318,8 @@ def run_tk() -> int:
             "PC_MONITOR_TK_IDLE_REFRESH_SECONDS": str(runtime["idle_refresh"]),
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
             "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
+            "PC_NOTIFY_DETAILS": "1" if notify_details_var.get() else "0",
+            "PC_TEMPLATES_SRC_DIR": templates_src_var.get().strip(),
             "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(pc_common.RECORDS_DIR),
             "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(pc_common.CALENDAR_DIR),
@@ -1240,6 +1340,9 @@ def run_tk() -> int:
             "PC_NEXT_RUN_TIMER_RECORDS": timer_records_var.get().strip() or "20",
             "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
             "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
+            "CHANGEDETECTION_BASE_URL": changedetection_url_var.get().strip() or "http://localhost:5000",
+            "WAHA_PORT": waha_port_var.get().strip() or "3000",
+            "WAHA_API_KEY": waha_server_key_var.get().strip(),
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1261,7 +1364,94 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; automatic messages are sent only in the post-detail MESSAGING step when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL, WAHA port/API key) apply when the docker stack is restarted from the Integrations buttons.", style="Card.TLabel", wraplength=820).grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    ttk.Label(settings, text="Work templates (copied into templates/ inside each record folder)", style="Title.TLabel").grid(row=28, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    templates_src_var = tk.StringVar(value=setting("PC_TEMPLATES_SRC_DIR", ""))
+    field(29, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
+    templates_listbox = tk.Listbox(settings, selectmode="multiple", height=5, activestyle="none", exportselection=False)
+    templates_listbox.grid(row=30, column=1, columnspan=3, sticky="ew", pady=3)
+    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=30, column=0, sticky="nw", pady=3)
+    add_tooltip(templates_listbox, "Tick the template files to copy into each record's templates/ folder. Selection is saved on Apply to data/config/templates_selected.txt (shared with pcc templates). New downloads receive them automatically; files already inside a record are never overwritten.")
+
+    def refresh_templates_list() -> None:
+        templates_listbox.delete(0, "end")
+        src = record_templates.source_dir()
+        files = record_templates.source_files(src)
+        selected = set(record_templates.load_selection())
+        for position, rel_name in enumerate(files):
+            templates_listbox.insert("end", rel_name)
+            if rel_name in selected:
+                templates_listbox.selection_set(position)
+        if not files:
+            templates_listbox.insert("end", f"(no files in {src} — drop templates there and refresh)")
+
+    refresh_templates_button = ttk.Button(settings, text="Refresh template files", command=refresh_templates_list)
+    refresh_templates_button.grid(row=29, column=2, sticky="w", pady=3)
+    add_tooltip(refresh_templates_button, "Re-scan the template source folder (after Apply when the folder path changed).")
+    refresh_templates_list()
+
+    ttk.Label(settings, text="Per-destination WhatsApp filters (blank = use the shared filter above; OR with commas, AND with '+', NOT with '-')", style="Title.TLabel").grid(row=35, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    field(36, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(36, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(37, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+
+    ttk.Label(settings, text="WhatsApp message formats ({placeholder} fields; unknown placeholders stay literal)", style="Title.TLabel").grid(row=31, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    format_kind_var = tk.StringVar(value="index")
+    format_controls = ttk.Frame(settings, style="Card.TFrame")
+    format_controls.grid(row=32, column=0, columnspan=4, sticky="w", pady=3)
+    ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
+    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=("index", "details", "status"), width=9, state="readonly")
+    format_kind_combo.grid(row=0, column=1, padx=(0, 10))
+    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with the items; status = cambios de estado/cancelaciones/items.")
+
+    format_text = tk.Text(settings, height=8, wrap="word")
+    format_text.grid(row=33, column=0, columnspan=4, sticky="ew", pady=3)
+    add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
+    format_preview = tk.Text(settings, height=8, wrap="word", state="disabled")
+    format_preview.grid(row=34, column=0, columnspan=4, sticky="ew", pady=3)
+
+    def _set_preview(text: str) -> None:
+        format_preview.configure(state="normal")
+        format_preview.delete("1.0", "end")
+        format_preview.insert("1.0", text)
+        format_preview.configure(state="disabled")
+
+    def load_format(*_a) -> None:
+        kind = format_kind_var.get()
+        custom = notify_formats.load_custom_format(kind)
+        format_text.delete("1.0", "end")
+        format_text.insert("1.0", custom or notify_formats.DEFAULT_FORMATS[kind])
+        _set_preview(notify_formats.render_format(kind))
+        button_status_var.set(f"Loaded {kind} format ({'custom' if custom else 'built-in default'}).")
+
+    def preview_format() -> None:
+        _set_preview(notify_formats.render_format(format_kind_var.get(), format_text.get("1.0", "end").strip("\n")))
+
+    def save_format() -> None:
+        kind = format_kind_var.get()
+        template = format_text.get("1.0", "end").strip("\n")
+        if not template.strip():
+            button_status_var.set("Template is empty — use Reset to restore the default.")
+            return
+        path = notify_formats.format_path(kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(template + "\n", encoding="utf-8")
+        preview_format()
+        button_status_var.set(f"Custom {kind} WhatsApp format saved to {path.name}.")
+
+    def reset_format() -> None:
+        kind = format_kind_var.get()
+        notify_formats.format_path(kind).unlink(missing_ok=True)
+        load_format()
+        button_status_var.set(f"{kind} WhatsApp format reset to the built-in layout.")
+
+    ttk.Button(format_controls, text="Load", command=load_format).grid(row=0, column=2, padx=(0, 6))
+    ttk.Button(format_controls, text="Preview", command=preview_format).grid(row=0, column=3, padx=(0, 6))
+    ttk.Button(format_controls, text="Save format", command=save_format).grid(row=0, column=4, padx=(0, 6))
+    ttk.Button(format_controls, text="Reset to default", command=reset_format).grid(row=0, column=5)
+    format_kind_combo.bind("<<ComboboxSelected>>", load_format)
+    load_format()
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1367,7 +1557,7 @@ def run_tk() -> int:
             "Previous database data / all records summary\n"
             f"Total: {s['total']} · Completed(saved): {s['saved']} · Pending: {s['pending']} · Failed: {s['failed']}\n"
             f"Pending snapshot: {s['new_records']} · Completed snapshot: {s['existing_records']} · Detail JSON: {s['with_detail_json']} · Notified: {s['notified']}\n"
-            f"Awaiting WhatsApp (backlog): {s['notify_backlog']} · Needs deadline repair: {s['needs_deadline']}\n"
+            f"Awaiting WhatsApp index alert: {s['notify_backlog']} · Awaiting item-details WhatsApp: {s['detail_notify_backlog']} · Needs deadline repair: {s['needs_deadline']}\n"
             f"Detail statuses: {statuses}\n"
             f"Groups: {groups}\n"
             f"DB elements/columns with data: {columns}\n"
@@ -1697,18 +1887,29 @@ def run_tk() -> int:
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        cmd = [str(BASE_DIR / "src/pipeline/notify_new_records.py"), "--force"]
+        cmd = [str(BASE_DIR / "src/pipeline/020-notify-whatsapp.py"), "--force"]
         for numero in numeros:
             cmd.extend(["--record", numero])
         subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected record(s).")
+
+    def copy_templates_to_selected() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        cmd = [str(BASE_DIR / "src/tools/020-record-templates.py"), "apply", "--apply"]
+        for numero in numeros:
+            cmd.extend(["--numero", numero])
+        subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Work templates requested for {len(numeros)} selected record(s) (existing files kept).")
 
     def import_selected_calendars() -> None:
         numeros = selected_numeros()
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        subprocess.Popen([str(BASE_DIR / "src/tools/import-selected-calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/tools/060-import-selected-calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
 
     def open_selected_portal() -> None:
@@ -1748,6 +1949,9 @@ def run_tk() -> int:
     notify_selected_button.grid(row=0, column=3, padx=(0, 8))
     import_selected_button = ttk.Button(index_buttons, text="Import selected calendars", command=import_selected_calendars)
     import_selected_button.grid(row=0, column=4, padx=(0, 8))
+    templates_selected_button = ttk.Button(index_buttons, text="Copy templates to selected", command=copy_templates_to_selected)
+    templates_selected_button.grid(row=0, column=5, padx=(0, 8))
+    add_tooltip(templates_selected_button, "Copy the selected work templates into templates/ inside each chosen record folder (files already there are kept).")
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
     add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")
@@ -1758,12 +1962,76 @@ def run_tk() -> int:
     add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
+    # Opportunity calendar: the collected opportunities by day/week/month/year,
+    # driven by deadline/start/downloaded dates. Shares its renderer with
+    # `pcc calendar` and the web monitor's Calendar card.
+    calendar_card = ttk.Frame(content, style="Card.TFrame", padding=14)
+    calendar_card.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    calendar_card.columnconfigure(6, weight=1)
+    ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+
+    calendar_view_var = tk.StringVar(value="month")
+    calendar_field_var = tk.StringVar(value="end")
+    calendar_anchor_var = tk.StringVar(value="")
+
+    def render_calendar(shift: int | None = None) -> None:
+        view = calendar_view_var.get()
+        try:
+            anchor = opportunity_calendar.parse_anchor(calendar_anchor_var.get())
+        except SystemExit:
+            anchor = opportunity_calendar.parse_anchor("")
+        if shift == 0:
+            anchor = opportunity_calendar.parse_anchor("")
+        elif shift:
+            anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
+        calendar_anchor_var.set(anchor.isoformat())
+        try:
+            conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+            conn.row_factory = sqlite3.Row
+            try:
+                text = opportunity_calendar.render_view(conn, view, anchor, calendar_field_var.get())
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            text = "(archive database not available yet — run a collection first)"
+        calendar_text.configure(state="normal")
+        calendar_text.delete("1.0", "end")
+        calendar_text.insert("1.0", text)
+        calendar_text.configure(state="disabled")
+
+    ttk.Label(calendar_card, text="View:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 4))
+    calendar_view_combo = ttk.Combobox(calendar_card, textvariable=calendar_view_var, values=("day", "week", "month", "year"), width=7, state="readonly")
+    calendar_view_combo.grid(row=1, column=1, sticky="w", padx=(0, 10))
+    ttk.Label(calendar_card, text="Date field:", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=(0, 4))
+    calendar_field_combo = ttk.Combobox(calendar_card, textvariable=calendar_field_var, values=("end", "start", "downloaded"), width=11, state="readonly")
+    calendar_field_combo.grid(row=1, column=3, sticky="w", padx=(0, 10))
+    calendar_anchor_entry = ttk.Entry(calendar_card, textvariable=calendar_anchor_var, width=12)
+    calendar_anchor_entry.grid(row=1, column=4, sticky="w", padx=(0, 10))
+    add_tooltip(calendar_anchor_entry, "Anchor date: YYYY, YYYY-MM or YYYY-MM-DD (blank = today). Press Show.")
+    add_tooltip(calendar_view_combo, "Calendar granularity: one day, the week, a month grid with per-day counts, or a whole year with per-month totals.")
+    add_tooltip(calendar_field_combo, "Which date drives the view: end = deadline (default), start = opportunity start, downloaded = when the detail was saved locally.")
+
+    calendar_buttons = ttk.Frame(calendar_card, style="Card.TFrame")
+    calendar_buttons.grid(row=1, column=5, sticky="w")
+    ttk.Button(calendar_buttons, text="◀ Prev", command=lambda: render_calendar(-1)).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Today", command=lambda: render_calendar(0)).grid(row=0, column=1, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Next ▶", command=lambda: render_calendar(1)).grid(row=0, column=2, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Show", command=lambda: render_calendar(None)).grid(row=0, column=3)
+
+    calendar_text = tk.Text(calendar_card, height=14, wrap="none", state="disabled", font=("monospace", 9))
+    calendar_text.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+    calendar_view_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
+    calendar_field_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
+    render_calendar(0)
+    add_section_toggle(calendar_card, button_column=6)
+
+    # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
     # Each button's explanation is shown as a hover tooltip (not an inline label)
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1827,7 +2095,7 @@ def run_tk() -> int:
             f"Total records: {s['total']}\n"
             f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"
             f"Detail JSON on record: {s['with_detail_json']}   ·   Notified (WAHA): {s['notified']}\n"
-            f"Awaiting WhatsApp (backlog): {s['notify_backlog']}   ·   Needs deadline repair: {s['needs_deadline']}\n"
+            f"Awaiting WhatsApp index alert: {s['notify_backlog']}   ·   Awaiting item-details WhatsApp: {s['detail_notify_backlog']}   ·   Needs deadline repair: {s['needs_deadline']}\n"
             f"By group   ·   {groups}"
         )
 
@@ -1841,10 +2109,10 @@ def run_tk() -> int:
     # SECTION 7: RESET / REVIEW FROM ZERO - separate buttons (per the operator's
     # request) for each reset depth, from a soft detail re-queue to a full wipe.
     # The two destructive wipes pop a confirmation dialog and pass --yes only when
-    # confirmed, so a stray click cannot erase the archive. All call src/tools/reset.py.
+    # confirmed, so a stray click cannot erase the archive. All call src/tools/110-reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -1856,7 +2124,7 @@ def run_tk() -> int:
             if not messagebox.askyesno("Confirm reset", confirm_text, icon="warning", default="no"):
                 reset_status_var.set(f"{action}: cancelled.")
                 return
-        command = [str(BASE_DIR / "src/tools/reset.py"), action]
+        command = [str(BASE_DIR / "src/tools/110-reset.py"), action]
         if destructive:
             command.append("--yes")
         MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1886,7 +2154,7 @@ def run_tk() -> int:
     add_section_toggle(reset_zone, button_column=1)
 
     logs = ttk.Frame(content, style="Card.TFrame", padding=14)
-    logs.grid(row=11, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=12, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -1970,6 +2238,12 @@ def run_tk() -> int:
 
         if not waha_var.get():
             waha_var.set(str(snap.get("waha_chat_id", "")))
+        if not waha_index_var.get():
+            waha_index_var.set(str(snap.get("waha_chat_id_index", "")))
+        if not waha_details_var.get():
+            waha_details_var.set(str(snap.get("waha_chat_id_details", "")))
+        if not waha_status_var.get():
+            waha_status_var.set(str(snap.get("waha_chat_id_status", "")))
 
         set_text(worker_text, str(snap["worker_log"]))
         set_text(current_text, str(snap["current_log"]))

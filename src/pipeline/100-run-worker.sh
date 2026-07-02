@@ -46,8 +46,8 @@ notify_waha() {
   local event="$1"
   local status="$2"
   local message="$3"
-  if [ -x "$APP_ROOT/src/notify/waha_client.py" ]; then
-    "$PYTHON_BIN" "$APP_ROOT/src/notify/waha_client.py" --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
+  if [ -x "$APP_ROOT/src/notify/010-waha-client.py" ]; then
+    "$PYTHON_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -61,16 +61,16 @@ launch_queued_update_monitor() {
   log "Queued Update + Monitor request found after collector finished; launching updater."
   echo "$(date '+%Y-%m-%d %H:%M:%S') | UPDATE+MONITOR STARTING after collector finished" >> "$UPDATE_QUEUE_LOG"
   rm -f "$UPDATE_QUEUE_FLAG"
-  if [ -x "$APP_ROOT/src/monitor/update-loader.py" ]; then
-    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/update-loader.py" --open-monitor-after >> "$UPDATE_QUEUE_LOG" 2>&1 &
+  if [ -x "$APP_ROOT/src/monitor/003-update-loader.py" ]; then
+    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/003-update-loader.py" --open-monitor-after >> "$UPDATE_QUEUE_LOG" 2>&1 &
   else
     nohup "$APP_ROOT/update-local-copy.sh" >> "$UPDATE_QUEUE_LOG" 2>&1 &
   fi
 }
 
 notify_new_records() {
-  if [ -x "$PIPELINE_DIR/notify_new_records.py" ]; then
-    "$PYTHON_BIN" "$PIPELINE_DIR/notify_new_records.py" "$@" >> "$WORKER_LOG" 2>&1 || true
+  if [ -x "$PIPELINE_DIR/020-notify-whatsapp.py" ]; then
+    "$PYTHON_BIN" "$PIPELINE_DIR/020-notify-whatsapp.py" "$@" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -261,7 +261,7 @@ while true; do
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  write_progress "INDEX" "RUNNING" "10" "Step 1/6: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
+  write_progress "INDEX" "RUNNING" "10" "Step 1/7: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
 
   {
     echo ""
@@ -305,17 +305,54 @@ PY
 )"
   [ -n "$PENDING_BEFORE" ] || PENDING_BEFORE="-1"
 
-  write_progress "DETAIL" "RUNNING" "55" "Step 2/6: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
+  # STEP 2: MESSAGING — send the WhatsApp messages one by one RIGHT AFTER the
+  # index, before the (potentially long) detail downloads, so subscribers hear
+  # about new opportunities immediately. 020-notify-whatsapp.py --announce
+  # publishes per-message progress (current/total + a preview) so the monitor
+  # shows each message going out. It announces new opportunities (items shown
+  # as pending download) AND status changes (e.g. Programada → Abierta), or
+  # sends the single "Sin nuevas entradas" status when there is nothing to
+  # send. After the downloads finish, --sync-snapshots aligns the notified
+  # snapshots so the freshly downloaded items are not re-announced next run.
+  NOTIFY_WHATSAPP="${PC_NOTIFY_WHATSAPP:-}"
+  if [ -z "$NOTIFY_WHATSAPP" ] && [ -f "$MONITOR_SETTINGS" ]; then
+    NOTIFY_WHATSAPP="$($PYTHON_BIN - "$MONITOR_SETTINGS" <<'PY'
+import sys
+from pathlib import Path
+for line in Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.startswith("PC_NOTIFY_WHATSAPP="):
+        print(line.split("=", 1)[1].strip().strip("\"").strip("'"))
+        break
+PY
+)"
+  fi
+  NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
+  if [ "$NOTIFY_WHATSAPP" != "0" ]; then
+    write_progress "MESSAGING" "RUNNING" "52" "Step 2/7: sending WhatsApp index alerts (new opportunities + status changes) before downloads..." "$STARTED"
+    {
+      echo ""
+      echo "-------------------- STEP 2: WHATSAPP MESSAGING ----------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    } >> "$CURRENT_LOG"
+    MESSAGING_START_EPOCH="$(date '+%s')"
+    PC_MSG_STEP_CURRENT=2 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=52 PC_MSG_PERCENT_DONE=55 notify_new_records --announce
+    MESSAGING_SECONDS=$(( $(date '+%s') - MESSAGING_START_EPOCH ))
+  else
+    write_progress "MESSAGING" "DONE" "52" "Step 2/7: WhatsApp notifications disabled by monitor setting." "$STARTED"
+    log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
+  fi
+
+  write_progress "DETAIL" "RUNNING" "55" "Step 3/7: downloading pending detail pages, limit=$DETAIL_LIMIT..." "$STARTED"
 
   {
     echo ""
-    echo "-------------------- STEP 2: DETAIL DOWNLOADER ------------------"
+    echo "-------------------- STEP 3: DETAIL DOWNLOADER ------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u $PIPELINE_DIR/collect_detail.py"
+    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u $PIPELINE_DIR/030-collect-details.py"
   } >> "$CURRENT_LOG"
 
   DETAIL_START_EPOCH="$(date '+%s')"
-  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u "$PIPELINE_DIR/collect_detail.py" >> "$CURRENT_LOG" 2>&1
+  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u "$PIPELINE_DIR/030-collect-details.py" >> "$CURRENT_LOG" 2>&1
   DETAIL_EXIT=$?
   DETAIL_SECONDS=$(( $(date '+%s') - DETAIL_START_EPOCH ))
 
@@ -332,19 +369,19 @@ PY
   CALENDAR_EXIT=0
 
   if [ "$DETAIL_EXIT" -eq 0 ]; then
-    # STEP 3: normalize detail outputs after all detail downloads finish. This
+    # STEP 4: normalize detail outputs after all detail downloads finish. This
     # rebuilds the structured summary/items/calendar views in each detail JSON
-    # and rewrites per-record .calendar.ics files before packages or WAHA.
-    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x "$PIPELINE_DIR/030-build-detail-views.py" ]; then
-      write_progress "CALENDAR" "RUNNING" "76" "Step 3/6: creating per-record calendar/detail views from saved detail.json files..." "$STARTED"
+    # and rewrites per-record .calendar.ics files before packages.
+    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x "$PIPELINE_DIR/040-build-detail-views.py" ]; then
+      write_progress "CALENDAR" "RUNNING" "76" "Step 4/7: creating per-record calendar/detail views from saved detail.json files..." "$STARTED"
       {
         echo ""
-        echo "-------------------- STEP 3: DETAIL VIEWS + RECORD ICS --------"
+        echo "-------------------- STEP 4: DETAIL VIEWS + RECORD ICS --------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/030-build-detail-views.py --apply --since $STARTED"
+        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/040-build-detail-views.py --apply --since $STARTED"
       } >> "$CURRENT_LOG"
       VIEW_START_EPOCH="$(date '+%s')"
-      "$PYTHON_BIN" -u "$PIPELINE_DIR/030-build-detail-views.py" --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
+      "$PYTHON_BIN" -u "$PIPELINE_DIR/040-build-detail-views.py" --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
       VIEW_EXIT=$?
       VIEW_SECONDS=$(( $(date '+%s') - VIEW_START_EPOCH ))
       {
@@ -352,41 +389,82 @@ PY
         echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
     else
-      write_progress "CALENDAR" "RUNNING" "76" "Step 3/6: per-record calendar/detail view rebuild disabled; continuing to package calendars." "$STARTED"
+      write_progress "CALENDAR" "RUNNING" "76" "Step 4/7: per-record calendar/detail view rebuild disabled; continuing to package calendars." "$STARTED"
       log "ITERATION $ITERATION detail view rebuild skipped by PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL=0."
     fi
 
-    # STEP 4: verification and repair. Compile the core Python entrypoints, then
-    # retry failed rows and folders/DB rows missing DTEND before calendar packages
-    # are built, so any repaired records are included in the packages/messaging.
-    if [ "$VIEW_EXIT" -eq 0 ]; then
-      write_progress "VERIFY" "RUNNING" "84" "Step 4/6: compiling collector scripts and checking failed/missing-deadline records..." "$STARTED"
+    # Post-download work templates: copy the operator's selected template files
+    # into templates/ inside each record folder downloaded this run, so every
+    # opportunity comes ready to work on. No-op when nothing is selected;
+    # existing files are never overwritten. Disable with PC_TEMPLATES_AUTO=0.
+    if [ "$VIEW_EXIT" -eq 0 ] && [ "${PC_TEMPLATES_AUTO:-1}" != "0" ] && [ -x "$APP_ROOT/src/tools/020-record-templates.py" ]; then
       {
         echo ""
-        echo "-------------------- STEP 4: VERIFY + REPAIR -------------------"
+        echo "---------------- POST-DOWNLOAD: WORK TEMPLATES -----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+      "$PYTHON_BIN" "$APP_ROOT/src/tools/020-record-templates.py" apply --since "$STARTED" --apply >> "$CURRENT_LOG" 2>&1 || true
+    fi
+
+    # STEP 5: MESSAGING (details) — second notifier phase. For every record
+    # announced from the index in this or a previous run whose detail page is
+    # now downloaded (and its views rebuilt), send the follow-up "Detalles
+    # Completos" WhatsApp message with the real items, one by one with monitor
+    # progress. Disable with PC_NOTIFY_DETAILS=0 (monitor Settings), in which
+    # case the downloaded items are absorbed silently so no duplicate "items
+    # updated" message fires next run.
+    if [ "$VIEW_EXIT" -eq 0 ]; then
+      NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
+      if [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
+        write_progress "MESSAGING" "RUNNING" "80" "Step 5/7: sending WhatsApp detail messages (downloaded items) for announced records..." "$STARTED"
+        {
+          echo ""
+          echo "-------------------- STEP 5: WHATSAPP DETAILS ------------------"
+          echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        } >> "$CURRENT_LOG"
+        DETAIL_MSG_START_EPOCH="$(date '+%s')"
+        PC_MSG_STEP_CURRENT=5 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=80 PC_MSG_PERCENT_DONE=83 notify_new_records --announce-details --since "$STARTED"
+        MESSAGING_SECONDS=$(( MESSAGING_SECONDS + $(date '+%s') - DETAIL_MSG_START_EPOCH ))
+      elif [ "$NOTIFY_WHATSAPP" != "0" ]; then
+        write_progress "MESSAGING" "RUNNING" "80" "Step 5/7: WhatsApp detail messages disabled (PC_NOTIFY_DETAILS=0); syncing item snapshots silently." "$STARTED"
+        log "ITERATION $ITERATION WhatsApp detail messages skipped by PC_NOTIFY_DETAILS=0; running silent snapshot sync."
+        notify_new_records --sync-snapshots --since "$STARTED"
+      else
+        write_progress "MESSAGING" "DONE" "80" "Step 5/7: WhatsApp notifications disabled by monitor setting." "$STARTED"
+      fi
+    fi
+
+    # STEP 6: verification and repair. Compile the core Python entrypoints, then
+    # retry failed rows and folders/DB rows missing DTEND before calendar packages
+    # are built, so any repaired records are included in the packages.
+    if [ "$VIEW_EXIT" -eq 0 ]; then
+      write_progress "VERIFY" "RUNNING" "84" "Step 6/7: compiling collector scripts and checking failed/missing-deadline records..." "$STARTED"
+      {
+        echo ""
+        echo "-------------------- STEP 6: VERIFY + REPAIR -------------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "Command: ${PYTHON_BIN} -m py_compile core collector scripts"
       } >> "$CURRENT_LOG"
 
       VERIFY_START_EPOCH="$(date '+%s')"
       "$PYTHON_BIN" -m py_compile \
-        "$APP_ROOT/src/common.py" "$PIPELINE_DIR/010-collect-index.py" "$PIPELINE_DIR/collect_detail.py" \
-        "$PIPELINE_DIR/030-build-detail-views.py" "$PIPELINE_DIR/build_calendar.py" "$PIPELINE_DIR/notify_new_records.py" \
-        "$PIPELINE_DIR/040-repair-missing-deadlines.py" >> "$CURRENT_LOG" 2>&1
+        "$APP_ROOT/src/common.py" "$PIPELINE_DIR/010-collect-index.py" "$PIPELINE_DIR/030-collect-details.py" \
+        "$PIPELINE_DIR/040-build-detail-views.py" "$PIPELINE_DIR/060-build-calendar.py" "$PIPELINE_DIR/020-notify-whatsapp.py" \
+        "$PIPELINE_DIR/050-repair-missing-deadlines.py" >> "$CURRENT_LOG" 2>&1
       COMPILE_EXIT=$?
       {
         echo "Compile verification exit code: $COMPILE_EXIT"
         echo "Finished compile: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
 
-      if [ "$COMPILE_EXIT" -eq 0 ] && [ "${PC_REPAIR_FAILED_AND_MISSING_DEADLINES:-1}" != "0" ] && [ -x "$PIPELINE_DIR/040-repair-missing-deadlines.py" ]; then
+      if [ "$COMPILE_EXIT" -eq 0 ] && [ "${PC_REPAIR_FAILED_AND_MISSING_DEADLINES:-1}" != "0" ] && [ -x "$PIPELINE_DIR/050-repair-missing-deadlines.py" ]; then
         REPAIR_LIMIT="${PC_MISSING_DEADLINE_REPAIR_LIMIT:-0}"
         {
           echo ""
-          echo "Verification repair command: ${PYTHON_BIN} -u $PIPELINE_DIR/040-repair-missing-deadlines.py --include-failed --apply --limit $REPAIR_LIMIT"
+          echo "Verification repair command: ${PYTHON_BIN} -u $PIPELINE_DIR/050-repair-missing-deadlines.py --include-failed --apply --limit $REPAIR_LIMIT"
           echo "PC_MISSING_DEADLINE_REPAIR_LIMIT=$REPAIR_LIMIT (0 = all matching failed/missing-deadline rows)"
         } >> "$CURRENT_LOG"
-        "$PYTHON_BIN" -u "$PIPELINE_DIR/040-repair-missing-deadlines.py" --include-failed --apply --limit "$REPAIR_LIMIT" >> "$CURRENT_LOG" 2>&1
+        "$PYTHON_BIN" -u "$PIPELINE_DIR/050-repair-missing-deadlines.py" --include-failed --apply --limit "$REPAIR_LIMIT" >> "$CURRENT_LOG" 2>&1
         REPAIR_EXIT=$?
         echo "Failed/missing-deadline repair exit code: $REPAIR_EXIT" >> "$CURRENT_LOG"
         if [ "$REPAIR_EXIT" -ne 0 ]; then
@@ -399,19 +477,19 @@ PY
       VERIFY_EXIT=$COMPILE_EXIT
     fi
 
-    # STEP 5: build timestamped Thunderbird/ICS import packages from the
+    # STEP 7: build timestamped Thunderbird/ICS import packages from the
     # per-record calendars after detail views/verification have completed.
     if [ "$VIEW_EXIT" -eq 0 ] && [ "$VERIFY_EXIT" -eq 0 ]; then
-      write_progress "CALENDAR" "RUNNING" "90" "Step 5/6: creating timestamped calendar import packages (.ics)..." "$STARTED"
+      write_progress "CALENDAR" "RUNNING" "90" "Step 7/7: creating timestamped calendar import packages (.ics)..." "$STARTED"
       {
         echo ""
-        echo "-------------------- STEP 5: CALENDAR PACKAGES -----------------"
+        echo "-------------------- STEP 7: CALENDAR PACKAGES -----------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/build_calendar.py"
+        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/060-build-calendar.py"
       } >> "$CURRENT_LOG"
 
       CALENDAR_START_EPOCH="$(date '+%s')"
-      "$PYTHON_BIN" -u "$PIPELINE_DIR/build_calendar.py" >> "$CURRENT_LOG" 2>&1
+      "$PYTHON_BIN" -u "$PIPELINE_DIR/060-build-calendar.py" >> "$CURRENT_LOG" 2>&1
       CALENDAR_EXIT=$?
       CALENDAR_SECONDS=$(( $(date '+%s') - CALENDAR_START_EPOCH ))
 
@@ -423,62 +501,28 @@ PY
   fi
 
   if [ "$DETAIL_EXIT" -eq 124 ]; then
-    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out. Calendar/package/WhatsApp steps skipped." "$STARTED"
-    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out. Calendar/package/WhatsApp steps skipped."
+    write_progress "DETAIL" "TIMEOUT" "90" "Detail downloader timed out. View/calendar/package steps skipped (WhatsApp was already sent after the index)." "$STARTED"
+    notify_waha "timeout" "TIMEOUT" "Iteration $ITERATION detail downloader timed out. View/calendar/package steps skipped."
     log "ITERATION $ITERATION detail step timed out."
   elif [ "$DETAIL_EXIT" -ne 0 ]; then
-    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped." "$STARTED"
-    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT. Calendar/package/WhatsApp steps skipped."
+    write_progress "DETAIL" "FAILED" "90" "Detail downloader failed with exit=$DETAIL_EXIT. View/calendar/package steps skipped (WhatsApp was already sent after the index)." "$STARTED"
+    notify_waha "failed" "FAILED" "Iteration $ITERATION detail downloader failed with exit=$DETAIL_EXIT. View/calendar/package steps skipped."
     log "ITERATION $ITERATION detail failed with exit=$DETAIL_EXIT."
   elif [ "$VIEW_EXIT" -ne 0 ]; then
-    write_progress "CALENDAR" "FAILED" "88" "Detail finished but per-record calendar/detail view build failed with exit=$VIEW_EXIT. Packages/WhatsApp skipped." "$STARTED"
+    write_progress "CALENDAR" "FAILED" "88" "Detail finished but per-record calendar/detail view build failed with exit=$VIEW_EXIT. Packages skipped." "$STARTED"
     notify_waha "failed" "FAILED" "Iteration $ITERATION detail view/calendar build failed with exit=$VIEW_EXIT."
     log "ITERATION $ITERATION detail view/calendar step failed with exit=$VIEW_EXIT."
   elif [ "$VERIFY_EXIT" -ne 0 ]; then
-    write_progress "VERIFY" "FAILED" "86" "Verification compile failed with exit=$VERIFY_EXIT. Calendar/package/WhatsApp steps skipped." "$STARTED"
+    write_progress "VERIFY" "FAILED" "86" "Verification compile failed with exit=$VERIFY_EXIT. Calendar/package steps skipped." "$STARTED"
     notify_waha "failed" "FAILED" "Iteration $ITERATION verification compile failed with exit=$VERIFY_EXIT."
     log "ITERATION $ITERATION verification compile failed with exit=$VERIFY_EXIT."
   elif [ "$CALENDAR_EXIT" -ne 0 ]; then
-    write_progress "CALENDAR" "FAILED" "94" "Per-record calendars finished but calendar package build failed with exit=$CALENDAR_EXIT. WhatsApp skipped." "$STARTED"
+    write_progress "CALENDAR" "FAILED" "94" "Per-record calendars finished but calendar package build failed with exit=$CALENDAR_EXIT." "$STARTED"
     notify_waha "failed" "FAILED" "Iteration $ITERATION calendar package build failed with exit=$CALENDAR_EXIT."
     log "ITERATION $ITERATION calendar package step failed with exit=$CALENDAR_EXIT."
   fi
 
-  # STEP 6: MESSAGING — send the rich WhatsApp messages one by one. This is a
-  # visible step: notify_new_records.py --announce publishes per-message
-  # progress (current/total + a preview), so the monitor shows each message going
-  # out. It announces new opportunities AND status changes (e.g. Programada →
-  # Abierta), or sends the single "Sin nuevas entradas" status when there is
-  # nothing to send. It runs only after index, all details, per-record calendars,
-  # and calendar packages succeed.
   if [ "$DETAIL_EXIT" -eq 0 ] && [ "$VIEW_EXIT" -eq 0 ] && [ "$VERIFY_EXIT" -eq 0 ] && [ "$CALENDAR_EXIT" -eq 0 ]; then
-    NOTIFY_WHATSAPP="${PC_NOTIFY_WHATSAPP:-}"
-    if [ -z "$NOTIFY_WHATSAPP" ] && [ -f "$MONITOR_SETTINGS" ]; then
-      NOTIFY_WHATSAPP="$($PYTHON_BIN - "$MONITOR_SETTINGS" <<'PY'
-import sys
-from pathlib import Path
-for line in Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines():
-    if line.startswith("PC_NOTIFY_WHATSAPP="):
-        print(line.split("=", 1)[1].strip().strip("\"").strip("'"))
-        break
-PY
-)"
-    fi
-    NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
-    if [ "$NOTIFY_WHATSAPP" != "0" ]; then
-      write_progress "MESSAGING" "RUNNING" "96" "Step 6/6: sending WhatsApp messages (new opportunities + status changes)..." "$STARTED"
-      {
-        echo ""
-        echo "-------------------- STEP 6: WHATSAPP MESSAGING ----------------"
-        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-      } >> "$CURRENT_LOG"
-      MESSAGING_START_EPOCH="$(date '+%s')"
-      PC_MSG_STEP_CURRENT=6 PC_MSG_STEP_TOTAL=6 notify_new_records --announce
-      MESSAGING_SECONDS=$(( $(date '+%s') - MESSAGING_START_EPOCH ))
-    else
-      write_progress "MESSAGING" "DONE" "96" "Step 6/6: WhatsApp notifications disabled by monitor setting." "$STARTED"
-      log "ITERATION $ITERATION WhatsApp notifications skipped by PC_NOTIFY_WHATSAPP=0."
-    fi
     FINISHED="$(date '+%Y-%m-%d %H:%M:%S')"
     SUMMARY_COUNTS="$($PYTHON_BIN - <<'PY'
 from common import init_db
@@ -521,13 +565,13 @@ PY
 Inicio: $STARTED
 Fin: $FINISHED
 Duración total: $(format_eta "$TOTAL_SECONDS")
-Etapas: index $(format_eta "$INDEX_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), verification $(format_eta "$VERIFY_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS")
+Etapas: index $(format_eta "$INDEX_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), verification $(format_eta "$VERIFY_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS")
 Iteración: $ITERATION
 $SUMMARY_COUNTS"
     {
       echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"
-    write_progress "DONE" "DONE" "100" "Index, details, verification/repair, per-record calendars, calendar packages and WhatsApp messaging completed." "$STARTED"
+    write_progress "DONE" "DONE" "100" "Index, WhatsApp index alerts, details, WhatsApp item details, verification/repair, per-record calendars and calendar packages completed." "$STARTED"
     log "ITERATION $ITERATION finished successfully."
   fi
 
@@ -546,7 +590,7 @@ $SUMMARY_COUNTS"
   } >> "$CURRENT_LOG"
   cat "$CURRENT_LOG" >> "$HISTORY_LOG"
 
-  # STEP 7: OPTIONAL test zone. When this run had no new records to process, it
+  # STEP 8: OPTIONAL test zone. When this run had no new records to process, it
   # can exercise the current code on the last N records in an isolated sandbox
   # (records_test/) so a "nothing new" run still verifies code changes. This is
   # OFF by default — the autostart no longer launches the test zone on its own.
@@ -558,7 +602,7 @@ $SUMMARY_COUNTS"
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""
-      echo "----------------- STEP 7: TEST ZONE (idle, last $TEST_LIMIT) ----"
+      echo "----------------- STEP 8: TEST ZONE (idle, last $TEST_LIMIT) ----"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/070-test-zone.py --limit $TEST_LIMIT --apply"
     } >> "$CURRENT_LOG"

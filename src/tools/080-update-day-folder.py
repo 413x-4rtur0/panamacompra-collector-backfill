@@ -11,10 +11,10 @@ re-naming the folder if the finish date or description changed).
 Use it when records pulled earlier — e.g. yesterday's folder, captured from a
 previous portal version — need to be refreshed to the current one.
 
-    ./src/tools/update_day_folder.py                 # prompt for the day (default: today), then confirm
-    ./src/tools/update_day_folder.py --date 26-06-18 # target a specific day folder
-    ./src/tools/update_day_folder.py --date yesterday --apply
-    ./src/tools/update_day_folder.py --apply          # today's folder, no confirmation
+    ./src/tools/080-update-day-folder.py                 # prompt for the day (default: today), then confirm
+    ./src/tools/080-update-day-folder.py --date 26-06-18 # target a specific day folder
+    ./src/tools/080-update-day-folder.py --date yesterday --apply
+    ./src/tools/080-update-day-folder.py --apply          # today's folder, no confirmation
 
 By default it lists the records and asks before downloading; pass --apply to skip
 the confirmation. Targeting works from the database's ``date_folder`` (the day a
@@ -75,7 +75,7 @@ def sync_day_folder_indexes(conn, date_folder, records_dir=RECORDS_DIR):
     download did not run yet, or because the SQLite DB was rebuilt after files
     were already on disk.  Before selecting rows for a day update, scan the
     day folder for ``<NUMERO>.json`` files and insert any missing NUMERO into
-    the DB with its existing folder path.  This lets ``update_day_folder.py``
+    the DB with its existing folder path.  This lets ``080-update-day-folder.py``
     catch those records and prevents the next index scan from creating a
     duplicate plain ``NUMERO`` folder when a renamed folder already exists.
     """

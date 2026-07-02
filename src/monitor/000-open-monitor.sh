@@ -73,7 +73,7 @@ start_next_run_timer() {
     log "DISPLAY is empty; cannot open next-run timer."
     return 1
   fi
-  nohup "$PYTHON_BIN" "$SCRIPT_DIR/next-run-timer.py" >> "$TIMER_LOG" 2>&1 &
+  nohup "$PYTHON_BIN" "$SCRIPT_DIR/002-next-run-timer.py" >> "$TIMER_LOG" 2>&1 &
   log "Started next-run timer with log $TIMER_LOG."
 }
 
@@ -145,9 +145,9 @@ start_log_follower_fallback() {
     return 0
   fi
 
-  nohup "$APP_ROOT/src/pipeline/follow-run-all.sh" > "$FALLBACK_LOG" 2>&1 &
+  nohup "$APP_ROOT/src/pipeline/130c-follow-run.sh" > "$FALLBACK_LOG" 2>&1 &
   log "No GUI monitor available. Started background log follower at $FALLBACK_LOG."
-  log "Open a terminal and run: $APP_ROOT/src/pipeline/follow-run-all.sh"
+  log "Open a terminal and run: $APP_ROOT/src/pipeline/130c-follow-run.sh"
 }
 
 prepare_gui_environment
