@@ -348,7 +348,7 @@ available, verifies that the selected `PYTHON_BIN` is Python 3.10+ with working
 `.env` does not already exist, creates `.venv`, installs Python dependencies,
 installs the Playwright Firefox browser (plus Linux browser dependencies on
 Debian/Ubuntu/Linux Mint when apt is not skipped), creates runtime directories,
-and finishes by running `./scripts/validate-installation.sh`. The validator
+writes a full review log to `data/logs/setup_YYYYMMDD_HHMMSS.log` (or `PC_SETUP_LOG_FILE`) and finishes by running `./scripts/validate-installation.sh`. The validator
 automatically uses `.venv/bin/python` when that virtual environment exists, so
 standalone validation checks the same interpreter the collector will use. Set
 `PC_SETUP_SKIP_APT=1` when system packages are managed separately,
@@ -534,6 +534,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update-local-copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update-local-copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut during updates. The shortcut opens the separate updater loader first, then starts the native monitor only after the updater exits successfully. Set to `0` to skip. |
+| `PC_SETUP_LOG_FILE` | `data/logs/setup_YYYYMMDD_HHMMSS.log` | `setup.sh` | Full tee log for every setup run. Override to force a specific log path. Setup prints the path at start and again on success/failure. |
 | `PC_SETUP_INSTALL_MONITOR_SHORTCUT` | `1` | `setup.sh` | Installs/refreshes the desktop/application-menu launcher suite during first setup: Update + Monitor, changedetection.io, WAHA, and Docker Integrations. The setup script creates these launchers before browser validation so they still appear if Playwright Firefox/headless browser installation needs to be fixed later. Set to `0` to skip on headless/server installs. |
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update-local-copy.sh` | Controls whether the updater restores `src/webhook/010-webhook-listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
 | `PC_REQUEST_OPEN_MONITOR` | `1` | `src/pipeline/110a-request-run.sh` | When `0`, queue/start the worker without opening the monitor. `update-local-copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |

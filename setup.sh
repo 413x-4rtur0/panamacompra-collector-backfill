@@ -13,6 +13,26 @@ SKIP_BROWSER="${PC_SETUP_SKIP_BROWSER:-0}"
 note() { printf '[setup] %s\n' "$*"; }
 fail() { printf '[setup] ERROR: %s\n' "$*" >&2; exit 1; }
 
+SETUP_LOG_FILE="${PC_SETUP_LOG_FILE:-$PC_LOG_DIR/setup_$(date +%Y%m%d_%H%M%S).log}"
+mkdir -p "$(dirname "$SETUP_LOG_FILE")"
+touch "$SETUP_LOG_FILE"
+exec > >(tee -a "$SETUP_LOG_FILE") 2>&1
+SETUP_STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+finish_setup_log() {
+  local code=$?
+  local finished_at
+  finished_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  if [[ "$code" -eq 0 ]]; then
+    printf '[setup] Finished successfully at %s. Full log: %s\n' "$finished_at" "$SETUP_LOG_FILE"
+  else
+    printf '[setup] FAILED with exit code %s at %s. Review full log: %s\n' "$code" "$finished_at" "$SETUP_LOG_FILE" >&2
+  fi
+}
+trap finish_setup_log EXIT
+
+note "Setup started at $SETUP_STARTED_AT"
+note "Setup log: $SETUP_LOG_FILE"
+
 install_monitor_launchers() {
   # Install/update desktop launchers before validation/browser steps that may be
   # skipped or fail in partial/headless setups. Launchers are useful even when the
