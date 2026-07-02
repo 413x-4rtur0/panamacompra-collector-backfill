@@ -53,7 +53,7 @@ index_running() {
 }
 
 detail_running() {
-  pgrep -f "[p]ython3? -u .*collect_detail.py" >/dev/null 2>&1
+  pgrep -f "[p]ython3? -u .*030-collect-details.py" >/dev/null 2>&1
 }
 
 request_pending() {

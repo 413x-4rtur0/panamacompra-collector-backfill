@@ -19,9 +19,9 @@ echo "1) Stopping run-all worker and collector processes..."
 pkill -TERM -f "[r]un-worker.sh" 2>/dev/null || true
 pkill -TERM -f "[w]atch-queue-flag.sh" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u .*010-collect-index.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u .*collect_detail.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -TERM -f "[t]imeout .*010-collect-index.py" 2>/dev/null || true
-pkill -TERM -f "[t]imeout .*collect_detail.py" 2>/dev/null || true
+pkill -TERM -f "[t]imeout .*030-collect-details.py" 2>/dev/null || true
 
 # ============================================================================
 # STEP 2: Stop test zone runner (isolated sandbox testing)
@@ -34,7 +34,7 @@ pkill -TERM -f "[0]70-test-zone.py" 2>/dev/null || true
 # STEP 3: Stop calendar builder (ICS package generation)
 # ============================================================================
 echo "3) Stopping calendar builder..."
-pkill -TERM -f "[p]ython3? -u .*build_calendar.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u .*060-build-calendar.py" 2>/dev/null || true
 pkill -TERM -f "[b]uild_calendar.py" 2>/dev/null || true
 
 # ============================================================================
@@ -54,14 +54,14 @@ pkill -TERM -f "[0]01a-monitor-tk.py" 2>/dev/null || true
 pkill -TERM -f "[p]ython3? -u .*001b-monitor-web.py" 2>/dev/null || true
 pkill -TERM -f "[0]01b-monitor-web.py" 2>/dev/null || true
 pkill -TERM -f "[n]ext-run-timer.py" 2>/dev/null || true
-pkill -TERM -f "[f]ollow-run-all.sh" 2>/dev/null || true
+pkill -TERM -f "[1]30c-follow-run.sh" 2>/dev/null || true
 
 # ============================================================================
 # STEP 6: Stop webhook listener (background HTTP receiver)
 # ============================================================================
 echo "6) Stopping webhook listener..."
-pkill -TERM -f "[p]ython3? -u .*src/webhook/listener.py" 2>/dev/null || true
-pkill -TERM -f "[s]rc/webhook/listener.py" 2>/dev/null || true
+pkill -TERM -f "[p]ython3? -u .*src/webhook/010-webhook-listener.py" 2>/dev/null || true
+pkill -TERM -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
 
 # Give processes a short window to terminate gracefully. Keep this snappy so the
 # STOP action (and update-local-copy.sh, which relies on a fast stop) does not
@@ -73,12 +73,12 @@ echo "Force-killing any remaining stubborn processes..."
 pkill -9 -f "[r]un-worker.sh" 2>/dev/null || true
 pkill -9 -f "[w]atch-queue-flag.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u .*010-collect-index.py" 2>/dev/null || true
-pkill -9 -f "[p]ython3? -u .*collect_detail.py" 2>/dev/null || true
+pkill -9 -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate-local-copy.sh" 2>/dev/null || true
 pkill -9 -f "[0]01a-monitor-tk.py" 2>/dev/null || true
-pkill -9 -f "[s]rc/webhook/listener.py" 2>/dev/null || true
+pkill -9 -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
 
 sleep 1
 
@@ -93,4 +93,4 @@ echo "============================================================"
 echo "All PanamaCompra processes stopped."
 echo "============================================================"
 echo "Remaining related processes (should be empty):"
-pgrep -af "run-worker.sh|watch-queue-flag.sh|070-test-zone.py|build_calendar.py|monitor-tk.py|monitor-web.py|src/webhook/listener.py|update-local-copy.sh" || echo "  None found - all stopped successfully."
+pgrep -af "100-run-worker.sh|050-watch-queue-flag.sh|070-test-zone.py|060-build-calendar.py|monitor-tk.py|monitor-web.py|src/webhook/010-webhook-listener.py|update-local-copy.sh" || echo "  None found - all stopped successfully."

@@ -45,9 +45,9 @@ from pathlib import Path
 
 _SRC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SRC_DIR))
-sys.path.insert(0, str(_SRC_DIR / "notify"))
 import common as pc_common
-import waha_client as waha
+
+waha = pc_common.load_script("src/notify/010-waha-client.py", "waha_client")
 
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 CALENDAR_EXPORT_DIR = pc_common.CALENDAR_EXPORT_DIR

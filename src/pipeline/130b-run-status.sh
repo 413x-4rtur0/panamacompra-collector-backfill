@@ -38,13 +38,13 @@ else
   echo "Index collector: not running"
 fi
 
-if pgrep -f "[p]ython3? -u .*collect_detail.py" >/dev/null 2>&1; then
+if pgrep -f "[p]ython3? -u .*030-collect-details.py" >/dev/null 2>&1; then
   echo "Detail downloader: RUNNING"
 else
   echo "Detail downloader: not running"
 fi
 
-if pgrep -f "[p]ython3? -u .*build_calendar.py" >/dev/null 2>&1; then
+if pgrep -f "[p]ython3? -u .*060-build-calendar.py" >/dev/null 2>&1; then
   echo "Calendar packager: RUNNING"
 else
   echo "Calendar packager: not running"
@@ -75,7 +75,7 @@ fi
 
 echo ""
 echo "Related processes:"
-pgrep -af "run-worker.sh|010-collect-index.py|collect_detail.py|build_calendar.py|070-test-zone.py|timeout .*src/pipeline" || true
+pgrep -af "100-run-worker.sh|010-collect-index.py|030-collect-details.py|060-build-calendar.py|070-test-zone.py|timeout .*src/pipeline" || true
 
 echo ""
 echo "Recent run-all requests:"

@@ -17,7 +17,7 @@ usage() {
   cat <<USAGE
 Usage: $0 [--replace-port-owner] [--no-replace-port-owner] [--foreground]
 
-Starts src/webhook/listener.py in the background.
+Starts src/webhook/010-webhook-listener.py in the background.
   --replace-port-owner     Stop the current process listening on PC_WEBHOOK_PORT first.
   --no-replace-port-owner  Never stop a non-webhook process; print diagnostics only.
   --foreground             Run listener in the foreground (for systemd services).
@@ -42,7 +42,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 webhook_listener_running() {
-  pgrep -f "[s]rc/webhook/listener.py" >/dev/null 2>&1
+  pgrep -f "[s]rc/webhook/010-webhook-listener.py" >/dev/null 2>&1
 }
 
 port_available() {
@@ -107,7 +107,7 @@ PY
 }
 
 print_port_owner_hint() {
-  echo "Port $PORT is already in use, but no local src/webhook/listener.py process was detected." >&2
+  echo "Port $PORT is already in use, but no local src/webhook/010-webhook-listener.py process was detected." >&2
   echo "This often means an old panamacompra-webhook-receiver service/container is still bound to the port." >&2
   if command -v ss >/dev/null 2>&1; then
     ss -ltnp "sport = :$PORT" >&2 || true
@@ -168,7 +168,7 @@ fi
 
 if webhook_listener_running; then
   echo "Webhook listener is already running."
-  pgrep -af "[s]rc/webhook/listener.py" || true
+  pgrep -af "[s]rc/webhook/010-webhook-listener.py" || true
   print_notification_urls
   exit 0
 fi
@@ -187,7 +187,7 @@ PYTHON_BIN="python3"
 if [ -x "$APP_ROOT/.venv/bin/python" ]; then
   PYTHON_BIN="$APP_ROOT/.venv/bin/python"
 fi
-LISTENER="$APP_ROOT/src/webhook/listener.py"
+LISTENER="$APP_ROOT/src/webhook/010-webhook-listener.py"
 
 if [ "$FOREGROUND" = "1" ]; then
   echo "Webhook listener starting in foreground on $HOST:$PORT."
@@ -201,7 +201,7 @@ nohup env PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" \
 sleep 1
 if webhook_listener_running; then
   echo "Webhook listener started on $HOST:$PORT. Log: $LOG_FILE"
-  pgrep -af "[s]rc/webhook/listener.py" || true
+  pgrep -af "[s]rc/webhook/010-webhook-listener.py" || true
   print_notification_urls
   exit 0
 fi

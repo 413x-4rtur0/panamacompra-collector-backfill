@@ -80,19 +80,19 @@ chat_file_for() {
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 case "$cmd" in
-  start|run) exec "$APP_ROOT/src/pipeline/request-run-all.sh" "$@" ;;
-  stop) exec "$APP_ROOT/src/pipeline/stop-run-all.sh" "$@" ;;
-  status) exec "$APP_ROOT/src/pipeline/queue-status.sh" "$@" ;;
-  monitor) exec "$APP_ROOT/src/monitor/open-monitor.sh" "$@" ;;
+  start|run) exec "$APP_ROOT/src/pipeline/110a-request-run.sh" "$@" ;;
+  stop) exec "$APP_ROOT/src/pipeline/120a-stop-everything.sh" "$@" ;;
+  status) exec "$APP_ROOT/src/pipeline/130a-queue-status.sh" "$@" ;;
+  monitor) exec "$APP_ROOT/src/monitor/000-open-monitor.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
     case "$sub" in
-      start) exec "$APP_ROOT/src/webhook/start-listener.sh" "$@" ;;
-      diag|diagnostic) exec "$APP_ROOT/src/webhook/diagnose.sh" "$@" ;;
+      start) exec "$APP_ROOT/src/webhook/020-start-listener.sh" "$@" ;;
+      diag|diagnostic) exec "$APP_ROOT/src/webhook/040-diagnose-webhook.sh" "$@" ;;
       *) echo "Unknown webhook command: $sub" >&2; exit 2 ;;
     esac ;;
   watch) exec "$APP_ROOT/src/monitor/001c-monitor-terminal.sh" "$@" ;;
-  docker|stack) exec "$APP_ROOT/src/tools/docker-stack.sh" "$@" ;;
+  docker|stack) exec "$APP_ROOT/src/tools/010-docker-stack.sh" "$@" ;;
   db|stats)
     exec "$PY_BIN" - <<'PY'
 import sys
@@ -209,7 +209,7 @@ PY
         KW_PURPOSE="$kw_purpose" KW_TEXT="$2" "$PY_BIN" - <<'PYEOF'
 import importlib.util, os
 spec = importlib.util.spec_from_file_location(
-    "notify_new_records", os.environ["APP_ROOT"] + "/src/pipeline/notify_new_records.py")
+    "notify_new_records", os.environ["APP_ROOT"] + "/src/pipeline/020-notify-whatsapp.py")
 nnr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nnr)
 purpose = os.environ["KW_PURPOSE"]
@@ -225,7 +225,7 @@ PYEOF
     ;;
   test-whatsapp)
     load_monitor_settings
-    exec "$PY_BIN" "$APP_ROOT/src/notify/waha_client.py" --event info --status TEST \
+    exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST \
       --message "${1:-Prueba de notificación desde la CLI pcc.}"
     ;;
   notify)
@@ -235,12 +235,12 @@ PYEOF
     for arg in "$@"; do
       if [[ "$arg" == "--force" ]]; then args+=("--force"); else args+=("--record" "$arg"); fi
     done
-    exec "$PY_BIN" "$APP_ROOT/src/pipeline/notify_new_records.py" "${args[@]}"
+    exec "$PY_BIN" "$APP_ROOT/src/pipeline/020-notify-whatsapp.py" "${args[@]}"
     ;;
-  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/record-templates.py" "$@" ;;
-  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/opportunity-calendar.py" "$@" ;;
-  format|formats) exec "$PY_BIN" "$APP_ROOT/src/tools/message-formats.py" "$@" ;;
-  migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
+  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/020-record-templates.py" "$@" ;;
+  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/030-opportunity-calendar.py" "$@" ;;
+  format|formats) exec "$PY_BIN" "$APP_ROOT/src/tools/040-message-formats.py" "$@" ;;
+  migrate) exec "$APP_ROOT/src/tools/100-migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
   launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install-desktop-launcher.sh" "$@" ;;

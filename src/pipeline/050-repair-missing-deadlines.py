@@ -21,8 +21,8 @@ from urllib.parse import urlparse
 _SRC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SRC_DIR))
 sys.path.insert(0, str(_SRC_DIR / "tools"))
-from common import init_db, safe_name
-from update_day_folder import ensure_playwright_available
+from common import init_db, load_script, safe_name
+ensure_playwright_available = load_script("src/tools/080-update-day-folder.py").ensure_playwright_available
 
 PORTAL_HOST = "www.panamacompra.gob.pa"
 DNS_ERROR_MARKERS = ("NS_ERROR_UNKNOWN_HOST", "ERR_NAME_NOT_RESOLVED", "Name or service not known")

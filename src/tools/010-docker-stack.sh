@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Manage the changedetection + sockpuppetbrowser + WAHA + webhook Docker stack.
 #
-#   ./src/tools/docker-stack.sh up        pull/start (or refresh) the stack
-#   ./src/tools/docker-stack.sh down      stop and remove the containers
-#   ./src/tools/docker-stack.sh restart   down + up
-#   ./src/tools/docker-stack.sh status    show container state
-#   ./src/tools/docker-stack.sh logs      tail the stack logs
+#   ./src/tools/010-docker-stack.sh up        pull/start (or refresh) the stack
+#   ./src/tools/010-docker-stack.sh down      stop and remove the containers
+#   ./src/tools/010-docker-stack.sh restart   down + up
+#   ./src/tools/010-docker-stack.sh status    show container state
+#   ./src/tools/010-docker-stack.sh logs      tail the stack logs
 #
 # Container data lives inside the self-contained state directory
 # ($PC_INTEGRATIONS_DIR, default var/integrations — or the XDG state dir in
@@ -34,7 +34,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
 elif command -v docker-compose >/dev/null 2>&1; then
   COMPOSE=(docker-compose)
 else
-  fail "Docker (with the compose plugin) is not installed. Install it and rerun: ./src/tools/docker-stack.sh $ACTION"
+  fail "Docker (with the compose plugin) is not installed. Install it and rerun: ./src/tools/010-docker-stack.sh $ACTION"
 fi
 
 # Monitor-saved container settings win over .env, but only when non-empty so a
@@ -119,7 +119,7 @@ preflight() {
 
   for legacy_app in "${HOME:-/root}/Apps/waha" "/Apps/waha" "${HOME:-/root}/Apps/panamacompra-monitor" "/Apps/panamacompra-monitor" "${HOME:-/root}/Apps/panamacompra-webhook-receiver" "/Apps/panamacompra-webhook-receiver"; do
     if [ -d "$legacy_app" ] && [ ! -L "$legacy_app" ]; then
-      note "Found previous installation data at $legacy_app — consolidate it into this checkout with ./src/tools/migrate-apps-layout.sh (dry-run by default)."
+      note "Found previous installation data at $legacy_app — consolidate it into this checkout with ./src/tools/100-migrate-apps-layout.sh (dry-run by default)."
     fi
   done
 }

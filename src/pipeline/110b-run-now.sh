@@ -18,7 +18,7 @@ echo "Index page cap: $INDEX_LIMIT (0 = all pages)"
 echo "Detail limit: $DETAIL_LIMIT"
 echo ""
 
-PC_RUN_MODE="$RUN_MODE" PC_INDEX_LIMIT="$INDEX_LIMIT" "$SCRIPT_DIR/run-worker.sh" "$DETAIL_LIMIT" "$INDEX_LIMIT"
+PC_RUN_MODE="$RUN_MODE" PC_INDEX_LIMIT="$INDEX_LIMIT" "$SCRIPT_DIR/100-run-worker.sh" "$DETAIL_LIMIT" "$INDEX_LIMIT"
 
 echo ""
 echo "Finished. Last current log:"

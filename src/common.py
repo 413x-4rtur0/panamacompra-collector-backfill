@@ -15,6 +15,20 @@ APP_ROOT = Path(os.environ.get("APP_ROOT", BASE_DIR)).expanduser().resolve()
 APP_MODE = os.environ.get("APP_MODE", "development" if (APP_ROOT / ".git").exists() else "portable")
 
 
+def load_script(relative_path: str, module_name: str | None = None):
+    """Import a numbered script (###-feature.py, dashes in the file name) as a
+    Python module. Used everywhere a script is reused as a library, since
+    numbered names cannot be imported with a plain `import` statement."""
+    import importlib.util
+
+    path = APP_ROOT / relative_path
+    name = module_name or Path(relative_path).stem.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def env_path(name: str, default: Path, *, base: Path | None = None) -> Path:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -1056,7 +1070,7 @@ def build_detail_views(text, tables=None, numero="", dtstamp=None, link=""):
     items = parse_detail_items(text, tables)
     summary = build_summary(fields, numero)
     # Aggregate the per-table key/values the same way the folder-naming path does
-    # (naming_fields / rename-record-folders.py), so the calendar DTEND is derived
+    # (naming_fields / 070-rename-record-folders.py), so the calendar DTEND is derived
     # from the same close window as the folder's finish stamp.
     agg_kv = {}
     for table in tables or []:
@@ -1155,7 +1169,7 @@ def ensure_db_schema(conn):
         "finish_date_guess": "ALTER TABLE opportunities ADD COLUMN finish_date_guess TEXT",
         "start_date_guess": "ALTER TABLE opportunities ADD COLUMN start_date_guess TEXT",
         # Timestamp of the WAHA "new opportunity" WhatsApp notification, used by
-        # notify_new_records.py so each record is announced at most once.
+        # 020-notify-whatsapp.py so each record is announced at most once.
         "notified_at": "ALTER TABLE opportunities ADD COLUMN notified_at TEXT",
         # Timestamp of the follow-up WhatsApp message with the downloaded item
         # details (second notifier phase). NULL = full-detail message still owed
@@ -1169,7 +1183,7 @@ def ensure_db_schema(conn):
         "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
         "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",
         "last_calendar_export_path": "ALTER TABLE opportunities ADD COLUMN last_calendar_export_path TEXT",
-        # Maintained by maintain-database.py / detail saves. These make monitor
+        # Maintained by 050-maintain-database.py / detail saves. These make monitor
         # summaries and update checks independent from repeatedly opening every
         # detail JSON file.
         "record_folder_leaf": "ALTER TABLE opportunities ADD COLUMN record_folder_leaf TEXT",

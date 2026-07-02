@@ -87,7 +87,7 @@ if [[ "$SKIP_DOCKER" != "1" ]]; then
       $SUDO apt-get install -y docker.io docker-compose-v2 \
         || $SUDO apt-get install -y docker.io docker-compose-plugin \
         || $SUDO apt-get install -y docker.io docker-compose \
-        || note "Could not install Docker with apt-get. Install it manually, then run: ./src/tools/docker-stack.sh up"
+        || note "Could not install Docker with apt-get. Install it manually, then run: ./src/tools/010-docker-stack.sh up"
       if command -v systemctl >/dev/null 2>&1; then
         $SUDO systemctl enable --now docker >/dev/null 2>&1 || note "Could not enable the docker service automatically (systemctl enable --now docker)."
       fi
@@ -97,28 +97,28 @@ if [[ "$SKIP_DOCKER" != "1" ]]; then
           || true
       fi
     else
-      note "Docker not found and apt install unavailable/skipped. Install Docker manually, then run: ./src/tools/docker-stack.sh up"
+      note "Docker not found and apt install unavailable/skipped. Install Docker manually, then run: ./src/tools/010-docker-stack.sh up"
     fi
   fi
   if command -v docker >/dev/null 2>&1; then
     note "Starting the changedetection + WAHA + webhook Docker stack."
-    if ! ./src/tools/docker-stack.sh up; then
+    if ! ./src/tools/010-docker-stack.sh up; then
       if command -v sudo >/dev/null 2>&1; then
         # A user freshly added to the docker group cannot reach the socket until
         # re-login; bootstrap the first start with sudo so setup ends complete.
         note "Retrying the Docker stack start with sudo (fresh 'docker' group membership applies after re-login)."
-        sudo ./src/tools/docker-stack.sh up || note "Docker stack start failed — start it later with: ./src/tools/docker-stack.sh up"
+        sudo ./src/tools/010-docker-stack.sh up || note "Docker stack start failed — start it later with: ./src/tools/010-docker-stack.sh up"
       else
-        note "Docker stack start failed (daemon not running or no permission?). Start it later with: ./src/tools/docker-stack.sh up"
+        note "Docker stack start failed (daemon not running or no permission?). Start it later with: ./src/tools/010-docker-stack.sh up"
       fi
     fi
   else
-    note "Docker is still unavailable: the changedetection/WAHA containers stay off. Install Docker, then run: ./src/tools/docker-stack.sh up"
+    note "Docker is still unavailable: the changedetection/WAHA containers stay off. Install Docker, then run: ./src/tools/010-docker-stack.sh up"
   fi
 else
-  note "Docker install/stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/docker-stack.sh up"
+  note "Docker install/stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/010-docker-stack.sh up"
 fi
 
-note "Setup complete. Start with: ./src/pipeline/request-run-all.sh 5 && ./src/monitor/open-monitor.sh"
+note "Setup complete. Start with: ./src/pipeline/110a-request-run.sh 5 && ./src/monitor/000-open-monitor.sh"
 note "Or use the unified CLI: ./bin/pcc start 5 && ./bin/pcc monitor"
 note "To stop/remove a previous or duplicate installation, run ./scripts/uninstall.sh in THAT installation's folder (interactive; data kept unless purged)."

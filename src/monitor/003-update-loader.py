@@ -25,7 +25,7 @@ import common as pc_common
 BASE_DIR = pc_common.APP_ROOT
 LOG_DIR = pc_common.LOG_DIR
 UPDATE_SCRIPT = BASE_DIR / "update-local-copy.sh"
-MONITOR_SCRIPT = Path(__file__).resolve().parent / "open-monitor.sh"
+MONITOR_SCRIPT = Path(__file__).resolve().parent / "000-open-monitor.sh"
 
 # update-local-copy.sh prints numbered steps "1) ..." through "11) ...".
 TOTAL_STEPS = 12

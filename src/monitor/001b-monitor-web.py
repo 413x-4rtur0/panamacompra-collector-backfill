@@ -36,17 +36,17 @@ UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
 import importlib.util as _importlib_util
 
 _rt_spec = _importlib_util.spec_from_file_location(
-    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "record-templates.py"))
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "020-record-templates.py"))
 record_templates = _importlib_util.module_from_spec(_rt_spec)
 _rt_spec.loader.exec_module(record_templates)
 
 _cal_spec = _importlib_util.spec_from_file_location(
-    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "opportunity-calendar.py"))
+    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "030-opportunity-calendar.py"))
 opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
 _cal_spec.loader.exec_module(opportunity_calendar)
 
 _nnr_spec = _importlib_util.spec_from_file_location(
-    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "notify_new_records.py"))
+    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "020-notify-whatsapp.py"))
 notify_formats = _importlib_util.module_from_spec(_nnr_spec)
 _nnr_spec.loader.exec_module(notify_formats)
 
@@ -108,7 +108,7 @@ VALUE_SETTING_DEFAULTS = {
     "PC_NEXT_RUN_TIMER_RECORDS": "20",
     "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": "10",
     "PC_MONITOR_STALE_SECONDS": "120",
-    # Container-side settings applied by src/tools/docker-stack.sh on the next
+    # Container-side settings applied by src/tools/010-docker-stack.sh on the next
     # stack restart (non-empty values win over .env).
     "CHANGEDETECTION_BASE_URL": "http://localhost:5000",
     "PC_TEMPLATES_SRC_DIR": "",
@@ -141,28 +141,28 @@ class ManualAction(tuple):
 
 RECORDS_TEST_PARENT = pc_common.RECORDS_TEST_DIR
 MANUAL_ACTIONS = [
-    ManualAction("Runners", "Run full collector", ("./src/pipeline/request-run-all.sh", "99", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
-    ManualAction("Runners", "Run collector now", ("./src/pipeline/run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages."),
-    ManualAction("Runners", "Stop active run", ("./src/pipeline/stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
-    ManualAction("Runners", "Show run status", ("./src/pipeline/run-all-status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Runners", "Run full collector", ("./src/pipeline/110a-request-run.sh", "99", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
+    ManualAction("Runners", "Run collector now", ("./src/pipeline/110b-run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages."),
+    ManualAction("Runners", "Stop active run", ("./src/pipeline/120b-stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
+    ManualAction("Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary."),
-    ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
+    ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
     ManualAction("Updater / Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
-    ManualAction("Updater / Migration", "Rename folders", ("./src/tools/rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
-    ManualAction("Updater / Migration", "Migrate records", ("./src/tools/migrate-previous-records.sh",), "Imports/migrates previous record archives."),
-    ManualAction("Integrations", "Start/refresh docker stack", ("./src/tools/docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers; data stays in var/integrations."),
-    ManualAction("Integrations", "Docker stack status", ("./src/tools/docker-stack.sh", "status"), "Writes container states plus the changedetection/WAHA URLs to the manual action log."),
-    ManualAction("Integrations", "Restart docker stack", ("./src/tools/docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved below (changedetection URL, WAHA port/API key)."),
-    ManualAction("Integrations", "Stop docker stack", ("./src/tools/docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
-    ManualAction("Settings", "Apply work templates", ("./src/tools/record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder (existing files kept)."),
-    ManualAction("Settings", "Build detail views", ("./src/pipeline/030-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
-    ManualAction("Settings", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
-    ManualAction("Settings", "Build calendars", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds calendar import packages."),
-    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/build_calendar.py --all"), "Rebuilds and opens generated ICS files."),
-    ManualAction("Settings", "Webhook listener", ("./src/webhook/start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
-    ManualAction("Settings", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
-    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the browser monitor."),
+    ManualAction("Updater / Migration", "Rename folders", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
+    ManualAction("Updater / Migration", "Migrate records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives."),
+    ManualAction("Integrations", "Start/refresh docker stack", ("./src/tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers; data stays in var/integrations."),
+    ManualAction("Integrations", "Docker stack status", ("./src/tools/010-docker-stack.sh", "status"), "Writes container states plus the changedetection/WAHA URLs to the manual action log."),
+    ManualAction("Integrations", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved below (changedetection URL, WAHA port/API key)."),
+    ManualAction("Integrations", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Settings", "Apply work templates", ("./src/tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder (existing files kept)."),
+    ManualAction("Settings", "Build detail views", ("./src/pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
+    ManualAction("Settings", "Repair missing deadlines", ("./src/pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
+    ManualAction("Settings", "Build calendars", ("./src/pipeline/060-build-calendar.py", "--all"), "Rebuilds calendar import packages."),
+    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/060-build-calendar.py --all"), "Rebuilds and opens generated ICS files."),
+    ManualAction("Settings", "Webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
+    ManualAction("Settings", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
+    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the browser monitor."),
 ]
 
 DEFAULT_PROGRESS = {
@@ -405,7 +405,7 @@ def db_review_stats() -> dict[str, object]:
         ]
         # Records the "Repair missing deadlines" action would act on: blank
         # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 040-repair-missing-deadlines.py so the count matches what that tool processes.
+        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
         deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
                                "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
         if "record_folder_leaf" in columns:
@@ -457,7 +457,7 @@ def db_review_stats() -> dict[str, object]:
 
 
 # Reset actions exposed as separate buttons (per operator request). Maps the
-# button action to (src/tools/reset.py subcommand, is_destructive). The destructive
+# button action to (src/tools/110-reset.py subcommand, is_destructive). The destructive
 # wipes are confirmed in the browser and run with --yes.
 RESET_ACTIONS = {
     "requeue-details": False,
@@ -472,7 +472,7 @@ def running(pattern: str) -> bool:
 
 
 def webhook_running() -> bool:
-    if running("[s]rc/webhook/listener.py") or running("[p]ython3? -u .*src/webhook/listener.py"):
+    if running("[s]rc/webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/webhook/010-webhook-listener.py"):
         return True
     try:
         result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
@@ -489,9 +489,9 @@ def process_snapshot() -> dict[str, bool]:
         "test_run": test,
         "worker": worker,
         "index": running("[p]ython(3)? -u .*010-collect-index.py"),
-        "detail": running("[p]ython(3)? -u .*collect_detail.py"),
-        "calendar": running("[p]ython(3)? -u .*(030-build-detail-views|build_calendar).py"),
-        "messaging": running("[n]otify_new_records.py"),
+        "detail": running("[p]ython(3)? -u .*030-collect-details.py"),
+        "calendar": running("[p]ython(3)? -u .*(040-build-detail-views|060-build-calendar).py"),
+        "messaging": running("[0]20-notify-whatsapp.py"),
         "webhook": webhook,
         "request": REQUEST_FLAG.exists(),
     }
@@ -699,7 +699,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
 <div class="card"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family with {{placeholder}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
-<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
+<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
 <div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
@@ -1201,10 +1201,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
             if mode == "manual":
-                subprocess.Popen([str(BASE_DIR / "src/pipeline/run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([str(BASE_DIR / "src/pipeline/110b-run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Manual run started with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
-            subprocess.Popen([str(BASE_DIR / "src/pipeline/request-run-all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "src/pipeline/110a-request-run.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_text(202, f"Restart-pending run requested with index page cap {index_limit_text}, detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
             return
         if path == "/api/manual-action":
@@ -1254,21 +1254,21 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(400, "Select one or more known records first.\n", "text/plain; charset=utf-8")
                 return
             if action_name == "notify":
-                cmd = [str(BASE_DIR / "src/pipeline/notify_new_records.py"), "--force"]
+                cmd = [str(BASE_DIR / "src/pipeline/020-notify-whatsapp.py"), "--force"]
                 for numero in selected:
                     cmd.extend(["--record", numero])
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"WhatsApp notification requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
             if action_name == "templates":
-                cmd = [str(BASE_DIR / "src/tools/record-templates.py"), "apply", "--apply"]
+                cmd = [str(BASE_DIR / "src/tools/020-record-templates.py"), "apply", "--apply"]
                 for numero in selected:
                     cmd.extend(["--numero", numero])
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Work templates requested for {len(selected)} selected record(s) (existing files kept).\n", "text/plain; charset=utf-8")
                 return
             if action_name == "calendar":
-                cmd = [str(BASE_DIR / "src/tools/import-selected-calendars.py"), "--open", *selected]
+                cmd = [str(BASE_DIR / "src/tools/060-import-selected-calendars.py"), "--open", *selected]
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"Calendar import requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
@@ -1279,7 +1279,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if action not in RESET_ACTIONS:
                 self.send_text(400, "Unknown reset action.\n", "text/plain; charset=utf-8")
                 return
-            command = [str(BASE_DIR / "src/tools/reset.py"), action]
+            command = [str(BASE_DIR / "src/tools/110-reset.py"), action]
             if RESET_ACTIONS[action]:  # destructive -> confirmed in the browser
                 command.append("--yes")
             MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1344,7 +1344,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
             # One WAHA test message with the saved settings, so the WhatsApp
             # pipeline can be verified without waiting for a collector run.
             subprocess.Popen(
-                [str(BASE_DIR / "src/notify/waha_client.py"), "--event", "info", "--status", "TEST",
+                [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
                  "--message", "Prueba de notificación desde el monitor web PanamaCompra."],
                 cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )

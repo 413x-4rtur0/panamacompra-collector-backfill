@@ -46,8 +46,8 @@ notify_waha() {
   local event="$1"
   local status="$2"
   local message="$3"
-  if [ -x "$APP_ROOT/src/notify/waha_client.py" ]; then
-    "$PYTHON_BIN" "$APP_ROOT/src/notify/waha_client.py" --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
+  if [ -x "$APP_ROOT/src/notify/010-waha-client.py" ]; then
+    "$PYTHON_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -61,16 +61,16 @@ launch_queued_update_monitor() {
   log "Queued Update + Monitor request found after collector finished; launching updater."
   echo "$(date '+%Y-%m-%d %H:%M:%S') | UPDATE+MONITOR STARTING after collector finished" >> "$UPDATE_QUEUE_LOG"
   rm -f "$UPDATE_QUEUE_FLAG"
-  if [ -x "$APP_ROOT/src/monitor/update-loader.py" ]; then
-    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/update-loader.py" --open-monitor-after >> "$UPDATE_QUEUE_LOG" 2>&1 &
+  if [ -x "$APP_ROOT/src/monitor/003-update-loader.py" ]; then
+    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/003-update-loader.py" --open-monitor-after >> "$UPDATE_QUEUE_LOG" 2>&1 &
   else
     nohup "$APP_ROOT/update-local-copy.sh" >> "$UPDATE_QUEUE_LOG" 2>&1 &
   fi
 }
 
 notify_new_records() {
-  if [ -x "$PIPELINE_DIR/notify_new_records.py" ]; then
-    "$PYTHON_BIN" "$PIPELINE_DIR/notify_new_records.py" "$@" >> "$WORKER_LOG" 2>&1 || true
+  if [ -x "$PIPELINE_DIR/020-notify-whatsapp.py" ]; then
+    "$PYTHON_BIN" "$PIPELINE_DIR/020-notify-whatsapp.py" "$@" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -307,7 +307,7 @@ PY
 
   # STEP 2: MESSAGING — send the WhatsApp messages one by one RIGHT AFTER the
   # index, before the (potentially long) detail downloads, so subscribers hear
-  # about new opportunities immediately. notify_new_records.py --announce
+  # about new opportunities immediately. 020-notify-whatsapp.py --announce
   # publishes per-message progress (current/total + a preview) so the monitor
   # shows each message going out. It announces new opportunities (items shown
   # as pending download) AND status changes (e.g. Programada → Abierta), or
@@ -348,11 +348,11 @@ PY
     echo ""
     echo "-------------------- STEP 3: DETAIL DOWNLOADER ------------------"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u $PIPELINE_DIR/collect_detail.py"
+    echo "Command: PC_DETAIL_LIMIT=$DETAIL_LIMIT timeout 8h ${PYTHON_BIN} -u $PIPELINE_DIR/030-collect-details.py"
   } >> "$CURRENT_LOG"
 
   DETAIL_START_EPOCH="$(date '+%s')"
-  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u "$PIPELINE_DIR/collect_detail.py" >> "$CURRENT_LOG" 2>&1
+  PC_DETAIL_LIMIT="$DETAIL_LIMIT" timeout 8h "$PYTHON_BIN" -u "$PIPELINE_DIR/030-collect-details.py" >> "$CURRENT_LOG" 2>&1
   DETAIL_EXIT=$?
   DETAIL_SECONDS=$(( $(date '+%s') - DETAIL_START_EPOCH ))
 
@@ -372,16 +372,16 @@ PY
     # STEP 4: normalize detail outputs after all detail downloads finish. This
     # rebuilds the structured summary/items/calendar views in each detail JSON
     # and rewrites per-record .calendar.ics files before packages.
-    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x "$PIPELINE_DIR/030-build-detail-views.py" ]; then
+    if [ "${PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL:-1}" != "0" ] && [ -x "$PIPELINE_DIR/040-build-detail-views.py" ]; then
       write_progress "CALENDAR" "RUNNING" "76" "Step 4/7: creating per-record calendar/detail views from saved detail.json files..." "$STARTED"
       {
         echo ""
         echo "-------------------- STEP 4: DETAIL VIEWS + RECORD ICS --------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/030-build-detail-views.py --apply --since $STARTED"
+        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/040-build-detail-views.py --apply --since $STARTED"
       } >> "$CURRENT_LOG"
       VIEW_START_EPOCH="$(date '+%s')"
-      "$PYTHON_BIN" -u "$PIPELINE_DIR/030-build-detail-views.py" --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
+      "$PYTHON_BIN" -u "$PIPELINE_DIR/040-build-detail-views.py" --apply --since "$STARTED" >> "$CURRENT_LOG" 2>&1
       VIEW_EXIT=$?
       VIEW_SECONDS=$(( $(date '+%s') - VIEW_START_EPOCH ))
       {
@@ -397,13 +397,13 @@ PY
     # into templates/ inside each record folder downloaded this run, so every
     # opportunity comes ready to work on. No-op when nothing is selected;
     # existing files are never overwritten. Disable with PC_TEMPLATES_AUTO=0.
-    if [ "$VIEW_EXIT" -eq 0 ] && [ "${PC_TEMPLATES_AUTO:-1}" != "0" ] && [ -x "$APP_ROOT/src/tools/record-templates.py" ]; then
+    if [ "$VIEW_EXIT" -eq 0 ] && [ "${PC_TEMPLATES_AUTO:-1}" != "0" ] && [ -x "$APP_ROOT/src/tools/020-record-templates.py" ]; then
       {
         echo ""
         echo "---------------- POST-DOWNLOAD: WORK TEMPLATES -----------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
-      "$PYTHON_BIN" "$APP_ROOT/src/tools/record-templates.py" apply --since "$STARTED" --apply >> "$CURRENT_LOG" 2>&1 || true
+      "$PYTHON_BIN" "$APP_ROOT/src/tools/020-record-templates.py" apply --since "$STARTED" --apply >> "$CURRENT_LOG" 2>&1 || true
     fi
 
     # STEP 5: MESSAGING (details) — second notifier phase. For every record
@@ -448,23 +448,23 @@ PY
 
       VERIFY_START_EPOCH="$(date '+%s')"
       "$PYTHON_BIN" -m py_compile \
-        "$APP_ROOT/src/common.py" "$PIPELINE_DIR/010-collect-index.py" "$PIPELINE_DIR/collect_detail.py" \
-        "$PIPELINE_DIR/030-build-detail-views.py" "$PIPELINE_DIR/build_calendar.py" "$PIPELINE_DIR/notify_new_records.py" \
-        "$PIPELINE_DIR/040-repair-missing-deadlines.py" >> "$CURRENT_LOG" 2>&1
+        "$APP_ROOT/src/common.py" "$PIPELINE_DIR/010-collect-index.py" "$PIPELINE_DIR/030-collect-details.py" \
+        "$PIPELINE_DIR/040-build-detail-views.py" "$PIPELINE_DIR/060-build-calendar.py" "$PIPELINE_DIR/020-notify-whatsapp.py" \
+        "$PIPELINE_DIR/050-repair-missing-deadlines.py" >> "$CURRENT_LOG" 2>&1
       COMPILE_EXIT=$?
       {
         echo "Compile verification exit code: $COMPILE_EXIT"
         echo "Finished compile: $(date '+%Y-%m-%d %H:%M:%S')"
       } >> "$CURRENT_LOG"
 
-      if [ "$COMPILE_EXIT" -eq 0 ] && [ "${PC_REPAIR_FAILED_AND_MISSING_DEADLINES:-1}" != "0" ] && [ -x "$PIPELINE_DIR/040-repair-missing-deadlines.py" ]; then
+      if [ "$COMPILE_EXIT" -eq 0 ] && [ "${PC_REPAIR_FAILED_AND_MISSING_DEADLINES:-1}" != "0" ] && [ -x "$PIPELINE_DIR/050-repair-missing-deadlines.py" ]; then
         REPAIR_LIMIT="${PC_MISSING_DEADLINE_REPAIR_LIMIT:-0}"
         {
           echo ""
-          echo "Verification repair command: ${PYTHON_BIN} -u $PIPELINE_DIR/040-repair-missing-deadlines.py --include-failed --apply --limit $REPAIR_LIMIT"
+          echo "Verification repair command: ${PYTHON_BIN} -u $PIPELINE_DIR/050-repair-missing-deadlines.py --include-failed --apply --limit $REPAIR_LIMIT"
           echo "PC_MISSING_DEADLINE_REPAIR_LIMIT=$REPAIR_LIMIT (0 = all matching failed/missing-deadline rows)"
         } >> "$CURRENT_LOG"
-        "$PYTHON_BIN" -u "$PIPELINE_DIR/040-repair-missing-deadlines.py" --include-failed --apply --limit "$REPAIR_LIMIT" >> "$CURRENT_LOG" 2>&1
+        "$PYTHON_BIN" -u "$PIPELINE_DIR/050-repair-missing-deadlines.py" --include-failed --apply --limit "$REPAIR_LIMIT" >> "$CURRENT_LOG" 2>&1
         REPAIR_EXIT=$?
         echo "Failed/missing-deadline repair exit code: $REPAIR_EXIT" >> "$CURRENT_LOG"
         if [ "$REPAIR_EXIT" -ne 0 ]; then
@@ -485,11 +485,11 @@ PY
         echo ""
         echo "-------------------- STEP 7: CALENDAR PACKAGES -----------------"
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/build_calendar.py"
+        echo "Command: ${PYTHON_BIN} -u $PIPELINE_DIR/060-build-calendar.py"
       } >> "$CURRENT_LOG"
 
       CALENDAR_START_EPOCH="$(date '+%s')"
-      "$PYTHON_BIN" -u "$PIPELINE_DIR/build_calendar.py" >> "$CURRENT_LOG" 2>&1
+      "$PYTHON_BIN" -u "$PIPELINE_DIR/060-build-calendar.py" >> "$CURRENT_LOG" 2>&1
       CALENDAR_EXIT=$?
       CALENDAR_SECONDS=$(( $(date '+%s') - CALENDAR_START_EPOCH ))
 

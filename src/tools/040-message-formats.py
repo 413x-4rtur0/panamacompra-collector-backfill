@@ -21,8 +21,9 @@ from pathlib import Path
 
 _SRC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SRC_DIR))
-sys.path.insert(0, str(_SRC_DIR / "pipeline"))
-import notify_new_records as nnr
+import common as pc_common
+
+nnr = pc_common.load_script("src/pipeline/020-notify-whatsapp.py", "notify_new_records")
 
 KINDS = nnr.FORMAT_KINDS
 KIND_LABELS = {

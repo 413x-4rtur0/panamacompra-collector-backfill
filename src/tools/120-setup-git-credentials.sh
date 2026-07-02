@@ -11,8 +11,8 @@
 #     it pre-seeds ~/.git-credentials so even the first pull is silent.
 #
 # USAGE
-#   ./src/tools/setup-git-credentials.sh
-#   PC_GITHUB_USER=myuser PC_GITHUB_TOKEN=ghp_xxx ./src/tools/setup-git-credentials.sh
+#   ./src/tools/120-setup-git-credentials.sh
+#   PC_GITHUB_USER=myuser PC_GITHUB_TOKEN=ghp_xxx ./src/tools/120-setup-git-credentials.sh
 #   # or drop the values in gitignored files first:
 #   #   echo myuser  > data/config/github_user.txt
 #   #   echo ghp_xxx > data/config/github_token.txt
@@ -91,7 +91,7 @@ else
   echo ""
   echo "No token provided yet. Either:"
   echo "  • set PC_GITHUB_TOKEN (and optionally PC_GITHUB_USER) and re-run this, or"
-  echo "  • write it once:  echo <TOKEN> > $TOKEN_FILE  &&  ./src/tools/setup-git-credentials.sh"
+  echo "  • write it once:  echo <TOKEN> > $TOKEN_FILE  &&  ./src/tools/120-setup-git-credentials.sh"
   echo "  • or just run 'git pull' once now and enter your username + token —"
   echo "    the 'store' helper will save it and it won't ask again after restart."
 fi

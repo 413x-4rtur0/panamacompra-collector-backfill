@@ -13,4 +13,4 @@ if [ -f ".venv/bin/activate" ]; then
   PYTHON_BIN="python"
 fi
 
-"$PYTHON_BIN" "$SCRIPT_DIR/migrate-previous-records.py" | tee "$PC_LOG_DIR/migrate_previous_records_$(date +%Y%m%d_%H%M%S).log"
+"$PYTHON_BIN" "$SCRIPT_DIR/090b-migrate-previous-records.py" | tee "$PC_LOG_DIR/migrate_previous_records_$(date +%Y%m%d_%H%M%S).log"

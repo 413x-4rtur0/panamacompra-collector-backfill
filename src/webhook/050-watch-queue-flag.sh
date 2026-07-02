@@ -9,7 +9,7 @@ set -euo pipefail
 # real collection whenever a request appears (and no worker is already running).
 #
 # Run it from the checkout:
-#   ./src/webhook/watch-queue-flag.sh
+#   ./src/webhook/050-watch-queue-flag.sh
 # or install it as the systemd user service documented in the README.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -53,8 +53,8 @@ launch_queued_update_monitor() {
   fi
   log "queued Update + Monitor detected; launching updater"
   rm -f "$UPDATE_QUEUE_FLAG"
-  if [ -x "$APP_ROOT/src/monitor/update-loader.py" ]; then
-    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/update-loader.py" --open-monitor-after >> "$PC_LOG_DIR/update_monitor_queue.log" 2>&1 &
+  if [ -x "$APP_ROOT/src/monitor/003-update-loader.py" ]; then
+    nohup "$PYTHON_BIN" "$APP_ROOT/src/monitor/003-update-loader.py" --open-monitor-after >> "$PC_LOG_DIR/update_monitor_queue.log" 2>&1 &
   else
     nohup "$APP_ROOT/update-local-copy.sh" >> "$PC_LOG_DIR/update_monitor_queue.log" 2>&1 &
   fi
@@ -66,9 +66,9 @@ while true; do
   launch_queued_update_monitor
   if [ -f "$FLAG" ] && ! worker_running; then
     log "request flag detected; launching host collector"
-    # request-run-all.sh keeps/refreshes the flag and starts the host worker,
+    # 110a-request-run.sh keeps/refreshes the flag and starts the host worker,
     # which consumes the request. Never let one failure stop the watcher.
-    PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/pipeline/request-run-all.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "request-run-all.sh returned non-zero"
+    PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "110a-request-run.sh returned non-zero"
   fi
   sleep "$POLL_SECONDS"
 done

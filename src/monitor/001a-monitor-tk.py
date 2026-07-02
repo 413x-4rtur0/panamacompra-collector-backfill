@@ -25,22 +25,22 @@ import common as pc_common
 BASE_DIR = pc_common.APP_ROOT
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 
-# Work-templates helper (src/tools/record-templates.py) imported as a module so
+# Work-templates helper (src/tools/020-record-templates.py) imported as a module so
 # the monitor lists/saves the same source folder and selection the CLI uses.
 import importlib.util as _importlib_util
 
 _rt_spec = _importlib_util.spec_from_file_location(
-    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "record-templates.py"))
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "020-record-templates.py"))
 record_templates = _importlib_util.module_from_spec(_rt_spec)
 _rt_spec.loader.exec_module(record_templates)
 
 _cal_spec = _importlib_util.spec_from_file_location(
-    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "opportunity-calendar.py"))
+    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "030-opportunity-calendar.py"))
 opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
 _cal_spec.loader.exec_module(opportunity_calendar)
 
 _nnr_spec = _importlib_util.spec_from_file_location(
-    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "notify_new_records.py"))
+    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "020-notify-whatsapp.py"))
 notify_formats = _importlib_util.module_from_spec(_nnr_spec)
 _nnr_spec.loader.exec_module(notify_formats)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
@@ -159,32 +159,32 @@ RECORDS_TEST_PARENT = pc_common.RECORDS_TEST_DIR
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./src/pipeline/request-run-all.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./src/pipeline/run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
-    ManualAction("Collector Runners", "Show run status", ("./src/pipeline/run-all-status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Collector Runners", "STOP all runners", ("./src/pipeline/stop-run-all.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Collector Runners", "Request full collection", ("./src/pipeline/110a-request-run.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./src/pipeline/110b-run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Collector Runners", "STOP all runners", ("./src/pipeline/120a-stop-everything.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
-    ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
+    ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
     ManualAction("Updater & Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh used before worker iterations (no browser install)."),
-    ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
-    ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
+    ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
+    ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
 
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
-    ManualAction("Data Tools", "Rebuild detail views", ("./src/pipeline/030-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
-    ManualAction("Data Tools", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
-    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
-    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
-    ManualAction("Data Tools", "Apply work templates", ("./src/tools/record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
-    ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
-    ManualAction("Data Tools", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
-    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
+    ManualAction("Data Tools", "Rebuild detail views", ("./src/pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
+    ManualAction("Data Tools", "Repair missing deadlines", ("./src/pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
+    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/pipeline/060-build-calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
+    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/060-build-calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
+    ManualAction("Data Tools", "Apply work templates", ("./src/tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
+    ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
+    ManualAction("Data Tools", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
+    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
     # --- 4. Integrations: changedetection + WAHA Docker containers -----------
-    ManualAction("Integrations (Docker)", "Start/refresh docker stack", ("./src/tools/docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers. Their data stays inside the self-contained var/integrations folder."),
-    ManualAction("Integrations (Docker)", "Docker stack status", ("./src/tools/docker-stack.sh", "status"), "Writes the container states plus the changedetection/WAHA URLs to the manual action log."),
-    ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
-    ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Integrations (Docker)", "Start/refresh docker stack", ("./src/tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers. Their data stays inside the self-contained var/integrations folder."),
+    ManualAction("Integrations (Docker)", "Docker stack status", ("./src/tools/010-docker-stack.sh", "status"), "Writes the container states plus the changedetection/WAHA URLs to the manual action log."),
+    ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
+    ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
     ManualAction("Integrations (Docker)", "Open changedetection UI", ("bash", "-lc", 'xdg-open "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"'), "Opens the changedetection.io web interface to configure the PanamaCompra watch and its trigger/webhook URL."),
     ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("bash", "-lc", 'xdg-open "http://localhost:${WAHA_PORT:-3000}"'), "Opens the WAHA dashboard to pair the WhatsApp session by QR and inspect the session state."),
 
@@ -392,7 +392,7 @@ def db_review_stats() -> dict[str, object]:
 
         # Records the "Repair missing deadlines" action would act on: blank
         # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 040-repair-missing-deadlines.py so the count matches what that tool processes.
+        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
         deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
                                "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
         if "record_folder_leaf" in columns:
@@ -572,7 +572,7 @@ def running(pattern: str) -> bool:
 
 
 def webhook_running() -> bool:
-    if running("[s]rc/webhook/listener.py") or running("[p]ython3? -u .*src/webhook/listener.py"):
+    if running("[s]rc/webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/webhook/010-webhook-listener.py"):
         return True
     try:
         result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)
@@ -588,19 +588,19 @@ def process_snapshot() -> dict[str, bool]:
     webhook = webhook_running()
     monitor_tk = running("[0]01a-monitor-tk.py") or running("[p]ython3? -u .*001a-monitor-tk.py")
     monitor_server = running("[0]01b-monitor-web.py") or running("[p]ython3? -u .*001b-monitor-web.py")
-    timer = running("[n]ext-run-timer.py")
+    timer = running("[0]02-next-run-timer.py")
 
     return {
         "normal_run": worker and not test,
         "test_run": test,
         "worker": worker,
         "index": running("[p]ython(3)? -u .*010-collect-index.py"),
-        "detail": running("[p]ython(3)? -u .*collect_detail.py"),
-        "calendar": running("[p]ython(3)? -u .*(030-build-detail-views|build_calendar).py"),
+        "detail": running("[p]ython(3)? -u .*030-collect-details.py"),
+        "calendar": running("[p]ython(3)? -u .*(040-build-detail-views|060-build-calendar).py"),
         # WhatsApp MESSAGING step: visible while the notifier sends messages.
-        "messaging": running("[n]otify_new_records.py"),
+        "messaging": running("[0]20-notify-whatsapp.py"),
         "request": REQUEST_FLAG.exists(),
-        # Additional runners that should be stopped by src/pipeline/stop-run-all.sh
+        # Additional runners that should be stopped by src/pipeline/120a-stop-everything.sh
         "updater": updater,
         "webhook": webhook,
         "monitor_tk": monitor_tk,
@@ -1031,16 +1031,16 @@ def run_tk() -> int:
             button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
         if mode == "manual":
-            subprocess.Popen([str(BASE_DIR / "src/pipeline/run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "src/pipeline/110b-run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Manual run started with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
             return
-        subprocess.Popen([str(BASE_DIR / "src/pipeline/request-run-all.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/pipeline/110a-request-run.sh"), detail_limit, "RESTART", index_limit], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Restart-pending run requested with index page cap {index_limit} (0 = all), detail limit {detail_limit}.")
 
     def stop_run_now() -> None:
         # Halt the active collection but keep this monitor (and the timer/webhook)
         # running. Stays enabled while a run is active — that is when it is needed.
-        subprocess.Popen([str(BASE_DIR / "src/pipeline/stop-collectors.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/pipeline/120b-stop-collectors.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Stop requested: halting the active collection (worker + collectors). Monitor stays open; request a new run to resume.")
 
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
@@ -1211,7 +1211,7 @@ def run_tk() -> int:
 
     def send_test_whatsapp() -> None:
         subprocess.Popen(
-            [str(BASE_DIR / "src/notify/waha_client.py"), "--event", "info", "--status", "TEST",
+            [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
              "--message", "Prueba de notificación desde el monitor PanamaCompra."],
             cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -1887,7 +1887,7 @@ def run_tk() -> int:
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        cmd = [str(BASE_DIR / "src/pipeline/notify_new_records.py"), "--force"]
+        cmd = [str(BASE_DIR / "src/pipeline/020-notify-whatsapp.py"), "--force"]
         for numero in numeros:
             cmd.extend(["--record", numero])
         subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1898,7 +1898,7 @@ def run_tk() -> int:
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        cmd = [str(BASE_DIR / "src/tools/record-templates.py"), "apply", "--apply"]
+        cmd = [str(BASE_DIR / "src/tools/020-record-templates.py"), "apply", "--apply"]
         for numero in numeros:
             cmd.extend(["--numero", numero])
         subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1909,7 +1909,7 @@ def run_tk() -> int:
         if not numeros:
             button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
             return
-        subprocess.Popen([str(BASE_DIR / "src/tools/import-selected-calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([str(BASE_DIR / "src/tools/060-import-selected-calendars.py"), "--open", *numeros], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"Calendar import requested for {len(numeros)} selected record(s).")
 
     def open_selected_portal() -> None:
@@ -2109,7 +2109,7 @@ def run_tk() -> int:
     # SECTION 7: RESET / REVIEW FROM ZERO - separate buttons (per the operator's
     # request) for each reset depth, from a soft detail re-queue to a full wipe.
     # The two destructive wipes pop a confirmation dialog and pass --yes only when
-    # confirmed, so a stray click cannot erase the archive. All call src/tools/reset.py.
+    # confirmed, so a stray click cannot erase the archive. All call src/tools/110-reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
     reset_zone.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
@@ -2124,7 +2124,7 @@ def run_tk() -> int:
             if not messagebox.askyesno("Confirm reset", confirm_text, icon="warning", default="no"):
                 reset_status_var.set(f"{action}: cancelled.")
                 return
-        command = [str(BASE_DIR / "src/tools/reset.py"), action]
+        command = [str(BASE_DIR / "src/tools/110-reset.py"), action]
         if destructive:
             command.append("--yes")
         MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
 
 BASE = pc_common.APP_ROOT
-RUNNER = str(Path(__file__).resolve().parent / "run-collector.sh")
+RUNNER = str(Path(__file__).resolve().parent / "060-run-collector.sh")
 LOG = pc_common.LOG_DIR / "webhook_listener.log"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 
@@ -25,8 +25,8 @@ PORT = int(os.environ.get("PC_WEBHOOK_PORT", "8765"))
 # Enqueue-only mode: when running inside the docker-compose `webhook` container,
 # the listener cannot launch the host browser pipeline, so it only records the
 # run request into the shared data/queue volume. A host-side runner
-# (src/webhook/watch-queue-flag.sh or the systemd webhook unit) performs the real
-# collection. Unset/0 keeps the original behaviour (run run-collector.sh).
+# (src/webhook/050-watch-queue-flag.sh or the systemd webhook unit) performs the real
+# collection. Unset/0 keeps the original behaviour (run 060-run-collector.sh).
 ENQUEUE_ONLY = os.environ.get("PC_WEBHOOK_ENQUEUE_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 

@@ -15,7 +15,7 @@ usage() {
 Usage: pcc launcher [install|remove|path] [options]
 
 Creates the Linux desktop/application-menu launcher for "PanamaCompra Update +
-Monitor". The launcher opens src/monitor/update-loader.py first; after a successful
+Monitor". The launcher opens src/monitor/003-update-loader.py first; after a successful
 update, the normal monitor opens with the refreshed code.
 
 Commands:
@@ -51,7 +51,7 @@ launcher_name="panamacompra-update-monitor.desktop"
 app_path="$app_dir/$launcher_name"
 desktop_path="$desktop_dir/$launcher_name"
 icon_path="$icon_dir/panamacompra-update-monitor.svg"
-loader_path="$APP_ROOT/src/monitor/update-loader.py"
+loader_path="$APP_ROOT/src/monitor/003-update-loader.py"
 
 write_icon() {
   mkdir -p "$icon_dir"

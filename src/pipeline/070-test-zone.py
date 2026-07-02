@@ -29,14 +29,15 @@ sys.path.insert(0, str(_SRC_DIR))
 sys.path.insert(0, str(_SRC_DIR / "tools"))
 from common import (
     RECORDS_TEST_DIR,
+    load_script,
     date_folder_name,
     init_db,
     now_iso,
     safe_name,
     write_run_progress,
 )
-from build_calendar import write_packages
-from update_day_folder import ensure_playwright_available
+write_packages = load_script("src/pipeline/060-build-calendar.py").write_packages
+ensure_playwright_available = load_script("src/tools/080-update-day-folder.py").ensure_playwright_available
 
 
 def recent_rows(conn, limit):
@@ -89,7 +90,7 @@ def run_test_zone(rows):
     ensure_playwright_available()
     from playwright.sync_api import sync_playwright
 
-    from collect_detail import process_detail
+    process_detail = load_script("src/pipeline/030-collect-details.py").process_detail
 
     # Fresh sandbox each run so old leaves do not accumulate.
     shutil.rmtree(RECORDS_TEST_DIR, ignore_errors=True)

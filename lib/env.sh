@@ -4,8 +4,8 @@
 # This file is `source`d (not executed) by nearly every script in the
 # project, so it must NOT change the caller's `set -e` behavior: `source` runs
 # in the calling shell, and a `set -e` here would silently force strict-abort
-# semantics onto scripts that deliberately opt out of it (e.g. run-worker.sh
-# and stop-collectors.sh use `set -uo pipefail` without `-e` specifically so a
+# semantics onto scripts that deliberately opt out of it (e.g. 100-run-worker.sh
+# and 120b-stop-collectors.sh use `set -uo pipefail` without `-e` specifically so a
 # single failing step, like a pre-run git update, does not abort the whole
 # script). Only `-u`/`pipefail` are safe to set unconditionally here; nothing
 # below needs `-e` to behave correctly (every failure path already has an
@@ -89,7 +89,7 @@ export PC_INDEX_CSV_PATH="${PC_INDEX_CSV_PATH:-$PC_DATA_DIR/panamacompra_index.c
 export PC_CALENDAR_DIR="${PC_CALENDAR_DIR:-$PC_DATA_DIR/calendar}"
 export PC_RECORDS_TEST_DIR="${PC_RECORDS_TEST_DIR:-$PC_STATE_DIR/records_test}"
 # Docker bind-mount data for the changedetection + WAHA containers, kept inside
-# the self-contained state directory (see src/tools/docker-stack.sh).
+# the self-contained state directory (see src/tools/010-docker-stack.sh).
 export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
 
 # The WAHA container is protected with WAHA_API_KEY (docker-compose), while the
