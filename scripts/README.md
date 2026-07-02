@@ -62,8 +62,8 @@ Rules:
 
 | Ordered wrapper | Canonical command | Purpose |
 | --- | --- | --- |
-| `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout and install/update the Update + Monitor launcher unless `PC_SETUP_INSTALL_MONITOR_SHORTCUT=0`. |
-| `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor desktop launcher. |
+| `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout and install/update the monitor, changedetection, WAHA, and Docker integration launchers unless `PC_SETUP_INSTALL_MONITOR_SHORTCUT=0`. |
+| `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor, changedetection, WAHA, and Docker integration desktop launchers. |
 | `tasks/010-update-local-copy.sh` | `./update-local-copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
 | `tasks/021-000-open-monitor.sh` | `./bin/pcc monitor` | Open the monitor independently. |

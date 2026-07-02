@@ -48,7 +48,7 @@ Maintenance:
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
-  launcher [install|remove|path]            Manage Update + Monitor desktop launcher
+  launcher [install|remove|path]            Manage desktop launchers (monitor, WAHA, changedetection, Docker)
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE

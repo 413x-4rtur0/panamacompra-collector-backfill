@@ -534,7 +534,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update-local-copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update-local-copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut during updates. The shortcut opens the separate updater loader first, then starts the native monitor only after the updater exits successfully. Set to `0` to skip. |
-| `PC_SETUP_INSTALL_MONITOR_SHORTCUT` | `1` | `setup.sh` | Installs/refreshes the same desktop/application-menu shortcut during first setup. Set to `0` to skip on headless/server installs. |
+| `PC_SETUP_INSTALL_MONITOR_SHORTCUT` | `1` | `setup.sh` | Installs/refreshes the desktop/application-menu launcher suite during first setup: Update + Monitor, changedetection.io, WAHA, and Docker Integrations. Set to `0` to skip on headless/server installs. |
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update-local-copy.sh` | Controls whether the updater restores `src/webhook/010-webhook-listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
 | `PC_REQUEST_OPEN_MONITOR` | `1` | `src/pipeline/110a-request-run.sh` | When `0`, queue/start the worker without opening the monitor. `update-local-copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
@@ -1358,13 +1358,14 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`src/monitor/001a-monitor-tk.py`). Run
-`./src/monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The shortcut opens a separate updater loader (`src/monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
+`./src/monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The same launcher installer also creates desktop/menu entries for **PanamaCompra changedetection**, **PanamaCompra WAHA**, and **PanamaCompra Docker Integrations** so operators can open the two web dashboards or start/status the container stack without typing commands. The shortcut opens a separate updater loader (`src/monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
 
 Launcher maintenance commands:
 
 ```bash
-./bin/pcc launcher install          # create/update menu + desktop shortcut
+./bin/pcc launcher install          # create/update monitor + changedetection + WAHA + Docker launchers
 ./bin/pcc launcher install --no-desktop
+./bin/pcc launcher install --monitor-only # only Update + Monitor
 ./bin/pcc launcher remove
 ./bin/pcc launcher path
 ```
@@ -1381,7 +1382,7 @@ This mini-monitor counts down to the next run, anchored to the last live run's s
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh`,
-then open `http://127.0.0.1:8766/`; the web monitor mirrors the Tk monitor zones, stop button, test-sandbox folder opening, Index + Detail KPI tab, and live-run-only auto-close behavior. The terminal UI is still available with
+then open `http://127.0.0.1:8766/`; this dashboard is served by Python and opened in your normal desktop browser (not Playwright). The collector itself uses Playwright Firefox headless to read PanamaCompra pages; `setup.sh` installs that browser unless `PC_SETUP_SKIP_BROWSER=1` is set. The web monitor mirrors the Tk monitor zones, stop button, test-sandbox folder opening, Index + Detail KPI tab, and live-run-only auto-close behavior. The terminal UI is still available with
 `PC_MONITOR_MODE=terminal ./src/monitor/000-open-monitor.sh`. If no GUI can be opened, use
 `./src/pipeline/130b-run-status.sh` or `./src/pipeline/130c-follow-run.sh` from any terminal.
 
