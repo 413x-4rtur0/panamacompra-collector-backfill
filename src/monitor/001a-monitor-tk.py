@@ -7,6 +7,7 @@ It uses only Python's standard library and refreshes on a timer.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import re
@@ -349,6 +350,73 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
+def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
+    """Best-effort item loader for KPI dashboards; never raises."""
+    if not detail_json_path:
+        return []
+    path = Path(str(detail_json_path))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = data.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+    descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+    rel = descriptor.get("file")
+    if rel:
+        try:
+            split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
+            if isinstance(split_items, list):
+                return [item for item in split_items if isinstance(item, dict)]
+        except Exception:
+            return []
+    return []
+
+
+def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[str, object]:
+    """Summarize detail items for decision KPIs without scanning unbounded data."""
+    rows = conn.execute(
+        "SELECT numero, descripcion, detail_json_path FROM opportunities "
+        "WHERE COALESCE(detail_json_path, '') <> '' "
+        "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    total_items = 0
+    with_items = 0
+    max_items = {"numero": "", "descripcion": "", "count": 0}
+    keyword_counts: Counter[str] = Counter()
+    sample_items: list[dict[str, str]] = []
+    for row in rows:
+        items = load_detail_items_for_kpi(str(row["detail_json_path"] or ""))
+        if items:
+            with_items += 1
+        total_items += len(items)
+        if len(items) > int(max_items["count"]):
+            max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
+        for item in items:
+            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
+            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
+                if not word.isdigit():
+                    keyword_counts[word] += 1
+            if len(sample_items) < 8:
+                sample_items.append({
+                    "numero": str(row["numero"] or ""),
+                    "descripcion": str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "")[:90],
+                    "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
+                })
+    avg_items = round(total_items / with_items, 1) if with_items else 0
+    return {
+        "sampled_records": len(rows),
+        "records_with_items": with_items,
+        "total_items": total_items,
+        "avg_items_per_record": avg_items,
+        "max_items_record": max_items,
+        "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
+        "sample_items": sample_items,
+    }
+
 def db_review_stats() -> dict[str, object]:
     """Aggregate counts for the Database review panel (totals, detail-queue state,
     notification state, and a per-group breakdown). Never raises; a missing/locked
@@ -356,7 +424,7 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
-        "needs_deadline": 0, "with_detail_json": 0,
+        "needs_deadline": 0, "with_detail_json": 0, "item_analysis": {},
         "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
@@ -415,6 +483,7 @@ def db_review_stats() -> dict[str, object]:
             ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "item_analysis": summarize_items_for_kpi(conn),
             "recent": [
                 (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
                 for r in conn.execute(
@@ -1597,6 +1666,7 @@ def run_tk() -> int:
         "index": tk.StringVar(value="Index scan: —"),
         "details": tk.StringVar(value="Detail queue: —"),
         "whatsapp": tk.StringVar(value="WhatsApp: —"),
+        "items": tk.StringVar(value="Items analysis: —"),
         "trend": tk.StringVar(value="Trend: —"),
         "decision": tk.StringVar(value="Decision signals loading…"),
     }
@@ -1605,8 +1675,9 @@ def run_tk() -> int:
         bg, fg = kpi_colors[key]
         tk.Label(kpi_frame, textvariable=kpi_vars[key], anchor="nw", justify="left", bg=bg, fg=fg,
                  padx=12, pady=10, font=("Sans", 10, "bold")).grid(row=1, column=idx, sticky="nsew", padx=4, pady=(0, 8))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=3, column=0, columnspan=3, sticky="w")
+    ttk.Label(kpi_frame, textvariable=kpi_vars["items"], style="Card.TLabel", justify="left", wraplength=900).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=4, column=0, columnspan=3, sticky="w")
 
     def update_kpi_dashboard(progress: dict[str, str]) -> None:
         s = db_review_stats()
@@ -1631,12 +1702,20 @@ def run_tk() -> int:
             f"Index alerts sent: {s.get('notified', 0)} · Details follow-up backlog: {s.get('detail_notify_backlog', 0)}\n"
             f"Needs deadline repair: {s.get('needs_deadline', 0)}"
         )
+        items = s.get("item_analysis", {}) if isinstance(s.get("item_analysis"), dict) else {}
+        max_item_record = items.get("max_items_record", {}) if isinstance(items.get("max_items_record"), dict) else {}
+        item_keywords = " · ".join(f"{row.get('label')}: {row.get('count')}" for row in items.get("top_item_keywords", [])[:6]) or "no item keywords yet"
+        kpi_vars["items"].set(
+            "Items analysis KPIs\n"
+            f"Parsed item lines: {items.get('total_items', 0)} · Records with items: {items.get('records_with_items', 0)}/{items.get('sampled_records', 0)} · Avg items/record: {items.get('avg_items_per_record', 0)}\n"
+            f"Largest record: {max_item_record.get('numero', '-')} ({max_item_record.get('count', 0)} items) · Top item keywords: {item_keywords}"
+        )
         trend = " · ".join(f"{label}: {count}" for label, count in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
         statuses = " · ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "no status data"
         kpi_vars["trend"].set(f"Trend windows: {trend}\nDetail status mix: {statuses}")
         kpi_vars["decision"].set(
             "Decision focus: clear failed detail downloads first; repair missing deadlines before calendar/export decisions; "
-            "if index notify backlog grows, verify WAHA/settings before running more scans; if pending details grows, prioritize detail worker capacity over more index pages."
+            "if index notify backlog grows, verify WAHA/settings before running more scans; if item keywords cluster around specific products/buyers, prioritize those folders for review and detail follow-up; if pending details grows, prioritize detail worker capacity over more index pages."
         )
 
 

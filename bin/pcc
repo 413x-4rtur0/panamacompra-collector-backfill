@@ -95,7 +95,11 @@ case "$cmd" in
   docker|stack) exec "$APP_ROOT/src/tools/010-docker-stack.sh" "$@" ;;
   db|stats)
     exec "$PY_BIN" - <<'PY'
+import json
+import re
 import sys
+from collections import Counter
+from pathlib import Path
 sys.path.insert(0, __import__("os").environ["APP_ROOT"] + "/src")
 from common import init_db
 conn = init_db()
@@ -115,6 +119,39 @@ print(f"Details saved:                     {saved}")
 print(f"Details pending:                   {pending}")
 print(f"Details failed:                    {failed}")
 print(f"Detail JSON coverage:              {detail_json}/{total} ({closure}% saved)")
+item_total = 0
+item_records = 0
+item_terms = Counter()
+max_item_record = ("-", 0)
+if "detail_json_path" in cols:
+    for numero, detail_path in conn.execute("SELECT numero, detail_json_path FROM opportunities WHERE COALESCE(detail_json_path, '') <> '' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC LIMIT 300"):
+        try:
+            path = Path(detail_path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            items = data.get("items")
+            if not isinstance(items, list):
+                split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+                descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+                rel = descriptor.get("file")
+                items = json.loads((path.parent / rel).read_text(encoding="utf-8")) if rel else []
+            items = [item for item in items if isinstance(item, dict)]
+        except Exception:
+            items = []
+        if items:
+            item_records += 1
+        item_total += len(items)
+        if len(items) > max_item_record[1]:
+            max_item_record = (str(numero or "-"), len(items))
+        for item in items:
+            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
+            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
+                if not word.isdigit():
+                    item_terms[word] += 1
+    avg_items = round(item_total / item_records, 1) if item_records else 0
+    print(f"Item lines parsed (latest 300):     {item_total} across {item_records} records; avg={avg_items}")
+    print(f"Largest item record:               {max_item_record[0]} ({max_item_record[1]} items)")
+    if item_terms:
+        print("Top item keywords:                 " + " · ".join(f"{k}={v}" for k, v in item_terms.most_common(8)))
 if "notified_at" in cols:
     print(f"WAHA index alerts sent:            {count('notified_at IS NOT NULL')}")
 if "detail_notified_at" in cols:
