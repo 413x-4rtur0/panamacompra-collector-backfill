@@ -346,6 +346,33 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         heading = f"🔔 *Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
 
+    items_block = (
+        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
+        if detail_pending else format_items(items)
+    )
+    fechas = date_range(row, summary)
+
+    # Operator-customized layout for this message family, when saved.
+    custom = load_custom_format(kind_for_variant(variant))
+    if custom:
+        return custom.format_map(_SafeDict({
+            "heading": heading,
+            "fuente": SOURCE_NAME,
+            "estado": status,
+            "estado_linea": status_line,
+            "estado_anterior": clean_field(previous_status),
+            "numero": numero,
+            "descripcion": title,
+            "entidad": clean_field(row["entidad"]),
+            "ubicacion": location,
+            "rango_fechas": fechas,
+            "items": items_block,
+            "coincidencia": match_line or DASH,
+            "enlace": url,
+            "creado": created,
+            "descargado": downloaded,
+        }))
+
     parts = [
         heading,
         "",
@@ -353,9 +380,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         f"🔢 *Número:* {numero}",
         f"📝 *Descripción:* {title}",
         f"📍 *Ubicación:* {location}",
-        f"📅 *Rango Fechas:* {date_range(row, summary)}",
+        f"📅 *Rango Fechas:* {fechas}",
         "",
-        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso" if detail_pending else format_items(items),
+        items_block,
     ]
     if match_line:
         parts.extend(["", f"🔎 *Coincidencia:* {match_line}"])
@@ -384,6 +411,117 @@ def build_empty_message(records_checked: int) -> str:
         f"📊 Registros revisados: {records_checked}\n"
         "✅ Monitor activo"
     )
+
+
+# ---------------------------------------------------------------------------
+# Customizable message formats. Each message family (index alert / detail
+# follow-up / status change) can be reformatted by the operator: a template
+# saved to data/config/waha_format_<kind>.txt (via `pcc format` or either
+# monitor) replaces the built-in layout. Templates use {placeholder} fields;
+# unknown placeholders are left literally so a typo never breaks a send.
+FORMAT_KINDS = ("index", "details", "status")
+
+PLACEHOLDERS = {
+    "heading": "message heading with emoji (varies per message type)",
+    "fuente": "source label (PC_WAHA_SOURCE, default 'Panamá Compra')",
+    "estado": "current record status (e.g. Abierta)",
+    "estado_linea": "the built-in '📊 Estado:' line (includes previous→current on status changes)",
+    "estado_anterior": "previous status on status-change messages",
+    "numero": "record number (NUMERO)",
+    "descripcion": "record title/description",
+    "entidad": "contracting entity",
+    "ubicacion": "delivery province/place",
+    "rango_fechas": "start–deadline range",
+    "items": "formatted items block (or the 'pendiente' note before download)",
+    "coincidencia": "matched keywords line",
+    "enlace": "portal link",
+    "creado": "first-seen/publication timestamp",
+    "descargado": "local download timestamp",
+}
+
+DEFAULT_FORMATS = {
+    "index": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔎 *Coincidencia:* {coincidencia}\n\n🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "details": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔎 *Coincidencia:* {coincidencia}\n\n🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "status": (
+        "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+}
+
+
+class _SafeDict(dict):
+    """format_map helper: unknown {placeholders} stay literal instead of raising."""
+
+    def __missing__(self, key):  # noqa: D105
+        return "{" + key + "}"
+
+
+def format_path(kind: str) -> Path:
+    return CONFIG_DIR / f"waha_format_{kind}.txt"
+
+
+def load_custom_format(kind: str) -> str:
+    """Operator-saved template for a message kind, or '' for the built-in layout."""
+    path = format_path(kind)
+    if path.exists():
+        text = path.read_text(encoding="utf-8", errors="replace").strip("\n")
+        if text.strip():
+            return text
+    return ""
+
+
+def kind_for_variant(variant: str) -> str:
+    if variant == "new":
+        return "index"
+    if variant in ("details", "manual"):
+        return "details"
+    return "status"  # status / cancelled / items
+
+
+def sample_context(kind: str) -> dict[str, str]:
+    """Fabricated values so templates can be previewed without a real record."""
+    headings = {
+        "index": f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*",
+        "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
+        "status": f"⚠️ *Cambio de Estado - {SOURCE_NAME}*",
+    }
+    items = (
+        "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
+        if kind == "index"
+        else "📦 *Items (2):*\n• Item 1: Guantes de nitrilo - Qty: 100 - Unit: caja\n• Item 2: Mascarillas N95 - Qty: 50 - Unit: caja"
+    )
+    return {
+        "heading": headings[kind],
+        "fuente": SOURCE_NAME,
+        "estado": "Abierta",
+        "estado_linea": "📊 *Estado:* [ANTERIOR: Programada] ➡️ [ACTUAL: Abierta]" if kind == "status" else "📊 *Estado:* Abierta",
+        "estado_anterior": "Programada",
+        "numero": "OC-2026-000123",
+        "descripcion": "Adquisición de insumos médicos para el centro de salud",
+        "entidad": "Ministerio de Salud",
+        "ubicacion": "Panamá, Ciudad de Panamá",
+        "rango_fechas": "2026-07-01 09:00 al 2026-07-15 16:00",
+        "items": items,
+        "coincidencia": "salud",
+        "enlace": "https://www.panamacompra.gob.pa/…/OC-2026-000123",
+        "creado": "2026-07-01 09:12",
+        "descargado": "2026-07-01 09:45",
+    }
+
+
+def render_format(kind: str, template: str | None = None) -> str:
+    """Render a template (given, custom, or default) with the sample context."""
+    text = template if template is not None else (load_custom_format(kind) or DEFAULT_FORMATS[kind])
+    return text.format_map(_SafeDict(sample_context(kind)))
 
 
 # Human-readable label for a pending_status_change code stored by the index step.

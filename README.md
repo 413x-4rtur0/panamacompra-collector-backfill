@@ -40,6 +40,7 @@ useful on servers/SSH sessions with no display:
 ./bin/pcc docker up                              # manage the changedetection + WAHA containers
 ./bin/pcc templates select oferta.docx          # work templates copied into each record folder
 ./bin/pcc calendar week                          # opportunities by day/week/month/year (deadlines)
+./bin/pcc format preview index                   # customize the WhatsApp message texts
 ```
 
 A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
@@ -456,6 +457,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/webhook/watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/request-run-all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `src/webhook/diagnose.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `src/tools/message-formats.py` | Customizable WhatsApp message formats: the operator can rewrite the text of the **index alert**, the **detail follow-up**, and the **status-change** messages with `{placeholder}` templates (`pcc format show/preview/set/reset/placeholders`; unknown placeholders stay literal so a typo never breaks a send). Also editable from both monitors; stored in `data/config/waha_format_<kind>.txt`. Blank/absent = built-in layout. |
 | `src/tools/opportunity-calendar.py` | Opportunity calendar: collected opportunities by **day / week / month / year**, driven by deadline (default), start, or local-download dates. Month view is a grid with per-day counts plus the day-by-day listing; year view shows per-month totals. Backs `pcc calendar` and the **Opportunity calendar** panels in both monitors (all three share this renderer). |
 | `src/tools/record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. Also manageable from both monitors (source folder, file selection, apply-to-all, copy-to-selected-records). |
 | `src/tools/docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
@@ -580,6 +582,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_BREAKER_THRESHOLD` | `3` | WAHA notifier | Consecutive failed sends in one run before retries are suppressed (each message still gets a single attempt; one success re-arms retries). Raise it to keep retrying longer through a flaky WAHA. |
 | `PC_NOTIFY_SKIP_EXPIRED` | `0` | new-record notifier | Set `1` to skip announcing opportunities whose deadline (DTEND) has already passed. Records with no detectable deadline are never suppressed. |
 | `PC_NOTIFY_WITHIN_DAYS` | unset | new-record notifier | When set to an integer N, only announce opportunities whose deadline is within the next N days; records further out are deferred and re-checked on later runs as their deadline approaches. |
+| message formats | `data/config/waha_format_{index,details,status}.txt` | notifier / monitors / CLI | Optional custom `{placeholder}` templates replacing the built-in WhatsApp layouts; delete (or `pcc format reset`) to restore the defaults. |
 | template selection | `data/config/templates_selected.txt` | record templates | One selected template file per line (relative to the source folder), written by `pcc templates select/unselect`. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
@@ -599,6 +602,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
    - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
+   - WhatsApp message formats editor: pick index/details/status, edit the `{placeholder}` template, Preview with sample data, Save or Reset (native monitor Settings block; web monitor card backed by `/api/waha-format`).
    - Opportunity calendar panel: day/week/month/year views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor section; web monitor card backed by `/api/calendar`).
    - Work templates: source folder plus a multi-select list of template files (native monitor Settings panel; the web monitor has a dedicated **Work templates** card with checkboxes). Selection is shared with `pcc templates`; both monitors also offer **Apply work templates** (all records) and **Copy templates to selected** in the record selector.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.

@@ -38,6 +38,11 @@ _cal_spec = _importlib_util.spec_from_file_location(
     "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "opportunity-calendar.py"))
 opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
 _cal_spec.loader.exec_module(opportunity_calendar)
+
+_nnr_spec = _importlib_util.spec_from_file_location(
+    "notify_new_records", str(pc_common.APP_ROOT / "src" / "pipeline" / "notify_new_records.py"))
+notify_formats = _importlib_util.module_from_spec(_nnr_spec)
+_nnr_spec.loader.exec_module(notify_formats)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
@@ -1373,6 +1378,63 @@ def run_tk() -> int:
     refresh_templates_button.grid(row=29, column=2, sticky="w", pady=3)
     add_tooltip(refresh_templates_button, "Re-scan the template source folder (after Apply when the folder path changed).")
     refresh_templates_list()
+
+    ttk.Label(settings, text="WhatsApp message formats ({placeholder} fields; unknown placeholders stay literal)", style="Title.TLabel").grid(row=31, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    format_kind_var = tk.StringVar(value="index")
+    format_controls = ttk.Frame(settings, style="Card.TFrame")
+    format_controls.grid(row=32, column=0, columnspan=4, sticky="w", pady=3)
+    ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
+    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=("index", "details", "status"), width=9, state="readonly")
+    format_kind_combo.grid(row=0, column=1, padx=(0, 10))
+    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with the items; status = cambios de estado/cancelaciones/items.")
+
+    format_text = tk.Text(settings, height=8, wrap="word")
+    format_text.grid(row=33, column=0, columnspan=4, sticky="ew", pady=3)
+    add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
+    format_preview = tk.Text(settings, height=8, wrap="word", state="disabled")
+    format_preview.grid(row=34, column=0, columnspan=4, sticky="ew", pady=3)
+
+    def _set_preview(text: str) -> None:
+        format_preview.configure(state="normal")
+        format_preview.delete("1.0", "end")
+        format_preview.insert("1.0", text)
+        format_preview.configure(state="disabled")
+
+    def load_format(*_a) -> None:
+        kind = format_kind_var.get()
+        custom = notify_formats.load_custom_format(kind)
+        format_text.delete("1.0", "end")
+        format_text.insert("1.0", custom or notify_formats.DEFAULT_FORMATS[kind])
+        _set_preview(notify_formats.render_format(kind))
+        button_status_var.set(f"Loaded {kind} format ({'custom' if custom else 'built-in default'}).")
+
+    def preview_format() -> None:
+        _set_preview(notify_formats.render_format(format_kind_var.get(), format_text.get("1.0", "end").strip("\n")))
+
+    def save_format() -> None:
+        kind = format_kind_var.get()
+        template = format_text.get("1.0", "end").strip("\n")
+        if not template.strip():
+            button_status_var.set("Template is empty — use Reset to restore the default.")
+            return
+        path = notify_formats.format_path(kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(template + "\n", encoding="utf-8")
+        preview_format()
+        button_status_var.set(f"Custom {kind} WhatsApp format saved to {path.name}.")
+
+    def reset_format() -> None:
+        kind = format_kind_var.get()
+        notify_formats.format_path(kind).unlink(missing_ok=True)
+        load_format()
+        button_status_var.set(f"{kind} WhatsApp format reset to the built-in layout.")
+
+    ttk.Button(format_controls, text="Load", command=load_format).grid(row=0, column=2, padx=(0, 6))
+    ttk.Button(format_controls, text="Preview", command=preview_format).grid(row=0, column=3, padx=(0, 6))
+    ttk.Button(format_controls, text="Save format", command=save_format).grid(row=0, column=4, padx=(0, 6))
+    ttk.Button(format_controls, text="Reset to default", command=reset_format).grid(row=0, column=5)
+    format_kind_combo.bind("<<ComboboxSelected>>", load_format)
+    load_format()
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================

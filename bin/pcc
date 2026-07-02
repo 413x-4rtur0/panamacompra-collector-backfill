@@ -32,6 +32,8 @@ Settings (same files the GUI monitors use):
 WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
+  format [list|show|preview|set|reset|placeholders] [index|details|status]
+                                            Customize the WhatsApp message formats
 
 Work templates (copied into templates/ inside each record folder):
   templates source [PATH]                   Show or set the template source folder
@@ -206,6 +208,7 @@ PY
     ;;
   templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/record-templates.py" "$@" ;;
   calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/opportunity-calendar.py" "$@" ;;
+  format|formats) exec "$PY_BIN" "$APP_ROOT/src/tools/message-formats.py" "$@" ;;
   migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
