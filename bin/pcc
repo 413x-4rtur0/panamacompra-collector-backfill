@@ -31,6 +31,12 @@ WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
 
+Work templates (copied into templates/ inside each record folder):
+  templates source [PATH]                   Show or set the template source folder
+  templates list                            List source files, marking selected ones
+  templates select|unselect FILE...         Choose which templates to use
+  templates apply [--numero N] [--overwrite] [--apply]   Copy into record folders (dry-run without --apply)
+
 Maintenance:
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
@@ -196,6 +202,7 @@ PY
     done
     exec "$PY_BIN" "$APP_ROOT/src/pipeline/notify_new_records.py" "${args[@]}"
     ;;
+  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/record-templates.py" "$@" ;;
   migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;

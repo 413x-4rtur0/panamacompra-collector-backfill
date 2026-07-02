@@ -38,6 +38,7 @@ useful on servers/SSH sessions with no display:
 ./bin/pcc test-whatsapp                          # one WAHA test message with the saved settings
 ./bin/pcc notify OC-2026-000123 --force          # manual WhatsApp send for specific record(s)
 ./bin/pcc docker up                              # manage the changedetection + WAHA containers
+./bin/pcc templates select oferta.docx          # work templates copied into each record folder
 ```
 
 A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
@@ -454,6 +455,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/webhook/watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/request-run-all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `src/webhook/diagnose.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `src/tools/record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. |
 | `src/tools/docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
 | `src/tools/migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `src/monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons and test-sandbox folder opening after test-zone completion. |
@@ -506,6 +508,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_AUTO_IMPORT` | unset | calendar builder | Set to `1` to automatically open each generated `.ics` package with the desktop opener (`xdg-open`, `gio open`, or macOS `open`) after it is written. |
 | `PC_CALENDAR_AUTO_IMPORT_CMD` | unset | calendar builder | Optional command run once per written `.ics` package, with the package path appended, for local auto-import/open workflows. Overrides the default opener used by `PC_CALENDAR_AUTO_IMPORT=1`. |
 | `PC_NOTIFY_WHATSAPP` | `1` | run-all worker / monitor | Master switch. Set to `0` (or uncheck **Notify by WhatsApp**) to skip all automatic WhatsApp announcements while still collecting data and building calendars. |
+| `PC_TEMPLATES_SRC_DIR` | `$PC_STATE_DIR/templates` | record templates | Folder holding the operator's reusable work templates; manage with `pcc templates source/list/select`. |
+| `PC_TEMPLATES_AUTO` | `1` | run-all worker | Set `0` to stop the worker from copying the selected templates into the record folders downloaded in each run. |
 | `PC_NOTIFY_DETAILS` | `1` | run-all worker / monitor | Second notifier phase. Set to `0` (or uncheck **Follow-up WhatsApp with item details**) to skip the per-record “📥 Detalles Completos” message after the downloads; the downloaded items are then folded into the notified snapshot silently so no duplicate fires later. |
 | `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before verification, calendar packages and WhatsApp. Set `0` only for troubleshooting. |
 | `PC_REPAIR_FAILED_AND_MISSING_DEADLINES` | `1` | run-all worker | STEP 4 verification runs `py_compile`, then retries failed rows and records/folders missing `DTEND` using `src/pipeline/040-repair-missing-deadlines.py --include-failed --apply`. Set `0` to skip automatic repair. |
@@ -574,6 +578,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_BREAKER_THRESHOLD` | `3` | WAHA notifier | Consecutive failed sends in one run before retries are suppressed (each message still gets a single attempt; one success re-arms retries). Raise it to keep retrying longer through a flaky WAHA. |
 | `PC_NOTIFY_SKIP_EXPIRED` | `0` | new-record notifier | Set `1` to skip announcing opportunities whose deadline (DTEND) has already passed. Records with no detectable deadline are never suppressed. |
 | `PC_NOTIFY_WITHIN_DAYS` | unset | new-record notifier | When set to an integer N, only announce opportunities whose deadline is within the next N days; records further out are deferred and re-checked on later runs as their deadline approaches. |
+| template selection | `data/config/templates_selected.txt` | record templates | One selected template file per line (relative to the source folder), written by `pcc templates select/unselect`. |
 | keyword filter | `data/config/waha_keywords.txt` | new-record notifier | Optional, one keyword per line. When present only matching new records are announced; matched keywords appear in `🔎 Coincidencia`. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | detail-notify baseline | `data/config/waha_detail_notify_initialized` | new-record notifier | Marker for the second (item-details) notifier phase so previously announced records do not get a burst of follow-up messages when upgrading. Delete it to re-baseline the detail phase. |

@@ -393,6 +393,19 @@ PY
       log "ITERATION $ITERATION detail view rebuild skipped by PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL=0."
     fi
 
+    # Post-download work templates: copy the operator's selected template files
+    # into templates/ inside each record folder downloaded this run, so every
+    # opportunity comes ready to work on. No-op when nothing is selected;
+    # existing files are never overwritten. Disable with PC_TEMPLATES_AUTO=0.
+    if [ "$VIEW_EXIT" -eq 0 ] && [ "${PC_TEMPLATES_AUTO:-1}" != "0" ] && [ -x "$APP_ROOT/src/tools/record-templates.py" ]; then
+      {
+        echo ""
+        echo "---------------- POST-DOWNLOAD: WORK TEMPLATES -----------------"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$CURRENT_LOG"
+      "$PYTHON_BIN" "$APP_ROOT/src/tools/record-templates.py" apply --since "$STARTED" --apply >> "$CURRENT_LOG" 2>&1 || true
+    fi
+
     # STEP 5: MESSAGING (details) — second notifier phase. For every record
     # announced from the index in this or a previous run whose detail page is
     # now downloaded (and its views rebuilt), send the follow-up "Detalles
