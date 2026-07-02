@@ -24,6 +24,15 @@ import common as pc_common
 
 BASE_DIR = pc_common.APP_ROOT
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
+
+# Work-templates helper (src/tools/record-templates.py) imported as a module so
+# the monitor lists/saves the same source folder and selection the CLI uses.
+import importlib.util as _importlib_util
+
+_rt_spec = _importlib_util.spec_from_file_location(
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "record-templates.py"))
+record_templates = _importlib_util.module_from_spec(_rt_spec)
+_rt_spec.loader.exec_module(record_templates)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
@@ -156,6 +165,7 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
     ManualAction("Data Tools", "Rebuild calendar packages", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
     ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/build_calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
+    ManualAction("Data Tools", "Apply work templates", ("./src/tools/record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
     ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
     ManualAction("Data Tools", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
@@ -1275,6 +1285,9 @@ def run_tk() -> int:
         WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
         keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
         WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
+        available_templates = set(record_templates.source_files(record_templates.source_dir()))
+        selected_templates = [templates_listbox.get(i) for i in templates_listbox.curselection() if templates_listbox.get(i) in available_templates]
+        record_templates.save_selection(selected_templates)
 
         updates = {
             "PC_MONITOR_TK_ALPHA": f"{alpha:.2f}",
@@ -1284,6 +1297,7 @@ def run_tk() -> int:
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
             "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
             "PC_NOTIFY_DETAILS": "1" if notify_details_var.get() else "0",
+            "PC_TEMPLATES_SRC_DIR": templates_src_var.get().strip(),
             "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(pc_common.RECORDS_DIR),
             "PC_CALENDAR_DIR": calendar_dir_var.get().strip() or str(pc_common.CALENDAR_DIR),
@@ -1329,6 +1343,31 @@ def run_tk() -> int:
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
     ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL, WAHA port/API key) apply when the docker stack is restarted from the Integrations buttons.", style="Card.TLabel", wraplength=820).grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    ttk.Label(settings, text="Work templates (copied into templates/ inside each record folder)", style="Title.TLabel").grid(row=28, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    templates_src_var = tk.StringVar(value=setting("PC_TEMPLATES_SRC_DIR", ""))
+    field(29, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
+    templates_listbox = tk.Listbox(settings, selectmode="multiple", height=5, activestyle="none", exportselection=False)
+    templates_listbox.grid(row=30, column=1, columnspan=3, sticky="ew", pady=3)
+    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=30, column=0, sticky="nw", pady=3)
+    add_tooltip(templates_listbox, "Tick the template files to copy into each record's templates/ folder. Selection is saved on Apply to data/config/templates_selected.txt (shared with pcc templates). New downloads receive them automatically; files already inside a record are never overwritten.")
+
+    def refresh_templates_list() -> None:
+        templates_listbox.delete(0, "end")
+        src = record_templates.source_dir()
+        files = record_templates.source_files(src)
+        selected = set(record_templates.load_selection())
+        for position, rel_name in enumerate(files):
+            templates_listbox.insert("end", rel_name)
+            if rel_name in selected:
+                templates_listbox.selection_set(position)
+        if not files:
+            templates_listbox.insert("end", f"(no files in {src} — drop templates there and refresh)")
+
+    refresh_templates_button = ttk.Button(settings, text="Refresh template files", command=refresh_templates_list)
+    refresh_templates_button.grid(row=29, column=2, sticky="w", pady=3)
+    add_tooltip(refresh_templates_button, "Re-scan the template source folder (after Apply when the folder path changed).")
+    refresh_templates_list()
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
@@ -1770,6 +1809,17 @@ def run_tk() -> int:
         subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set(f"WhatsApp notification requested for {len(numeros)} selected record(s).")
 
+    def copy_templates_to_selected() -> None:
+        numeros = selected_numeros()
+        if not numeros:
+            button_status_var.set("Select one or more records first (Ctrl/Shift-click).")
+            return
+        cmd = [str(BASE_DIR / "src/tools/record-templates.py"), "apply", "--apply"]
+        for numero in numeros:
+            cmd.extend(["--numero", numero])
+        subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set(f"Work templates requested for {len(numeros)} selected record(s) (existing files kept).")
+
     def import_selected_calendars() -> None:
         numeros = selected_numeros()
         if not numeros:
@@ -1815,6 +1865,9 @@ def run_tk() -> int:
     notify_selected_button.grid(row=0, column=3, padx=(0, 8))
     import_selected_button = ttk.Button(index_buttons, text="Import selected calendars", command=import_selected_calendars)
     import_selected_button.grid(row=0, column=4, padx=(0, 8))
+    templates_selected_button = ttk.Button(index_buttons, text="Copy templates to selected", command=copy_templates_to_selected)
+    templates_selected_button.grid(row=0, column=5, padx=(0, 8))
+    add_tooltip(templates_selected_button, "Copy the selected work templates into templates/ inside each chosen record folder (files already there are kept).")
     add_tooltip(refresh_index_button, "Reload the record list from the archive database (run after a new collection).")
     add_tooltip(open_folder_button, "Open the selected record's archive folder (or double-click a row).")
     add_tooltip(open_portal_button, "Open the selected record's PanamaCompra portal page in the browser.")

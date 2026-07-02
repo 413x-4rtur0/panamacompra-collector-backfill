@@ -31,6 +31,15 @@ UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
+# Work-templates helper imported as a module so the web monitor lists/saves the
+# same source folder and selection the CLI and native monitor use.
+import importlib.util as _importlib_util
+
+_rt_spec = _importlib_util.spec_from_file_location(
+    "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "record-templates.py"))
+record_templates = _importlib_util.module_from_spec(_rt_spec)
+_rt_spec.loader.exec_module(record_templates)
+
 WAHA_CHAT_ID_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id.txt"
 # Optional per-purpose destinations; each falls back to the default chat id.
 WAHA_CHAT_ID_INDEX_PATH = pc_common.DATA_CONFIG_DIR / "waha_chat_id_index.txt"
@@ -76,6 +85,7 @@ VALUE_SETTING_DEFAULTS = {
     # Container-side settings applied by src/tools/docker-stack.sh on the next
     # stack restart (non-empty values win over .env).
     "CHANGEDETECTION_BASE_URL": "http://localhost:5000",
+    "PC_TEMPLATES_SRC_DIR": "",
     "WAHA_PORT": "3000",
     "WAHA_API_KEY": "",
 }
@@ -119,6 +129,7 @@ MANUAL_ACTIONS = [
     ManualAction("Integrations", "Docker stack status", ("./src/tools/docker-stack.sh", "status"), "Writes container states plus the changedetection/WAHA URLs to the manual action log."),
     ManualAction("Integrations", "Restart docker stack", ("./src/tools/docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved below (changedetection URL, WAHA port/API key)."),
     ManualAction("Integrations", "Stop docker stack", ("./src/tools/docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Settings", "Apply work templates", ("./src/tools/record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder (existing files kept)."),
     ManualAction("Settings", "Build detail views", ("./src/pipeline/030-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
     ManualAction("Settings", "Repair missing deadlines", ("./src/pipeline/040-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
     ManualAction("Settings", "Build calendars", ("./src/pipeline/build_calendar.py", "--all"), "Rebuilds calendar import packages."),
@@ -660,7 +671,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+<div class="card"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -720,7 +731,7 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const note = document.getElementById('done-note');
   if (data.done) {{
@@ -784,6 +795,21 @@ function renderActionZones() {{
 }}
 function saveWaha() {{ const v = id => encodeURIComponent((document.getElementById(id) || {{value:''}}).value); postForm('/api/waha-destination', 'chat_id=' + v('waha-message') + '&chat_id_index=' + v('waha-index') + '&chat_id_details=' + v('waha-details') + '&chat_id_status=' + v('waha-status')); }}
 function sendTestWhatsapp() {{ postForm('/api/test-whatsapp', ''); }}
+function saveTemplatesSource() {{ saveMonitorSetting('PC_TEMPLATES_SRC_DIR', document.getElementById('set-PC_TEMPLATES_SRC_DIR').value); setTimeout(loadTemplates, 400); }}
+async function loadTemplates() {{
+  const wrap = document.getElementById('templates-files');
+  try {{
+    const response = await fetch('/api/templates', {{cache: 'no-store'}});
+    const data = await response.json();
+    if (!data.files.length) {{ wrap.textContent = 'No template files in ' + data.source + ' — drop your work files there and press Refresh files.'; return; }}
+    wrap.innerHTML = data.files.map(f => '<label class="small" style="margin-right:14px; white-space:nowrap"><input type="checkbox" class="tpl-file" value="' + encodeURIComponent(f) + '"' + (data.selected.includes(f) ? ' checked' : '') + '> ' + f + '</label>').join(' ');
+  }} catch (err) {{ wrap.textContent = 'Template list unavailable: ' + err; }}
+}}
+function saveTemplatesSelection() {{
+  const files = Array.from(document.querySelectorAll('.tpl-file:checked')).map(el => 'file=' + el.value);
+  postForm('/api/templates-select', files.join('&'));
+  setTimeout(loadTemplates, 400);
+}}
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
@@ -933,6 +959,11 @@ function notifySelectedRecords() {{
   if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
   postForm('/api/selected-record-action', 'action=notify&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
+function templatesSelectedRecords() {{
+  const numeros = selectedRecordNumeros();
+  if (!numeros.length) return;
+  postForm('/api/selected-record-action', 'action=templates&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
+}}
 function importSelectedCalendars() {{
   const numeros = selectedRecordNumeros();
   if (!numeros.length) {{ document.getElementById('button-status').textContent = 'Select one or more records first.'; return; }}
@@ -1045,6 +1076,7 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
 }});
 initCollapsibleSections();
 refreshRecordIndex();
+loadTemplates();
 refreshDbReview();
 poll();
 </script>
@@ -1140,6 +1172,13 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_text(202, f"WhatsApp notification requested for {len(selected)} selected record(s).\n", "text/plain; charset=utf-8")
                 return
+            if action_name == "templates":
+                cmd = [str(BASE_DIR / "src/tools/record-templates.py"), "apply", "--apply"]
+                for numero in selected:
+                    cmd.extend(["--numero", numero])
+                subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Work templates requested for {len(selected)} selected record(s) (existing files kept).\n", "text/plain; charset=utf-8")
+                return
             if action_name == "calendar":
                 cmd = [str(BASE_DIR / "src/tools/import-selected-calendars.py"), "--open", *selected]
                 subprocess.Popen(cmd, cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1175,6 +1214,14 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     purpose_path.write_text(form.get(field_name, [""])[0].strip() + "\n", encoding="utf-8")
             self.send_text(200, "WhatsApp destination(s) saved.\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/templates-select":
+            src = record_templates.source_dir()
+            available = set(record_templates.source_files(src))
+            requested = [f.strip() for f in form.get("file", []) if f.strip()]
+            selection = [f for f in requested if f in available]
+            record_templates.save_selection(selection)
+            self.send_text(200, f"Template selection saved: {len(selection)} file(s).\n", "text/plain; charset=utf-8")
+            return
         if path == "/api/test-whatsapp":
             # One WAHA test message with the saved settings, so the WhatsApp
             # pipeline can be verified without waiting for a collector run.
@@ -1194,6 +1241,15 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/templates":
+            src = record_templates.source_dir()
+            payload = {
+                "source": str(src),
+                "files": record_templates.source_files(src),
+                "selected": record_templates.load_selection(),
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/record-index":
             self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")
