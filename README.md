@@ -26,6 +26,20 @@ cd panamacompra-collector
 ./bin/pcc monitor               # open the native monitor (falls back to a background log follower if there is no display)
 ```
 
+Everything the GUI monitors configure is also available headless through the CLI —
+useful on servers/SSH sessions with no display:
+
+```bash
+./bin/pcc watch                                  # live terminal monitor
+./bin/pcc db                                     # record + WhatsApp backlog counters
+./bin/pcc set PC_WAHA_ENABLED 1                  # any monitor setting (same file the GUIs use)
+./bin/pcc chat index 120363...@g.us              # WhatsApp destinations (default|index|details|status)
+./bin/pcc keywords set "salud, medicamentos"     # keyword filter (blank = announce everything)
+./bin/pcc test-whatsapp                          # one WAHA test message with the saved settings
+./bin/pcc notify OC-2026-000123 --force          # manual WhatsApp send for specific record(s)
+./bin/pcc docker up                              # manage the changedetection + WAHA containers
+```
+
 A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
 and runs the collector identically. The only features that need a real Git
 remote are the optional self-update commands (`./update-local-copy.sh`, the
@@ -448,6 +462,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/monitor/open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `src/pipeline/run-all-status.sh` | One-shot status snapshot. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), archive + WhatsApp backlog counters (`db`), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
 | `src/pipeline/queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `src/pipeline/stop-run-all.sh` | Emergency stop for stuck index/detail/worker processes. |
