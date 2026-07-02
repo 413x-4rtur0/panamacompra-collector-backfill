@@ -334,10 +334,13 @@ automatically uses `.venv/bin/python` when that virtual environment exists, so
 standalone validation checks the same interpreter the collector will use. Set
 `PC_SETUP_SKIP_APT=1` when system packages are managed separately,
 `PC_SETUP_SKIP_BROWSER=1` for
-CI/offline validation, or `PC_SETUP_SKIP_DOCKER=1` to skip starting the
-changedetection/WAHA/webhook Docker stack at the end of setup (when Docker is
-installed, setup brings the stack up with `./src/tools/docker-stack.sh up`;
-container data lives in `var/integrations`, override with `PC_INTEGRATIONS_DIR`) — these must be set as real environment variables
+CI/offline validation, or `PC_SETUP_SKIP_DOCKER=1` to skip the Docker step at
+the end of setup. That step installs the Docker engine + compose plugin with
+apt when missing (Debian/Ubuntu/Linux Mint), enables the service, adds your
+user to the `docker` group (re-login to use it without sudo), and brings the
+changedetection + WAHA + webhook stack up with `./src/tools/docker-stack.sh up`
+(bootstrapping the first start with sudo when needed; container data lives in
+`var/integrations`, override with `PC_INTEGRATIONS_DIR`) — these must be set as real environment variables
 (`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
 environment variable always takes precedence over `.env`/`config/defaults.env`
 values, matching this project's usual "environment variable > file > default"
@@ -1079,7 +1082,8 @@ into one reproducible stack:
 | `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:${WAHA_PORT:-3000}` (scan the QR once to log in). |
 | `webhook` | built from `docker/Dockerfile.webhook` | `src/webhook/listener.py` in **enqueue-only** mode on port `8765`. |
 
-`./setup.sh` starts this stack automatically when Docker is installed (set
+`./setup.sh` installs the Docker engine when missing (via apt on
+Debian/Ubuntu/Linux Mint) and starts this stack automatically (set
 `PC_SETUP_SKIP_DOCKER=1` to skip). The recommended way to manage it afterwards is
 the helper — also available as buttons in both monitors' **Integrations** zone:
 

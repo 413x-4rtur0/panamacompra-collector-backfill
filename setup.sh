@@ -65,18 +65,49 @@ else
   ./scripts/validate-installation.sh
 fi
 
-# Optional Docker stack: changedetection (change trigger) + WAHA (WhatsApp) +
-# enqueue-only webhook. Best effort — the collector itself works without it.
+# Docker dependencies: changedetection (change trigger) + WAHA (WhatsApp) +
+# enqueue-only webhook. Installs the Docker engine itself when missing (via
+# apt), then starts the stack. Best effort — the collector works without it.
 SKIP_DOCKER="${PC_SETUP_SKIP_DOCKER:-0}"
 if [[ "$SKIP_DOCKER" != "1" ]]; then
-  if command -v docker >/dev/null 2>&1 && { docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; }; then
-    note "Starting the changedetection + WAHA + webhook Docker stack (set PC_SETUP_SKIP_DOCKER=1 to skip)."
-    ./src/tools/docker-stack.sh up || note "Docker stack start failed (daemon not running or no permission?). Start it later with: ./src/tools/docker-stack.sh up"
+  if ! command -v docker >/dev/null 2>&1; then
+    if [[ "$SKIP_APT" != "1" ]] && command -v apt-get >/dev/null 2>&1; then
+      if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+      note "Installing the Docker engine + compose plugin with apt-get (set PC_SETUP_SKIP_DOCKER=1 to skip)."
+      # Package name for the compose v2 plugin varies by distro release.
+      $SUDO apt-get install -y docker.io docker-compose-v2 \
+        || $SUDO apt-get install -y docker.io docker-compose-plugin \
+        || $SUDO apt-get install -y docker.io docker-compose \
+        || note "Could not install Docker with apt-get. Install it manually, then run: ./src/tools/docker-stack.sh up"
+      if command -v systemctl >/dev/null 2>&1; then
+        $SUDO systemctl enable --now docker >/dev/null 2>&1 || note "Could not enable the docker service automatically (systemctl enable --now docker)."
+      fi
+      if command -v docker >/dev/null 2>&1 && [[ -n "${USER:-}" ]] && ! id -nG "$USER" 2>/dev/null | grep -qw docker; then
+        $SUDO usermod -aG docker "$USER" \
+          && note "Added $USER to the 'docker' group. Log out/in (or run 'newgrp docker') to manage containers without sudo." \
+          || true
+      fi
+    else
+      note "Docker not found and apt install unavailable/skipped. Install Docker manually, then run: ./src/tools/docker-stack.sh up"
+    fi
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    note "Starting the changedetection + WAHA + webhook Docker stack."
+    if ! ./src/tools/docker-stack.sh up; then
+      if command -v sudo >/dev/null 2>&1; then
+        # A user freshly added to the docker group cannot reach the socket until
+        # re-login; bootstrap the first start with sudo so setup ends complete.
+        note "Retrying the Docker stack start with sudo (fresh 'docker' group membership applies after re-login)."
+        sudo ./src/tools/docker-stack.sh up || note "Docker stack start failed — start it later with: ./src/tools/docker-stack.sh up"
+      else
+        note "Docker stack start failed (daemon not running or no permission?). Start it later with: ./src/tools/docker-stack.sh up"
+      fi
+    fi
   else
-    note "Docker not found: skipping the changedetection/WAHA containers. Install Docker, then run: ./src/tools/docker-stack.sh up"
+    note "Docker is still unavailable: the changedetection/WAHA containers stay off. Install Docker, then run: ./src/tools/docker-stack.sh up"
   fi
 else
-  note "Docker stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/docker-stack.sh up"
+  note "Docker install/stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/docker-stack.sh up"
 fi
 
 note "Setup complete. Start with: ./src/pipeline/request-run-all.sh 5 && ./src/monitor/open-monitor.sh"
