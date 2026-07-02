@@ -114,8 +114,15 @@ case "${WAHA_ENABLED,,}" in
     fi
     ;;
   *)
-    echo "WhatsApp notifications: disabled (default). To enable: docker compose up -d waha, pair the session (QR), then set PC_WAHA_ENABLED=1 and the chat id (see .env.example)."
+    echo "WhatsApp notifications: disabled (default). To enable: ./src/tools/docker-stack.sh up, pair the session (QR), then set PC_WAHA_ENABLED=1 and the chat id (see .env.example)."
     ;;
 esac
+
+# Informational: whether the changedetection/WAHA container stack can run here.
+if command -v docker >/dev/null 2>&1 && { docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; }; then
+  echo "Docker: available. Stack data: ${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations} — manage with ./src/tools/docker-stack.sh up|status|down."
+else
+  echo "Docker: not installed — the changedetection/WAHA containers stay off until Docker is installed (./src/tools/docker-stack.sh up)."
+fi
 
 echo "PanamaCompra Collector installation validation passed."

@@ -160,11 +160,19 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Install webhook service", ("./src/webhook/install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
     ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
 
-    # --- 4. Testing & Validation: sandbox runs and health checks -------------
+    # --- 4. Integrations: changedetection + WAHA Docker containers -----------
+    ManualAction("Integrations (Docker)", "Start/refresh docker stack", ("./src/tools/docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers. Their data stays inside the self-contained var/integrations folder."),
+    ManualAction("Integrations (Docker)", "Docker stack status", ("./src/tools/docker-stack.sh", "status"), "Writes the container states plus the changedetection/WAHA URLs to the manual action log."),
+    ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
+    ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
+    ManualAction("Integrations (Docker)", "Open changedetection UI", ("bash", "-lc", 'xdg-open "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"'), "Opens the changedetection.io web interface to configure the PanamaCompra watch and its trigger/webhook URL."),
+    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("bash", "-lc", 'xdg-open "http://localhost:${WAHA_PORT:-3000}"'), "Opens the WAHA dashboard to pair the WhatsApp session by QR and inspect the session state."),
+
+    # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
     ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary."),
 
-    # --- 5. Folder Management: open data storage locations -------------------
+    # --- 6. Folder Management: open data storage locations -------------------
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.DATA_DIR / 'index'))}"), "Opens the main index folder where collected records are stored."),
     ManualAction("Folder Management", "Open records folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.RECORDS_DIR))}"), "Opens the records archive folder containing organized record subfolders."),
     ManualAction("Folder Management", "Open logs folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.LOG_DIR))}"), "Opens the logs folder containing worker and action logs."),
@@ -1134,6 +1142,9 @@ def run_tk() -> int:
     timer_records_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_RECORDS", "20"))
     timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
     monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
+    changedetection_url_var = tk.StringVar(value=setting("CHANGEDETECTION_BASE_URL", os.environ.get("CHANGEDETECTION_BASE_URL", "http://localhost:5000")))
+    waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
+    waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
@@ -1218,6 +1229,9 @@ def run_tk() -> int:
     field(21, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
     field(21, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
     field(22, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
+    field(25, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
+    field(25, 2, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(26, 0, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
     waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
     waha_enabled_check.grid(row=23, column=0, columnspan=2, sticky="w", pady=3)
     skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
@@ -1290,6 +1304,9 @@ def run_tk() -> int:
             "PC_NEXT_RUN_TIMER_RECORDS": timer_records_var.get().strip() or "20",
             "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
             "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
+            "CHANGEDETECTION_BASE_URL": changedetection_url_var.get().strip() or "http://localhost:5000",
+            "WAHA_PORT": waha_port_var.get().strip() or "3000",
+            "WAHA_API_KEY": waha_server_key_var.get().strip(),
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1311,7 +1328,7 @@ def run_tk() -> int:
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL, WAHA port/API key) apply when the docker stack is restarted from the Integrations buttons.", style="Card.TLabel", wraplength=820).grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================

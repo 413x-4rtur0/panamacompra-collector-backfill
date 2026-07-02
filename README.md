@@ -332,9 +332,12 @@ Debian/Ubuntu/Linux Mint when apt is not skipped), creates runtime directories,
 and finishes by running `./scripts/validate-installation.sh`. The validator
 automatically uses `.venv/bin/python` when that virtual environment exists, so
 standalone validation checks the same interpreter the collector will use. Set
-`PC_SETUP_SKIP_APT=1` when system packages are managed separately, or
+`PC_SETUP_SKIP_APT=1` when system packages are managed separately,
 `PC_SETUP_SKIP_BROWSER=1` for
-CI/offline validation — these must be set as real environment variables
+CI/offline validation, or `PC_SETUP_SKIP_DOCKER=1` to skip starting the
+changedetection/WAHA/webhook Docker stack at the end of setup (when Docker is
+installed, setup brings the stack up with `./src/tools/docker-stack.sh up`;
+container data lives in `var/integrations`, override with `PC_INTEGRATIONS_DIR`) — these must be set as real environment variables
 (`PC_SETUP_SKIP_APT=1 ./setup.sh`, not written into `.env`), since a real
 environment variable always takes precedence over `.env`/`config/defaults.env`
 values, matching this project's usual "environment variable > file > default"
@@ -434,6 +437,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/webhook/watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/request-run-all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `src/webhook/diagnose.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `src/tools/docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
 | `src/tools/migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `src/monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons and test-sandbox folder opening after test-zone completion. |
 | `src/monitor/next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
@@ -1075,14 +1079,30 @@ into one reproducible stack:
 | `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:${WAHA_PORT:-3000}` (scan the QR once to log in). |
 | `webhook` | built from `docker/Dockerfile.webhook` | `src/webhook/listener.py` in **enqueue-only** mode on port `8765`. |
 
+`./setup.sh` starts this stack automatically when Docker is installed (set
+`PC_SETUP_SKIP_DOCKER=1` to skip). The recommended way to manage it afterwards is
+the helper — also available as buttons in both monitors' **Integrations** zone:
+
 ```bash
 cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
 printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
-docker compose up -d webhook changedetection   # webhook + changedetection + browser
-docker compose up -d waha                      # add WAHA if host port 3000 is free
-# If another WAHA already owns port 3000: WAHA_PORT=3001 docker compose up -d waha
-# Runtime volumes live under ./integrations/changedetection and ./integrations/waha
+./src/tools/docker-stack.sh up       # pull/start changedetection + browser + WAHA + webhook
+./src/tools/docker-stack.sh status   # container states + UI URLs
+./src/tools/docker-stack.sh down     # stop the containers (data is kept)
+# If another WAHA already owns port 3000: save "WAHA server port" in the monitor
+# Settings (or WAHA_PORT in .env) and restart the stack.
 ```
+
+Container data stays **inside the self-contained state directory** —
+`var/integrations/changedetection` and `var/integrations/waha` in
+development/portable mode, the XDG state dir in installed mode; override with
+`PC_INTEGRATIONS_DIR`. A legacy repo-root `./integrations/` folder is moved there
+automatically on the first `docker-stack.sh` run (a compatibility symlink is left
+behind). The helper also applies the container settings saved from the monitors'
+Settings panels (`CHANGEDETECTION_BASE_URL`, `WAHA_PORT`, `WAHA_API_KEY`) on the
+next `up`/`restart`, so changedetection and WAHA can be adjusted without editing
+`.env`. Raw `docker compose up -d` still works from the checkout root and uses
+the same `var/integrations` default.
 
 **Why the webhook container only “enqueues”.** The real collector (Playwright
 Firefox writing to the host `./records` and `./data`) runs on the **host**, not in
@@ -1125,7 +1145,7 @@ If Apprise/changedetection still logs a huge payload (`message` length near
 If you previously split the stack into separate folders such as
 `~/Apps/panamacompra-monitor`, `~/Apps/panamacompra-webhook-receiver`,
 `~/Apps/waha`, or the same names under `/Apps`, consolidate them into the
-collector checkout's `integrations/` folder so Docker volumes, `.webhook_token`,
+collector's integrations folder (now `var/integrations/`, see `PC_INTEGRATIONS_DIR`) so Docker volumes, `.webhook_token`,
 queue files, and the updated listener all refer to the same checkout. The helper
 defaults to the `Apps` directory that contains the script (for example
 `~/Apps/panamacompra-collector` stays under `~/Apps`, not `/Apps`) and also

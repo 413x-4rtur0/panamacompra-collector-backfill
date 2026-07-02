@@ -64,5 +64,20 @@ if [[ "$SKIP_BROWSER" == "1" ]]; then
 else
   ./scripts/validate-installation.sh
 fi
+
+# Optional Docker stack: changedetection (change trigger) + WAHA (WhatsApp) +
+# enqueue-only webhook. Best effort — the collector itself works without it.
+SKIP_DOCKER="${PC_SETUP_SKIP_DOCKER:-0}"
+if [[ "$SKIP_DOCKER" != "1" ]]; then
+  if command -v docker >/dev/null 2>&1 && { docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; }; then
+    note "Starting the changedetection + WAHA + webhook Docker stack (set PC_SETUP_SKIP_DOCKER=1 to skip)."
+    ./src/tools/docker-stack.sh up || note "Docker stack start failed (daemon not running or no permission?). Start it later with: ./src/tools/docker-stack.sh up"
+  else
+    note "Docker not found: skipping the changedetection/WAHA containers. Install Docker, then run: ./src/tools/docker-stack.sh up"
+  fi
+else
+  note "Docker stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/docker-stack.sh up"
+fi
+
 note "Setup complete. Start with: ./src/pipeline/request-run-all.sh 5 && ./src/monitor/open-monitor.sh"
 note "Or use the unified CLI: ./bin/pcc start 5 && ./bin/pcc monitor"

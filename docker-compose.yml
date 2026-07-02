@@ -16,6 +16,12 @@
 # with Docker Compose" section.
 #
 # Copy .env.example to .env first and set the values.
+#
+# Container data (changedetection datastore, WAHA sessions) lives inside the
+# self-contained state directory: ${PC_INTEGRATIONS_DIR:-./var/integrations}.
+# Prefer starting the stack through ./src/tools/docker-stack.sh, which resolves
+# PC_INTEGRATIONS_DIR for every mode (development/portable/installed), applies
+# monitor-saved container settings, and migrates a legacy ./integrations folder.
 
 services:
   sockpuppetbrowser:
@@ -41,7 +47,7 @@ services:
       # Public URL it advertises in its own UI/notification links.
       - BASE_URL=${CHANGEDETECTION_BASE_URL:-http://localhost:5000}
     volumes:
-      - ./integrations/changedetection:/datastore
+      - ${PC_INTEGRATIONS_DIR:-./var/integrations}/changedetection:/datastore
     # Lets watches/notifications reach the host too if you ever point them there.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -59,7 +65,7 @@ services:
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
     volumes:
-      - ./integrations/waha:/app/.sessions
+      - ${PC_INTEGRATIONS_DIR:-./var/integrations}/waha:/app/.sessions
     networks:
       - pc
 

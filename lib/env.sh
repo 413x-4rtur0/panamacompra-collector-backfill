@@ -88,10 +88,13 @@ export PC_ARCHIVE_DB_PATH="${PC_ARCHIVE_DB_PATH:-$PC_DATA_DIR/panamacompra_archi
 export PC_INDEX_CSV_PATH="${PC_INDEX_CSV_PATH:-$PC_DATA_DIR/panamacompra_index.csv}"
 export PC_CALENDAR_DIR="${PC_CALENDAR_DIR:-$PC_DATA_DIR/calendar}"
 export PC_RECORDS_TEST_DIR="${PC_RECORDS_TEST_DIR:-$PC_STATE_DIR/records_test}"
+# Docker bind-mount data for the changedetection + WAHA containers, kept inside
+# the self-contained state directory (see src/tools/docker-stack.sh).
+export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
 
 # The WAHA container is protected with WAHA_API_KEY (docker-compose), while the
 # notifier authenticates with PC_WAHA_API_KEY. Default one from the other so a
 # single .env value keeps the collector able to reach a protected WAHA server.
 export PC_WAHA_API_KEY="${PC_WAHA_API_KEY:-${WAHA_API_KEY:-}}"
 
-mkdir -p "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR"
+mkdir -p "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR" "$PC_INTEGRATIONS_DIR"
