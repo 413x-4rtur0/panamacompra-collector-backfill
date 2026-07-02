@@ -1509,3 +1509,7 @@ The repository contains **code only**. Runtime data (`data/`, `records/`, `.venv
 ### Date fields retained in detail and database records
 
 The collector stores the important dates with explicit names: `date_start_opportunity` / `start_date_guess` for the opportunity start, `date_end_opportunity` / `finish_date_guess` for the opportunity end or deadline, `date_downloaded_local` / `detail_saved_at` for the local download time, and `date_name_finish_stamp` for the date token used in the record folder name. The monitor displays downloaded/start/end values together so filtering and review do not depend on the folder name alone.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
