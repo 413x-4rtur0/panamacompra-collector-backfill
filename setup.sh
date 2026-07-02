@@ -34,12 +34,18 @@ if [[ "$SKIP_APT" != "1" ]] && command -v apt-get >/dev/null 2>&1; then
 fi
 
 require_python
+note "Python $("$PYTHON_BIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') found at $(command -v "$PYTHON_BIN") — no interpreter install needed."
 
 if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env
   note "Created .env from .env.example. Edit it to customize settings before first run."
+elif [[ -f .env ]]; then
+  note "Existing .env recognized and kept (delete it to regenerate from .env.example)."
 fi
 
+if [[ -d .venv ]]; then
+  note "Existing virtual environment .venv recognized — reusing it; dependencies upgrade in place. Delete .venv to force a clean rebuild."
+fi
 note "Creating/updating virtual environment at $APP_ROOT/.venv"
 "$PYTHON_BIN" -m venv .venv
 # shellcheck disable=SC1091
@@ -70,6 +76,9 @@ fi
 # apt), then starts the stack. Best effort — the collector works without it.
 SKIP_DOCKER="${PC_SETUP_SKIP_DOCKER:-0}"
 if [[ "$SKIP_DOCKER" != "1" ]]; then
+  if command -v docker >/dev/null 2>&1; then
+    note "Docker already installed ($(docker --version 2>/dev/null || echo version unknown)) — skipping engine install."
+  fi
   if ! command -v docker >/dev/null 2>&1; then
     if [[ "$SKIP_APT" != "1" ]] && command -v apt-get >/dev/null 2>&1; then
       if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
@@ -112,3 +121,4 @@ fi
 
 note "Setup complete. Start with: ./src/pipeline/request-run-all.sh 5 && ./src/monitor/open-monitor.sh"
 note "Or use the unified CLI: ./bin/pcc start 5 && ./bin/pcc monitor"
+note "To stop/remove a previous or duplicate installation, run ./scripts/uninstall.sh in THAT installation's folder (interactive; data kept unless purged)."

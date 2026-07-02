@@ -1084,7 +1084,17 @@ into one reproducible stack:
 
 `./setup.sh` installs the Docker engine when missing (via apt on
 Debian/Ubuntu/Linux Mint) and starts this stack automatically (set
-`PC_SETUP_SKIP_DOCKER=1` to skip). The recommended way to manage it afterwards is
+`PC_SETUP_SKIP_DOCKER=1` to skip). Setup recognizes what is already installed —
+existing Python, `.venv`, `.env` and Docker are reported and reused, never
+reinstalled — and before starting containers the helper runs a preflight: if a
+previous/other installation already holds the needed ports (for example a WAHA
+or changedetection started from another folder), it lists the offending
+containers with their origin path and asks whether to stop them (interactive) or
+warns and continues (unattended); it also points old `/Apps`-style data at
+`./src/tools/migrate-apps-layout.sh` and legacy `./integrations` data is migrated
+automatically. To remove a previous installation, run `./scripts/uninstall.sh`
+from that installation's folder (interactive; add `--purge-*` flags to delete
+data). The recommended way to manage it afterwards is
 the helper — also available as buttons in both monitors' **Integrations** zone:
 
 ```bash

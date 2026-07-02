@@ -76,8 +76,57 @@ print_urls() {
   note "Container data: $PC_INTEGRATIONS_DIR"
 }
 
+# Recognize previous/parallel installations before starting:
+#  * our own stack already running        -> just refresh it
+#  * foreign containers on our host ports -> ask to stop them (tty) or warn
+#  * old /Apps-style data folders         -> point to the migration helper
+preflight() {
+  if [ -n "$("${COMPOSE[@]}" ps -q 2>/dev/null)" ]; then
+    note "This project's stack is already running — containers will be refreshed in place."
+  fi
+
+  local ports=("5000" "${WAHA_PORT:-3000}" "${PC_WEBHOOK_PORT:-8765}")
+  local conflict_names=() conflict_lines=() port line name image workdir
+  for port in "${ports[@]}"; do
+    while IFS='|' read -r name image workdir; do
+      [ -n "$name" ] || continue
+      [ "$workdir" = "$APP_ROOT" ] && continue
+      conflict_names+=("$name")
+      conflict_lines+=("port $port is used by container '$name' ($image)${workdir:+ from $workdir}")
+    done < <(docker ps --filter "publish=$port" --format '{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null)
+  done
+
+  if [ "${#conflict_names[@]}" -gt 0 ]; then
+    note "Detected containers from a previous/other installation using ports this stack needs:"
+    printf '[docker-stack]   - %s\n' "${conflict_lines[@]}"
+    note "Options: stop them now, keep them and change this stack's ports (WAHA server port in the monitor Settings, WAHA_PORT/PC_WEBHOOK_PORT in .env), or keep using the existing service."
+    if [ -t 0 ]; then
+      printf '[docker-stack] Stop the conflicting container(s) and continue? [y/N]: '
+      read -r answer
+      case "$answer" in
+        y|Y|yes|YES|s|S|si|SI|sí)
+          docker stop "${conflict_names[@]}" || fail "Could not stop the conflicting container(s)."
+          note "Conflicting container(s) stopped. Their data was not touched."
+          ;;
+        *)
+          fail "Aborted: adjust the ports or stop/uninstall the previous installation (see ./scripts/uninstall.sh in its folder), then rerun."
+          ;;
+      esac
+    else
+      note "WARNING: continuing non-interactively; services whose ports are busy will fail to start."
+    fi
+  fi
+
+  for legacy_app in "${HOME:-/root}/Apps/waha" "/Apps/waha" "${HOME:-/root}/Apps/panamacompra-monitor" "/Apps/panamacompra-monitor" "${HOME:-/root}/Apps/panamacompra-webhook-receiver" "/Apps/panamacompra-webhook-receiver"; do
+    if [ -d "$legacy_app" ] && [ ! -L "$legacy_app" ]; then
+      note "Found previous installation data at $legacy_app — consolidate it into this checkout with ./src/tools/migrate-apps-layout.sh (dry-run by default)."
+    fi
+  done
+}
+
 case "$ACTION" in
   up)
+    preflight
     "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed. Check that the Docker daemon is running and your user can access it."
     note "Stack is up."
     print_urls
@@ -88,6 +137,7 @@ case "$ACTION" in
     ;;
   restart)
     "${COMPOSE[@]}" down --remove-orphans
+    preflight
     "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed after restart."
     note "Stack restarted."
     print_urls
