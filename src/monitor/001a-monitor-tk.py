@@ -350,29 +350,42 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
-def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
-    """Best-effort item loader for KPI dashboards; never raises."""
+def load_detail_payload_for_kpi(detail_json_path: str | None) -> tuple[list[dict], dict]:
+    """Best-effort loader of a saved detail JSON for the KPI dashboards.
+
+    Returns (items, summary); handles split item files and never raises."""
     if not detail_json_path:
-        return []
+        return [], {}
     path = Path(str(detail_json_path))
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return [], {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     items = data.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
-    split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
-    descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
-    rel = descriptor.get("file")
-    if rel:
-        try:
-            split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
-            if isinstance(split_items, list):
-                return [item for item in split_items if isinstance(item, dict)]
-        except Exception:
-            return []
-    return []
+    if not isinstance(items, list):
+        items = []
+        split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+        descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+        rel = descriptor.get("file")
+        if rel:
+            try:
+                split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
+                if isinstance(split_items, list):
+                    items = split_items
+            except Exception:
+                items = []
+    return [item for item in items if isinstance(item, dict)], summary
+
+
+def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
+    """Best-effort item loader for KPI dashboards; never raises."""
+    return load_detail_payload_for_kpi(detail_json_path)[0]
+
+
+# Detail-summary labels that describe WHERE the opportunity is bought/delivered.
+# Used to build the KPI location diagram from the saved detail pages.
+LOCATION_SUMMARY_KEYS = ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia")
 
 
 def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[str, object]:
@@ -387,9 +400,15 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[
     with_items = 0
     max_items = {"numero": "", "descripcion": "", "count": 0}
     keyword_counts: Counter[str] = Counter()
+    location_counts: Counter[str] = Counter()
     sample_items: list[dict[str, str]] = []
     for row in rows:
-        items = load_detail_items_for_kpi(str(row["detail_json_path"] or ""))
+        items, summary = load_detail_payload_for_kpi(str(row["detail_json_path"] or ""))
+        for key in LOCATION_SUMMARY_KEYS:
+            place = str(summary.get(key) or "").strip()
+            if place:
+                location_counts[place[:60]] += 1
+                break
         if items:
             with_items += 1
         total_items += len(items)
@@ -414,6 +433,7 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[
         "avg_items_per_record": avg_items,
         "max_items_record": max_items,
         "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
+        "top_locations": [{"label": k, "count": v} for k, v in location_counts.most_common(10)],
         "sample_items": sample_items,
     }
 
@@ -425,7 +445,8 @@ def db_review_stats() -> dict[str, object]:
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
         "needs_deadline": 0, "with_detail_json": 0, "item_analysis": {},
-        "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
+        "groups": [], "entities": [], "dependencias": [],
+        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -514,6 +535,22 @@ def db_review_stats() -> dict[str, object]:
                     "GROUP BY grupo ORDER BY c DESC"
                 ).fetchall()
             ],
+            # WHO buys and WHERE: contracting entities and their dependencies,
+            # for the KPI location/buyer diagrams.
+            "entities": [
+                {"label": str(r["entidad"] or "(sin entidad)"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT entidad, COUNT(*) AS c FROM opportunities "
+                    "GROUP BY entidad ORDER BY c DESC LIMIT 12"
+                ).fetchall()
+            ] if "entidad" in columns else [],
+            "dependencias": [
+                {"label": str(r["dependencia"] or "(sin dependencia)"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT dependencia, COUNT(*) AS c FROM opportunities "
+                    "GROUP BY dependencia ORDER BY c DESC LIMIT 12"
+                ).fetchall()
+            ] if "dependencia" in columns else [],
         }
     except sqlite3.Error:
         return empty
@@ -912,6 +949,13 @@ def run_tk() -> int:
     style.configure("TEntry", fieldbackground="#020617", foreground="#e5e7eb",
                     bordercolor="#475569", insertcolor="#e5e7eb")
     style.map("TEntry", fieldbackground=[("readonly", "#0b1220")], foreground=[("readonly", "#e5e7eb")])
+    # Unified tab bar shared with the web monitor's look: dark chips, blue active.
+    style.configure("TNotebook", background="#0f172a", borderwidth=0)
+    style.configure("TNotebook.Tab", background="#1f2937", foreground="#cbd5e1",
+                    padding=(14, 7), font=("Sans", 10, "bold"))
+    style.map("TNotebook.Tab",
+              background=[("selected", "#2563eb")],
+              foreground=[("selected", "#ffffff")])
 
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
@@ -925,9 +969,9 @@ def run_tk() -> int:
     content = ttk.Frame(canvas, style="TFrame")
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
-    # The logs pane (after record/database sections plus reset actions) is the
-    # one that should absorb extra vertical space.
-    content.rowconfigure(11, weight=1)
+    # Row 0 holds the live header; row 1 holds the unified tab notebook, which
+    # absorbs the extra vertical space.
+    content.rowconfigure(1, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -1084,10 +1128,34 @@ def run_tk() -> int:
             apply_hidden(True)
 
     # ========================================================================
-    # SECTION 1: RUN CONTROLS - request a restart or test-zone run
+    # UNIFIED TABS - the same five tabs as the web monitor: Operations ·
+    # Settings · WhatsApp · KPIs · Records & Database. The live header
+    # (progress, process chips, queue) stays visible above the tab bar.
     # ========================================================================
-    controls = ttk.Frame(content, style="Card.TFrame", padding=14)
-    controls.grid(row=1, column=0, sticky="ew", padx=14, pady=8)
+    tabs = ttk.Notebook(content)
+    tabs.grid(row=1, column=0, sticky="nsew", padx=14, pady=8)
+    ops_tab = ttk.Frame(tabs, style="TFrame")
+    settings_tab = ttk.Frame(tabs, style="TFrame")
+    whatsapp_tab = ttk.Frame(tabs, style="TFrame")
+    kpi_tab = ttk.Frame(tabs, style="TFrame")
+    records_tab = ttk.Frame(tabs, style="TFrame")
+    for tab_frame, tab_title in (
+        (ops_tab, "Operations"),
+        (settings_tab, "Settings"),
+        (whatsapp_tab, "WhatsApp"),
+        (kpi_tab, "KPIs"),
+        (records_tab, "Records & Database"),
+    ):
+        tabs.add(tab_frame, text=tab_title)
+        tab_frame.columnconfigure(0, weight=1)
+    # Tab contents differ in height; recompute the page scroll range on switch.
+    tabs.bind("<<NotebookTabChanged>>", lambda _e: root.after_idle(update_scroll_region))
+
+    # ========================================================================
+    # OPERATIONS TAB / RUN CONTROLS - request a restart or test-zone run
+    # ========================================================================
+    controls = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
+    controls.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     controls.columnconfigure(5, weight=1)
     button_status_var = tk.StringVar(value="")
     run_mode_var = tk.StringVar(value="restart")
@@ -1187,16 +1255,21 @@ def run_tk() -> int:
             run_button.configure(text="Request selected run")
 
     # ========================================================================
-    # SECTION 3: SETTINGS - editable fields with defaults; leave as-is to keep
-    # the defaults. Saved to data/config/monitor_settings.env and applied live.
-    # (Rendered at grid row 3, below the Live diagnostics section.)
+    # SETTINGS TAB - general options in one fixed, tidy order: Monitor window →
+    # Storage paths → Collector & webhook automation → Next-run timer window →
+    # Integrations → Work templates. Everything WhatsApp/WAHA lives in the
+    # WhatsApp tab; both tabs share the same Apply logic and persist to
+    # data/config/monitor_settings.env (environment variables still win).
     # ========================================================================
-    settings = ttk.Frame(content, style="Card.TFrame", padding=14)
-    # Live diagnostics sits at row 2 (directly under Run controls); Settings moves
-    # to row 3, so the live run status is visible without scrolling past Settings.
-    settings.grid(row=3, column=0, sticky="ew", padx=14, pady=8)
+    settings = ttk.Frame(settings_tab, style="Card.TFrame", padding=14)
+    settings.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     settings.columnconfigure(1, weight=1)
     settings.columnconfigure(3, weight=1)
+
+    whatsapp = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
+    whatsapp.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+    whatsapp.columnconfigure(1, weight=1)
+    whatsapp.columnconfigure(3, weight=1)
 
     alpha_var = tk.StringVar(value=f"{runtime['alpha']:.2f}")
     autoclose_var = tk.StringVar(value=str(runtime["auto_close"]))
@@ -1207,6 +1280,7 @@ def run_tk() -> int:
     waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
     waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
     waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
+
     def read_filter_file(path: Path) -> str:
         if not path.exists():
             return ""
@@ -1247,43 +1321,67 @@ def run_tk() -> int:
     changedetection_url_var = tk.StringVar(value=setting("CHANGEDETECTION_BASE_URL", os.environ.get("CHANGEDETECTION_BASE_URL", "http://localhost:5000")))
     waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
     waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
+    # WAHA dashboard login: the docker stack seeds admin / 12345678 on every
+    # install/reinstall so the review dashboard is always reachable; change the
+    # password here whenever desired (applied on the next stack restart).
+    waha_dash_user_var = tk.StringVar(value=setting("WAHA_DASHBOARD_USERNAME", "admin"))
+    waha_dash_pass_var = tk.StringVar(value=setting("WAHA_DASHBOARD_PASSWORD", "12345678"))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
     update_before_var = tk.BooleanVar(value=setting("PC_RUN_UPDATE_BEFORE_RUN", "1") != "0")
 
-    def field(row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
-        ttk.Label(settings, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
-        entry = ttk.Entry(settings, textvariable=var, width=width)
+    def field(frame: ttk.Frame, row: int, col: int, label: str, var: tk.StringVar, width: int, tip: str) -> None:
+        ttk.Label(frame, text=label, style="Card.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 6), pady=3)
+        entry = ttk.Entry(frame, textvariable=var, width=width)
         entry.grid(row=row, column=col + 1, sticky="ew", pady=3, padx=(0, 12))
         add_tooltip(entry, tip)
 
-    ttk.Label(settings, text="Settings (ordered: Window → WhatsApp destinations → Paths → Collector/Timer/Integrations → Templates → Filters/Formats)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-    field(1, 0, "Transparency 0.30–1.00:", alpha_var, 8, "Whole-window opacity (text shares it). Default 0.85 = lightly translucent and readable. Lower it toward 0.30 for a more see-through window; 1.00 = fully opaque. Applied live when you click Apply.")
-    field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
-    field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
-    field(2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
-    field(3, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
-    ttk.Label(settings, text="WhatsApp destination chat id (…@g.us):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
-    chat_entry = ttk.Entry(settings, textvariable=waha_var)
-    chat_entry.grid(row=4, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
-    kw_entry = ttk.Entry(settings, textvariable=keywords_var)
-    kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
-    field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
-    field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
-    field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
-    notify_check = ttk.Checkbutton(settings, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
-    notify_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=3)
+    def group_title(frame: ttk.Frame, row: int, text: str) -> None:
+        ttk.Label(frame, text=text, style="Title.TLabel").grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 6))
+
+    # ---- Settings tab: Monitor window -------------------------------------
+    ttk.Label(settings, text="Settings (Monitor window → Storage paths → Collector & webhook → Timer window → Integrations → Work templates)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    field(settings, 1, 0, "Transparency 0.30–1.00:", alpha_var, 8, "Whole-window opacity (text shares it). Default 0.85 = lightly translucent and readable. Lower it toward 0.30 for a more see-through window; 1.00 = fully opaque. Applied live when you click Apply.")
+    field(settings, 1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
+    field(settings, 2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
+    field(settings, 2, 2, "Idle refresh seconds:", idle_var, 8, "How often the monitor refreshes when idle (low power). Default 15.")
+
+    # ---- Settings tab: Storage paths ---------------------------------------
+    group_title(settings, 3, "Storage paths")
+    field(settings, 4, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
+    field(settings, 5, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
+    field(settings, 6, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
+
+    # ---- Settings tab: Collector & webhook automation ----------------------
+    group_title(settings, 7, "Collector & webhook automation (apply on the next run/launch)")
+    field(settings, 8, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
+    field(settings, 8, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
+    field(settings, 9, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
+    field(settings, 9, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. 0 = every pending detail row. Env: PC_WEBHOOK_DETAIL_LIMIT.")
+    field(settings, 10, 0, "Test-zone records:", test_limit_var, 8, "How many recent records the idle test zone re-runs in the sandbox. Env: PC_TEST_ZONE_LIMIT.")
+    field(settings, 10, 2, "Monitor stale seconds:", monitor_stale_var, 8, "Seconds before stale RUNNING progress unlocks controls when no worker process is active. Env: PC_MONITOR_STALE_SECONDS.")
     calendar_check = ttk.Checkbutton(settings, text="Import/open generated calendar events", variable=import_calendar_var, style="Card.TCheckbutton")
-    calendar_check.grid(row=9, column=2, columnspan=2, sticky="w", pady=3)
-    add_tooltip(notify_check, "Master switch for automatic WhatsApp MESSAGING. The index alert is sent right after the index scan, before downloads. Manual selected-record notification buttons remain available.")
+    calendar_check.grid(row=11, column=0, columnspan=2, sticky="w", pady=3)
     add_tooltip(calendar_check, "Turn on to open generated .ics calendar packages/events after they are built.")
-    notify_details_check = ttk.Checkbutton(settings, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
-    notify_details_check.grid(row=10, column=0, columnspan=2, sticky="w", pady=3)
-    add_tooltip(notify_details_check, "Second notifier phase: after each announced record's detail page downloads, send the '📥 Detalles Completos' message with the real items, location and full date range. Env: PC_NOTIFY_DETAILS. Off = items are absorbed silently (no duplicate messages).")
+    test_autorun_check = ttk.Checkbutton(settings, text="Auto-run test zone when no new records", variable=test_autorun_var, style="Card.TCheckbutton")
+    test_autorun_check.grid(row=11, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(test_autorun_check, "When a run finds no new records, exercise the current code on the last N records in the sandbox. Env: PC_TEST_ZONE_AUTORUN.")
+    update_before_check = ttk.Checkbutton(settings, text="Update local copy before each run", variable=update_before_var, style="Card.TCheckbutton")
+    update_before_check.grid(row=12, column=0, columnspan=2, sticky="w", pady=3)
+    add_tooltip(update_before_check, "Fast-forward the local git checkout before each worker iteration. Env: PC_RUN_UPDATE_BEFORE_RUN.")
+
+    # ---- Settings tab: Next-run timer window -------------------------------
+    group_title(settings, 13, "Next-run timer window")
+    field(settings, 14, 0, "Timer width:", timer_width_var, 8, "Next-run timer window width in pixels. Env: PC_NEXT_RUN_TIMER_WIDTH.")
+    field(settings, 14, 2, "Timer height:", timer_height_var, 8, "Next-run timer window height in pixels. Env: PC_NEXT_RUN_TIMER_HEIGHT.")
+    field(settings, 15, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
+    field(settings, 15, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
+    field(settings, 16, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
+
+    # ---- Settings tab: Integrations ----------------------------------------
+    group_title(settings, 17, "Integrations (changedetection container; applied on the next docker stack restart)")
+    field(settings, 18, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
 
     def send_test_whatsapp() -> None:
         subprocess.Popen(
@@ -1292,60 +1390,6 @@ def run_tk() -> int:
             cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         button_status_var.set("WhatsApp test message requested (uses the saved WAHA settings; check the group and data/logs).")
-
-    test_whatsapp_button = ttk.Button(settings, text="Send test WhatsApp", command=send_test_whatsapp)
-    test_whatsapp_button.grid(row=10, column=2, sticky="w", pady=3)
-    add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
-
-    ttk.Label(settings, text="Per-purpose WhatsApp chat ids (blank = use the default destination above):", style="Card.TLabel").grid(row=11, column=0, sticky="w", pady=3)
-    purpose_frame = ttk.Frame(settings, style="Card.TFrame")
-    purpose_frame.grid(row=11, column=1, columnspan=3, sticky="ew", pady=3)
-    for _col, (_label, _var, _tip) in enumerate((
-        ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
-        ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
-        ("Status changes:", waha_status_var, "Group/channel that receives status-change/cancellation/items-updated messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
-    )):
-        ttk.Label(purpose_frame, text=_label, style="Card.TLabel").grid(row=0, column=_col * 2, sticky="w", padx=(0 if _col == 0 else 8, 4))
-        _entry = ttk.Entry(purpose_frame, textvariable=_var, width=22)
-        _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
-        add_tooltip(_entry, _tip)
-
-    ttk.Label(settings, text="Collector automation, timer, WAHA and integration settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
-    field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
-    field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
-    field(14, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
-    field(14, 2, "Webhook detail limit:", webhook_detail_var, 8, "Detail pages per automatic (changedetection) AUTO run. 0 = every pending detail row. Env: PC_WEBHOOK_DETAIL_LIMIT.")
-    field(15, 0, "WhatsApp within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
-    field(15, 2, "WhatsApp send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
-    field(16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
-    field(16, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
-    ttk.Label(settings, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=17, column=0, sticky="w", pady=3)
-    events_entry = ttk.Entry(settings, textvariable=waha_events_var)
-    events_entry.grid(row=17, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
-    field(18, 0, "Test-zone records:", test_limit_var, 8, "How many recent records the idle test zone re-runs in the sandbox. Env: PC_TEST_ZONE_LIMIT.")
-    field(18, 2, "Monitor stale seconds:", monitor_stale_var, 8, "Seconds before stale RUNNING progress unlocks controls when no worker process is active. Env: PC_MONITOR_STALE_SECONDS.")
-    ttk.Label(settings, text="Next-run timer window settings", style="Title.TLabel").grid(row=19, column=0, columnspan=4, sticky="w", pady=(12, 6))
-    field(20, 0, "Timer width:", timer_width_var, 8, "Next-run timer window width in pixels. Env: PC_NEXT_RUN_TIMER_WIDTH.")
-    field(20, 2, "Timer height:", timer_height_var, 8, "Next-run timer window height in pixels. Env: PC_NEXT_RUN_TIMER_HEIGHT.")
-    field(21, 0, "Timer top offset:", timer_top_var, 8, "Pixels from top of screen for the timer window. Env: PC_NEXT_RUN_TIMER_TOP.")
-    field(21, 2, "Timer latest records:", timer_records_var, 8, "How many latest records the timer window lists. Env: PC_NEXT_RUN_TIMER_RECORDS.")
-    field(22, 0, "Timer data refresh sec:", timer_data_refresh_var, 8, "How often the timer refreshes git/database/queue details. Env: PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS.")
-    field(25, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
-    field(25, 2, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
-    field(26, 0, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
-    waha_enabled_check = ttk.Checkbutton(settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
-    waha_enabled_check.grid(row=23, column=0, columnspan=2, sticky="w", pady=3)
-    skip_expired_check = ttk.Checkbutton(settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
-    skip_expired_check.grid(row=23, column=2, columnspan=2, sticky="w", pady=3)
-    test_autorun_check = ttk.Checkbutton(settings, text="Auto-run test zone when no new records", variable=test_autorun_var, style="Card.TCheckbutton")
-    test_autorun_check.grid(row=24, column=0, columnspan=2, sticky="w", pady=3)
-    update_before_check = ttk.Checkbutton(settings, text="Update local copy before each run", variable=update_before_var, style="Card.TCheckbutton")
-    update_before_check.grid(row=24, column=2, columnspan=2, sticky="w", pady=3)
-    add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
-    add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
-    add_tooltip(test_autorun_check, "When a run finds no new records, exercise the current code on the last N records in the sandbox. Env: PC_TEST_ZONE_AUTORUN.")
-    add_tooltip(update_before_check, "Fast-forward the local git checkout before each worker iteration. Env: PC_RUN_UPDATE_BEFORE_RUN.")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -1375,6 +1419,7 @@ def run_tk() -> int:
         WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
+
         def write_filter_file(path: Path, raw: str) -> None:
             rules = [k.strip() for k in re.split(r"[,\n]", raw) if k.strip()]
             path.write_text(("\n".join(rules) + "\n") if rules else "", encoding="utf-8")
@@ -1419,6 +1464,8 @@ def run_tk() -> int:
             "CHANGEDETECTION_BASE_URL": changedetection_url_var.get().strip() or "http://localhost:5000",
             "WAHA_PORT": waha_port_var.get().strip() or "3000",
             "WAHA_API_KEY": waha_server_key_var.get().strip(),
+            "WAHA_DASHBOARD_USERNAME": waha_dash_user_var.get().strip() or "admin",
+            "WAHA_DASHBOARD_PASSWORD": waha_dash_pass_var.get().strip() or "12345678",
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1438,16 +1485,17 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
-    add_tooltip(apply_button, "Apply transparency immediately, persist all settings to data/config/monitor_settings.env (shell-quoted so the worker can source them), and save the WhatsApp destination/keywords files.")
-    ttk.Label(settings, text="WhatsApp sending requires the 'Enable WAHA WhatsApp sending' box above (PC_WAHA_ENABLED) and a reachable WAHA server (base URL above). Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled. Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL, WAHA port/API key) apply when the docker stack is restarted from the Integrations buttons.", style="Card.TLabel", wraplength=820).grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    apply_button.grid(row=19, column=0, sticky="w", pady=(10, 0))
+    add_tooltip(apply_button, "Apply transparency immediately and persist EVERY setting from the Settings and WhatsApp tabs to data/config/monitor_settings.env (shell-quoted so the worker can source them).")
+    ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=20, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    ttk.Label(settings, text="Work templates (copied into templates/ inside each record folder)", style="Title.TLabel").grid(row=28, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    # ---- Settings tab: Work templates ---------------------------------------
+    group_title(settings, 21, "Work templates (copied into templates/ inside each record folder)")
     templates_src_var = tk.StringVar(value=setting("PC_TEMPLATES_SRC_DIR", ""))
-    field(29, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
+    field(settings, 22, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
     templates_listbox = tk.Listbox(settings, selectmode="multiple", height=5, activestyle="none", exportselection=False)
-    templates_listbox.grid(row=30, column=1, columnspan=3, sticky="ew", pady=3)
-    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=30, column=0, sticky="nw", pady=3)
+    templates_listbox.grid(row=23, column=1, columnspan=3, sticky="ew", pady=3)
+    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=23, column=0, sticky="nw", pady=3)
     add_tooltip(templates_listbox, "Tick the template files to copy into each record's templates/ folder. Selection is saved on Apply to data/config/templates_selected.txt (shared with pcc templates). New downloads receive them automatically; files already inside a record are never overwritten.")
 
     def refresh_templates_list() -> None:
@@ -1463,29 +1511,97 @@ def run_tk() -> int:
             templates_listbox.insert("end", f"(no files in {src} — drop templates there and refresh)")
 
     refresh_templates_button = ttk.Button(settings, text="Refresh template files", command=refresh_templates_list)
-    refresh_templates_button.grid(row=29, column=2, sticky="w", pady=3)
+    refresh_templates_button.grid(row=22, column=2, sticky="w", pady=3)
     add_tooltip(refresh_templates_button, "Re-scan the template source folder (after Apply when the folder path changed).")
     refresh_templates_list()
+    add_section_toggle(settings, button_column=3)
 
-    ttk.Label(settings, text="Per-destination WhatsApp filters (blank = use the shared filter above; OR with commas, AND with '+', NOT with '-')", style="Title.TLabel").grid(row=35, column=0, columnspan=4, sticky="w", pady=(12, 6))
-    field(36, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
-    field(36, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
-    field(37, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+    # ========================================================================
+    # WHATSAPP TAB - every WhatsApp/WAHA option in one place, ordered:
+    # Toggles → Destinations → Filters → Delivery → WAHA server (container) →
+    # Message formats. Saved by the same Apply logic as the Settings tab.
+    # ========================================================================
+    ttk.Label(whatsapp, text="WhatsApp & WAHA (Toggles → Destinations → Filters → Delivery → Server → Formats)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    waha_enabled_check = ttk.Checkbutton(whatsapp, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
+    waha_enabled_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
+    add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
+    notify_check = ttk.Checkbutton(whatsapp, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check.grid(row=1, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_check, "Master switch for automatic WhatsApp MESSAGING. The index alert is sent right after the index scan, before downloads. Manual selected-record notification buttons remain available.")
+    notify_details_check = ttk.Checkbutton(whatsapp, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
+    notify_details_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=3)
+    add_tooltip(notify_details_check, "Second notifier phase: after each announced record's detail page downloads, send the '📥 Detalles Completos' message with the real items, location and full date range. Env: PC_NOTIFY_DETAILS. Off = items are absorbed silently (no duplicate messages).")
+    skip_expired_check = ttk.Checkbutton(whatsapp, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
+    skip_expired_check.grid(row=2, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
 
-    ttk.Label(settings, text="WhatsApp message formats ({placeholder} fields; unknown placeholders stay literal)", style="Title.TLabel").grid(row=31, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    group_title(whatsapp, 3, "Destinations")
+    field(whatsapp, 4, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
+    ttk.Label(whatsapp, text="Default destination chat id (…@g.us):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    chat_entry = ttk.Entry(whatsapp, textvariable=waha_var)
+    chat_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
+    ttk.Label(whatsapp, text="Per-purpose chat ids (blank = default above):", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=3)
+    purpose_frame = ttk.Frame(whatsapp, style="Card.TFrame")
+    purpose_frame.grid(row=6, column=1, columnspan=3, sticky="ew", pady=3)
+    for _col, (_label, _var, _tip) in enumerate((
+        ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
+        ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
+        ("Status changes:", waha_status_var, "Group/channel that receives status-change/cancellation/items-updated messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
+    )):
+        ttk.Label(purpose_frame, text=_label, style="Card.TLabel").grid(row=0, column=_col * 2, sticky="w", padx=(0 if _col == 0 else 8, 4))
+        _entry = ttk.Entry(purpose_frame, textvariable=_var, width=22)
+        _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
+        add_tooltip(_entry, _tip)
+
+    group_title(whatsapp, 7, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
+    ttk.Label(whatsapp, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=8, column=0, sticky="w", pady=3)
+    kw_entry = ttk.Entry(whatsapp, textvariable=keywords_var)
+    kw_entry.grid(row=8, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
+    field(whatsapp, 9, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(whatsapp, 9, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(whatsapp, 10, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+
+    group_title(whatsapp, 11, "Delivery")
+    field(whatsapp, 12, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
+    field(whatsapp, 12, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
+    ttk.Label(whatsapp, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
+    events_entry = ttk.Entry(whatsapp, textvariable=waha_events_var)
+    events_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=3)
+    add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
+    test_whatsapp_button = ttk.Button(whatsapp, text="Send test WhatsApp", command=send_test_whatsapp)
+    test_whatsapp_button.grid(row=14, column=0, sticky="w", pady=3)
+    add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
+
+    group_title(whatsapp, 15, "WAHA server (container; applied on the next docker stack restart)")
+    field(whatsapp, 16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
+    field(whatsapp, 16, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
+    field(whatsapp, 17, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(whatsapp, 17, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
+    field(whatsapp, 18, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
+    field(whatsapp, 18, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. A fresh install/reinstall seeds the default 12345678 so you can always get in — change it here whenever you like. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
+    ttk.Label(whatsapp, text="Dashboard login defaults to admin / 12345678 after every install/reinstall; change the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=19, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+    whatsapp_apply_button = ttk.Button(whatsapp, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
+    whatsapp_apply_button.grid(row=20, column=0, sticky="w", pady=(10, 0))
+    add_tooltip(whatsapp_apply_button, "Same as the Settings tab Apply: persists every setting from both tabs and saves the WhatsApp destination/keywords files.")
+    ttk.Label(whatsapp, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=21, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    group_title(whatsapp, 22, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
     format_kind_var = tk.StringVar(value="index")
-    format_controls = ttk.Frame(settings, style="Card.TFrame")
-    format_controls.grid(row=32, column=0, columnspan=4, sticky="w", pady=3)
+    format_controls = ttk.Frame(whatsapp, style="Card.TFrame")
+    format_controls.grid(row=23, column=0, columnspan=4, sticky="w", pady=3)
     ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
     format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=("index", "details", "status"), width=9, state="readonly")
     format_kind_combo.grid(row=0, column=1, padx=(0, 10))
     add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with the items; status = cambios de estado/cancelaciones/items.")
 
-    format_text = tk.Text(settings, height=8, wrap="word")
-    format_text.grid(row=33, column=0, columnspan=4, sticky="ew", pady=3)
+    format_text = tk.Text(whatsapp, height=8, wrap="word")
+    format_text.grid(row=24, column=0, columnspan=4, sticky="ew", pady=3)
     add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
-    format_preview = tk.Text(settings, height=8, wrap="word", state="disabled")
-    format_preview.grid(row=34, column=0, columnspan=4, sticky="ew", pady=3)
+    format_preview = tk.Text(whatsapp, height=8, wrap="word", state="disabled")
+    format_preview.grid(row=25, column=0, columnspan=4, sticky="ew", pady=3)
 
     def _set_preview(text: str) -> None:
         format_preview.configure(state="normal")
@@ -1528,15 +1644,13 @@ def run_tk() -> int:
     ttk.Button(format_controls, text="Reset to default", command=reset_format).grid(row=0, column=5)
     format_kind_combo.bind("<<ComboboxSelected>>", load_format)
     load_format()
-    add_section_toggle(settings, button_column=3)
+    add_section_toggle(whatsapp, button_column=3)
 
     # ========================================================================
-    # SECTION 2: LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
-    # Rendered at grid row 2 (directly under Run controls) so the live run status
-    # is the third section on screen, above Settings.
+    # OPERATIONS TAB / LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.
     # ========================================================================
-    diag = ttk.Frame(content, style="Card.TFrame", padding=14)
-    diag.grid(row=2, column=0, sticky="ew", padx=14, pady=8)
+    diag = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
+    diag.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
     # Keep the two label columns narrow and let the two value columns absorb the
     # remaining width, so large counters and long descriptions stay readable.
     diag.columnconfigure(0, weight=0, minsize=130)
@@ -1579,11 +1693,11 @@ def run_tk() -> int:
     add_section_toggle(diag, button_column=3)
 
     # ========================================================================
-    # SECTION 4: RECORDS PENDING / COMPLETED - readable run counters plus the
+    # RECORDS TAB / RECORDS PENDING / COMPLETED - readable run counters plus the
     # previous database snapshot directly after the live records-completed view.
     # ========================================================================
-    records_overview = ttk.Frame(content, style="Card.TFrame", padding=14)
-    records_overview.grid(row=4, column=0, sticky="ew", padx=14, pady=8)
+    records_overview = ttk.Frame(records_tab, style="Card.TFrame", padding=14)
+    records_overview.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     for col in range(2):
         records_overview.columnconfigure(col, weight=1, uniform="record_overview")
     ttk.Label(records_overview, text="Records summary counters", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -1643,25 +1757,22 @@ def run_tk() -> int:
     add_section_toggle(records_overview, button_column=1)
 
     # ========================================================================
-    # SECTION 5: INDEX + DETAIL KPI DASHBOARD - focused decision signals.
+    # KPIS TAB - every KPI in one dedicated tab: the decision cards, an items
+    # analysis line, trend/status text, plus drawn diagrams about the collected
+    # groups, contracting entities, locations and monthly intake so the numbers
+    # point at a decision. Mirrors the web monitor's KPIs tab.
     # ========================================================================
-    kpi_tabs = ttk.Notebook(content)
-    kpi_tabs.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
-    kpi_frame = ttk.Frame(kpi_tabs, style="Card.TFrame", padding=14)
-    kpi_guide = ttk.Frame(kpi_tabs, style="Card.TFrame", padding=14)
-    kpi_tabs.add(kpi_frame, text="Index + Detail KPIs")
-    kpi_tabs.add(kpi_guide, text="Decision guide")
+    kpi_frame = ttk.Frame(kpi_tab, style="Card.TFrame", padding=14)
+    kpi_frame.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     for col in range(3):
         kpi_frame.columnconfigure(col, weight=1, uniform="kpi")
-    ttk.Label(kpi_frame, text="Index + Detail KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-    ttk.Label(kpi_guide, text="How to use this tab", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+    ttk.Label(kpi_frame, text="KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
     kpi_guide_text = (
-        "1) Fix failed detail downloads first.\n"
-        "2) If pending details grows, prioritize detail capacity over more index pages.\n"
-        "3) Repair missing deadlines before calendar/export decisions.\n"
+        "How to use this tab: 1) Fix failed detail downloads first. "
+        "2) If pending details grows, prioritize detail capacity over more index pages. "
+        "3) Repair missing deadlines before calendar/export decisions. "
         "4) If WAHA backlog grows, verify destinations and WAHA status before scanning more."
     )
-    ttk.Label(kpi_guide, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=880).grid(row=1, column=0, sticky="w")
     kpi_vars = {
         "index": tk.StringVar(value="Index scan: —"),
         "details": tk.StringVar(value="Detail queue: —"),
@@ -1678,6 +1789,70 @@ def run_tk() -> int:
     ttk.Label(kpi_frame, textvariable=kpi_vars["items"], style="Card.TLabel", justify="left", wraplength=900).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
     ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
     ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=4, column=0, columnspan=3, sticky="w")
+    ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    add_section_toggle(kpi_frame, button_column=2)
+
+    # KPI diagrams: horizontal bar charts drawn on plain Tk canvases about the
+    # collected data — index groups, contracting entities, locations parsed
+    # from the detail pages, and the monthly intake trend.
+    kpi_charts = ttk.Frame(kpi_tab, style="Card.TFrame", padding=14)
+    kpi_charts.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+    for col in range(2):
+        kpi_charts.columnconfigure(col, weight=1, uniform="kpi_chart")
+    ttk.Label(kpi_charts, text="KPI diagrams (groups · entities · locations · monthly trend)", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    CHART_HEIGHT = 176
+
+    def make_kpi_chart(title: str, grid_row: int, grid_col: int) -> tk.Canvas:
+        holder = ttk.Frame(kpi_charts, style="Card.TFrame")
+        holder.grid(row=grid_row, column=grid_col, sticky="nsew", padx=4, pady=4)
+        holder.columnconfigure(0, weight=1)
+        ttk.Label(holder, text=title, style="Message.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 2))
+        chart = tk.Canvas(holder, height=CHART_HEIGHT, bg="#020617", highlightthickness=1,
+                          highlightbackground="#334155")
+        chart.grid(row=1, column=0, sticky="ew")
+        return chart
+
+    groups_chart = make_kpi_chart("Index groups", 1, 0)
+    entities_chart = make_kpi_chart("Top contracting entities", 1, 1)
+    locations_chart = make_kpi_chart("Locations / buying units (from details)", 2, 0)
+    trend_chart = make_kpi_chart("Monthly intake trend", 2, 1)
+    add_section_toggle(kpi_charts, button_column=1, start_hidden=False)
+
+    def draw_bars(chart: tk.Canvas, rows: list[tuple[str, int]], color: str = "#38bdf8") -> None:
+        chart.delete("all")
+        rows = [(str(label), int(count)) for label, count in rows if str(label).strip()][:8]
+        if not rows:
+            chart.create_text(10, 16, anchor="w", fill="#94a3b8", font=("Sans", 9),
+                              text="No data yet — run a collection first.")
+            return
+        width = chart.winfo_width()
+        if width <= 1:
+            width = 430
+        label_width = 170
+        bar_area = max(60, width - label_width - 56)
+        max_count = max(count for _, count in rows) or 1
+        y = 8
+        for label, count in rows:
+            chart.create_text(8, y + 7, anchor="w", fill="#e5e7eb", font=("Sans", 8), text=label[:30])
+            bar_width = max(3, int(bar_area * count / max_count))
+            chart.create_rectangle(label_width, y, label_width + bar_width, y + 14, fill=color, width=0)
+            chart.create_text(label_width + bar_width + 6, y + 7, anchor="w", fill="#94a3b8",
+                              font=("Sans", 8), text=str(count))
+            y += 20
+
+    def update_kpi_charts(s: dict[str, object]) -> None:
+        items = s.get("item_analysis", {}) if isinstance(s.get("item_analysis"), dict) else {}
+        draw_bars(groups_chart, [(name, qty) for name, qty in s.get("groups", [])])
+        draw_bars(entities_chart, [(row.get("label", ""), row.get("count", 0)) for row in s.get("entities", [])], color="#22c55e")
+        locations = items.get("top_locations") or []
+        if not locations:
+            # Before any detail pages carry a Lugar/Provincia field, fall back to
+            # the index "dependencia" column so the location chart still informs.
+            locations = s.get("dependencias", [])
+        draw_bars(locations_chart, [(row.get("label", ""), row.get("count", 0)) for row in locations], color="#facc15")
+        # Oldest→newest so the trend reads left/top to bottom chronologically.
+        draw_bars(trend_chart, [(label, count) for label, count in reversed(list(s.get("monthly_trend", [])))], color="#a78bfa")
 
     def update_kpi_dashboard(progress: dict[str, str]) -> None:
         s = db_review_stats()
@@ -1713,15 +1888,23 @@ def run_tk() -> int:
         trend = " · ".join(f"{label}: {count}" for label, count in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
         statuses = " · ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "no status data"
         kpi_vars["trend"].set(f"Trend windows: {trend}\nDetail status mix: {statuses}")
+        entities = s.get("entities", []) or []
+        top_entity = entities[0] if entities else {}
+        decision_extra = (
+            f" Most active entity: {top_entity.get('label', '-')} ({top_entity.get('count', 0)} records) — focus review capacity where the volume is."
+            if top_entity else ""
+        )
         kpi_vars["decision"].set(
             "Decision focus: clear failed detail downloads first; repair missing deadlines before calendar/export decisions; "
             "if index notify backlog grows, verify WAHA/settings before running more scans; if item keywords cluster around specific products/buyers, prioritize those folders for review and detail follow-up; if pending details grows, prioritize detail worker capacity over more index pages."
+            + decision_extra
         )
+        update_kpi_charts(s)
 
 
     def make_status_browser(title: str, detail_status: str, row: int) -> None:
-        frame = ttk.Frame(content, style="Card.TFrame", padding=14)
-        frame.grid(row=row, column=0, sticky="ew", padx=14, pady=8)
+        frame = ttk.Frame(records_tab, style="Card.TFrame", padding=14)
+        frame.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
         frame.columnconfigure(1, weight=1)
         ttk.Label(frame, text=title, style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
         filter_var = tk.StringVar(value="")
@@ -1792,16 +1975,16 @@ def run_tk() -> int:
         refresh_list()
         add_section_toggle(frame, button_column=3)
 
-    make_status_browser("Records Pendings", "pending", 5)
-    make_status_browser("Records Completed", "saved", 6)
+    make_status_browser("Records Pendings", "pending", 1)
+    make_status_browser("Records Completed", "saved", 2)
 
     # ========================================================================
-    # SECTION 5: RECORD INDEX - pick a collected record by NUMERO + description
-    # and open its archive folder or the portal page. Populated read-only from
-    # data/panamacompra_archive.db; empty until the collector has run.
+    # RECORDS TAB / RECORD INDEX - pick a collected record by NUMERO +
+    # description and open its archive folder or the portal page. Populated
+    # read-only from data/panamacompra_archive.db; empty until the collector runs.
     # ========================================================================
-    record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    record_index = ttk.Frame(records_tab, style="Card.TFrame", padding=14)
+    record_index.grid(row=3, column=0, sticky="ew", padx=6, pady=6)
     record_index.columnconfigure(1, weight=1)
 
     ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
@@ -2118,8 +2301,8 @@ def run_tk() -> int:
     # Opportunity calendar: the collected opportunities by day/week/month/year,
     # driven by deadline/start/downloaded dates. Shares its renderer with
     # `pcc calendar` and the web monitor's Calendar card.
-    calendar_card = ttk.Frame(content, style="Card.TFrame", padding=14)
-    calendar_card.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
+    calendar_card = ttk.Frame(records_tab, style="Card.TFrame", padding=14)
+    calendar_card.grid(row=4, column=0, sticky="ew", padx=6, pady=6)
     calendar_card.columnconfigure(6, weight=1)
     ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
 
@@ -2179,12 +2362,12 @@ def run_tk() -> int:
     add_section_toggle(calendar_card, button_column=6)
 
     # ========================================================================
-    # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
-    # Each button's explanation is shown as a hover tooltip (not an inline label)
-    # so the grid stays compact and easy to scan.
+    # OPERATIONS TAB / MANUAL ACTION BUTTONS - grouped by zone in a tidy
+    # 3-column grid. Each button's explanation is shown as a hover tooltip (not
+    # an inline label) so the grid stays compact and easy to scan.
     # ========================================================================
-    actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
+    actions = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
+    actions.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -2227,12 +2410,12 @@ def run_tk() -> int:
     add_section_toggle(actions, button_column=button_columns - 1)
 
     # ========================================================================
-    # SECTION 6: DATABASE REVIEW - read-only aggregate snapshot of the archive DB
+    # KPIS TAB / DATABASE REVIEW - read-only aggregate snapshot of the archive DB
     # (totals, detail-queue state, notification state, per-group breakdown) so the
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
-    db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=12, column=0, sticky="ew", padx=14, pady=8)
+    db_review = ttk.Frame(kpi_tab, style="Card.TFrame", padding=14)
+    db_review.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -2264,8 +2447,8 @@ def run_tk() -> int:
     # The two destructive wipes pop a confirmation dialog and pass --yes only when
     # confirmed, so a stray click cannot erase the archive. All call src/tools/110-reset.py.
     # ========================================================================
-    reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=13, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone = ttk.Frame(settings_tab, style="Card.TFrame", padding=14)
+    reset_zone.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -2306,8 +2489,9 @@ def run_tk() -> int:
     add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
     add_section_toggle(reset_zone, button_column=1)
 
-    logs = ttk.Frame(content, style="Card.TFrame", padding=14)
-    logs.grid(row=14, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
+    logs.grid(row=3, column=0, sticky="nsew", padx=6, pady=(6, 10))
+    ops_tab.rowconfigure(3, weight=1)
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
