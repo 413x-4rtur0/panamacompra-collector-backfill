@@ -157,6 +157,10 @@ else
   note "Docker install/stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/010-docker-stack.sh up"
 fi
 
+ACCESS_NOTE_FILE="${PC_INTEGRATION_CREDENTIALS_FILE:-$PC_DATA_DIR/config/integration-access.txt}"
+if [[ -f "$ACCESS_NOTE_FILE" ]]; then
+  note "Integration access note (WAHA API key, webhook URL/token, changedetection note): $ACCESS_NOTE_FILE"
+fi
 note "Setup complete. Start with: ./src/pipeline/110a-request-run.sh 5 && ./src/monitor/000-open-monitor.sh"
 note "Or use the unified CLI: ./bin/pcc start 5 && ./bin/pcc monitor"
 note "To stop/remove a previous or duplicate installation, run ./scripts/uninstall.sh in THAT installation's folder (interactive; data kept unless purged)."
