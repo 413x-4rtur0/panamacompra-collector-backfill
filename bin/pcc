@@ -27,7 +27,10 @@ Settings (same files the GUI monitors use):
   get [KEY]                                 Show one or all monitor settings
   set KEY VALUE                             Save a monitor setting (e.g. set PC_WAHA_ENABLED 1)
   chat [default|index|details|status] [ID]  Show or save WhatsApp destination chat id(s)
-  keywords [list|set "a, b"|clear]          Show or edit the WhatsApp keyword filter
+  keywords [global|index|details|status] [list|set "..."|clear|test "text"]
+                                            Per-destination filters. Rules: OR between
+                                            comma/line-separated rules, AND with '+'
+                                            (salud + panama), NOT with '-' (-construccion)
 
 WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
@@ -178,18 +181,46 @@ PY
     fi
     ;;
   keywords)
-    kw_file="$PC_DATA_DIR/config/waha_keywords.txt"
+    kw_purpose="global"
+    case "${1:-}" in global|index|details|status) kw_purpose="$1"; shift ;; esac
+    if [[ "$kw_purpose" == "global" ]]; then
+      kw_file="$PC_DATA_DIR/config/waha_keywords.txt"
+    else
+      kw_file="$PC_DATA_DIR/config/waha_keywords_$kw_purpose.txt"
+    fi
     sub="${1:-list}"
     case "$sub" in
-      list) [[ -s "$kw_file" ]] && cat "$kw_file" || echo "(no keyword filter — every new record is announced)" ;;
+      list)
+        echo "# $kw_purpose filter ($kw_file)"
+        if [[ -s "$kw_file" ]]; then cat "$kw_file"; else
+          echo "(no rules — $( [[ "$kw_purpose" == global ]] && echo 'every record is announced' || echo 'falls back to the global filter'))"
+        fi
+        echo "# Rules: OR between lines/commas · AND with '+' (salud + panama) · NOT with '-' (-construccion)"
+        ;;
       set)
-        [[ $# -ge 2 ]] || { echo "Usage: pcc keywords set \"palabra1, palabra2\"" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { echo "Usage: pcc keywords [$kw_purpose] set \"salud + panama, medicinas, -construccion\"" >&2; exit 2; }
         mkdir -p "$(dirname "$kw_file")"
         printf '%s\n' "$2" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d' > "$kw_file"
-        echo "Saved $(wc -l < "$kw_file") keyword(s) to $kw_file"
+        echo "Saved $(wc -l < "$kw_file") rule(s) to $kw_file"
         ;;
-      clear) rm -f "$kw_file"; echo "Keyword filter cleared (every new record will be announced)." ;;
-      *) echo "Usage: pcc keywords [list|set \"a, b\"|clear]" >&2; exit 2 ;;
+      clear) rm -f "$kw_file"; echo "$kw_purpose filter cleared." ;;
+      test)
+        [[ $# -ge 2 ]] || { echo "Usage: pcc keywords [$kw_purpose] test \"texto de la oportunidad\"" >&2; exit 2; }
+        KW_PURPOSE="$kw_purpose" KW_TEXT="$2" "$PY_BIN" - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "notify_new_records", os.environ["APP_ROOT"] + "/src/pipeline/notify_new_records.py")
+nnr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(nnr)
+purpose = os.environ["KW_PURPOSE"]
+purpose = "" if purpose == "global" else purpose
+includes, excludes = nnr.load_filter_rules(purpose)
+result = nnr.evaluate_filter(os.environ["KW_TEXT"], includes, excludes)
+print(f"rules: {len(includes)} include, {len(excludes)} exclude")
+print(f"WOULD NOTIFY — Coincidencia: {result}" if result else "WOULD NOT NOTIFY (excluded or no include rule matched)")
+PYEOF
+        ;;
+      *) echo "Usage: pcc keywords [global|index|details|status] [list|set \"...\"|clear|test \"...\"]" >&2; exit 2 ;;
     esac
     ;;
   test-whatsapp)

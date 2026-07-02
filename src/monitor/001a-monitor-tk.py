@@ -1131,10 +1131,16 @@ def run_tk() -> int:
     waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
     waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
     waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
-    existing_keywords = []
-    if WAHA_KEYWORDS_PATH.exists():
-        existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
-    keywords_var = tk.StringVar(value=", ".join(existing_keywords))
+    def read_filter_file(path: Path) -> str:
+        if not path.exists():
+            return ""
+        rules = [k.strip() for k in path.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
+        return ", ".join(rules)
+
+    keywords_var = tk.StringVar(value=read_filter_file(WAHA_KEYWORDS_PATH))
+    keywords_index_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_index.txt"))
+    keywords_details_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_details.txt"))
+    keywords_status_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_status.txt"))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
     notify_details_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS", "1") != "0")
     import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
@@ -1189,7 +1195,7 @@ def run_tk() -> int:
     ttk.Label(settings, text="WhatsApp keywords (comma separated; blank = all):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(settings, textvariable=keywords_var)
     kw_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
-    add_tooltip(kw_entry, "Only announce new records matching one of these keywords (title/description/entity). Blank announces every new record. Saved to data/config/waha_keywords.txt.")
+    add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
     field(6, 0, "Records folder:", records_dir_var, 36, "Where normal record folders are stored. Environment key: PC_RECORDS_DIR. Relative paths are resolved from the checkout root.")
     field(7, 0, "Calendar packages folder:", calendar_dir_var, 36, "Where timestamped .ics calendar packages are written. Environment key: PC_CALENDAR_DIR.")
     field(8, 0, "Test sandbox folder:", records_test_dir_var, 36, "Where the isolated test zone stores re-downloaded records. Environment key: PC_RECORDS_TEST_DIR.")
@@ -1293,8 +1299,14 @@ def run_tk() -> int:
         WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
-        keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
-        WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
+        def write_filter_file(path: Path, raw: str) -> None:
+            rules = [k.strip() for k in re.split(r"[,\n]", raw) if k.strip()]
+            path.write_text(("\n".join(rules) + "\n") if rules else "", encoding="utf-8")
+
+        write_filter_file(WAHA_KEYWORDS_PATH, keywords_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_index.txt", keywords_index_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_details.txt", keywords_details_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_status.txt", keywords_status_var.get())
         available_templates = set(record_templates.source_files(record_templates.source_dir()))
         selected_templates = [templates_listbox.get(i) for i in templates_listbox.curselection() if templates_listbox.get(i) in available_templates]
         record_templates.save_selection(selected_templates)
@@ -1378,6 +1390,11 @@ def run_tk() -> int:
     refresh_templates_button.grid(row=29, column=2, sticky="w", pady=3)
     add_tooltip(refresh_templates_button, "Re-scan the template source folder (after Apply when the folder path changed).")
     refresh_templates_list()
+
+    ttk.Label(settings, text="Per-destination WhatsApp filters (blank = use the shared filter above; OR with commas, AND with '+', NOT with '-')", style="Title.TLabel").grid(row=35, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    field(36, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(36, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(37, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
 
     ttk.Label(settings, text="WhatsApp message formats ({placeholder} fields; unknown placeholders stay literal)", style="Title.TLabel").grid(row=31, column=0, columnspan=4, sticky="w", pady=(12, 6))
     format_kind_var = tk.StringVar(value="index")

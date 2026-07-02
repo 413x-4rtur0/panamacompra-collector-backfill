@@ -177,24 +177,70 @@ def waha_destination() -> bool:
     return waha.any_destination_configured()
 
 
-def load_keywords() -> list[str]:
-    if not KEYWORDS_PATH.exists():
-        return []
-    keywords = []
-    for line in KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
-        token = line.strip()
-        if token and not token.startswith("#"):
-            keywords.append(token)
-    return keywords
+FILTER_PURPOSES = ("index", "details", "status")
 
 
-def matched_keywords(haystack: str, keywords: list[str]) -> list[str]:
+def keywords_path(purpose: str = "") -> Path:
+    """Filter file for a WhatsApp destination ('' = the shared/global filter)."""
+    if purpose in FILTER_PURPOSES:
+        return CONFIG_DIR / f"waha_keywords_{purpose}.txt"
+    return KEYWORDS_PATH
+
+
+def parse_filter_rules(text: str) -> tuple[list[list[str]], list[list[str]]]:
+    """Parse filter rules from a file/entry.
+
+    One rule per line (commas also separate rules). Operators:
+      * OR  between rules: a record is announced when ANY rule matches.
+      * AND inside a rule with '+': ``salud + panama`` requires both words.
+      * NOT with a leading '-': ``-construccion`` excludes matching records
+        even when an include rule matched. ``-obra + calle`` excludes only
+        records containing both words.
+    Matching is accent- and case-insensitive substring search over the record's
+    description, entity, dependency, modality and detail summary. Returns
+    (include_rules, exclude_rules) as lists of term lists."""
+    import re as _re
+    includes: list[list[str]] = []
+    excludes: list[list[str]] = []
+    for raw in _re.split(r"[,\n]", text or ""):
+        token = raw.strip()
+        if not token or token.startswith("#"):
+            continue
+        negate = token.startswith("-")
+        if negate:
+            token = token[1:].strip()
+        terms = [term.strip() for term in token.split("+") if term.strip()]
+        if terms:
+            (excludes if negate else includes).append(terms)
+    return includes, excludes
+
+
+def load_filter_rules(purpose: str = "") -> tuple[list[list[str]], list[list[str]]]:
+    """Rules for a destination: its own file when it has rules, else the
+    shared filter file, else no filter (everything announced)."""
+    candidates = [keywords_path(purpose)] if purpose in FILTER_PURPOSES else []
+    candidates.append(KEYWORDS_PATH)
+    for path in candidates:
+        if path.exists():
+            includes, excludes = parse_filter_rules(path.read_text(encoding="utf-8", errors="replace"))
+            if includes or excludes:
+                return includes, excludes
+    return [], []
+
+
+def evaluate_filter(haystack: str, includes: list[list[str]], excludes: list[list[str]]) -> str | None:
+    """The '🔎 Coincidencia' line, or None when the record must not be sent."""
     normalized = pc_common.strip_accents(haystack).lower()
-    matches = []
-    for keyword in keywords:
-        if pc_common.strip_accents(keyword).lower() in normalized:
-            matches.append(keyword)
-    return matches
+
+    def rule_matches(terms: list[str]) -> bool:
+        return all(pc_common.strip_accents(term).lower() in normalized for term in terms)
+
+    if any(rule_matches(rule) for rule in excludes):
+        return None
+    if not includes:
+        return "Sin filtro (todas las entradas)" if not excludes else "Pasa las exclusiones"
+    matched = [" + ".join(rule) for rule in includes if rule_matches(rule)]
+    return ", ".join(matched) if matched else None
 
 
 def load_detail_data(detail_json_path: str | None) -> dict:
@@ -352,6 +398,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     )
     fechas = date_range(row, summary)
 
+    deadline_dt = parse_finish_date(row)
+    dias_restantes = str((deadline_dt.date() - datetime.now().date()).days) if deadline_dt else DASH
+
     # Operator-customized layout for this message family, when saved.
     custom = load_custom_format(kind_for_variant(variant))
     if custom:
@@ -371,6 +420,13 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
             "enlace": url,
             "creado": created,
             "descargado": downloaded,
+            "modalidad": clean_field(row["modalidad"]),
+            "dependencia": clean_field(row["dependencia"]),
+            "grupo": clean_field(row["grupo"]),
+            "fecha_inicio": fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion")),
+            "fecha_limite": fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion")),
+            "items_total": "⏳" if detail_pending else str(len(items)),
+            "dias_restantes": dias_restantes,
         }))
 
     parts = [
@@ -437,6 +493,13 @@ PLACEHOLDERS = {
     "enlace": "portal link",
     "creado": "first-seen/publication timestamp",
     "descargado": "local download timestamp",
+    "modalidad": "procurement modality",
+    "dependencia": "entity dependency/office",
+    "grupo": "portal list the record came from (Programadas/Abiertas)",
+    "fecha_inicio": "start/publication date on its own",
+    "fecha_limite": "deadline date on its own",
+    "items_total": "number of items (⏳ before the detail download)",
+    "dias_restantes": "whole days until the deadline (negative = expired)",
 }
 
 DEFAULT_FORMATS = {
@@ -515,6 +578,13 @@ def sample_context(kind: str) -> dict[str, str]:
         "enlace": "https://www.panamacompra.gob.pa/…/OC-2026-000123",
         "creado": "2026-07-01 09:12",
         "descargado": "2026-07-01 09:45",
+        "modalidad": "Cotización en línea",
+        "dependencia": "Dirección de Compras",
+        "grupo": "Abiertas",
+        "fecha_inicio": "2026-07-01 09:00",
+        "fecha_limite": "2026-07-15 16:00",
+        "items_total": "⏳" if kind == "index" else "2",
+        "dias_restantes": "13",
     }
 
 
@@ -589,10 +659,13 @@ def fetch_row(conn, numero: str):
     return conn.execute("SELECT * FROM opportunities WHERE numero = ?", (numero,)).fetchone()
 
 
-def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
-    """Return the '🔎 Coincidencia' line, or None when a keyword filter is active
-    and this record matched nothing (so it should not be announced)."""
-    if not keywords:
+def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
+    """Return the '🔎 Coincidencia' line for a destination's filter, or None
+    when the record must not be announced (no include rule matched, or an
+    exclude rule matched). Each WhatsApp destination (index/details/status) can
+    have its own rules, falling back to the shared filter file."""
+    includes, excludes = load_filter_rules(purpose)
+    if not includes and not excludes:
         return "Sin filtro (todas las entradas)"
     haystack = " ".join(
         str(value)
@@ -600,12 +673,13 @@ def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
             row["descripcion"],
             row["short_description"],
             row["entidad"],
+            row["dependencia"],
+            row["modalidad"],
             summary.get("descripcion"),
         )
         if value
     )
-    matches = matched_keywords(haystack, keywords)
-    return ", ".join(matches) if matches else None
+    return evaluate_filter(haystack, includes, excludes)
 
 
 def send_text(event: str, text: str, purpose: str = "") -> bool:
@@ -711,7 +785,7 @@ def notify_saved_record(conn, numero: str) -> bool:
             # run re-checks it once the deadline moves into range.
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, load_keywords())
+        match_line = match_line_for(row, summary, "index")
         if match_line is None:
             # Filtered out by keywords: remember it so it is not rechecked.
             mark_notified(conn, numero)
@@ -748,8 +822,8 @@ def notify_status_change(conn, numero: str) -> bool:
         if row is None or not row["pending_status_change"]:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        # Respect the same keyword filter as new records.
-        if match_line_for(row, summary, load_keywords()) is None:
+        # Respect the status destination's keyword filter.
+        if match_line_for(row, summary, "status") is None:
             clear_status_change(conn, numero)
             return False
         sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]), purpose="status")
@@ -778,7 +852,7 @@ def notify_detected_status_change(conn, numero: str) -> bool:
         if row["last_notified_signature"] == current_signature or row["last_notified_status"] == current_status:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, load_keywords()) is None:
+        if match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
         sent = send_text("update", build_record_message(
@@ -813,7 +887,7 @@ def notify_items_change(conn, numero: str) -> bool:
             mark_snapshot(conn, numero)
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, load_keywords()) is None:
+        if match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
         sent = send_text("update", build_items_changed_message(row, summary), purpose="status")
@@ -873,9 +947,9 @@ def notify_detail_ready(conn, numero: str) -> bool:
         if row is None or row["detail_status"] != "saved" or not row["notified_at"] or row["detail_notified_at"]:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, load_keywords())
+        match_line = match_line_for(row, summary, "details")
         if match_line is None:
-            # Same keyword filter as the index phase: settle it silently.
+            # Filtered out for the details destination: settle it silently.
             mark_detail_notified(conn, numero)
             mark_snapshot(conn, numero)
             return False
@@ -926,7 +1000,7 @@ def announce_details_with_progress(conn) -> int:
         full_row = fetch_row(conn, row["numero"])
         label = _short_label(full_row) if full_row is not None else row["numero"]
         summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
-        match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+        match_line = match_line_for(full_row, summary, "details") if full_row is not None else None
         preview = (
             _one_line_preview(build_record_message(full_row, summary, variant="details", match_line=match_line))
             if (full_row is not None and match_line is not None)
@@ -1105,7 +1179,7 @@ def announce_with_progress(conn) -> int:
         elif kind == "items":
             preview = f"🔵 {label} (items modificados)"
         else:
-            match_line = match_line_for(full_row, summary, load_keywords()) if full_row is not None else None
+            match_line = match_line_for(full_row, summary, "index") if full_row is not None else None
             preview = (
                 _one_line_preview(build_opportunity_message(full_row, summary, match_line))
                 if (full_row is not None and match_line is not None)
