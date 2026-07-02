@@ -1576,11 +1576,23 @@ def run_tk() -> int:
     # ========================================================================
     # SECTION 5: INDEX + DETAIL KPI DASHBOARD - focused decision signals.
     # ========================================================================
-    kpi_frame = ttk.Frame(content, style="Card.TFrame", padding=14)
-    kpi_frame.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    kpi_tabs = ttk.Notebook(content)
+    kpi_tabs.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    kpi_frame = ttk.Frame(kpi_tabs, style="Card.TFrame", padding=14)
+    kpi_guide = ttk.Frame(kpi_tabs, style="Card.TFrame", padding=14)
+    kpi_tabs.add(kpi_frame, text="Index + Detail KPIs")
+    kpi_tabs.add(kpi_guide, text="Decision guide")
     for col in range(3):
         kpi_frame.columnconfigure(col, weight=1, uniform="kpi")
     ttk.Label(kpi_frame, text="Index + Detail KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    ttk.Label(kpi_guide, text="How to use this tab", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+    kpi_guide_text = (
+        "1) Fix failed detail downloads first.\n"
+        "2) If pending details grows, prioritize detail capacity over more index pages.\n"
+        "3) Repair missing deadlines before calendar/export decisions.\n"
+        "4) If WAHA backlog grows, verify destinations and WAHA status before scanning more."
+    )
+    ttk.Label(kpi_guide, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=880).grid(row=1, column=0, sticky="w")
     kpi_vars = {
         "index": tk.StringVar(value="Index scan: —"),
         "details": tk.StringVar(value="Detail queue: —"),
@@ -1627,7 +1639,6 @@ def run_tk() -> int:
             "if index notify backlog grows, verify WAHA/settings before running more scans; if pending details grows, prioritize detail worker capacity over more index pages."
         )
 
-    add_section_toggle(kpi_frame, button_column=2)
 
     def make_status_browser(title: str, detail_status: str, row: int) -> None:
         frame = ttk.Frame(content, style="Card.TFrame", padding=14)
