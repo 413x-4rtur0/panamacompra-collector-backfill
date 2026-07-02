@@ -7,6 +7,7 @@ browser reloads every few seconds while preserving the same dashboard UI.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import os
 import re
 import shlex
@@ -365,6 +366,73 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
+def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
+    """Best-effort item loader for KPI dashboards; never raises."""
+    if not detail_json_path:
+        return []
+    path = Path(str(detail_json_path))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = data.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+    descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+    rel = descriptor.get("file")
+    if rel:
+        try:
+            split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
+            if isinstance(split_items, list):
+                return [item for item in split_items if isinstance(item, dict)]
+        except Exception:
+            return []
+    return []
+
+
+def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[str, object]:
+    """Summarize detail items for decision KPIs without scanning unbounded data."""
+    rows = conn.execute(
+        "SELECT numero, descripcion, detail_json_path FROM opportunities "
+        "WHERE COALESCE(detail_json_path, '') <> '' "
+        "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    total_items = 0
+    with_items = 0
+    max_items = {"numero": "", "descripcion": "", "count": 0}
+    keyword_counts: Counter[str] = Counter()
+    sample_items: list[dict[str, str]] = []
+    for row in rows:
+        items = load_detail_items_for_kpi(str(row["detail_json_path"] or ""))
+        if items:
+            with_items += 1
+        total_items += len(items)
+        if len(items) > int(max_items["count"]):
+            max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
+        for item in items:
+            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
+            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
+                if not word.isdigit():
+                    keyword_counts[word] += 1
+            if len(sample_items) < 8:
+                sample_items.append({
+                    "numero": str(row["numero"] or ""),
+                    "descripcion": str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "")[:90],
+                    "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
+                })
+    avg_items = round(total_items / with_items, 1) if with_items else 0
+    return {
+        "sampled_records": len(rows),
+        "records_with_items": with_items,
+        "total_items": total_items,
+        "avg_items_per_record": avg_items,
+        "max_items_record": max_items,
+        "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
+        "sample_items": sample_items,
+    }
+
 def db_review_stats() -> dict[str, object]:
     """Aggregate counts for the web Database-review card (mirror of the Tk
     monitor's panel): totals, detail-queue state, notification state, and a
@@ -372,8 +440,8 @@ def db_review_stats() -> dict[str, object]:
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
         "failed": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0, "needs_deadline": 0,
-        "with_detail_json": 0, "groups": [],
-        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [],
+        "with_detail_json": 0, "item_analysis": {}, "groups": [],
+        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [],
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -426,6 +494,7 @@ def db_review_stats() -> dict[str, object]:
             ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
+            "item_analysis": summarize_items_for_kpi(conn),
             "recent": [
                 {"numero": str(r["numero"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or ""), "detail_status": str(r["detail_status"] or "")}
                 for r in conn.execute(
@@ -442,6 +511,13 @@ def db_review_stats() -> dict[str, object]:
             ],
             "columns": column_details,
             "status_breakdown": status_rows,
+            "monthly_trend": [
+                {"label": str(r["period"] or "unknown"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
+                    "FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 12"
+                ).fetchall()
+            ],
             "groups": [
                 {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
                 for r in conn.execute(
@@ -671,6 +747,22 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .section-toggle {{ float: right; margin-left: 12px; padding: 5px 10px; font-size: .8rem; }}
 .card.collapsed > *:not(h1):not(h2) {{ display: none; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; }}
+.tab-nav {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; position: sticky; top: 0; z-index: 5; background: #0f172acc; backdrop-filter: blur(8px); padding: 8px 0; }}
+.tab-nav button.active {{ background: #2563eb; color: #fff; }}
+.card[data-tab] {{ display: none; }}
+.card[data-tab].tab-active {{ display: block; }}
+.subsection {{ border: 1px solid #334155; border-radius: 10px; padding: 12px; margin: 10px 0; background: #0b1220; }}
+.subsection h3 {{ margin: 0 0 8px; color: #bfdbfe; }}
+.setting-actions {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
+.kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+.kpi {{ background: linear-gradient(135deg, #172554, #0f172a); border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; box-shadow: 0 0 18px #0ea5e933; }}
+.kpi b {{ display: block; font-size: 1.7rem; color: #67e8f9; }}
+.diagram-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }}
+.chart {{ background: #020617; border: 1px solid #334155; border-radius: 10px; padding: 12px; min-height: 180px; }}
+.bar-row {{ display: grid; grid-template-columns: minmax(90px, 1fr) 4fr 48px; gap: 8px; align-items: center; margin: 7px 0; font-size: .9rem; }}
+.bar-track {{ height: 12px; background: #1e293b; border-radius: 999px; overflow: hidden; }}
+.bar-fill {{ height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }}
+.keyword-cloud span {{ display: inline-block; margin: 4px; padding: 5px 8px; border-radius: 999px; background: #1e293b; color: #bfdbfe; }}
 /* Slim dark scrollbars for the log panes. */
 pre::-webkit-scrollbar {{ width: 10px; height: 10px; }}
 pre::-webkit-scrollbar-track {{ background: #0f172a; border-radius: 8px; }}
@@ -691,17 +783,24 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="card"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
-<div class="card"><h2>Monitor buttons</h2><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button onclick="saveWaha()">Save WhatsApp destination</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p><textarea id="waha-message" placeholder="WhatsApp group/channel chat ID destination (default for all message types)"></textarea><p class="small">Per-purpose chat ids (blank = use the default destination above): <label class="small">Index alerts <input id="waha-index" size="26" placeholder="…@g.us"></label> <label class="small">Item details <input id="waha-details" size="26" placeholder="…@g.us"></label> <label class="small">Status changes <input id="waha-status" size="26" placeholder="…@g.us"></label></p><p><label class="small"><input type="checkbox" id="notify-whatsapp" onchange="saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts right after scan)</label> <label class="small"><input type="checkbox" id="notify-details" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Follow-up WhatsApp with item details after download</label> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button> <label class="small"><input type="checkbox" id="calendar-auto-import" onchange="saveMonitorSetting('PC_CALENDAR_AUTO_IMPORT', this.checked ? '1' : '0')"> Import/open generated calendar events</label></p><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p><details class="adv-settings"><summary class="small">Advanced collector, timer &amp; WhatsApp settings (apply on the next run/launch)</summary><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label> <button onclick="saveAdvancedSettings()">Save advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details><div id="action-zones"></div></div>
-<div class="card"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
-<div class="card"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
-<div class="card"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
-<div class="card"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family with {{placeholder}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
-<div class="card"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
-<div class="card"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
-<div class="card"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
-<div class="card"><h2>Current action log</h2><pre id="current-log"></pre></div>
+<div class="tab-nav"><button class="active" data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="decision" onclick="showTab('decision')">Index + Detail KPIs</button><button data-tab-button="records" onclick="showTab('records')">Records & Database</button></div>
+<div class="card" data-tab="operations"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
+<div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p></div><div class="subsection"><h3>Storage paths</h3><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
+<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Run cadence</h3><div class="settings-grid"><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details></div>
+<div class="card" data-tab="operations"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
+<div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
+<div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
+<div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
+<div class="card" data-tab="whatsapp"><h2>WhatsApp destinations & toggles</h2><p class="small">Dedicated WhatsApp section: default and per-purpose destinations, notification toggles, and test send. These fields mirror the quick controls in Operations.</p><textarea id="waha-message-wa" placeholder="Default WhatsApp group/channel chat ID destination"></textarea><p class="small"><label>Index alerts <input id="waha-index-wa" size="26" placeholder="…@g.us"></label> <label>Item details <input id="waha-details-wa" size="26" placeholder="…@g.us"></label> <label>Status changes <input id="waha-status-wa" size="26" placeholder="…@g.us"></label></p><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label> <label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label> <button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div>
+
+<div class="card" data-tab="whatsapp"><h2>WhatsApp advanced delivery settings</h2><p class="small">WAHA server, retry, event and deadline-notification settings live here so the Settings tab stays focused on collector/timer options.</p><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label></p></div>
+<div class="card" data-tab="whatsapp"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
+
+<div class="card" data-tab="decision"><h2>Index + Detail KPI Dashboard</h2><p class="small">Decision board focused on index scan intake, detail download throughput, WAHA delivery, deadline repair, and recent archive trends.</p><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups / buyers</h3><div id="decision-groups"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div><div class="chart"><h3>Command keywords</h3><div id="decision-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh decision KPIs</button></p></div>
+<div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
+<div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
+<div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
+<div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log"></pre></div>
 <script>
 let doneSince = null;
 let timer = null;
@@ -742,15 +841,19 @@ function render(data) {{
   document.getElementById('current-log').textContent = data.current_log || '';
   const waha = document.getElementById('waha-message');
   if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
+  const wahawa = document.getElementById('waha-message-wa'); if (wahawa && document.activeElement !== wahawa) wahawa.value = data.waha_chat_id || '';
   [['waha-index','waha_chat_id_index'],['waha-details','waha_chat_id_details'],['waha-status','waha_chat_id_status']].forEach(([id, key]) => {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = data[key] || '';
+    const mirror = document.getElementById(id + '-wa'); if (mirror && document.activeElement !== mirror) mirror.value = data[key] || '';
   }});
   const settings = data.settings || {{}};
   const notifyToggle = document.getElementById('notify-whatsapp');
   if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
+  const notifyToggleWa = document.getElementById('notify-whatsapp-wa'); if (notifyToggleWa) notifyToggleWa.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
   const detailsToggle = document.getElementById('notify-details');
   if (detailsToggle && document.activeElement !== detailsToggle) detailsToggle.checked = String(settings.PC_NOTIFY_DETAILS ?? '1') !== '0';
+  const detailsToggleWa = document.getElementById('notify-details-wa'); if (detailsToggleWa) detailsToggleWa.checked = String(settings.PC_NOTIFY_DETAILS ?? '1') !== '0';
   const calendarToggle = document.getElementById('calendar-auto-import');
   if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
   [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
@@ -819,7 +922,13 @@ function renderActionZones() {{
   const zones = [...new Set(actionZones.map(a => a.zone))];
   root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
-function saveWaha() {{ const v = id => encodeURIComponent((document.getElementById(id) || {{value:''}}).value); postForm('/api/waha-destination', 'chat_id=' + v('waha-message') + '&chat_id_index=' + v('waha-index') + '&chat_id_details=' + v('waha-details') + '&chat_id_status=' + v('waha-status')); }}
+function saveWaha() {{ const val = (id, fallback) => ((document.getElementById(id) || document.getElementById(fallback) || {{value:''}}).value); const v = (id, fallback) => encodeURIComponent(val(id, fallback)); postForm('/api/waha-destination', 'chat_id=' + v('waha-message', 'waha-message-wa') + '&chat_id_index=' + v('waha-index', 'waha-index-wa') + '&chat_id_details=' + v('waha-details', 'waha-details-wa') + '&chat_id_status=' + v('waha-status', 'waha-status-wa')); }}
+function syncWhatsappMirror(source) {{
+  const pairs = [['waha-message','waha-message-wa'],['waha-index','waha-index-wa'],['waha-details','waha-details-wa'],['waha-status','waha-status-wa']];
+  pairs.forEach(([a,b]) => {{ const from = document.getElementById(source === 'wa' ? b : a); const to = document.getElementById(source === 'wa' ? a : b); if (from && to && document.activeElement !== to) to.value = from.value; }});
+  [['notify-whatsapp','notify-whatsapp-wa'],['notify-details','notify-details-wa']].forEach(([a,b]) => {{ const from = document.getElementById(source === 'wa' ? b : a); const to = document.getElementById(source === 'wa' ? a : b); if (from && to) to.checked = from.checked; }});
+}}
+function saveWahaFrom(source) {{ syncWhatsappMirror(source); saveWaha(); }}
 function sendTestWhatsapp() {{ postForm('/api/test-whatsapp', ''); }}
 function saveTemplatesSource() {{ saveMonitorSetting('PC_TEMPLATES_SRC_DIR', document.getElementById('set-PC_TEMPLATES_SRC_DIR').value); setTimeout(loadTemplates, 400); }}
 async function loadTemplates() {{
@@ -1022,12 +1131,24 @@ function applyRecordFilter() {{
   }}).join('');
   renderRecordDetail();
 }}
+function renderCalendarVisual() {{
+  const node = document.getElementById('calendar-visual');
+  if (!node) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const rows = [];
+  for (let i = 0; i < 14; i++) {{ const d = new Date(today.getTime() + i * 86400000); rows.push({{date:d, label:d.toISOString().slice(0,10), count:0}}); }}
+  recordIndex.forEach(rec => {{ const d = parseDeadline(rec); if (!d) return; d.setHours(0,0,0,0); const idx = Math.round((d - today) / 86400000); if (idx >= 0 && idx < rows.length) rows[idx].count++; }});
+  const max = Math.max(1, ...rows.map(r => r.count));
+  node.innerHTML = '<h3>Next 14 days deadline heatmap</h3>' + rows.map(r => `<button title="Show calendar at ${{r.label}}" onclick="document.getElementById('cal-date').value='${{r.label}}'; loadCalendar()" style="min-width:86px;margin:3px;background:${{r.count ? '#14532d' : '#1f2937'}}">${{r.label.slice(5)}}<br><b>${{r.count}}</b></button>`).join('') + '<p class="small">Click a day to jump the calendar anchor. Counts come from collected DTEND/deadline values.</p>';
+}}
 async function refreshRecordIndex() {{
   try {{
     const response = await fetch('/api/record-index', {{cache: 'no-store'}});
     recordIndex = await response.json();
+    renderCalendarVisual();
   }} catch (err) {{ recordIndex = []; }}
   applyRecordFilter();
+  renderCalendarVisual();
 }}
 function openRecordFolder() {{
   const rec = selectedRecord();
@@ -1055,13 +1176,41 @@ function importSelectedCalendars() {{
   postForm('/api/selected-record-action', 'action=calendar&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
 
+function showTab(tab) {{
+  document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
+  document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
+  if (tab === 'decision') refreshDecisionDashboard();
+}}
+function bars(nodeId, rows) {{
+  const node = document.getElementById(nodeId);
+  const max = Math.max(1, ...rows.map(r => Number(r.count || 0)));
+  node.innerHTML = rows.length ? rows.map(r => `<div class="bar-row"><span>${{esc(String(r.label || r.status || r.grupo || '—').slice(0, 28))}}</span><span class="bar-track"><span class="bar-fill" style="display:block;width:${{Math.max(4, Number(r.count || 0) / max * 100)}}%"></span></span><b>${{r.count || 0}}</b></div>`).join('') : '<span class="small">No data yet.</span>';
+}}
+async function refreshDecisionDashboard() {{
+  const s = await (await fetch('/api/db-stats', {{cache: 'no-store'}})).json();
+  const k = document.getElementById('decision-kpis');
+  const closure = Number(s.total || 0) ? Math.round(Number(s.saved || 0) / Number(s.total || 1) * 100) : 0;
+  const items = s.item_analysis || {{}};
+  k.innerHTML = [ ['Index archive total', s.total || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
+  bars('decision-status', (s.status_breakdown || []).map(r => ({{label: r.status, count: r.count}})));
+  bars('decision-groups', (s.groups || []).slice(0, 10).map(r => ({{label: r.grupo, count: r.count}})));
+  bars('decision-deadlines', [{{label:'Completed', count:s.saved||0}},{{label:'Pending', count:s.pending||0}},{{label:'Failed', count:s.failed||0}},{{label:'Needs repair', count:s.needs_deadline||0}},{{label:'Notify backlog', count:s.notify_backlog||0}}].concat((s.monthly_trend || []).slice(0, 6)));
+  bars('decision-items', [{{label:'Records sampled', count:items.sampled_records||0}},{{label:'Records with items', count:items.records_with_items||0}},{{label:'Total item lines', count:items.total_items||0}},{{label:'Largest record items', count:(items.max_items_record||{{}}).count||0}}]);
+  const itemWords = (items.top_item_keywords || []).map(r => r.label || '').filter(Boolean);
+  document.getElementById('decision-item-keywords').innerHTML = itemWords.length ? itemWords.map((w,i) => `<span style="font-size:${{0.85 + (itemWords.length-i)/18}}rem">${{esc(w)}}</span>`).join('') : '<span class="small">No parsed item keywords yet.</span>';
+  const words = ['index scan','new records','existing','detail queue','saved details','failed details','WAHA','deadline repair','calendar','trend','webhook','manual notify','items analysis','largest item record'];
+  document.getElementById('decision-keywords').innerHTML = words.map((w,i) => `<span style="font-size:${{0.85 + (words.length-i)/18}}rem">${{w}}</span>`).join('');
+  const biggest = items.max_items_record || {{}};
+  const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\n');
+  document.getElementById('decision-recommendations').textContent = `Index/detail/items decision signals\n• If Details failed > 0, repair collector/detail issues before expanding index page caps.\n• If Details pending grows, prioritize detail download capacity over more index scans.\n• Item lines parsed: ${{items.total_items || 0}} across ${{items.records_with_items || 0}} records; largest record: ${{biggest.numero || '-'}} with ${{biggest.count || 0}} items.\n• If item keywords cluster around a buyer/product family, prioritize those folders for review and WhatsApp detail follow-up.\n• If Deadline repairs > 0, repair missing DTEND before calendar/export decisions.\n• If Notify backlog grows, verify WAHA destinations/settings before running more scans.\nRecent parsed items:\n${{sampleLines || '  - no item rows parsed yet'}}`;
+}}
 function initCollapsibleSections() {{
   // Every card except the live-progress header starts COLLAPSED so the monitor
   // opens compact; the operator expands only the panels they need (matches the
   // Tk monitor's default-hidden sections).
   document.querySelectorAll('.card').forEach((card, idx) => {{
     const heading = card.querySelector('h1, h2');
-    if (idx === 0) return;
+    if (idx === 0 || card.dataset.tab) return;
     if (!heading || heading.querySelector('.section-toggle')) return;
     card.classList.add('collapsed');
     const btn = document.createElement('button');
@@ -1159,6 +1308,7 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
   const el = document.getElementById(id);
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
 }});
+showTab('operations');
 initCollapsibleSections();
 refreshRecordIndex();
 loadTemplates();
@@ -1166,6 +1316,7 @@ loadCalendar();
 loadWahaFormat();
 loadWahaFilters();
 refreshDbReview();
+refreshDecisionDashboard();
 poll();
 </script>
 </body>

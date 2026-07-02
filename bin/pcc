@@ -48,7 +48,7 @@ Maintenance:
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
-  launcher [install|remove|path]            Manage Update + Monitor desktop launcher
+  launcher [install|remove|path]            Manage desktop launchers (monitor, WAHA, changedetection, URLs, Docker)
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE
@@ -95,22 +95,75 @@ case "$cmd" in
   docker|stack) exec "$APP_ROOT/src/tools/010-docker-stack.sh" "$@" ;;
   db|stats)
     exec "$PY_BIN" - <<'PY'
+import json
+import re
 import sys
+from collections import Counter
+from pathlib import Path
 sys.path.insert(0, __import__("os").environ["APP_ROOT"] + "/src")
 from common import init_db
 conn = init_db()
 cols = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
 def count(where=""):
     return conn.execute("SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")).fetchone()[0]
-print(f"Total records:                     {count()}")
-print(f"Details saved:                     {count('detail_status = %r' % 'saved')}")
-print(f"Details pending:                   {count('detail_status != %r' % 'saved')}")
-print(f"Details failed:                    {count('detail_status = %r' % 'failed')}")
+total = count()
+saved = count("detail_status = 'saved'")
+pending = count("detail_status = 'pending'")
+failed = count("detail_status = 'failed'")
+detail_json = count("COALESCE(detail_json_path, '') <> ''") if "detail_json_path" in cols else 0
+closure = round((saved / total) * 100) if total else 0
+print("Index + Detail KPI summary")
+print(f"Index archive total:               {total}")
+print(f"Index records awaiting alert:      {count('notified_at IS NULL') if 'notified_at' in cols else 'n/a'}")
+print(f"Details saved:                     {saved}")
+print(f"Details pending:                   {pending}")
+print(f"Details failed:                    {failed}")
+print(f"Detail JSON coverage:              {detail_json}/{total} ({closure}% saved)")
+item_total = 0
+item_records = 0
+item_terms = Counter()
+max_item_record = ("-", 0)
+if "detail_json_path" in cols:
+    for numero, detail_path in conn.execute("SELECT numero, detail_json_path FROM opportunities WHERE COALESCE(detail_json_path, '') <> '' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC LIMIT 300"):
+        try:
+            path = Path(detail_path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            items = data.get("items")
+            if not isinstance(items, list):
+                split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+                descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+                rel = descriptor.get("file")
+                items = json.loads((path.parent / rel).read_text(encoding="utf-8")) if rel else []
+            items = [item for item in items if isinstance(item, dict)]
+        except Exception:
+            items = []
+        if items:
+            item_records += 1
+        item_total += len(items)
+        if len(items) > max_item_record[1]:
+            max_item_record = (str(numero or "-"), len(items))
+        for item in items:
+            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
+            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
+                if not word.isdigit():
+                    item_terms[word] += 1
+    avg_items = round(item_total / item_records, 1) if item_records else 0
+    print(f"Item lines parsed (latest 300):     {item_total} across {item_records} records; avg={avg_items}")
+    print(f"Largest item record:               {max_item_record[0]} ({max_item_record[1]} items)")
+    if item_terms:
+        print("Top item keywords:                 " + " · ".join(f"{k}={v}" for k, v in item_terms.most_common(8)))
 if "notified_at" in cols:
-    print(f"Notified (WhatsApp):               {count('notified_at IS NOT NULL')}")
-    print(f"Awaiting WhatsApp index alert:     {count('notified_at IS NULL')}")
+    print(f"WAHA index alerts sent:            {count('notified_at IS NOT NULL')}")
 if "detail_notified_at" in cols:
-    print(f"Awaiting item-details WhatsApp:    {count('detail_status = %r AND notified_at IS NOT NULL AND detail_notified_at IS NULL' % 'saved')}")
+    detail_backlog = count("detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL")
+    print(f"WAHA detail follow-up backlog:     {detail_backlog}")
+try:
+    rows = conn.execute("SELECT detail_status, COUNT(*) AS c FROM opportunities GROUP BY detail_status ORDER BY c DESC").fetchall()
+    print("Detail status mix:                 " + " · ".join(f"{r[0] or '(blank)'}={r[1]}" for r in rows))
+    trend = conn.execute("SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 6").fetchall()
+    print("Recent index/detail trend:         " + " · ".join(f"{r[0] or 'unknown'}={r[1]}" for r in trend))
+except Exception:
+    pass
 PY
     ;;
   get)

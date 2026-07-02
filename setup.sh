@@ -13,6 +13,43 @@ SKIP_BROWSER="${PC_SETUP_SKIP_BROWSER:-0}"
 note() { printf '[setup] %s\n' "$*"; }
 fail() { printf '[setup] ERROR: %s\n' "$*" >&2; exit 1; }
 
+SETUP_LOG_FILE="${PC_SETUP_LOG_FILE:-$PC_LOG_DIR/setup_$(date +%Y%m%d_%H%M%S).log}"
+mkdir -p "$(dirname "$SETUP_LOG_FILE")"
+touch "$SETUP_LOG_FILE"
+exec > >(tee -a "$SETUP_LOG_FILE") 2>&1
+SETUP_STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+finish_setup_log() {
+  local code=$?
+  local finished_at
+  finished_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  if [[ "$code" -eq 0 ]]; then
+    printf '[setup] Finished successfully at %s. Full log: %s\n' "$finished_at" "$SETUP_LOG_FILE"
+  else
+    printf '[setup] FAILED with exit code %s at %s. Review full log: %s\n' "$code" "$finished_at" "$SETUP_LOG_FILE" >&2
+  fi
+}
+trap finish_setup_log EXIT
+
+note "Setup started at $SETUP_STARTED_AT"
+note "Setup log: $SETUP_LOG_FILE"
+
+install_monitor_launchers() {
+  # Install/update desktop launchers before validation/browser steps that may be
+  # skipped or fail in partial/headless setups. Launchers are useful even when the
+  # collector browser still needs to be installed later.
+  if [[ "${PC_SETUP_INSTALL_MONITOR_SHORTCUT:-1}" != "0" ]]; then
+    if [[ -f ./scripts/install-desktop-launcher.sh ]]; then
+      chmod +x ./scripts/install-desktop-launcher.sh
+      note "Installing PanamaCompra desktop launchers (Update + Monitor, changedetection, WAHA, Docker). Set PC_SETUP_INSTALL_MONITOR_SHORTCUT=0 to skip."
+      ./scripts/install-desktop-launcher.sh install || note "Desktop launcher install failed; retry later with: ./bin/pcc launcher install"
+    else
+      note "Desktop launcher installer is missing; retry later with: ./bin/pcc launcher install"
+    fi
+  else
+    note "Desktop launcher install skipped by PC_SETUP_INSTALL_MONITOR_SHORTCUT=0."
+  fi
+}
+
 require_python() {
   command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "Python executable not found: $PYTHON_BIN"
   "$PYTHON_BIN" - <<'PY' || exit 1
@@ -54,6 +91,7 @@ python -m pip install --upgrade pip || fail "Unable to upgrade pip. Check networ
 python -m pip install -r requirements.txt || fail "Unable to install Python dependencies from requirements.txt. Check network/proxy access, then rerun ./setup.sh."
 
 # lib/env.sh already created $PC_DATA_DIR/$PC_RECORDS_DIR/$PC_RECORDS_TEST_DIR/etc above.
+install_monitor_launchers
 
 if [[ "$SKIP_BROWSER" != "1" ]]; then
   if [[ "$SKIP_APT" != "1" && -r /etc/os-release ]] && grep -qiE 'debian|ubuntu|linuxmint' /etc/os-release; then
@@ -119,6 +157,10 @@ else
   note "Docker install/stack skipped by PC_SETUP_SKIP_DOCKER=1. Start it later with: ./src/tools/010-docker-stack.sh up"
 fi
 
+ACCESS_NOTE_FILE="${PC_INTEGRATION_CREDENTIALS_FILE:-$PC_DATA_DIR/config/integration-access.txt}"
+if [[ -f "$ACCESS_NOTE_FILE" ]]; then
+  note "Integration access note (WAHA API key, webhook URL/token, changedetection note): $ACCESS_NOTE_FILE"
+fi
 note "Setup complete. Start with: ./src/pipeline/110a-request-run.sh 5 && ./src/monitor/000-open-monitor.sh"
 note "Or use the unified CLI: ./bin/pcc start 5 && ./bin/pcc monitor"
 note "To stop/remove a previous or duplicate installation, run ./scripts/uninstall.sh in THAT installation's folder (interactive; data kept unless purged)."
