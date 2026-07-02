@@ -124,6 +124,11 @@ if [[ -f "$settings" ]]; then
   source "$settings"
   set +a
 fi
+# Chromeless app window when possible (no Firefox needed, no browser header);
+# the helper falls back to the default browser by itself.
+if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" changedetection
+fi
 url="${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi
 if command -v sensible-browser >/dev/null 2>&1; then exec sensible-browser "$url"; fi
@@ -142,6 +147,11 @@ if [[ -f "$settings" ]]; then
   # shellcheck disable=SC1090
   source "$settings"
   set +a
+fi
+# Chromeless app window when possible (no Firefox needed, no browser header);
+# the helper falls back to the default browser by itself.
+if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" waha
 fi
 url="http://localhost:${WAHA_PORT:-3000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi

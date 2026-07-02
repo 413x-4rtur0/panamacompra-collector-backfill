@@ -179,15 +179,15 @@ MANUAL_ACTIONS = [
     ManualAction("Data Tools", "Apply work templates", ("./src/tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
     ManualAction("Data Tools", "Start webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
     ManualAction("Data Tools", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
-    ManualAction("Data Tools", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the optional browser-based monitor at the configured local URL."),
+    ManualAction("Data Tools", "Open web monitor", ("./src/tools/130-open-web-app.sh", "monitor"), "Starts the optional web monitor server if needed and opens it in a chromeless app window (no Firefox needed; falls back to the default browser)."),
 
     # --- 4. Integrations: changedetection + WAHA Docker containers -----------
     ManualAction("Integrations (Docker)", "Start/refresh docker stack", ("./src/tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers. Their data stays inside the self-contained var/integrations folder."),
     ManualAction("Integrations (Docker)", "Docker stack status", ("./src/tools/010-docker-stack.sh", "status"), "Writes the container states plus the changedetection/WAHA URLs to the manual action log."),
     ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
     ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
-    ManualAction("Integrations (Docker)", "Open changedetection UI", ("bash", "-lc", 'xdg-open "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"'), "Opens the changedetection.io web interface to configure the PanamaCompra watch and its trigger/webhook URL."),
-    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("bash", "-lc", 'xdg-open "http://localhost:${WAHA_PORT:-3000}"'), "Opens the WAHA dashboard to pair the WhatsApp session by QR and inspect the session state."),
+    ManualAction("Integrations (Docker)", "Open changedetection UI", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io interface in a chromeless app window (no Firefox needed; falls back to the default browser) to configure the PanamaCompra watch and its trigger/webhook URL."),
+    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login defaults to admin / 12345678 (see data/config/integration-access.txt)."),
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),

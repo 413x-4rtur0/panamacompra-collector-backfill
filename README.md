@@ -480,6 +480,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/tools/070-rename-record-folders.py` | Rename record folders to `<finish>--<numero>--<desc>` from already-saved data. Dry-run by default; `--apply` to act. |
 | `src/tools/110-reset.py` | Reset/"review from zero" helpers shared by both monitors, one subcommand per action: `requeue-details`, `reset-notify`, `wipe-db`, `wipe-all`. The two destructive actions refuse to run without `--yes`. Used by the monitors' Reset panel. |
 | `src/tools/060-import-selected-calendars.py` | Export/open `.ics` calendar files for one or more selected record NUMEROs; used by the monitors' **Import selected calendars** action. |
+| `src/tools/130-open-web-app.sh` | Opens the web monitor / changedetection / WAHA dashboards in a **chromeless app window** independent of Firefox (Chromium-family `--app=` mode, lightweight-browser fallback, default browser as last resort). Starts the web-monitor server on demand for the `monitor` target. Also available as `pcc open` and used by the desktop launchers and the monitors' *Open …* buttons. Controlled by `PC_WEB_APP_BROWSER` / `PC_WEB_APP_MODE`. |
 | `src/tools/120-setup-git-credentials.sh` | One-time helper that points this checkout's Git credential helper at `store` (instead of the desktop keyring) and optionally pre-seeds a GitHub token, so the desktop updater launcher never has to prompt for a password. |
 | `src/tools/050-maintain-database.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
 | `src/pipeline/040-build-detail-views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
@@ -579,6 +580,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
 | `PC_WAHA_CHAT_ID_STATUS` | `data/config/waha_chat_id_status.txt` fallback | WAHA notifier | Optional destination for **status-change messages** (Programada → Abierta, cancellations, “🔄 Actualización de Items”). Blank = default destination. |
 | `PC_WAHA_API_KEY` | `WAHA_API_KEY` fallback | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. When unset, `lib/env.sh` defaults it to the container-side `WAHA_API_KEY` from `.env`, so one value protects the server and authenticates the notifier. |
+| `PC_WEB_APP_BROWSER` | auto-detect | web-app opener | Exact browser command `src/tools/130-open-web-app.sh` / `pcc open` should use for the chromeless dashboard windows (tried with `--app=` first, then with the plain URL). Blank = auto-detect a Chromium-family browser, then a lightweight browser, then the default browser. |
+| `PC_WEB_APP_MODE` | `app` | web-app opener | `app` opens the dashboards as chromeless app windows (no browser header, independent of Firefox); `browser` skips the app-window attempts and always uses the regular default browser. |
 | `WAHA_DASHBOARD_USERNAME` | `admin` | WAHA container | Login user for the WAHA review dashboard (`http://localhost:3000`). Editable from either monitor's WhatsApp tab; applied on the next docker stack restart. |
 | `WAHA_DASHBOARD_PASSWORD` | `12345678` | WAHA container | Login password the WAHA dashboard asks for after an install/reinstall. The stack seeds the documented default `12345678` into `.env` so you can always get in to review/pair the session; change it in `.env` or the monitors' WhatsApp tab whenever you like (applied on the next stack restart). |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
@@ -636,6 +639,28 @@ Inside the tabs, the sections are:
 8. **Recent worker / current action logs**.
 
 Transparency, refresh cadence, WhatsApp/calendar toggles, section Hide/Show state and the auto-close countdown can all be changed from the monitor without restarting a run. The web monitor (`src/monitor/001b-monitor-web.py`) exposes the same ETA, toggles, path settings, multi-select record-index actions, downloaded-date filter and `/api/record-index` endpoint.
+
+#### Opening the dashboards without Firefox (chromeless app windows)
+
+None of the operator UIs requires Firefox (Playwright Firefox is only the
+collector's scraping engine):
+
+- The **native Tk monitor** (`pcc monitor`, the default) is a real desktop app —
+  no browser at all — and its **Settings/WhatsApp tabs are the settings app for
+  the dependencies**: changedetection URL, WAHA port, API key and dashboard
+  username/password are all edited there (or with `pcc get`/`pcc set`) and
+  applied to the containers on the next docker stack restart.
+- The **web dashboards** (web monitor, changedetection.io, WAHA) can be opened
+  in a **chromeless app window** — no address bar, tabs or browser header —
+  with `src/tools/130-open-web-app.sh`, also exposed as `pcc open
+  monitor|changedetection|waha|URL` and used by the desktop launchers and both
+  monitors' *Open …* buttons. It prefers any Chromium-family browser's
+  `--app=` mode, then a lightweight browser (GNOME Web, Falkon, …), and only
+  falls back to the regular default browser when nothing lighter exists.
+  `pcc open monitor` also starts the web-monitor server first when it is not
+  running yet.
+- `PC_WEB_APP_BROWSER` picks the exact browser command; `PC_WEB_APP_MODE=browser`
+  disables the app-window attempts and always uses the default browser.
 
 ### Optional WAHA private WhatsApp group alerts
 

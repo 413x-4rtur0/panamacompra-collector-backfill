@@ -22,6 +22,10 @@ Run control:
 
 Monitors & services:
   monitor                                   Open the monitor UI (native/web)
+  open monitor|changedetection|waha|URL     Open a dashboard in a chromeless app
+                                            window — no Firefox, no browser header
+                                            (chromium --app when available; set
+                                            PC_WEB_APP_BROWSER / PC_WEB_APP_MODE)
   webhook start|diag                        Start or diagnose the webhook listener
   docker up|down|restart|status|logs        Manage the changedetection + WAHA container stack
 
@@ -86,6 +90,7 @@ case "$cmd" in
   stop) exec "$APP_ROOT/src/pipeline/120a-stop-everything.sh" "$@" ;;
   status) exec "$APP_ROOT/src/pipeline/130a-queue-status.sh" "$@" ;;
   monitor) exec "$APP_ROOT/src/monitor/000-open-monitor.sh" "$@" ;;
+  open|app) exec "$APP_ROOT/src/tools/130-open-web-app.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
     case "$sub" in
