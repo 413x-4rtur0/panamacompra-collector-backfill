@@ -171,14 +171,10 @@ def waha_enabled() -> bool:
     return waha.env_bool("PC_WAHA_ENABLED", False)
 
 
-def waha_destination() -> str:
-    chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
-    if chat_id:
-        return chat_id
-    path = CONFIG_DIR / "waha_chat_id.txt"
-    if path.exists():
-        return path.read_text(encoding="utf-8", errors="replace").strip()
-    return ""
+def waha_destination() -> bool:
+    """True when any WhatsApp destination is configured (the default chat id or
+    any of the per-purpose index/details/status destinations)."""
+    return waha.any_destination_configured()
 
 
 def load_keywords() -> list[str]:
@@ -474,14 +470,20 @@ def match_line_for(row, summary: dict, keywords: list[str]) -> str | None:
     return ", ".join(matches) if matches else None
 
 
-def send_text(event: str, text: str) -> bool:
-    """Send through WAHA respecting the per-event enable list. Returns True only
-    when the message was actually sent."""
+def send_text(event: str, text: str, purpose: str = "") -> bool:
+    """Send through WAHA respecting the per-event enable list, routed to the
+    per-purpose destination ('index', 'details', 'status'; '' = default chat).
+    Returns True only when the message was actually sent."""
     if not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
+    if not waha.configured_chat_id(purpose):
+        # No destination for this purpose and no default to fall back to: leave
+        # the record unmarked so it sends once a destination is configured.
+        print(f"WAHA notification skipped: no destination configured{f' for {purpose!r}' if purpose else ''}.")
+        return False
     try:
-        waha.send_text(text)
+        waha.send_text(text, purpose=purpose)
         return True
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
@@ -577,7 +579,7 @@ def notify_saved_record(conn, numero: str) -> bool:
             mark_notified(conn, numero)
             mark_detail_notified(conn, numero)
             return False
-        if not send_text("new", build_opportunity_message(row, summary, match_line)):
+        if not send_text("new", build_opportunity_message(row, summary, match_line), purpose="index"):
             # Leave notified_at unset so a later --flush retries it.
             return False
         export_record_calendar(conn, row)
@@ -612,7 +614,7 @@ def notify_status_change(conn, numero: str) -> bool:
         if match_line_for(row, summary, load_keywords()) is None:
             clear_status_change(conn, numero)
             return False
-        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]))
+        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -646,7 +648,7 @@ def notify_detected_status_change(conn, numero: str) -> bool:
             summary,
             variant="cancelled" if is_cancelled_status(current_status) else "status",
             previous_status=row["last_notified_status"],
-        ))
+        ), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -676,7 +678,7 @@ def notify_items_change(conn, numero: str) -> bool:
         if match_line_for(row, summary, load_keywords()) is None:
             mark_snapshot(conn, numero)
             return False
-        sent = send_text("update", build_items_changed_message(row, summary))
+        sent = send_text("update", build_items_changed_message(row, summary), purpose="status")
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -739,7 +741,7 @@ def notify_detail_ready(conn, numero: str) -> bool:
             mark_detail_notified(conn, numero)
             mark_snapshot(conn, numero)
             return False
-        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line)):
+        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line), purpose="details"):
             # Leave detail_notified_at unset so the next run retries.
             return False
         export_record_calendar(conn, row)
@@ -941,7 +943,7 @@ def announce_with_progress(conn) -> int:
 
     if total == 0:
         total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records))
+        send_text("none", build_empty_message(total_records), purpose="index")
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING", percent_done - 1,
             f"Step {step_current}/{step_total}: no new opportunities or status changes to send.",
@@ -1050,7 +1052,7 @@ def main(argv=None) -> int:
             # Right after establishing the baseline, do not claim "no new entries".
             return 0
         total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records))
+        send_text("none", build_empty_message(total_records), purpose="index")
         return 0
 
     if just_baselined:

@@ -33,6 +33,14 @@ UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
 WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+# Optional per-purpose destinations; each falls back to the default chat id.
+WAHA_CHAT_ID_INDEX_PATH = CONFIG_DIR / "waha_chat_id_index.txt"
+WAHA_CHAT_ID_DETAILS_PATH = CONFIG_DIR / "waha_chat_id_details.txt"
+WAHA_CHAT_ID_STATUS_PATH = CONFIG_DIR / "waha_chat_id_status.txt"
+
+
+def read_chat_file(path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace").strip() if path.exists() else ""
 WAHA_KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 MANUAL_ACTION_LOG = pc_common.LOG_DIR / "manual_actions.log"
 # Archive database read (read-only) to populate the record-index selector with
@@ -660,7 +668,10 @@ def status_snapshot() -> dict[str, object]:
         "worker_log": tail(WORKER_LOG, 18),
         "current_log": tail(CURRENT_LOG, 28),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "waha_chat_id": WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else "",
+        "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
+        "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
+        "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
+        "waha_chat_id_status": read_chat_file(WAHA_CHAT_ID_STATUS_PATH),
     }
 
 
@@ -1088,7 +1099,10 @@ def run_tk() -> int:
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
     idle_var = tk.StringVar(value=str(runtime["idle_refresh"]))
     source_var = tk.StringVar(value=setting("PC_WAHA_SOURCE", "Panamá Compra"))
-    waha_var = tk.StringVar(value=(WAHA_CHAT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip() if WAHA_CHAT_ID_PATH.exists() else ""))
+    waha_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_PATH))
+    waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
+    waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
+    waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
     existing_keywords = []
     if WAHA_KEYWORDS_PATH.exists():
         existing_keywords = [k.strip() for k in WAHA_KEYWORDS_PATH.read_text(encoding="utf-8", errors="replace").splitlines() if k.strip() and not k.startswith("#")]
@@ -1170,6 +1184,19 @@ def run_tk() -> int:
     test_whatsapp_button.grid(row=10, column=2, sticky="w", pady=3)
     add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
 
+    ttk.Label(settings, text="Per-purpose WhatsApp chat ids (blank = use the default destination above):", style="Card.TLabel").grid(row=11, column=0, sticky="w", pady=3)
+    purpose_frame = ttk.Frame(settings, style="Card.TFrame")
+    purpose_frame.grid(row=11, column=1, columnspan=3, sticky="ew", pady=3)
+    for _col, (_label, _var, _tip) in enumerate((
+        ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
+        ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
+        ("Status changes:", waha_status_var, "Group/channel that receives status-change/cancellation/items-updated messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
+    )):
+        ttk.Label(purpose_frame, text=_label, style="Card.TLabel").grid(row=0, column=_col * 2, sticky="w", padx=(0 if _col == 0 else 8, 4))
+        _entry = ttk.Entry(purpose_frame, textvariable=_var, width=22)
+        _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
+        add_tooltip(_entry, _tip)
+
     ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
     field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
@@ -1229,6 +1256,9 @@ def run_tk() -> int:
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         WAHA_CHAT_ID_PATH.write_text(waha_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
         keywords = [k.strip() for k in re.split(r"[,\n]", keywords_var.get()) if k.strip()]
         WAHA_KEYWORDS_PATH.write_text(("\n".join(keywords) + "\n") if keywords else "", encoding="utf-8")
 
@@ -1990,6 +2020,12 @@ def run_tk() -> int:
 
         if not waha_var.get():
             waha_var.set(str(snap.get("waha_chat_id", "")))
+        if not waha_index_var.get():
+            waha_index_var.set(str(snap.get("waha_chat_id_index", "")))
+        if not waha_details_var.get():
+            waha_details_var.set(str(snap.get("waha_chat_id_details", "")))
+        if not waha_status_var.get():
+            waha_status_var.set(str(snap.get("waha_chat_id_status", "")))
 
         set_text(worker_text, str(snap["worker_log"]))
         set_text(current_text, str(snap["current_log"]))

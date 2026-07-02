@@ -96,9 +96,14 @@ WAHA_ENABLED="${PC_WAHA_ENABLED:-}"
 if [[ -z "$WAHA_ENABLED" && -f "$MONITOR_SETTINGS" ]]; then
   WAHA_ENABLED="$(sed -n "s/^PC_WAHA_ENABLED=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$MONITOR_SETTINGS" | tail -n 1)"
 fi
-WAHA_CHAT="${PC_WAHA_CHAT_ID:-}"
-if [[ -z "$WAHA_CHAT" && -s "$PC_DATA_DIR/config/waha_chat_id.txt" ]]; then
-  WAHA_CHAT="$(head -n 1 "$PC_DATA_DIR/config/waha_chat_id.txt")"
+WAHA_CHAT="${PC_WAHA_CHAT_ID:-}${PC_WAHA_CHAT_ID_INDEX:-}${PC_WAHA_CHAT_ID_DETAILS:-}${PC_WAHA_CHAT_ID_STATUS:-}"
+if [[ -z "$WAHA_CHAT" ]]; then
+  for chat_file in waha_chat_id.txt waha_chat_id_index.txt waha_chat_id_details.txt waha_chat_id_status.txt; do
+    if [[ -s "$PC_DATA_DIR/config/$chat_file" ]]; then
+      WAHA_CHAT="$(head -n 1 "$PC_DATA_DIR/config/$chat_file")"
+      [[ -n "$WAHA_CHAT" ]] && break
+    fi
+  done
 fi
 case "${WAHA_ENABLED,,}" in
   1|true|yes|on)

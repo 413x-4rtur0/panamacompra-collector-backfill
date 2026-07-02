@@ -539,7 +539,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If `PC_WAHA_CHAT_ID` is not configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
-| `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | Destination WhatsApp group/channel chat id for automated “what is new” notifications. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
+| `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | **Default** destination WhatsApp group/channel chat id, used by every message type that has no per-purpose destination. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
+| `PC_WAHA_CHAT_ID_INDEX` | `data/config/waha_chat_id_index.txt` fallback | WAHA notifier | Optional destination for the **index alerts** (immediate “🔔 Nueva Oportunidad” messages and the “⚪ Sin nuevas entradas” status). Blank = default destination. |
+| `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
+| `PC_WAHA_CHAT_ID_STATUS` | `data/config/waha_chat_id_status.txt` fallback | WAHA notifier | Optional destination for **status-change messages** (Programada → Abierta, cancellations, “🔄 Actualización de Items”). Blank = default destination. |
 | `PC_WAHA_API_KEY` | `WAHA_API_KEY` fallback | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. When unset, `lib/env.sh` defaults it to the container-side `WAHA_API_KEY` from `.env`, so one value protects the server and authenticates the notifier. |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
@@ -566,7 +569,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
 4. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
-   - WhatsApp source label, destination chat id, and keyword filter.
+   - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
@@ -701,7 +704,11 @@ Behavior notes:
 - **Config.** Requires `PC_WAHA_ENABLED=1`, a WAHA server (default
   `http://127.0.0.1:3000`) and a destination chat id. Set
   `PC_WAHA_CHAT_ID` or save the destination from either monitor, which writes
-  `data/config/waha_chat_id.txt` for the notifier to read. If messages do not
+  `data/config/waha_chat_id.txt` for the notifier to read. Each message type can
+  also go to its own group: set `PC_WAHA_CHAT_ID_INDEX`, `PC_WAHA_CHAT_ID_DETAILS`
+  and/or `PC_WAHA_CHAT_ID_STATUS` (or fill the per-purpose fields in either
+  monitor, saved to `data/config/waha_chat_id_{index,details,status}.txt`);
+  anything left blank uses the default destination. If messages do not
   send, verify `PC_WAHA_ENABLED=1`, the WAHA server/session is running,
   `PC_NOTIFY_WHATSAPP` is not `0`, and `PC_WAHA_NOTIFY_EVENTS` includes
   `new`, `update`, `none`, and `done` as needed.
@@ -718,7 +725,7 @@ panamacompra-collector/
 ├── data/                                      # runtime data (gitignored)
 │   ├── panamacompra_archive.db                # SQLite database
 │   ├── panamacompra_index.csv                 # append-only "first seen" log
-│   ├── config/                                # monitor_settings.env, waha_chat_id.txt, waha_keywords.txt
+│   ├── config/                                # monitor_settings.env, waha_chat_id*.txt (default + index/details/status), waha_keywords.txt
 │   ├── index/                                 # lightweight per-day index JSON
 │   ├── calendar/                              # YY-MM-DD timestamped .ics import packages
 │   ├── logs/                                  # worker / monitor / webhook logs + run_all_progress.env
