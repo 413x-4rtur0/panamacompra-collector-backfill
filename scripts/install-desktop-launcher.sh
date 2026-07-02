@@ -149,16 +149,13 @@ DESKTOP
   chmod +x "$target_app"
   log "Installed application-menu launcher: $target_app"
   if [[ "$INSTALL_DESKTOP" == "1" ]]; then
-    if [[ -d "$desktop_dir" ]]; then
-      cp "$target_app" "$target_desktop"
-      chmod +x "$target_desktop"
-      if command -v gio >/dev/null 2>&1; then
-        gio set "$target_desktop" metadata::trusted true >/dev/null 2>&1 || true
-      fi
-      log "Installed desktop launcher: $target_desktop"
-    else
-      log "Desktop folder not found ($desktop_dir); installed application-menu launcher only."
+    mkdir -p "$desktop_dir"
+    cp "$target_app" "$target_desktop"
+    chmod +x "$target_desktop"
+    if command -v gio >/dev/null 2>&1; then
+      gio set "$target_desktop" metadata::trusted true >/dev/null 2>&1 || true
     fi
+    log "Installed desktop launcher: $target_desktop"
   fi
 }
 
