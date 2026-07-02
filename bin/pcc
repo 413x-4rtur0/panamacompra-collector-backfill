@@ -102,15 +102,31 @@ conn = init_db()
 cols = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
 def count(where=""):
     return conn.execute("SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")).fetchone()[0]
-print(f"Total records:                     {count()}")
-print(f"Details saved:                     {count('detail_status = %r' % 'saved')}")
-print(f"Details pending:                   {count('detail_status != %r' % 'saved')}")
-print(f"Details failed:                    {count('detail_status = %r' % 'failed')}")
+total = count()
+saved = count("detail_status = 'saved'")
+pending = count("detail_status = 'pending'")
+failed = count("detail_status = 'failed'")
+detail_json = count("COALESCE(detail_json_path, '') <> ''") if "detail_json_path" in cols else 0
+closure = round((saved / total) * 100) if total else 0
+print("Index + Detail KPI summary")
+print(f"Index archive total:               {total}")
+print(f"Index records awaiting alert:      {count('notified_at IS NULL') if 'notified_at' in cols else 'n/a'}")
+print(f"Details saved:                     {saved}")
+print(f"Details pending:                   {pending}")
+print(f"Details failed:                    {failed}")
+print(f"Detail JSON coverage:              {detail_json}/{total} ({closure}% saved)")
 if "notified_at" in cols:
-    print(f"Notified (WhatsApp):               {count('notified_at IS NOT NULL')}")
-    print(f"Awaiting WhatsApp index alert:     {count('notified_at IS NULL')}")
+    print(f"WAHA index alerts sent:            {count('notified_at IS NOT NULL')}")
 if "detail_notified_at" in cols:
-    print(f"Awaiting item-details WhatsApp:    {count('detail_status = %r AND notified_at IS NOT NULL AND detail_notified_at IS NULL' % 'saved')}")
+    detail_backlog = count("detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL")
+    print(f"WAHA detail follow-up backlog:     {detail_backlog}")
+try:
+    rows = conn.execute("SELECT detail_status, COUNT(*) AS c FROM opportunities GROUP BY detail_status ORDER BY c DESC").fetchall()
+    print("Detail status mix:                 " + " · ".join(f"{r[0] or '(blank)'}={r[1]}" for r in rows))
+    trend = conn.execute("SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 6").fetchall()
+    print("Recent index/detail trend:         " + " · ".join(f"{r[0] or 'unknown'}={r[1]}" for r in trend))
+except Exception:
+    pass
 PY
     ;;
   get)

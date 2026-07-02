@@ -71,6 +71,19 @@ else
   ./scripts/validate-installation.sh
 fi
 
+# Install/update the desktop Update + Monitor launcher by default so setup leaves
+# a discoverable way to run the updater, native monitor, web fallback, and timer.
+if [[ "${PC_SETUP_INSTALL_MONITOR_SHORTCUT:-1}" != "0" ]]; then
+  if [[ -x ./scripts/install-desktop-launcher.sh ]]; then
+    note "Installing the PanamaCompra Update + Monitor desktop launcher. Set PC_SETUP_INSTALL_MONITOR_SHORTCUT=0 to skip."
+    ./scripts/install-desktop-launcher.sh install || note "Desktop launcher install failed; retry later with: ./bin/pcc launcher install"
+  else
+    note "Desktop launcher installer is missing; retry later with: ./bin/pcc launcher install"
+  fi
+else
+  note "Desktop launcher install skipped by PC_SETUP_INSTALL_MONITOR_SHORTCUT=0."
+fi
+
 # Docker dependencies: changedetection (change trigger) + WAHA (WhatsApp) +
 # enqueue-only webhook. Installs the Docker engine itself when missing (via
 # apt), then starts the stack. Best effort — the collector works without it.

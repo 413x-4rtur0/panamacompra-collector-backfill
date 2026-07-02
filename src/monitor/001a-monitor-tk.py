@@ -357,7 +357,7 @@ def db_review_stats() -> dict[str, object]:
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
         "needs_deadline": 0, "with_detail_json": 0,
-        "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "db_exists": ARCHIVE_DB.exists(),
+        "groups": [], "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -431,6 +431,13 @@ def db_review_stats() -> dict[str, object]:
             ],
             "columns": column_details,
             "status_breakdown": status_rows,
+            "monthly_trend": [
+                (str(r["period"] or "unknown"), int(r["c"]))
+                for r in conn.execute(
+                    "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
+                    "FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 12"
+                ).fetchall()
+            ],
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
@@ -1182,7 +1189,7 @@ def run_tk() -> int:
         entry.grid(row=row, column=col + 1, sticky="ew", pady=3, padx=(0, 12))
         add_tooltip(entry, tip)
 
-    ttk.Label(settings, text="Settings (editable — leave a field unchanged to keep its default)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    ttk.Label(settings, text="Settings (ordered: Window → WhatsApp destinations → Paths → Collector/Timer/Integrations → Templates → Filters/Formats)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
     field(1, 0, "Transparency 0.30–1.00:", alpha_var, 8, "Whole-window opacity (text shares it). Default 0.85 = lightly translucent and readable. Lower it toward 0.30 for a more see-through window; 1.00 = fully opaque. Applied live when you click Apply.")
     field(1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
@@ -1234,7 +1241,7 @@ def run_tk() -> int:
         _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
         add_tooltip(_entry, _tip)
 
-    ttk.Label(settings, text="Advanced collector, timer & WhatsApp settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
+    ttk.Label(settings, text="Collector automation, timer, WAHA and integration settings (apply on the next run/launch)", style="Title.TLabel").grid(row=12, column=0, columnspan=4, sticky="w", pady=(12, 6))
     field(13, 0, "Next-run interval (min):", interval_var, 8, "Timer cadence: minutes between expected automatic runs shown by the next-run countdown. Env: PC_NEXT_RUN_INTERVAL_MINUTES.")
     field(13, 2, "Deadline 'soon' days:", soon_days_var, 8, "DTEND within this many days shows amber 'next to expire' in the record list. Env: PC_MONITOR_DEADLINE_SOON_DAYS (applies on monitor restart).")
     field(14, 0, "Webhook index page cap:", webhook_index_var, 8, "Optional index page cap for automatic runs. 0 = all pages until no Next page. Env: PC_WEBHOOK_INDEX_LIMIT.")
@@ -1566,6 +1573,62 @@ def run_tk() -> int:
 
     add_section_toggle(records_overview, button_column=1)
 
+    # ========================================================================
+    # SECTION 5: INDEX + DETAIL KPI DASHBOARD - focused decision signals.
+    # ========================================================================
+    kpi_frame = ttk.Frame(content, style="Card.TFrame", padding=14)
+    kpi_frame.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    for col in range(3):
+        kpi_frame.columnconfigure(col, weight=1, uniform="kpi")
+    ttk.Label(kpi_frame, text="Index + Detail KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    kpi_vars = {
+        "index": tk.StringVar(value="Index scan: —"),
+        "details": tk.StringVar(value="Detail queue: —"),
+        "whatsapp": tk.StringVar(value="WhatsApp: —"),
+        "trend": tk.StringVar(value="Trend: —"),
+        "decision": tk.StringVar(value="Decision signals loading…"),
+    }
+    kpi_colors = {"index": ("#172554", "#bfdbfe"), "details": ("#064e3b", "#bbf7d0"), "whatsapp": ("#3b0764", "#e9d5ff")}
+    for idx, key in enumerate(("index", "details", "whatsapp")):
+        bg, fg = kpi_colors[key]
+        tk.Label(kpi_frame, textvariable=kpi_vars[key], anchor="nw", justify="left", bg=bg, fg=fg,
+                 padx=12, pady=10, font=("Sans", 10, "bold")).grid(row=1, column=idx, sticky="nsew", padx=4, pady=(0, 8))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=3, column=0, columnspan=3, sticky="w")
+
+    def update_kpi_dashboard(progress: dict[str, str]) -> None:
+        s = db_review_stats()
+        total = int(s.get("total") or 0)
+        saved = int(s.get("saved") or 0)
+        pending = int(s.get("pending") or 0)
+        failed = int(s.get("failed") or 0)
+        detail_json = int(s.get("with_detail_json") or 0)
+        closure = round((saved / total) * 100) if total else 0
+        kpi_vars["index"].set(
+            "Index scan KPIs\n"
+            f"Found now: {progress.get('RECORDS_FOUND', '-')} · New: {progress.get('RECORDS_NEW', '-')} · Existing: {progress.get('RECORDS_EXISTING', '-')}\n"
+            f"Archive total: {total} · Notify backlog: {s.get('notify_backlog', 0)}"
+        )
+        kpi_vars["details"].set(
+            "Detail download KPIs\n"
+            f"Pending: {pending} · Saved: {saved} · Failed: {failed}\n"
+            f"Detail JSON coverage: {detail_json}/{total or 0} · Closure: {closure}%"
+        )
+        kpi_vars["whatsapp"].set(
+            "Decision delivery KPIs\n"
+            f"Index alerts sent: {s.get('notified', 0)} · Details follow-up backlog: {s.get('detail_notify_backlog', 0)}\n"
+            f"Needs deadline repair: {s.get('needs_deadline', 0)}"
+        )
+        trend = " · ".join(f"{label}: {count}" for label, count in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
+        statuses = " · ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "no status data"
+        kpi_vars["trend"].set(f"Trend windows: {trend}\nDetail status mix: {statuses}")
+        kpi_vars["decision"].set(
+            "Decision focus: clear failed detail downloads first; repair missing deadlines before calendar/export decisions; "
+            "if index notify backlog grows, verify WAHA/settings before running more scans; if pending details grows, prioritize detail worker capacity over more index pages."
+        )
+
+    add_section_toggle(kpi_frame, button_column=2)
+
     def make_status_browser(title: str, detail_status: str, row: int) -> None:
         frame = ttk.Frame(content, style="Card.TFrame", padding=14)
         frame.grid(row=row, column=0, sticky="ew", padx=14, pady=8)
@@ -1648,7 +1711,7 @@ def run_tk() -> int:
     # data/panamacompra_archive.db; empty until the collector has run.
     # ========================================================================
     record_index = ttk.Frame(content, style="Card.TFrame", padding=14)
-    record_index.grid(row=8, column=0, sticky="ew", padx=14, pady=8)
+    record_index.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
     record_index.columnconfigure(1, weight=1)
 
     ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
@@ -1966,7 +2029,7 @@ def run_tk() -> int:
     # driven by deadline/start/downloaded dates. Shares its renderer with
     # `pcc calendar` and the web monitor's Calendar card.
     calendar_card = ttk.Frame(content, style="Card.TFrame", padding=14)
-    calendar_card.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    calendar_card.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
     calendar_card.columnconfigure(6, weight=1)
     ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
 
@@ -2031,7 +2094,7 @@ def run_tk() -> int:
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -2079,7 +2142,7 @@ def run_tk() -> int:
     # operator can review the database state at a glance without opening sqlite.
     # ========================================================================
     db_review = ttk.Frame(content, style="Card.TFrame", padding=14)
-    db_review.grid(row=7, column=0, sticky="ew", padx=14, pady=8)
+    db_review.grid(row=12, column=0, sticky="ew", padx=14, pady=8)
     db_review.columnconfigure(0, weight=1)
     ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
     db_review_var = tk.StringVar(value="Loading database snapshot…")
@@ -2112,7 +2175,7 @@ def run_tk() -> int:
     # confirmed, so a stray click cannot erase the archive. All call src/tools/110-reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=13, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -2154,7 +2217,7 @@ def run_tk() -> int:
     add_section_toggle(reset_zone, button_column=1)
 
     logs = ttk.Frame(content, style="Card.TFrame", padding=14)
-    logs.grid(row=12, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=14, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
@@ -2227,6 +2290,7 @@ def run_tk() -> int:
         update_queue_panel(snap.get("queue", {}) or {})
         update_run_controls(snap)
         update_records_overview(progress)
+        update_kpi_dashboard(progress)
 
         for key, var in diag_vars.items():
             if key == "STEP":

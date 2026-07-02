@@ -62,7 +62,7 @@ Rules:
 
 | Ordered wrapper | Canonical command | Purpose |
 | --- | --- | --- |
-| `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout. |
+| `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout and install/update the Update + Monitor launcher unless `PC_SETUP_INSTALL_MONITOR_SHORTCUT=0`. |
 | `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor desktop launcher. |
 | `tasks/010-update-local-copy.sh` | `./update-local-copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
