@@ -15,6 +15,8 @@ Run control:
   status                                    Show queue and process status
   watch                                     Live terminal monitor (no GUI needed)
   db                                        Archive/notification counters (records, backlogs)
+  calendar [day|week|month|year] [--date D] [--field end|start|downloaded]
+                                            Opportunities calendar (deadlines by default)
 
 Monitors & services:
   monitor                                   Open the monitor UI (native/web)
@@ -203,6 +205,7 @@ PY
     exec "$PY_BIN" "$APP_ROOT/src/pipeline/notify_new_records.py" "${args[@]}"
     ;;
   templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/record-templates.py" "$@" ;;
+  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/opportunity-calendar.py" "$@" ;;
   migrate) exec "$APP_ROOT/src/tools/migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;

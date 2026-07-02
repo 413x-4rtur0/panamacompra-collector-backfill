@@ -33,6 +33,11 @@ _rt_spec = _importlib_util.spec_from_file_location(
     "record_templates", str(pc_common.APP_ROOT / "src" / "tools" / "record-templates.py"))
 record_templates = _importlib_util.module_from_spec(_rt_spec)
 _rt_spec.loader.exec_module(record_templates)
+
+_cal_spec = _importlib_util.spec_from_file_location(
+    "opportunity_calendar", str(pc_common.APP_ROOT / "src" / "tools" / "opportunity-calendar.py"))
+opportunity_calendar = _importlib_util.module_from_spec(_cal_spec)
+_cal_spec.loader.exec_module(opportunity_calendar)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
@@ -1878,12 +1883,76 @@ def run_tk() -> int:
     add_section_toggle(record_index, button_column=2)
 
     # ========================================================================
+    # Opportunity calendar: the collected opportunities by day/week/month/year,
+    # driven by deadline/start/downloaded dates. Shares its renderer with
+    # `pcc calendar` and the web monitor's Calendar card.
+    calendar_card = ttk.Frame(content, style="Card.TFrame", padding=14)
+    calendar_card.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    calendar_card.columnconfigure(6, weight=1)
+    ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+
+    calendar_view_var = tk.StringVar(value="month")
+    calendar_field_var = tk.StringVar(value="end")
+    calendar_anchor_var = tk.StringVar(value="")
+
+    def render_calendar(shift: int | None = None) -> None:
+        view = calendar_view_var.get()
+        try:
+            anchor = opportunity_calendar.parse_anchor(calendar_anchor_var.get())
+        except SystemExit:
+            anchor = opportunity_calendar.parse_anchor("")
+        if shift == 0:
+            anchor = opportunity_calendar.parse_anchor("")
+        elif shift:
+            anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
+        calendar_anchor_var.set(anchor.isoformat())
+        try:
+            conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+            conn.row_factory = sqlite3.Row
+            try:
+                text = opportunity_calendar.render_view(conn, view, anchor, calendar_field_var.get())
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            text = "(archive database not available yet — run a collection first)"
+        calendar_text.configure(state="normal")
+        calendar_text.delete("1.0", "end")
+        calendar_text.insert("1.0", text)
+        calendar_text.configure(state="disabled")
+
+    ttk.Label(calendar_card, text="View:", style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 4))
+    calendar_view_combo = ttk.Combobox(calendar_card, textvariable=calendar_view_var, values=("day", "week", "month", "year"), width=7, state="readonly")
+    calendar_view_combo.grid(row=1, column=1, sticky="w", padx=(0, 10))
+    ttk.Label(calendar_card, text="Date field:", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=(0, 4))
+    calendar_field_combo = ttk.Combobox(calendar_card, textvariable=calendar_field_var, values=("end", "start", "downloaded"), width=11, state="readonly")
+    calendar_field_combo.grid(row=1, column=3, sticky="w", padx=(0, 10))
+    calendar_anchor_entry = ttk.Entry(calendar_card, textvariable=calendar_anchor_var, width=12)
+    calendar_anchor_entry.grid(row=1, column=4, sticky="w", padx=(0, 10))
+    add_tooltip(calendar_anchor_entry, "Anchor date: YYYY, YYYY-MM or YYYY-MM-DD (blank = today). Press Show.")
+    add_tooltip(calendar_view_combo, "Calendar granularity: one day, the week, a month grid with per-day counts, or a whole year with per-month totals.")
+    add_tooltip(calendar_field_combo, "Which date drives the view: end = deadline (default), start = opportunity start, downloaded = when the detail was saved locally.")
+
+    calendar_buttons = ttk.Frame(calendar_card, style="Card.TFrame")
+    calendar_buttons.grid(row=1, column=5, sticky="w")
+    ttk.Button(calendar_buttons, text="◀ Prev", command=lambda: render_calendar(-1)).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Today", command=lambda: render_calendar(0)).grid(row=0, column=1, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Next ▶", command=lambda: render_calendar(1)).grid(row=0, column=2, padx=(0, 6))
+    ttk.Button(calendar_buttons, text="Show", command=lambda: render_calendar(None)).grid(row=0, column=3)
+
+    calendar_text = tk.Text(calendar_card, height=14, wrap="none", state="disabled", font=("monospace", 9))
+    calendar_text.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+    calendar_view_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
+    calendar_field_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
+    render_calendar(0)
+    add_section_toggle(calendar_card, button_column=6)
+
+    # ========================================================================
     # SECTION 5: MANUAL ACTION BUTTONS - grouped by zone in a tidy 3-column grid.
     # Each button's explanation is shown as a hover tooltip (not an inline label)
     # so the grid stays compact and easy to scan.
     # ========================================================================
     actions = ttk.Frame(content, style="Card.TFrame", padding=14)
-    actions.grid(row=9, column=0, sticky="ew", padx=14, pady=8)
+    actions.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
@@ -1964,7 +2033,7 @@ def run_tk() -> int:
     # confirmed, so a stray click cannot erase the archive. All call src/tools/reset.py.
     # ========================================================================
     reset_zone = ttk.Frame(content, style="Card.TFrame", padding=14)
-    reset_zone.grid(row=10, column=0, sticky="ew", padx=14, pady=8)
+    reset_zone.grid(row=11, column=0, sticky="ew", padx=14, pady=8)
     for col in range(2):
         reset_zone.columnconfigure(col, weight=1, uniform="reset")
     ttk.Label(reset_zone, text="Reset / review from zero", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -2006,7 +2075,7 @@ def run_tk() -> int:
     add_section_toggle(reset_zone, button_column=1)
 
     logs = ttk.Frame(content, style="Card.TFrame", padding=14)
-    logs.grid(row=11, column=0, sticky="nsew", padx=14, pady=(8, 14))
+    logs.grid(row=12, column=0, sticky="nsew", padx=14, pady=(8, 14))
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)

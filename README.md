@@ -39,6 +39,7 @@ useful on servers/SSH sessions with no display:
 ./bin/pcc notify OC-2026-000123 --force          # manual WhatsApp send for specific record(s)
 ./bin/pcc docker up                              # manage the changedetection + WAHA containers
 ./bin/pcc templates select oferta.docx          # work templates copied into each record folder
+./bin/pcc calendar week                          # opportunities by day/week/month/year (deadlines)
 ```
 
 A checkout **without** `.git` (for example a downloaded-and-extracted ZIP) installs
@@ -455,6 +456,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/collect_detail.py   # download up to 5 pending 
 | `src/webhook/watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/pipeline/request-run-all.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
 | `docker-compose.yml` / `docker/Dockerfile.webhook` | Reproducible stack: changedetection.io + sockpuppetbrowser + WAHA + the enqueue-only webhook listener. |
 | `src/webhook/diagnose.sh` | Diagnostic/fix helper for changedetection.io webhook reachability; starts the listener on `PC_WEBHOOK_HOST:PC_WEBHOOK_PORT`, tests local curl, and tests from the changedetection container when Docker is available. |
+| `src/tools/opportunity-calendar.py` | Opportunity calendar: collected opportunities by **day / week / month / year**, driven by deadline (default), start, or local-download dates. Month view is a grid with per-day counts plus the day-by-day listing; year view shows per-month totals. Backs `pcc calendar` and the **Opportunity calendar** panels in both monitors (all three share this renderer). |
 | `src/tools/record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. Also manageable from both monitors (source folder, file selection, apply-to-all, copy-to-selected-records). |
 | `src/tools/docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
 | `src/tools/migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
@@ -597,6 +599,7 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
    - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
+   - Opportunity calendar panel: day/week/month/year views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor section; web monitor card backed by `/api/calendar`).
    - Work templates: source folder plus a multi-select list of template files (native monitor Settings panel; the web monitor has a dedicated **Work templates** card with checkboxes). Selection is shared with `pcc templates`; both monitors also offer **Apply work templates** (all records) and **Copy templates to selected** in the record selector.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
