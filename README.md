@@ -470,7 +470,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/monitor/000-open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `src/pipeline/130b-run-status.sh` | One-shot status snapshot. |
-| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` — the same numbers as the monitors' KPIs tab, including detail item-line analysis, top item keywords, groups, contracting entities and detail locations), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
 | `src/pipeline/130a-queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `src/pipeline/120a-stop-everything.sh` | Emergency stop for stuck index/detail/worker processes. |
@@ -610,11 +610,11 @@ visible above the tab bar:
 
 | Tab | Contents |
 |-----|----------|
-| **Operations** | Run controls, live diagnostics, grouped manual action buttons, worker/current logs. |
+| **Operations** | Run controls, live diagnostics, grouped manual action buttons, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), worker/current logs. |
 | **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, changedetection integration, work templates, and the Reset / review-from-zero actions. |
 | **WhatsApp** | Every WhatsApp/WAHA option in one place: toggles, destinations, per-destination filters, delivery options, the WAHA server/container settings (port, API key, dashboard username/password) and the message-format editor. |
-| **KPIs** | The whole KPI dashboard: decision cards, item analysis, trend/status mix, decision guidance, the drawn diagrams (index groups, top contracting entities, locations/buying units parsed from the details, monthly intake trend) and the database review snapshot. |
-| **Records & Database** | Records Pendings/Completed counters, the pending/completed browsers, the full record selector and filters, and the opportunity calendar. |
+| **KPIs** | The whole KPI dashboard with **filters** (time window · index group · contracting entity) that slice every card and diagram: decision cards, item analysis, trend/status mix, decision guidance, the drawn diagrams (index groups, top contracting entities, locations/buying units parsed from the details, monthly intake trend, **daily intake for the last 14 days**, **most frequent items**), a **latest parsed items** feed, and the database review snapshot. |
+| **Records & Database** | Records Pendings/Completed counters, the pending/completed browsers, the full record selector and filters, and the opportunity calendar with a **graphical month grid** (per-day counts, today highlighted, click a day to open its detail) above the text views. |
 
 Inside the tabs, the sections are:
 
@@ -627,13 +627,13 @@ Inside the tabs, the sections are:
    - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
    - Per-destination WhatsApp filters: shared + index/details/status rule fields with AND (`+`), OR (commas) and NOT (`-`) operators (native monitor Settings; web monitor **WhatsApp filters** card backed by `/api/waha-filters`).
    - WhatsApp message formats editor: pick index/details/status, edit the `{placeholder}` template, Preview with sample data, Save or Reset (native monitor Settings block; web monitor card backed by `/api/waha-format`).
-   - Opportunity calendar panel: day/week/month/year views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor section; web monitor card backed by `/api/calendar`).
+   - Opportunity calendar panel: a **graphical month calendar** (7-column day grid with per-day opportunity counts, amber outline on today, busiest days highlighted; click any day to jump to its detail) plus the day/week/month/year text views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor canvas + web monitor grid backed by `/api/calendar-grid` and `/api/calendar`).
    - Work templates: source folder plus a multi-select list of template files (native monitor Settings panel; the web monitor has a dedicated **Work templates** card with checkboxes). Selection is shared with `pcc templates`; both monitors also offer **Apply work templates** (all records) and **Copy templates to selected** in the record selector.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier. Settings are grouped into readable blocks, including timer-window sizing/position, refresh/stale timing, WAHA, and test-zone controls.
-5. **KPIs tab** — every KPI in one dedicated tab in both monitors: decision cards separating index intake (found/new/existing/archive/alert backlog), detail throughput (pending/saved/failed/detail JSON coverage), WAHA delivery and deadline repair pressure; an items analysis line (parsed item lines, records with items, largest record, top item keywords); trend/status mix; and **diagrams to base decisions on** — bar charts of the index groups, the top contracting entities, the locations/buying units parsed from the saved detail pages (`Lugar`/`Provincia`/`Unidad de compra`, falling back to the index `dependencia` column until details carry a location), and the monthly intake trend. The database review snapshot lives in the same tab. `pcc db` (alias `pcc kpi`) prints the same summary plus terminal bar charts.
+5. **KPIs tab** — every KPI in one dedicated tab in both monitors, with a **filter bar** (time window: 7/30/90/365 days or all · index group · contracting entity) that slices every card and diagram to the same subset: decision cards separating index intake (found/new/existing/archive/alert backlog), detail throughput (pending/saved/failed/detail JSON coverage), WAHA delivery and deadline repair pressure; an items analysis line (parsed item lines, records with items, largest record, top item keywords); trend/status mix; and **diagrams to base decisions on** — bar charts of the index groups, the top contracting entities, the locations/buying units parsed from the saved detail pages (`Lugar`/`Provincia`/`Unidad de compra`, falling back to the index `dependencia` column until details carry a location), the monthly intake trend, the **daily intake of the last 14 days** and the **most frequent items**, plus a **latest parsed items** feed with quantities and save dates. The database review snapshot lives in the same tab, and the web version adds sci-fi board touches (pulsing LIVE stamp, blueprint-grid charts with neon hover). `pcc db` (alias `pcc kpi`, filters via `--days N --grupo X --entidad Y`) prints the same summary plus terminal bar charts.
 6. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `(DL local-download timestamp | DTSTART start | DTEND deadline status) NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/start date/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
 7. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `src/webhook/020-start-listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 8. **Recent worker / current action logs**.
@@ -1379,6 +1379,20 @@ json://192.168.10.20:8765/panamacompra/YOUR_TOKEN?method=POST&format=text&overfl
 ```
 
 Before using the LAN URL, test it from inside the changedetection.io container.
+
+**Where to SEE these values after setup.** The trigger token is generated
+**automatically** by setup (`docker stack up` writes `.webhook_token` when it is
+missing) — you never have to invent one. Three places show the live values —
+the token, the `json://webhook:8765/panamacompra/<TOKEN>?method=POST&format=text&overflow=truncate&rto=15&cto=10`
+notification URL, the `http://host.docker.internal:8765/panamacompra/<TOKEN>`
+host URL and the `http://127.0.0.1:8765/panamacompra/<TOKEN>` local test URL:
+
+- Both monitors → **Operations → Webhook trigger access** (with a Refresh
+  button; values are re-read from disk on every refresh, so after an update or
+  a re-run of setup the panel always shows the CURRENT settings).
+- `pcc webhook info` in a terminal.
+- The access note at `data/config/integration-access.txt` (also carries the
+  WAHA dashboard login and API key).
 
 ### Persistent webhook listener with systemd
 

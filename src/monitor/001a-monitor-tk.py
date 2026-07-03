@@ -388,19 +388,26 @@ def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
 LOCATION_SUMMARY_KEYS = ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia")
 
 
-def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[str, object]:
-    """Summarize detail items for decision KPIs without scanning unbounded data."""
+def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300,
+                            flt: str = "", flt_params: tuple = ()) -> dict[str, object]:
+    """Summarize detail items for decision KPIs without scanning unbounded data.
+
+    ``flt``/``flt_params`` is an optional extra WHERE fragment (same filters the
+    KPI dashboard applies to the archive queries)."""
     rows = conn.execute(
-        "SELECT numero, descripcion, detail_json_path FROM opportunities "
+        "SELECT numero, descripcion, detail_json_path, "
+        "COALESCE(detail_saved_at, first_seen, '') AS saved_at FROM opportunities "
         "WHERE COALESCE(detail_json_path, '') <> '' "
-        "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
-        (limit,),
+        + (f"AND {flt} " if flt else "")
+        + "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
+        (*flt_params, limit),
     ).fetchall()
     total_items = 0
     with_items = 0
     max_items = {"numero": "", "descripcion": "", "count": 0}
     keyword_counts: Counter[str] = Counter()
     location_counts: Counter[str] = Counter()
+    item_name_counts: Counter[str] = Counter()
     sample_items: list[dict[str, str]] = []
     for row in rows:
         items, summary = load_detail_payload_for_kpi(str(row["detail_json_path"] or ""))
@@ -415,15 +422,22 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[
         if len(items) > int(max_items["count"]):
             max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
         for item in items:
+            name = str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "").strip()
+            if name:
+                # Normalized item name so the SAME product bought repeatedly
+                # surfaces as a "most frequent item" bar.
+                item_name_counts[name.lower()[:48]] += 1
             text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
             for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
                 if not word.isdigit():
                     keyword_counts[word] += 1
-            if len(sample_items) < 8:
+            if len(sample_items) < 10:
+                # Rows come newest-first, so these are the LATEST parsed items.
                 sample_items.append({
                     "numero": str(row["numero"] or ""),
-                    "descripcion": str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "")[:90],
+                    "descripcion": name[:90],
                     "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
+                    "saved_at": str(row["saved_at"] or "")[:16].replace("T", " "),
                 })
     avg_items = round(total_items / with_items, 1) if with_items else 0
     return {
@@ -433,19 +447,24 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[
         "avg_items_per_record": avg_items,
         "max_items_record": max_items,
         "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
+        "top_items": [{"label": k, "count": v} for k, v in item_name_counts.most_common(10)],
         "top_locations": [{"label": k, "count": v} for k, v in location_counts.most_common(10)],
         "sample_items": sample_items,
     }
 
-def db_review_stats() -> dict[str, object]:
+def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[str, object]:
     """Aggregate counts for the Database review panel (totals, detail-queue state,
     notification state, and a per-group breakdown). Never raises; a missing/locked
-    DB yields zeros so the panel renders before the collector has ever run."""
+    DB yields zeros so the panel renders before the collector has ever run.
+
+    ``days``/``grupo``/``entidad`` are the KPI dashboard filters: 0/blank means
+    no filter; otherwise every aggregate is restricted to records first seen in
+    the window and/or matching the group/entity."""
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
         "needs_deadline": 0, "with_detail_json": 0, "item_analysis": {},
-        "groups": [], "entities": [], "dependencias": [],
+        "groups": [], "entities": [], "dependencias": [], "daily_intake": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
     }
     if not ARCHIVE_DB.exists():
@@ -459,9 +478,28 @@ def db_review_stats() -> dict[str, object]:
         columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
         has_notified = "notified_at" in columns
 
+        # Optional dashboard filters applied to EVERY aggregate below, so the
+        # cards, diagrams and item analysis all answer for the same slice.
+        flt_conditions: list[str] = []
+        flt_params: list[str] = []
+        if days and int(days) > 0:
+            flt_conditions.append(
+                "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
+            flt_params.append(f"-{int(days)} day")
+        if grupo:
+            flt_conditions.append("COALESCE(grupo, '') = ?")
+            flt_params.append(grupo)
+        if entidad and "entidad" in columns:
+            flt_conditions.append("COALESCE(entidad, '') = ?")
+            flt_params.append(entidad)
+        flt = " AND ".join(flt_conditions)
+        flt_where = f" WHERE {flt}" if flt else ""
+        flt_and = f" AND {flt}" if flt else ""
+
         def count(where: str = "") -> int:
-            sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
-            return int(conn.execute(sql).fetchone()[0])
+            clauses = [c for c in (where, flt) if c]
+            sql = "SELECT COUNT(*) FROM opportunities" + ((" WHERE " + " AND ".join(clauses)) if clauses else "")
+            return int(conn.execute(sql, flt_params if flt else []).fetchone()[0])
 
         column_details = []
         for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
@@ -474,8 +512,9 @@ def db_review_stats() -> dict[str, object]:
         status_rows = [
             {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
             for r in conn.execute(
-                "SELECT detail_status, COUNT(*) AS c FROM opportunities "
-                "GROUP BY detail_status ORDER BY c DESC"
+                "SELECT detail_status, COUNT(*) AS c FROM opportunities" + flt_where
+                + " GROUP BY detail_status ORDER BY c DESC",
+                flt_params,
             ).fetchall()
         ]
 
@@ -504,19 +543,23 @@ def db_review_stats() -> dict[str, object]:
             ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
-            "item_analysis": summarize_items_for_kpi(conn),
+            "item_analysis": summarize_items_for_kpi(conn, flt=flt, flt_params=tuple(flt_params)),
             "recent": [
                 (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
                 for r in conn.execute(
-                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
-                    "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8"
+                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities"
+                    + flt_where +
+                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8",
+                    flt_params,
                 ).fetchall()
             ],
             "completed_recent": [
                 (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), str(r["descripcion"] or r["short_description"] or ""))
                 for r in conn.execute(
                     "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
-                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
+                    "WHERE detail_status = 'saved'" + flt_and +
+                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5",
+                    flt_params,
                 ).fetchall()
             ],
             "columns": column_details,
@@ -525,14 +568,26 @@ def db_review_stats() -> dict[str, object]:
                 (str(r["period"] or "unknown"), int(r["c"]))
                 for r in conn.execute(
                     "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
-                    "FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 12"
+                    "FROM opportunities" + flt_where + " GROUP BY period ORDER BY period DESC LIMIT 12",
+                    flt_params,
+                ).fetchall()
+            ],
+            # Records first seen per day, newest first — the "how alive is the
+            # intake" diagram for the KPI dashboard.
+            "daily_intake": [
+                {"label": str(r["day"]), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') AS day, COUNT(*) AS c "
+                    "FROM opportunities" + flt_where + " GROUP BY day HAVING day <> '' ORDER BY day DESC LIMIT 14",
+                    flt_params,
                 ).fetchall()
             ],
             "groups": [
                 (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
                 for r in conn.execute(
-                    "SELECT grupo, COUNT(*) AS c FROM opportunities "
-                    "GROUP BY grupo ORDER BY c DESC"
+                    "SELECT grupo, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY grupo ORDER BY c DESC",
+                    flt_params,
                 ).fetchall()
             ],
             # WHO buys and WHERE: contracting entities and their dependencies,
@@ -540,15 +595,17 @@ def db_review_stats() -> dict[str, object]:
             "entities": [
                 {"label": str(r["entidad"] or "(sin entidad)"), "count": int(r["c"])}
                 for r in conn.execute(
-                    "SELECT entidad, COUNT(*) AS c FROM opportunities "
-                    "GROUP BY entidad ORDER BY c DESC LIMIT 12"
+                    "SELECT entidad, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY entidad ORDER BY c DESC LIMIT 12",
+                    flt_params,
                 ).fetchall()
             ] if "entidad" in columns else [],
             "dependencias": [
                 {"label": str(r["dependencia"] or "(sin dependencia)"), "count": int(r["c"])}
                 for r in conn.execute(
-                    "SELECT dependencia, COUNT(*) AS c FROM opportunities "
-                    "GROUP BY dependencia ORDER BY c DESC LIMIT 12"
+                    "SELECT dependencia, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY dependencia ORDER BY c DESC LIMIT 12",
+                    flt_params,
                 ).fetchall()
             ] if "dependencia" in columns else [],
         }
@@ -692,6 +749,39 @@ def webhook_running() -> bool:
         return "webhook" in result.stdout.lower()
     except Exception:
         return False
+
+def webhook_access_text() -> str:
+    """Live view of the webhook trigger access: the token generated by setup
+    (docker-stack `ensure_access_credentials` writes `.webhook_token`) plus the
+    exact URLs changedetection / external tools must use. Read fresh on every
+    call, so the monitor always shows the CURRENT settings even right after an
+    update or a re-run of setup."""
+    token_path = BASE_DIR / ".webhook_token"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip() if token_path.exists() else ""
+    except OSError:
+        token = ""
+    settings_file = load_settings_file()
+    port = str(os.environ.get("PC_WEBHOOK_PORT") or settings_file.get("PC_WEBHOOK_PORT") or "8765")
+    public_host = str(os.environ.get("PC_WEBHOOK_PUBLIC_HOST") or settings_file.get("PC_WEBHOOK_PUBLIC_HOST") or "host.docker.internal")
+    shown = token or "YOUR_TOKEN"
+    query = "?method=POST&format=text&overflow=truncate&rto=15&cto=10"
+    return (
+        f"Webhook token: {token if token else '(not generated yet — run ./setup.sh or ./src/tools/010-docker-stack.sh up)'}\n"
+        f"Token file:    {token_path}\n"
+        f"Listener:      {'RUNNING' if webhook_running() else 'off'} on port {port}\n\n"
+        "changedetection notification URL (compose network, preferred):\n"
+        f"  json://webhook:8765/panamacompra/{shown}{query}\n"
+        "From a Docker container to a HOST-run listener:\n"
+        f"  http://{public_host}:{port}/panamacompra/{shown}\n"
+        "Local test from this machine:\n"
+        f"  http://127.0.0.1:{port}/panamacompra/{shown}\n\n"
+        "The token is generated AUTOMATICALLY by setup (docker stack up creates\n"
+        ".webhook_token when missing); values here are re-read live, so after an\n"
+        "update or a re-run of setup this panel always shows the current settings.\n"
+        f"Full access note (incl. WAHA login/API key): {CONFIG_DIR / 'integration-access.txt'}"
+    )
+
 
 def process_snapshot() -> dict[str, bool]:
     """Detect all running PanamaCompra processes for the monitor display."""
@@ -1767,6 +1857,51 @@ def run_tk() -> int:
     for col in range(3):
         kpi_frame.columnconfigure(col, weight=1, uniform="kpi")
     ttk.Label(kpi_frame, text="KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    # Dashboard filters: every card, line and diagram below answers for the
+    # same slice (time window, index group, contracting entity).
+    kpi_filters = ttk.Frame(kpi_frame, style="Card.TFrame")
+    kpi_filters.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    KPI_DAY_CHOICES = {"All time": 0, "Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90, "Last year": 365}
+    kpi_days_var = tk.StringVar(value="All time")
+    kpi_grupo_var = tk.StringVar(value="")
+    kpi_entidad_var = tk.StringVar(value="")
+    ttk.Label(kpi_filters, text="Window:", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+    kpi_days_box = ttk.Combobox(kpi_filters, textvariable=kpi_days_var, values=tuple(KPI_DAY_CHOICES), width=12, state="readonly")
+    kpi_days_box.grid(row=0, column=1, sticky="w", padx=(0, 10))
+    ttk.Label(kpi_filters, text="Group:", style="Card.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 4))
+    kpi_grupo_box = ttk.Combobox(kpi_filters, textvariable=kpi_grupo_var, values=(), width=14)
+    kpi_grupo_box.grid(row=0, column=3, sticky="w", padx=(0, 10))
+    ttk.Label(kpi_filters, text="Entity:", style="Card.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 4))
+    kpi_entidad_box = ttk.Combobox(kpi_filters, textvariable=kpi_entidad_var, values=(), width=28)
+    kpi_entidad_box.grid(row=0, column=5, sticky="w", padx=(0, 10))
+    add_tooltip(kpi_days_box, "Restrict every KPI card and diagram to records first seen inside this window.")
+    add_tooltip(kpi_grupo_box, "Restrict the dashboard to one index group (pick from the list or type; blank = all groups).")
+    add_tooltip(kpi_entidad_box, "Restrict the dashboard to one contracting entity (pick or type; blank = all entities).")
+
+    def kpi_filter_args() -> dict[str, object]:
+        return {
+            "days": KPI_DAY_CHOICES.get(kpi_days_var.get(), 0),
+            "grupo": kpi_grupo_var.get().strip(),
+            "entidad": kpi_entidad_var.get().strip(),
+        }
+
+    def apply_kpi_filters() -> None:
+        update_kpi_dashboard(parse_progress_file())
+
+    def reset_kpi_filters() -> None:
+        kpi_days_var.set("All time")
+        kpi_grupo_var.set("")
+        kpi_entidad_var.set("")
+        apply_kpi_filters()
+
+    kpi_apply_button = ttk.Button(kpi_filters, text="Apply filters", command=apply_kpi_filters, style="Accent.TButton")
+    kpi_apply_button.grid(row=0, column=6, sticky="w", padx=(0, 6))
+    ttk.Button(kpi_filters, text="Reset", command=reset_kpi_filters).grid(row=0, column=7, sticky="w")
+    kpi_days_box.bind("<<ComboboxSelected>>", lambda _e: apply_kpi_filters())
+    kpi_filter_state_var = tk.StringVar(value="Showing all records")
+    ttk.Label(kpi_filters, textvariable=kpi_filter_state_var, style="Card.TLabel").grid(row=0, column=8, sticky="w", padx=(10, 0))
+
     kpi_guide_text = (
         "How to use this tab: 1) Fix failed detail downloads first. "
         "2) If pending details grows, prioritize detail capacity over more index pages. "
@@ -1785,12 +1920,12 @@ def run_tk() -> int:
     for idx, key in enumerate(("index", "details", "whatsapp")):
         bg, fg = kpi_colors[key]
         tk.Label(kpi_frame, textvariable=kpi_vars[key], anchor="nw", justify="left", bg=bg, fg=fg,
-                 padx=12, pady=10, font=("Sans", 10, "bold")).grid(row=1, column=idx, sticky="nsew", padx=4, pady=(0, 8))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["items"], style="Card.TLabel", justify="left", wraplength=900).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=4, column=0, columnspan=3, sticky="w")
-    ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-    add_section_toggle(kpi_frame, button_column=2)
+                 padx=12, pady=10, font=("Sans", 10, "bold")).grid(row=2, column=idx, sticky="nsew", padx=4, pady=(0, 8))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["items"], style="Card.TLabel", justify="left", wraplength=900).grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w")
+    ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    add_section_toggle(kpi_frame, button_column=2, start_hidden=False)
 
     # KPI diagrams: horizontal bar charts drawn on plain Tk canvases about the
     # collected data — index groups, contracting entities, locations parsed
@@ -1817,6 +1952,14 @@ def run_tk() -> int:
     entities_chart = make_kpi_chart("Top contracting entities", 1, 1)
     locations_chart = make_kpi_chart("Locations / buying units (from details)", 2, 0)
     trend_chart = make_kpi_chart("Monthly intake trend", 2, 1)
+    daily_chart = make_kpi_chart("Daily intake (last 14 days)", 3, 0)
+    top_items_chart = make_kpi_chart("Most frequent items", 3, 1)
+    ttk.Label(kpi_charts, text="Latest parsed items", style="Message.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
+    latest_items_box = tk.Text(kpi_charts, height=7, wrap="none", bd=0, highlightthickness=1,
+                               highlightbackground="#334155", bg="#020617", fg="#cbd5e1",
+                               insertbackground="#e5e7eb", font=("monospace", 8))
+    latest_items_box.grid(row=5, column=0, columnspan=2, sticky="ew", padx=4)
+    latest_items_box.configure(state="disabled")
     add_section_toggle(kpi_charts, button_column=1, start_hidden=False)
 
     def draw_bars(chart: tk.Canvas, rows: list[tuple[str, int]], color: str = "#38bdf8") -> None:
@@ -1853,9 +1996,33 @@ def run_tk() -> int:
         draw_bars(locations_chart, [(row.get("label", ""), row.get("count", 0)) for row in locations], color="#facc15")
         # Oldest→newest so the trend reads left/top to bottom chronologically.
         draw_bars(trend_chart, [(label, count) for label, count in reversed(list(s.get("monthly_trend", [])))], color="#a78bfa")
+        draw_bars(daily_chart, [(row.get("label", ""), row.get("count", 0)) for row in s.get("daily_intake", [])], color="#38bdf8")
+        draw_bars(top_items_chart, [(row.get("label", ""), row.get("count", 0)) for row in items.get("top_items", [])], color="#f472b6")
+        latest = items.get("sample_items", []) or []
+        latest_lines = [
+            f"{row.get('numero', '?'):<22} {row.get('saved_at', ''):<17} qty {row.get('cantidad') or '-':<8} {row.get('descripcion') or '(item without description)'}"
+            for row in latest
+        ] or ["(no parsed items yet — run a collection with detail downloads)"]
+        latest_items_box.configure(state="normal")
+        latest_items_box.delete("1.0", "end")
+        latest_items_box.insert("1.0", "\n".join(latest_lines))
+        latest_items_box.configure(state="disabled")
 
     def update_kpi_dashboard(progress: dict[str, str]) -> None:
-        s = db_review_stats()
+        filters = kpi_filter_args()
+        s = db_review_stats(**filters)
+        # Keep the selector suggestion lists in sync with the current slice so
+        # drilling down (pick group → see its entities) stays easy.
+        kpi_grupo_box["values"] = tuple(name for name, _qty in s.get("groups", []))
+        kpi_entidad_box["values"] = tuple(row.get("label", "") for row in s.get("entities", []))
+        active_parts = []
+        if filters["days"]:
+            active_parts.append(f"last {filters['days']} days")
+        if filters["grupo"]:
+            active_parts.append(f"group {filters['grupo']}")
+        if filters["entidad"]:
+            active_parts.append(f"entity {filters['entidad']}")
+        kpi_filter_state_var.set(("Filtered: " + " · ".join(active_parts)) if active_parts else "Showing all records")
         total = int(s.get("total") or 0)
         saved = int(s.get("saved") or 0)
         pending = int(s.get("pending") or 0)
@@ -2310,6 +2477,57 @@ def run_tk() -> int:
     calendar_field_var = tk.StringVar(value="end")
     calendar_anchor_var = tk.StringVar(value="")
 
+    # Graphical month calendar: a drawn 7-column grid with per-day counts for
+    # the selected date field; today gets an amber outline and every day cell is
+    # clickable (click = jump the text calendar below to that day).
+    calendar_day_cells: list[tuple[float, float, float, float, str]] = []
+
+    def draw_month_grid(anchor, counts: dict[str, int]) -> None:
+        calendar_day_cells.clear()
+        calendar_canvas.delete("all")
+        month_start, month_end = opportunity_calendar.view_range("month", anchor)
+        width = calendar_canvas.winfo_width()
+        if width <= 1:
+            width = 920
+        cell_w = max(60, (width - 12) / 7)
+        header_h = 20
+        cell_h = 44
+        weeks = (month_start.weekday() + month_end.day + 6) // 7
+        calendar_canvas.configure(height=header_h + weeks * cell_h + 8)
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+        max_count = max(list(counts.values()) + [1])
+        for col, day_name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+            calendar_canvas.create_text(6 + col * cell_w + cell_w / 2, header_h / 2, fill="#93c5fd",
+                                        font=("Sans", 8, "bold"), text=day_name)
+        for day_number in range(1, month_end.day + 1):
+            iso = f"{month_start.isoformat()[:8]}{day_number:02d}"
+            slot = month_start.weekday() + day_number - 1
+            row, col = divmod(slot, 7)
+            x0 = 6 + col * cell_w
+            y0 = header_h + row * cell_h
+            x1, y1 = x0 + cell_w - 4, y0 + cell_h - 4
+            count = int(counts.get(iso, 0))
+            hot = count and count >= max_count * 0.7
+            fill = "#14532d" if count else "#0b1220"
+            if hot:
+                fill = "#713f12"
+            outline = "#facc15" if iso == today_iso else "#334155"
+            calendar_canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline,
+                                             width=2 if iso == today_iso else 1)
+            calendar_canvas.create_text(x0 + 6, y0 + 10, anchor="w", fill="#94a3b8", font=("Sans", 8), text=str(day_number))
+            if count:
+                calendar_canvas.create_text(x0 + cell_w / 2, y0 + cell_h / 2 + 4, fill="#bbf7d0" if not hot else "#fde68a",
+                                            font=("Sans", 10, "bold"), text=str(count))
+            calendar_day_cells.append((x0, y0, x1, y1, iso))
+
+    def on_calendar_grid_click(event: object) -> None:
+        for x0, y0, x1, y1, iso in calendar_day_cells:
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                calendar_anchor_var.set(iso)
+                calendar_view_var.set("day")
+                render_calendar(None)
+                return
+
     def render_calendar(shift: int | None = None) -> None:
         view = calendar_view_var.get()
         try:
@@ -2321,15 +2539,20 @@ def run_tk() -> int:
         elif shift:
             anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
         calendar_anchor_var.set(anchor.isoformat())
+        month_counts: dict[str, int] = {}
         try:
             conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
             conn.row_factory = sqlite3.Row
             try:
                 text = opportunity_calendar.render_view(conn, view, anchor, calendar_field_var.get())
+                month_start, month_end = opportunity_calendar.view_range("month", anchor)
+                events = opportunity_calendar.fetch_events(conn, calendar_field_var.get(), month_start, month_end)
+                month_counts = {day: len(rows) for day, rows in events.items()}
             finally:
                 conn.close()
         except sqlite3.Error:
             text = "(archive database not available yet — run a collection first)"
+        draw_month_grid(anchor, month_counts)
         calendar_text.configure(state="normal")
         calendar_text.delete("1.0", "end")
         calendar_text.insert("1.0", text)
@@ -2354,8 +2577,13 @@ def run_tk() -> int:
     ttk.Button(calendar_buttons, text="Next ▶", command=lambda: render_calendar(1)).grid(row=0, column=2, padx=(0, 6))
     ttk.Button(calendar_buttons, text="Show", command=lambda: render_calendar(None)).grid(row=0, column=3)
 
+    calendar_canvas = tk.Canvas(calendar_card, height=220, bg="#020617", highlightthickness=1,
+                                highlightbackground="#334155")
+    calendar_canvas.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+    calendar_canvas.bind("<Button-1>", on_calendar_grid_click)
+    add_tooltip(calendar_canvas, "Graphical month calendar for the selected date field. Click a day to open its detail below; amber outline = today, amber cell = busiest days.")
     calendar_text = tk.Text(calendar_card, height=14, wrap="none", state="disabled", font=("monospace", 9))
-    calendar_text.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(8, 0))
+    calendar_text.grid(row=3, column=0, columnspan=7, sticky="ew", pady=(8, 0))
     calendar_view_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
     calendar_field_combo.bind("<<ComboboxSelected>>", lambda _e: render_calendar(None))
     render_calendar(0)
@@ -2489,9 +2717,35 @@ def run_tk() -> int:
     add_tooltip(wipe_all_btn, "Delete the DB AND all downloaded records/calendars for a true from-scratch re-collection. Irreversible — asks for confirmation.")
     add_section_toggle(reset_zone, button_column=1)
 
+    # ========================================================================
+    # OPERATIONS TAB / WEBHOOK TRIGGER ACCESS - the token generated by setup
+    # plus the exact changedetection/docker/local URLs, re-read live on Refresh
+    # so the panel always reflects the CURRENT settings after an update.
+    # ========================================================================
+    webhook_access = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
+    webhook_access.grid(row=3, column=0, sticky="ew", padx=6, pady=6)
+    webhook_access.columnconfigure(0, weight=1)
+    ttk.Label(webhook_access, text="Webhook trigger access (token + URLs from setup)", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+    webhook_access_box = tk.Text(webhook_access, height=13, wrap="none", bd=0, highlightthickness=0,
+                                 bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", font=("monospace", 9))
+    webhook_access_box.grid(row=1, column=0, sticky="ew")
+
+    def refresh_webhook_access() -> None:
+        webhook_access_box.configure(state="normal")
+        webhook_access_box.delete("1.0", "end")
+        webhook_access_box.insert("1.0", webhook_access_text())
+        webhook_access_box.configure(state="disabled")
+
+    webhook_access_refresh = ttk.Button(webhook_access, text="Refresh webhook access", command=refresh_webhook_access)
+    webhook_access_refresh.grid(row=2, column=0, sticky="w", pady=(8, 0))
+    add_tooltip(webhook_access_refresh, "Re-read .webhook_token and the port settings so the URLs reflect the current setup (e.g. right after running setup or the docker stack).")
+    add_tooltip(webhook_access_box, "Copyable: token + the changedetection json:// URL, the host.docker.internal URL and the local test URL. Paste the json:// URL into the changedetection notification settings.")
+    refresh_webhook_access()
+    add_section_toggle(webhook_access, button_column=0)
+
     logs = ttk.Frame(ops_tab, style="Card.TFrame", padding=14)
-    logs.grid(row=3, column=0, sticky="nsew", padx=6, pady=(6, 10))
-    ops_tab.rowconfigure(3, weight=1)
+    logs.grid(row=4, column=0, sticky="nsew", padx=6, pady=(6, 10))
+    ops_tab.rowconfigure(4, weight=1)
     logs.columnconfigure(0, weight=1)
     logs.columnconfigure(1, weight=1)
     logs.rowconfigure(1, weight=1)
