@@ -700,11 +700,27 @@ def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
     return evaluate_filter(haystack, includes, excludes)
 
 
+def record_events_respect_filter() -> bool:
+    """Whether rich opportunity messages should obey PC_WAHA_NOTIFY_EVENTS.
+
+    Default false: PC_NOTIFY_WHATSAPP is the record-notification switch, while
+    PC_WAHA_NOTIFY_EVENTS remains useful for short operational messages. This
+    avoids the confusing setup where only `done` is enabled, so the final summary
+    sends but changedetection/new-opportunity messages are silently filtered out.
+    Set PC_WAHA_RECORD_EVENTS_RESPECT_FILTER=1 to restore strict event filtering.
+    """
+    return cfg_bool("PC_WAHA_RECORD_EVENTS_RESPECT_FILTER", False)
+
+
 def send_text(event: str, text: str, purpose: str = "") -> bool:
-    """Send through WAHA respecting the per-event enable list, routed to the
-    per-purpose destination ('index', 'details', 'status', 'system', 'summary'; '' = default chat).
-    Returns True only when the message was actually sent."""
-    if not waha.enabled_for_event(event):
+    """Send through WAHA, routed to the per-purpose destination.
+
+    Record-level sends are controlled by PC_NOTIFY_WHATSAPP plus destination and
+    keyword/date filters. They intentionally bypass PC_WAHA_NOTIFY_EVENTS unless
+    PC_WAHA_RECORD_EVENTS_RESPECT_FILTER=1, so changedetection page updates are
+    not hidden while only the final `done` summary continues to send.
+    """
+    if record_events_respect_filter() and not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
     if not waha.configured_chat_id(purpose):

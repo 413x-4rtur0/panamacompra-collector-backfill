@@ -164,8 +164,11 @@ Key point: the webhook only starts/queues the run. Two notifier phases: the inde
 alert is sent right after the index step — before the long download phase — so
 subscribers hear about a new opportunity immediately, and once its detail page is
 downloaded a follow-up message delivers the full record (items, location, dates)
-in the rich format. Disable the follow-up with **PC_NOTIFY_DETAILS=0** to fold the
-items into the snapshot silently instead.
+in the rich format. Record-level changedetection notifications are controlled by
+`PC_NOTIFY_WHATSAPP`, destinations, keyword/date filters and the database delta;
+they no longer disappear just because `PC_WAHA_NOTIFY_EVENTS` was narrowed to
+`done` for operational summaries. Disable the follow-up with **PC_NOTIFY_DETAILS=0**
+to fold the items into the snapshot silently instead.
 
 ### Process diagram and test visibility
 
@@ -614,7 +617,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEB_APP_MODE` | `app` | web-app opener | `app` opens the dashboards as chromeless app windows (no browser header, independent of Firefox); `browser` skips the app-window attempts and always uses the regular default browser. |
 | `WAHA_DASHBOARD_USERNAME` | `admin` | WAHA container | Login user for the WAHA review dashboard (`http://localhost:3000`). Editable from either monitor's WhatsApp tab; applied on the next docker stack restart. |
 | `WAHA_DASHBOARD_PASSWORD` | `12345678` | WAHA container | Login password the WAHA dashboard asks for after an install/reinstall. The stack seeds the documented default `12345678` into `.env` so you can always get in to review/pair the session; change it in `.env` or the monitors' WhatsApp tab whenever you like (applied on the next stack restart). |
-| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names for short operational sends. Record-level changedetection notifications (`new`, `update`, `none`) are controlled by `PC_NOTIFY_WHATSAPP` and bypass this list by default so page changes are not hidden while only final summaries send. |
+| `PC_WAHA_RECORD_EVENTS_RESPECT_FILTER` | `0` | record notifier | Set `1` only if rich opportunity messages should also obey `PC_WAHA_NOTIFY_EVENTS`. Leave `0` to ensure new/changed opportunities still notify even when the event list was narrowed to `done`. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label used in the rich opportunity message headings (e.g. `Nueva Oportunidad - <source>`) and shown as `📌 Fuente:` in the “sin nuevas entradas” status. |
 | `PC_WAHA_TIMEOUT_SECONDS` | `30` | WAHA notifier | Per-attempt HTTP timeout (seconds) for each WAHA `sendText` call. Raise it for a slow/remote WAHA; lower it to detect an unreachable endpoint faster. |
