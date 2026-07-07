@@ -27,7 +27,7 @@ nnr = pc_common.load_script("src/pipeline/020-notify-whatsapp.py", "notify_new_r
 
 KINDS = nnr.FORMAT_KINDS
 KIND_LABELS = {
-    "index": "index alert (🔔 Nueva Oportunidad, sent right after the scan)",
+    "index": "index alert (🔔 Nueva Oportunidad / 🟢 Oportunidad Ahora Abierta, sent right after the scan)",
     "details": "detail follow-up (📥 Detalles Completos, sent after download)",
     "status": "status change (cambios de estado / cancelaciones / items)",
     "system": "system/operations message (health review, worker start/test/failure)",

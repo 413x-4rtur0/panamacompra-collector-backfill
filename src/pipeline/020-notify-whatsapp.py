@@ -376,6 +376,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     if variant == "new":
         heading = f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
+    elif variant == "abierta":
+        heading = f"🟢 *Oportunidad Ahora Abierta - {SOURCE_NAME}*"
+        status_line = f"📊 *Estado:* [ANTERIOR: {clean_field(previous_status)}] ➡️ [ACTUAL: {status}]"
     elif variant == "cancelled":
         heading = f"❌ *Oportunidad Cancelada - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status.upper()}"
@@ -554,7 +557,7 @@ def load_custom_format(kind: str) -> str:
 
 
 def kind_for_variant(variant: str) -> str:
-    if variant == "new":
+    if variant in ("new", "abierta"):
         return "index"
     if variant in ("details", "manual"):
         return "details"
@@ -562,7 +565,12 @@ def kind_for_variant(variant: str) -> str:
 
 
 def sample_context(kind: str) -> dict[str, str]:
-    """Fabricated values so templates can be previewed without a real record."""
+    """Fabricated values so templates can be previewed without a real record.
+
+    The "index" kind covers both 🔔 Nueva Oportunidad and 🟢 Oportunidad Ahora
+    Abierta messages (both use the same format template). The preview uses the
+    new-opportunity heading; the Abiertas variant differs only in {heading} and
+    {estado_linea}, which users can observe via `pcc format preview status`."""
     headings = {
         "index": f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*",
         "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
@@ -612,17 +620,32 @@ def render_format(kind: str, template: str | None = None) -> str:
     return text.format_map(_SafeDict(sample_context(kind)))
 
 
-# Human-readable label for a pending_status_change code stored by the index step.
+# Human-readable label for a pending_status_change code (used in monitor progress lines).
 STATUS_CHANGE_LABELS = {
     "abierta": "Programada → Abierta",
-    "cancelada": "Programada → Cancelada",  # planned future transition
+    "cancelada": "Programada → Cancelada",
+}
+
+# Previous-status fallback for the WhatsApp message when last_notified_status is not set.
+# Separate from STATUS_CHANGE_LABELS (which are full transition descriptions used only in
+# monitor progress previews, not in message bodies).
+_PREV_STATUS_FOR_CHANGE = {
+    "abierta": "Programada",
+    "cancelada": "Programada",
 }
 
 
-def build_status_change_message(row, summary: dict, change_code: str) -> str:
-    previous_status = row["last_notified_status"] or STATUS_CHANGE_LABELS.get(change_code, change_code or DASH)
-    variant = "cancelled" if is_cancelled_status(status_value(row)) else "status"
-    return build_record_message(row, summary, variant=variant, previous_status=previous_status)
+def build_status_change_message(row, summary: dict, change_code: str, match_line: str | None = None) -> str:
+    # _PREV_STATUS_FOR_CHANGE supplies just the previous status name ("Programada"),
+    # not the full transition label from STATUS_CHANGE_LABELS ("Programada → Abierta").
+    previous_status = row["last_notified_status"] or _PREV_STATUS_FOR_CHANGE.get(change_code, change_code or DASH)
+    if change_code == "abierta":
+        variant = "abierta"
+    elif is_cancelled_status(status_value(row)):
+        variant = "cancelled"
+    else:
+        variant = "status"
+    return build_record_message(row, summary, variant=variant, previous_status=previous_status, match_line=match_line)
 
 def export_record_calendar(conn, row) -> str:
     calendar = load_detail_calendar(row["detail_json_path"])
@@ -848,19 +871,26 @@ def clear_status_change(conn, numero: str) -> None:
 def notify_status_change(conn, numero: str) -> bool:
     """Announce a single record's status transition (e.g. Programada → Abierta).
     Idempotent: clears the pending flag whether or not a message is sent. Returns
-    True only when a message was actually sent. Never raises."""
+    True only when a message was actually sent. Never raises.
+
+    Programadas→Abiertas transitions (change_code="abierta") are routed to the
+    "index" destination so they appear in the same feed as new-opportunity alerts.
+    All other status changes continue going to the "status" destination."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
         row = fetch_row(conn, numero)
         if row is None or not row["pending_status_change"]:
             return False
+        change_code = row["pending_status_change"]
+        # Abiertas transitions go to the index feed (new-opportunity channel).
+        purpose = "index" if change_code == "abierta" else "status"
         summary = load_detail_summary(row["detail_json_path"])
-        # Respect the status destination's keyword filter.
-        if match_line_for(row, summary, "status") is None:
+        match_line = match_line_for(row, summary, purpose)
+        if match_line is None:
             clear_status_change(conn, numero)
             return False
-        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]), purpose="status")
+        sent = send_text("update", build_status_change_message(row, summary, change_code, match_line=match_line), purpose=purpose)
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -1206,8 +1236,11 @@ def announce_with_progress(conn) -> int:
         summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
         if kind == "update":
             change = full_row["pending_status_change"] if full_row is not None else ""
-            verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
-            preview = f"🔄 {label} ({verb})"
+            if change == "abierta":
+                preview = f"🟢 {label} (Ahora Abierta)"
+            else:
+                verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
+                preview = f"🔄 {label} ({verb})"
         elif kind == "status":
             preview = f"🟡 {label} (estado cambiado)"
         elif kind == "items":
