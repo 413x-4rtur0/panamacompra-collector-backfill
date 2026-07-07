@@ -1431,7 +1431,7 @@ async function refreshDecisionDashboard() {{
   const biggest = items.max_items_record || {{}};
   const topEntity = (s.entities || [])[0] || {{}};
   const topLocation = ((items.top_locations || [])[0]) || {{}};
-  const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\n');
+  const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\\n');
   document.getElementById('decision-recommendations').textContent = `Index/detail/items decision signals\n• If Details failed > 0, repair collector/detail issues before expanding index page caps.\n• If Details pending grows, prioritize detail download capacity over more index scans.\n• Item lines parsed: ${{items.total_items || 0}} across ${{items.records_with_items || 0}} records; largest record: ${{biggest.numero || '-'}} with ${{biggest.count || 0}} items.\n• Most active entity: ${{topEntity.label || '-'}} (${{topEntity.count || 0}} records)${{topLocation.label ? ' · most frequent location/unit: ' + topLocation.label + ' (' + (topLocation.count || 0) + ')' : ''}} — focus review capacity where the volume is.\n• If item keywords cluster around a buyer/product family, prioritize those folders for review and WhatsApp detail follow-up.\n• If Deadline repairs > 0, repair missing DTEND before calendar/export decisions.\n• If Notify backlog grows, verify WAHA destinations/settings before running more scans.\nRecent parsed items:\n${{sampleLines || '  - no item rows parsed yet'}}`;
 }}
 function initCollapsibleSections() {{
@@ -1462,8 +1462,8 @@ function renderQueue(data) {{
     `Collector request: ${{q.collector_state || 'none'}} (since ${{q.collector_since || '-'}}) · ` +
     `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}})`;
   document.getElementById('queue-log').textContent =
-    'Recent collector queue log:\n' + (q.request_log || '(missing)') +
-    '\nRecent Update + Monitor queue log:\n' + (q.update_log || '(missing)');
+    'Recent collector queue log:\\n' + (q.request_log || '(missing)') +
+    '\\nRecent Update + Monitor queue log:\\n' + (q.update_log || '(missing)');
 }}
 
 function renderRecordSummary(data) {{
@@ -1490,7 +1490,7 @@ async function refreshDbReview(targetId = 'db-review') {{
     const groups = (s.groups || []).map(g => `${{g.grupo}}: ${{g.count}}`).join('   ·   ') || '—';
     const statuses = (s.status_breakdown || []).map(r => `${{r.status}}: ${{r.count}}`).join('   ·   ') || '—';
     const columns = (s.columns || []).map(c => `${{c.name}}[${{c.type || 'TEXT'}}]=${{c.nonempty}}`).join('   ·   ') || '—';
-    const recent = (s.recent || []).map(r => `  • ${{r.numero}} [${{r.detail_status || 'unknown'}}] — ${{(r.descripcion || '').slice(0, 120)}}`).join('\n') || '  • —';
+    const recent = (s.recent || []).map(r => `  • ${{r.numero}} [${{r.detail_status || 'unknown'}}] — ${{(r.descripcion || '').slice(0, 120)}}`).join('\\n') || '  • —';
     node.textContent =
       `Total records: ${{s.total}}\n` +
       `Records Completed (saved): ${{s.saved}}   ·   Records Pendings: ${{s.pending}}   ·   Failed: ${{s.failed}}\n` +
