@@ -38,7 +38,8 @@ Monitors & services:
 Settings (same files the GUI monitors use):
   get [KEY]                                 Show one or all monitor settings
   set KEY VALUE                             Save a monitor setting (e.g. set PC_WAHA_ENABLED 1)
-  chat [default|index|details|status] [ID]  Show or save WhatsApp destination chat id(s)
+  chat [default|index|details|status|system|summary] [ID]
+                                            Show or save WhatsApp destination chat id(s)
   keywords [global|index|details|status] [list|set "..."|clear|test "text"]
                                             Per-destination filters. Rules: OR between
                                             comma/line-separated rules, AND with '+'
@@ -47,10 +48,10 @@ Settings (same files the GUI monitors use):
 WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
-                                            message uses status/default/index/details
+                                            message uses system/default/index/details/status/summary
   full-report [--stdout] [--no-logs]        Generate a full diagnostic Markdown report
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
-  format [list|show|preview|set|reset|placeholders] [index|details|status|system]
+  format [list|show|preview|set|reset|placeholders] [index|details|status|system|summary]
                                             Customize the WhatsApp message formats
 
 Work templates (copied into templates/ inside each record folder):
@@ -87,7 +88,7 @@ load_monitor_settings() {
 chat_file_for() {
   case "$1" in
     default|"") echo "$PC_DATA_DIR/config/waha_chat_id.txt" ;;
-    index|details|status) echo "$PC_DATA_DIR/config/waha_chat_id_$1.txt" ;;
+    index|details|status|system|summary) echo "$PC_DATA_DIR/config/waha_chat_id_$1.txt" ;;
     *) echo ""; return 1 ;;
   esac
 }
@@ -388,13 +389,13 @@ PY
   chat)
     purpose="${1:-}"
     if [[ -z "$purpose" ]]; then
-      for p in default index details status; do
+      for p in default index details status system summary; do
         file="$(chat_file_for "$p")"
         printf '%-8s %s\n' "$p:" "$( [[ -s "$file" ]] && head -n 1 "$file" || echo '(not set)')"
       done
-      echo "Set with: pcc chat [default|index|details|status] 12036...@g.us (empty id clears)"
+      echo "Set with: pcc chat [default|index|details|status|system|summary] 12036...@g.us (empty id clears)"
     else
-      file="$(chat_file_for "$purpose")" || { echo "Unknown destination: $purpose (use default|index|details|status)" >&2; exit 2; }
+      file="$(chat_file_for "$purpose")" || { echo "Unknown destination: $purpose (use default|index|details|status|system|summary)" >&2; exit 2; }
       if [[ $# -ge 2 ]]; then
         mkdir -p "$(dirname "$file")"
         printf '%s\n' "${2:-}" > "$file"
@@ -449,7 +450,7 @@ PYEOF
     ;;
   test-whatsapp)
     load_monitor_settings
-    exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST --force-send --purpose status \
+    exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST --force-send --purpose system \
       --message "${1:-Prueba de notificación desde la CLI pcc.}"
     ;;
   health|system-health|review)

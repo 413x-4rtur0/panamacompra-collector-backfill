@@ -6,26 +6,26 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/lib/env.sh"
 cd "$APP_ROOT"
 
-HEALTH_NOTIFY_PURPOSE="${PC_SYSTEM_HEALTH_NOTIFY_PURPOSE:-status}"
+HEALTH_NOTIFY_PURPOSE="${PC_SYSTEM_HEALTH_NOTIFY_PURPOSE:-system}"
 HEALTH_NOTIFY_CHAT_ID="${PC_SYSTEM_HEALTH_CHAT_ID:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --chat-id) HEALTH_NOTIFY_CHAT_ID="${2:-}"; shift 2 ;;
-    --purpose) HEALTH_NOTIFY_PURPOSE="${2:-status}"; shift 2 ;;
+    --purpose) HEALTH_NOTIFY_PURPOSE="${2:-system}"; shift 2 ;;
     -h|--help)
       cat <<'USAGE'
-Usage: review-system.sh [--chat-id WAHA_CHAT_ID] [--purpose default|index|details|status]
+Usage: review-system.sh [--chat-id WAHA_CHAT_ID] [--purpose default|index|details|status|system|summary]
 
 Runs repository/system health checks. When WAHA is enabled, completion sends a
-"System health" status message to the selected purpose destination (default:
-status). --chat-id overrides that destination for this run.
+"System health" message to the selected purpose destination (default:
+system). --chat-id overrides that destination for this run.
 USAGE
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
-case "$HEALTH_NOTIFY_PURPOSE" in default|index|details|status) ;; *) HEALTH_NOTIFY_PURPOSE="status" ;; esac
+case "$HEALTH_NOTIFY_PURPOSE" in default|index|details|status|system|summary) ;; *) HEALTH_NOTIFY_PURPOSE="system" ;; esac
 
 SETTINGS_FILE="$PC_DATA_DIR/config/monitor_settings.env"
 load_monitor_settings_for_health() {
@@ -45,7 +45,10 @@ send_health_notification() {
     case "$HEALTH_NOTIFY_PURPOSE" in
       index) export PC_WAHA_CHAT_ID_INDEX="$HEALTH_NOTIFY_CHAT_ID" ;;
       details) export PC_WAHA_CHAT_ID_DETAILS="$HEALTH_NOTIFY_CHAT_ID" ;;
-      status|default) export PC_WAHA_CHAT_ID_STATUS="$HEALTH_NOTIFY_CHAT_ID" ;;
+      status) export PC_WAHA_CHAT_ID_STATUS="$HEALTH_NOTIFY_CHAT_ID" ;;
+      system) export PC_WAHA_CHAT_ID_SYSTEM="$HEALTH_NOTIFY_CHAT_ID" ;;
+      summary) export PC_WAHA_CHAT_ID_SUMMARY="$HEALTH_NOTIFY_CHAT_ID" ;;
+      default) export PC_WAHA_CHAT_ID="$HEALTH_NOTIFY_CHAT_ID" ;;
     esac
   fi
   local purpose_args=()

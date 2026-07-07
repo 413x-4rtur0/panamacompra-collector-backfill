@@ -31,11 +31,13 @@ CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 SYSTEM_FORMAT_PATH = CONFIG_DIR / "waha_format_system.txt"
+SUMMARY_FORMAT_PATH = CONFIG_DIR / "waha_format_summary.txt"
 
 # Per-purpose destinations, so the index alerts, the item-detail follow-ups and
-# the status-change messages can each go to a different group/channel. Every
-# purpose falls back to the default destination when not configured.
-CHAT_PURPOSES = ("index", "details", "status")
+# the status-change, system-health and final-summary messages can each go to a
+# different group/channel. Every purpose falls back to the default destination
+# when not configured.
+CHAT_PURPOSES = ("index", "details", "status", "system", "summary")
 
 
 def chat_id_path(purpose: str = "") -> Path:
@@ -128,20 +130,22 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-def load_system_format() -> str:
-    if SYSTEM_FORMAT_PATH.exists():
-        text = SYSTEM_FORMAT_PATH.read_text(encoding="utf-8", errors="replace").strip("\n")
+def load_operational_format(kind: str) -> str:
+    path = SUMMARY_FORMAT_PATH if kind == "summary" else SYSTEM_FORMAT_PATH
+    if path.exists():
+        text = path.read_text(encoding="utf-8", errors="replace").strip("\n")
         if text.strip():
             return text
     return ""
 
 
-def build_message(event: str, status: str, message: str) -> str:
+def build_message(event: str, status: str, message: str, purpose: str = "") -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mode_label = run_mode_label()
     body = message.strip() or saved_message()
-    custom = load_system_format()
+    kind = "summary" if purpose == "summary" else "system"
+    custom = load_operational_format(kind)
     if custom:
         return custom.format_map(_SafeDict({
             "heading": f"{prefix} [{event.upper()}]",
@@ -229,7 +233,7 @@ def main() -> int:
     parser.add_argument("--message", default="", help="Additional notification message text. If omitted, the saved reusable message is used.")
     parser.add_argument("--save-message", action="store_true", help="Save --message as the reusable group notification message for this and future runs.")
     parser.add_argument("--force-send", action="store_true", help="Send even when PC_WAHA_ENABLED=0 or the event is not listed in PC_WAHA_NOTIFY_EVENTS (used for explicit tests).")
-    parser.add_argument("--purpose", default="", choices=["", "index", "details", "status"], help="Use a purpose-specific destination, falling back to the default chat id.")
+    parser.add_argument("--purpose", default="", choices=["", *CHAT_PURPOSES], help="Use a purpose-specific destination, falling back to the default chat id.")
     args = parser.parse_args()
 
     if args.save_message:
@@ -245,7 +249,7 @@ def main() -> int:
         return 0
 
     try:
-        send_text(build_message(args.event, args.status, args.message), purpose=args.purpose)
+        send_text(build_message(args.event, args.status, args.message, purpose=args.purpose), purpose=args.purpose)
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         return 1 if env_bool("PC_WAHA_STRICT", False) else 0

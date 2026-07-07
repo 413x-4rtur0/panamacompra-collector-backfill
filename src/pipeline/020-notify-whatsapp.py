@@ -173,7 +173,7 @@ def waha_enabled() -> bool:
 
 def waha_destination() -> bool:
     """True when any WhatsApp destination is configured (the default chat id or
-    any of the per-purpose index/details/status destinations)."""
+    any of the per-purpose index/details/status/system/summary destinations)."""
     return waha.any_destination_configured()
 
 
@@ -475,7 +475,7 @@ def build_empty_message(records_checked: int) -> str:
 # saved to data/config/waha_format_<kind>.txt (via `pcc format` or either
 # monitor) replaces the built-in layout. Templates use {placeholder} fields;
 # unknown placeholders are left literally so a typo never breaks a send.
-FORMAT_KINDS = ("index", "details", "status", "system")
+FORMAT_KINDS = ("index", "details", "status", "system", "summary")
 
 PLACEHOLDERS = {
     "heading": "message heading with emoji (varies per message type)",
@@ -526,6 +526,9 @@ DEFAULT_FORMATS = {
     "system": (
         "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
     ),
+    "summary": (
+        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
+    ),
 }
 
 
@@ -565,6 +568,7 @@ def sample_context(kind: str) -> dict[str, str]:
         "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
         "status": f"⚠️ *Cambio de Estado - {SOURCE_NAME}*",
         "system": f"🛠️ *Sistema - {SOURCE_NAME}*",
+        "summary": f"📊 *Resumen final de ronda - {SOURCE_NAME}*",
     }
     items = (
         "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
@@ -595,8 +599,8 @@ def sample_context(kind: str) -> dict[str, str]:
         "items_total": "⏳" if kind == "index" else "2",
         "dias_restantes": "13",
         "event": "done",
-        "status": "SYSTEM HEALTH OK",
-        "message": "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
+        "status": "DONE" if kind == "summary" else "SYSTEM HEALTH OK",
+        "message": "Inicio: 2026-07-07 08:00:00\nFin: 2026-07-07 08:18:42\nDuración total: 18m 42s\nNuevos: 4\nDetalles guardados: 4" if kind == "summary" else "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
         "time": "2026-07-07 10:30:00",
         "run": "Manual",
     }
@@ -698,7 +702,7 @@ def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
 
 def send_text(event: str, text: str, purpose: str = "") -> bool:
     """Send through WAHA respecting the per-event enable list, routed to the
-    per-purpose destination ('index', 'details', 'status'; '' = default chat).
+    per-purpose destination ('index', 'details', 'status', 'system', 'summary'; '' = default chat).
     Returns True only when the message was actually sent."""
     if not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
