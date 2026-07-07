@@ -48,6 +48,7 @@ WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
                                             message uses status/default/index/details
+  full-report [--stdout] [--no-logs]        Generate a full diagnostic Markdown report
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
   format [list|show|preview|set|reset|placeholders] [index|details|status]
                                             Customize the WhatsApp message formats
@@ -454,6 +455,10 @@ PYEOF
   health|system-health|review)
     load_monitor_settings
     exec "$APP_ROOT/review-system.sh" "$@"
+    ;;
+  full-report|diagnostic-report|report)
+    load_monitor_settings
+    exec "$PY_BIN" "$APP_ROOT/src/tools/140-full-report.py" "$@"
     ;;
   notify)
     [[ $# -ge 1 ]] || { echo "Usage: pcc notify NUMERO [NUMERO...] [--force]" >&2; exit 2; }

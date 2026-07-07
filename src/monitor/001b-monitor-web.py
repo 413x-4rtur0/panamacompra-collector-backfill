@@ -155,6 +155,7 @@ MANUAL_ACTIONS = [
     ManualAction("Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary; on completion WAHA sends a System health message to the status destination (override with pcc health --chat-id/--purpose)."),
+    ManualAction("Tests", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
     ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
     ManualAction("Updater / Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
     ManualAction("Updater / Migration", "Rename folders", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),

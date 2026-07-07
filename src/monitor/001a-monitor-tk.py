@@ -193,6 +193,7 @@ MANUAL_ACTIONS = [
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
     ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary; on completion WAHA sends a System health message to the status destination (override with pcc health --chat-id/--purpose)."),
+    ManualAction("Testing & Validation", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
 
     # --- 6. Folder Management: open data storage locations -------------------
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.DATA_DIR / 'index'))}"), "Opens the main index folder where collected records are stored."),
