@@ -50,7 +50,7 @@ WhatsApp:
                                             message uses status/default/index/details
   full-report [--stdout] [--no-logs]        Generate a full diagnostic Markdown report
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
-  format [list|show|preview|set|reset|placeholders] [index|details|status]
+  format [list|show|preview|set|reset|placeholders] [index|details|status|system]
                                             Customize the WhatsApp message formats
 
 Work templates (copied into templates/ inside each record folder):

@@ -30,6 +30,7 @@ DEFAULT_SESSION = "default"
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+SYSTEM_FORMAT_PATH = CONFIG_DIR / "waha_format_system.txt"
 
 # Per-purpose destinations, so the index alerts, the item-detail follow-ups and
 # the status-change messages can each go to a different group/channel. Every
@@ -122,15 +123,40 @@ def run_mode_label() -> str:
     return RUN_MODE_LABELS.get(mode, mode.title())
 
 
+class _SafeDict(dict):
+    def __missing__(self, key):  # noqa: D105
+        return "{" + key + "}"
+
+
+def load_system_format() -> str:
+    if SYSTEM_FORMAT_PATH.exists():
+        text = SYSTEM_FORMAT_PATH.read_text(encoding="utf-8", errors="replace").strip("\n")
+        if text.strip():
+            return text
+    return ""
+
+
 def build_message(event: str, status: str, message: str) -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
     mode_label = run_mode_label()
+    body = message.strip() or saved_message()
+    custom = load_system_format()
+    if custom:
+        return custom.format_map(_SafeDict({
+            "heading": f"{prefix} [{event.upper()}]",
+            "event": event,
+            "status": status,
+            "message": body,
+            "time": timestamp,
+            "run": mode_label,
+            "fuente": prefix,
+        }))
+
+    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
     if mode_label:
         parts.append(f"Run: {mode_label}")
     parts.append(f"Time: {timestamp}")
-    body = message.strip() or saved_message()
     if body:
         parts.append(body)
     return "\n".join(parts)

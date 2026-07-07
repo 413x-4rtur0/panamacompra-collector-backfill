@@ -471,11 +471,11 @@ def build_empty_message(records_checked: int) -> str:
 
 # ---------------------------------------------------------------------------
 # Customizable message formats. Each message family (index alert / detail
-# follow-up / status change) can be reformatted by the operator: a template
+# follow-up / status change / operational system message) can be reformatted by the operator: a template
 # saved to data/config/waha_format_<kind>.txt (via `pcc format` or either
 # monitor) replaces the built-in layout. Templates use {placeholder} fields;
 # unknown placeholders are left literally so a typo never breaks a send.
-FORMAT_KINDS = ("index", "details", "status")
+FORMAT_KINDS = ("index", "details", "status", "system")
 
 PLACEHOLDERS = {
     "heading": "message heading with emoji (varies per message type)",
@@ -500,6 +500,11 @@ PLACEHOLDERS = {
     "fecha_limite": "deadline date on its own",
     "items_total": "number of items (⏳ before the detail download)",
     "dias_restantes": "whole days until the deadline (negative = expired)",
+    "event": "system event name for operational messages (start/done/failed/info)",
+    "status": "short system status label (for example SYSTEM HEALTH OK)",
+    "message": "operator/system message body",
+    "time": "send timestamp for operational messages",
+    "run": "friendly run mode for operational messages, or blank",
 }
 
 DEFAULT_FORMATS = {
@@ -517,6 +522,9 @@ DEFAULT_FORMATS = {
         "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
         "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
         "🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "system": (
+        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
     ),
 }
 
@@ -556,6 +564,7 @@ def sample_context(kind: str) -> dict[str, str]:
         "index": f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*",
         "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
         "status": f"⚠️ *Cambio de Estado - {SOURCE_NAME}*",
+        "system": f"🛠️ *Sistema - {SOURCE_NAME}*",
     }
     items = (
         "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
@@ -585,6 +594,11 @@ def sample_context(kind: str) -> dict[str, str]:
         "fecha_limite": "2026-07-15 16:00",
         "items_total": "⏳" if kind == "index" else "2",
         "dias_restantes": "13",
+        "event": "done",
+        "status": "SYSTEM HEALTH OK",
+        "message": "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
+        "time": "2026-07-07 10:30:00",
+        "run": "Manual",
     }
 
 
