@@ -165,7 +165,7 @@ def send_text(text: str, purpose: str = "") -> None:
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
     chat_id = configured_chat_id(purpose)
-    api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
+    api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 
     if not chat_id:
@@ -202,22 +202,24 @@ def main() -> int:
     parser.add_argument("--status", default="INFO", help="Short status label for the message body.")
     parser.add_argument("--message", default="", help="Additional notification message text. If omitted, the saved reusable message is used.")
     parser.add_argument("--save-message", action="store_true", help="Save --message as the reusable group notification message for this and future runs.")
+    parser.add_argument("--force-send", action="store_true", help="Send even when PC_WAHA_ENABLED=0 or the event is not listed in PC_WAHA_NOTIFY_EVENTS (used for explicit tests).")
+    parser.add_argument("--purpose", default="", choices=["", "index", "details", "status"], help="Use a purpose-specific destination, falling back to the default chat id.")
     args = parser.parse_args()
 
     if args.save_message:
         save_message(args.message)
         print(f"Saved reusable WAHA message to {SAVED_MESSAGE_PATH}.")
 
-    if not env_bool("PC_WAHA_ENABLED", False):
+    if not args.force_send and not env_bool("PC_WAHA_ENABLED", False):
         print("WAHA notification skipped: set PC_WAHA_ENABLED=1 and PC_WAHA_CHAT_ID to enable.")
         return 0
 
-    if not enabled_for_event(args.event):
+    if not args.force_send and not enabled_for_event(args.event):
         print(f"WAHA notification skipped: event {args.event!r} is not enabled.")
         return 0
 
     try:
-        send_text(build_message(args.event, args.status, args.message))
+        send_text(build_message(args.event, args.status, args.message), purpose=args.purpose)
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         return 1 if env_bool("PC_WAHA_STRICT", False) else 0
