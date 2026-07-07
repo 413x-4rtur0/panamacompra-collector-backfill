@@ -116,9 +116,11 @@ case "$cmd" in
         echo "Token file:    $token_file"
         echo "Listener port: $port"
         echo
-        echo "changedetection notification URL (compose network, preferred):"
+        echo "changedetection notification URL (Docker -> host, recommended):"
+        echo "  json://${public_host}:${port}/panamacompra/${shown}${query}"
+        echo "Compose-only URL (only if changedetection resolves host 'webhook'):"
         echo "  json://webhook:8765/panamacompra/${shown}${query}"
-        echo "From a Docker container to a HOST-run listener:"
+        echo "From a Docker container to a HOST-run listener (plain HTTP test):"
         echo "  http://${public_host}:${port}/panamacompra/${shown}"
         echo "Local test from this machine:"
         echo "  http://127.0.0.1:${port}/panamacompra/${shown}"

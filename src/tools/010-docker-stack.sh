@@ -154,8 +154,9 @@ ensure_access_credentials() {
     printf '  Dashboard password: %s%s\n' "$waha_dash_pass" "$([ "$waha_dash_pass" = "12345678" ] && printf ' (default — change it in .env or the monitor Settings tab)')"
     printf '  API key (X-Api-Key header for /api requests): %s\n\n' "$waha_key"
     printf 'Webhook trigger for changedetection notifications\n'
-    printf '  Host URL: http://host.docker.internal:%s/panamacompra/%s\n' "${PC_WEBHOOK_PORT:-8765}" "$webhook_token"
-    printf '  Docker-network URL: http://webhook:8765/panamacompra/%s\n\n' "$webhook_token"
+    printf '  changedetection URL (Docker -> host, recommended): json://host.docker.internal:%s/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "${PC_WEBHOOK_PORT:-8765}" "$webhook_token"
+    printf '  Host HTTP test URL: http://host.docker.internal:%s/panamacompra/%s\n' "${PC_WEBHOOK_PORT:-8765}" "$webhook_token"
+    printf '  Compose-only URL (requires changedetection to resolve webhook): json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n\n' "$webhook_token"
     printf 'Files\n'
     printf '  WAHA key is stored in: %s/.env\n' "$APP_ROOT"
     printf '  Webhook token is stored in: %s/.webhook_token\n' "$APP_ROOT"
