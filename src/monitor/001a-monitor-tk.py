@@ -770,9 +770,11 @@ def webhook_access_text() -> str:
         f"Webhook token: {token if token else '(not generated yet — run ./setup.sh or ./src/tools/010-docker-stack.sh up)'}\n"
         f"Token file:    {token_path}\n"
         f"Listener:      {'RUNNING' if webhook_running() else 'off'} on port {port}\n\n"
-        "changedetection notification URL (compose network, preferred):\n"
+        "changedetection notification URL (Docker → host, recommended):\n"
+        f"  json://{public_host}:{port}/panamacompra/{shown}{query}\n"
+        "Compose-only URL (use only if changedetection can resolve host 'webhook'):\n"
         f"  json://webhook:8765/panamacompra/{shown}{query}\n"
-        "From a Docker container to a HOST-run listener:\n"
+        "Docker container → host listener URL (plain HTTP test):\n"
         f"  http://{public_host}:{port}/panamacompra/{shown}\n"
         "Local test from this machine:\n"
         f"  http://127.0.0.1:{port}/panamacompra/{shown}\n\n"
@@ -1409,6 +1411,8 @@ def run_tk() -> int:
     timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
     monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
     changedetection_url_var = tk.StringVar(value=setting("CHANGEDETECTION_BASE_URL", os.environ.get("CHANGEDETECTION_BASE_URL", "http://localhost:5000")))
+    webhook_port_var = tk.StringVar(value=setting("PC_WEBHOOK_PORT", os.environ.get("PC_WEBHOOK_PORT", "8765")))
+    webhook_public_host_var = tk.StringVar(value=setting("PC_WEBHOOK_PUBLIC_HOST", os.environ.get("PC_WEBHOOK_PUBLIC_HOST", "host.docker.internal")))
     waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
     waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
     # WAHA dashboard login: the docker stack seeds admin / 12345678 on every
@@ -1472,14 +1476,20 @@ def run_tk() -> int:
     # ---- Settings tab: Integrations ----------------------------------------
     group_title(settings, 17, "Integrations (changedetection container; applied on the next docker stack restart)")
     field(settings, 18, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
+    field(settings, 18, 2, "Webhook listener port:", webhook_port_var, 8, "Port used by the host webhook listener and the recommended changedetection json://host.docker.internal URL. Env: PC_WEBHOOK_PORT.")
+    field(settings, 19, 0, "Webhook public host:", webhook_public_host_var, 24, "Hostname changedetection containers use to reach the host listener. Keep host.docker.internal for Docker Desktop/modern Linux Docker. Env: PC_WEBHOOK_PUBLIC_HOST.")
 
     def send_test_whatsapp() -> None:
-        subprocess.Popen(
-            [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
-             "--message", "Prueba de notificación desde el monitor PanamaCompra."],
-            cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        button_status_var.set("WhatsApp test message requested (uses the saved WAHA settings; check the group and data/logs).")
+        MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | WhatsApp / native test send =====\n")
+            subprocess.Popen(
+                [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
+                 "--force-send", "--purpose", "status",
+                 "--message", "Prueba de notificación desde el monitor PanamaCompra."],
+                cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT,
+            )
+        button_status_var.set("WhatsApp test message requested. Output: data/logs/manual_actions.log")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -1552,6 +1562,8 @@ def run_tk() -> int:
             "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
             "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
             "CHANGEDETECTION_BASE_URL": changedetection_url_var.get().strip() or "http://localhost:5000",
+            "PC_WEBHOOK_PORT": webhook_port_var.get().strip() or "8765",
+            "PC_WEBHOOK_PUBLIC_HOST": webhook_public_host_var.get().strip() or "host.docker.internal",
             "WAHA_PORT": waha_port_var.get().strip() or "3000",
             "WAHA_API_KEY": waha_server_key_var.get().strip(),
             "WAHA_DASHBOARD_USERNAME": waha_dash_user_var.get().strip() or "admin",
@@ -1575,17 +1587,17 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=19, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=20, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately and persist EVERY setting from the Settings and WhatsApp tabs to data/config/monitor_settings.env (shell-quoted so the worker can source them).")
-    ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=20, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=21, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ---- Settings tab: Work templates ---------------------------------------
-    group_title(settings, 21, "Work templates (copied into templates/ inside each record folder)")
+    group_title(settings, 22, "Work templates (copied into templates/ inside each record folder)")
     templates_src_var = tk.StringVar(value=setting("PC_TEMPLATES_SRC_DIR", ""))
-    field(settings, 22, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
+    field(settings, 23, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
     templates_listbox = tk.Listbox(settings, selectmode="multiple", height=5, activestyle="none", exportselection=False)
-    templates_listbox.grid(row=23, column=1, columnspan=3, sticky="ew", pady=3)
-    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=23, column=0, sticky="nw", pady=3)
+    templates_listbox.grid(row=24, column=1, columnspan=3, sticky="ew", pady=3)
+    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=24, column=0, sticky="nw", pady=3)
     add_tooltip(templates_listbox, "Tick the template files to copy into each record's templates/ folder. Selection is saved on Apply to data/config/templates_selected.txt (shared with pcc templates). New downloads receive them automatically; files already inside a record are never overwritten.")
 
     def refresh_templates_list() -> None:
@@ -2739,7 +2751,7 @@ def run_tk() -> int:
     webhook_access_refresh = ttk.Button(webhook_access, text="Refresh webhook access", command=refresh_webhook_access)
     webhook_access_refresh.grid(row=2, column=0, sticky="w", pady=(8, 0))
     add_tooltip(webhook_access_refresh, "Re-read .webhook_token and the port settings so the URLs reflect the current setup (e.g. right after running setup or the docker stack).")
-    add_tooltip(webhook_access_box, "Copyable: token + the changedetection json:// URL, the host.docker.internal URL and the local test URL. Paste the json:// URL into the changedetection notification settings.")
+    add_tooltip(webhook_access_box, "Copyable: token + the changedetection json:// URL, the host.docker.internal URL and the local test URL. Paste the recommended json://host.docker.internal URL into changedetection; use json://webhook only in the same compose network.")
     refresh_webhook_access()
     add_section_toggle(webhook_access, button_column=0)
 
