@@ -187,6 +187,7 @@ MANUAL_ACTIONS = [
     ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
     ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
     ManualAction("Integrations (Docker)", "Open changedetection UI", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io interface in a chromeless app window (no Firefox needed; falls back to the default browser) to configure the PanamaCompra watch and its trigger/webhook URL."),
+    ManualAction("Integrations (Docker)", "Print changedetection JS setup", ("./bin/pcc", "changedetection-script"), "Writes the Browser Steps Execute JS instructions/script for Programadas + Abiertas pagination to data/logs/manual_actions.log so you can copy it into changedetection."),
     ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login defaults to admin / 12345678 (see data/config/integration-access.txt)."),
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------

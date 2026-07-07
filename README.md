@@ -1305,10 +1305,19 @@ https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-l
 
 **Watch configuration**
 
-- Fetch method: Playwright / Firefox (JavaScript mode)
-- JS actions: close popup → click *Programadas* → set 50 rows/page → crawl pages →
-  click *Abiertas* → set 50 rows/page → crawl pages → output stable text keyed by `NUMERO`
+- Fetch method: Playwright / Firefox (JavaScript mode).
+- Browser Steps → Execute JS: paste the maintained script at
+  `config/changedetection-browser-steps.js` (also printable with
+  `./bin/pcc changedetection-script` and copyable with
+  `./bin/pcc changedetection-script --copy`). The native and web monitors also
+  expose this from the Integrations actions/panel.
+- The script closes popups, selects 50 rows/page, crawls **all** pagination pages
+  for *Programadas* first and then *Abiertas*, de-duplicates by `NUMERO`, and
+  writes stable text into `#pc-monitor-output`.
 - CSS filter: `#pc-monitor-output`
+- Visual Filter: empty / disabled
+- Remove elements: empty
+- Triggers: empty
 - Do **not** include visual row number, page number, or generated timestamps (they cause false alerts)
 
 **Webhook**
@@ -1322,9 +1331,12 @@ python src/webhook/010-webhook-listener.py
 ```
 
 The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
-202 immediately, before queueing/starting collector work. For Docker Compose use
-`json://webhook:8765/...` with `format=text&overflow=truncate&rto=15&cto=10`; use `host.docker.internal:8765` only when you are
-intentionally targeting a listener running on the host. If
+202 immediately, before queueing/starting collector work. For changedetection running in Docker and a durable listener on the host, use the
+Docker-to-host URL shown by `./bin/pcc webhook info` or the monitors, for example
+`json://host.docker.internal:8765/panamacompra/YOUR_TOKEN?method=POST&format=text&overflow=truncate&rto=15&cto=10`.
+Use `json://webhook:8765/...` only when changedetection and the webhook service
+are in the same Docker Compose network and changedetection can resolve the
+`webhook` hostname. If
 `curl http://127.0.0.1:8765/health` returns JSON naming the old
 `panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
 host listener. Run `./src/webhook/020-start-listener.sh --replace-port-owner` to stop

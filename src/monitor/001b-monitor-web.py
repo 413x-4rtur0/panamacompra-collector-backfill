@@ -32,6 +32,7 @@ UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
+CHANGEDETECTION_BROWSER_STEPS_JS = pc_common.APP_ROOT / "config" / "changedetection-browser-steps.js"
 # Work-templates helper imported as a module so the web monitor lists/saves the
 # same source folder and selection the CLI and native monitor use.
 import importlib.util as _importlib_util
@@ -171,6 +172,7 @@ MANUAL_ACTIONS = [
     ManualAction("Settings", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
     ManualAction("Settings", "Open web monitor", ("./src/tools/130-open-web-app.sh", "monitor"), "Starts/opens the browser monitor (chromeless app window when available)."),
     ManualAction("Integrations", "Open changedetection app window", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io dashboard in a chromeless app window on the desktop — independent of Firefox, no browser header."),
+    ManualAction("Integrations", "Print changedetection JS setup", ("./bin/pcc", "changedetection-script"), "Writes the Browser Steps Execute JS instructions/script for Programadas + Abiertas pagination to the manual action log."),
     ManualAction("Integrations", "Open WAHA app window", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window on the desktop (login defaults to admin / 12345678)."),
 ]
 
@@ -950,6 +952,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details></div>
 <div class="card" data-tab="operations"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card" data-tab="integrations"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
+<div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
@@ -1379,6 +1382,35 @@ function resetKpiFilters() {{
   ['kpi-grupo', 'kpi-entidad'].forEach(id => {{ const el = document.getElementById(id); if (el) el.value = ''; }});
   refreshDecisionDashboard();
 }}
+
+async function loadChangedetectionScript() {{
+  const box = document.getElementById('changedetection-script');
+  const state = document.getElementById('cd-script-state');
+  if (!box || (box.value && box.dataset.loaded === '1')) return;
+  try {{
+    const data = await (await fetch('/api/changedetection-script', {{cache: 'no-store'}})).text();
+    box.value = data;
+    box.dataset.loaded = '1';
+    if (state) state.textContent = 'Loaded from config/changedetection-browser-steps.js';
+  }} catch (err) {{
+    if (state) state.textContent = 'Could not load script: ' + err;
+  }}
+}}
+async function copyChangedetectionScript() {{
+  await loadChangedetectionScript();
+  const box = document.getElementById('changedetection-script');
+  const state = document.getElementById('cd-script-state');
+  if (!box) return;
+  box.select();
+  try {{
+    await navigator.clipboard.writeText(box.value);
+    if (state) state.textContent = 'Copied script to clipboard.';
+  }} catch (err) {{
+    document.execCommand('copy');
+    if (state) state.textContent = 'Selected script; press Ctrl+C if it did not copy automatically.';
+  }}
+}}
+
 async function loadWebhookAccess() {{
   const node = document.getElementById('webhook-access');
   if (!node) return;
@@ -1827,6 +1859,14 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/webhook-access":
             self.send_text(200, json.dumps(webhook_access_payload(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/changedetection-script":
+            try:
+                script_text = CHANGEDETECTION_BROWSER_STEPS_JS.read_text(encoding="utf-8")
+            except OSError as exc:
+                self.send_text(404, f"changedetection script not found: {exc}\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, script_text, "text/javascript; charset=utf-8")
             return
         if path == "/api/calendar-grid":
             # Per-day event counts for one month, for the graphical calendar.
