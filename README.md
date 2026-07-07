@@ -165,7 +165,7 @@ alert is sent right after the index step — before the long download phase — 
 subscribers hear about a new opportunity immediately, and once its detail page is
 downloaded a follow-up message delivers the full record (items, location, dates)
 in the rich format. To keep the feed readable, consecutive sends are paced
-(`PC_WAHA_SEND_DELAY_SECONDS`, default 2s), runs that find many new records send
+(`PC_WAHA_SEND_DELAY_SECONDS`, default 3s), runs that find many new records send
 compact digest messages instead of a per-record burst
 (`PC_NOTIFY_INDEX_DIGEST_THRESHOLD`, default 10), the detail follow-ups go out
 inline as each download finishes (`PC_NOTIFY_DETAILS_INLINE`, default on) so they
@@ -552,7 +552,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_TEMPLATES_AUTO` | `1` | run-all worker | Set `0` to stop the worker from copying the selected templates into the record folders downloaded in each run. |
 | `PC_NOTIFY_DETAILS` | `1` | run-all worker / monitor | Second notifier phase. Set to `0` (or uncheck **Follow-up WhatsApp with item details**) to skip the per-record “📥 Detalles Completos” message after the downloads; the downloaded items are then folded into the notified snapshot silently so no duplicate fires later. |
 | `PC_NOTIFY_DETAILS_INLINE` | `1` | detail downloader | Send each record's “📥 Detalles Completos” follow-up **inline, right after that record's detail page downloads** (inside STEP 3), so the follow-ups arrive one by one spread across the download phase instead of as one burst at the end. STEP 5 remains the idempotent catch-up for anything missed (guarded by `detail_notified_at`, so never a duplicate). Set `0` to keep the batch-at-the-end flow. |
-| `PC_WAHA_SEND_DELAY_SECONDS` | `2` | record notifier | Pause between consecutive WhatsApp sends in the MESSAGING steps so a batch of messages stays readable on the phone instead of arriving all at once. `0` disables pacing. |
+| `PC_WAHA_SEND_DELAY_SECONDS` | `3` | record notifier | Pause between consecutive WhatsApp sends in the MESSAGING steps so a batch of messages stays readable on the phone instead of arriving all at once. `0` disables pacing. |
 | `PC_NOTIFY_INDEX_DIGEST_THRESHOLD` | `10` | record notifier | When one run finds more new records than this, the index alerts collapse into compact **digest** message(s) — 20 records per message, two lines each (NUMERO + description, entity + date) — instead of a long per-record burst. Records skipped by deadline/keyword filters do not count. Each digested record still gets its own full detail follow-up after download. `0` = always one message per new record. |
 | `PC_NOTIFY_IDLE_EVERY_HOURS` | `6` | record notifier | Minimum hours between “⚪ Sin nuevas entradas” idle messages, so frequent webhook-triggered runs do not repeat it. `0` restores one idle message per run. Last-sent time is stored in `data/config/waha_idle_last_sent.txt`. |
 | `PC_REBUILD_DETAIL_VIEWS_AFTER_DETAIL` | `1` | run-all worker | Rebuild structured `summary` / `items` / `calendar` detail JSON sections and per-record `.calendar.ics` files after all details finish, before verification, calendar packages and WhatsApp. Set `0` only for troubleshooting. |

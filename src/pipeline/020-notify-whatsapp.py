@@ -22,7 +22,7 @@ updated" message on the next run.
 
 Readability controls (all also readable from monitor_settings.env):
 
-* ``PC_WAHA_SEND_DELAY_SECONDS`` (default 2) paces consecutive sends so a batch
+* ``PC_WAHA_SEND_DELAY_SECONDS`` (default 3) paces consecutive sends so a batch
   arrives as separate readable messages instead of one burst; 0 disables.
 * ``PC_NOTIFY_INDEX_DIGEST_THRESHOLD`` (default 10) collapses the index alerts
   into compact digest message(s) when a run finds more new records than the
@@ -780,12 +780,12 @@ def send_text(event: str, text: str, purpose: str = "") -> bool:
 def send_delay_seconds() -> float:
     """Pause between consecutive WhatsApp sends so a batch stays readable on the
     phone instead of arriving as one burst. PC_WAHA_SEND_DELAY_SECONDS (env or
-    monitor settings), default 2 seconds; 0 disables pacing."""
-    raw = cfg("PC_WAHA_SEND_DELAY_SECONDS", "2").strip()
+    monitor settings), default 3 seconds; 0 disables pacing."""
+    raw = cfg("PC_WAHA_SEND_DELAY_SECONDS", "3").strip()
     try:
         return max(0.0, float(raw))
     except ValueError:
-        return 2.0
+        return 3.0
 
 
 def pace_after_send(index: int, total: int) -> None:
