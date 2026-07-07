@@ -606,8 +606,11 @@ Behavior is controlled with environment variables (all optional):
 WhatsApp messages are separated into five operator-facing categories. You can keep
 everything in one group by setting only `PC_WAHA_CHAT_ID`, or route each category
 to a different group with the per-purpose fields in either monitor or with
-`./bin/pcc chat <purpose> <chat-id>`. Blank per-purpose destinations always fall
-back to the default group, so partial splits are safe.
+`./bin/pcc chat <purpose> <chat-id>`. Blank per-purpose destinations first fall
+back to the default group. If the default is blank and exactly one purpose field is
+filled, that one field is treated as the single group for every category; if
+multiple purpose fields are filled, only those categories are sent and missing
+purposes stay unsent until you add a default or that purpose-specific group.
 
 | Purpose | When it sends | Destination override | Format template | Common variants / placeholders |
 |---|---|---|---|---|
@@ -823,7 +826,7 @@ Behavior notes:
   `PC_WAHA_CHAT_ID_STATUS`, `PC_WAHA_CHAT_ID_SYSTEM`, and/or
   `PC_WAHA_CHAT_ID_SUMMARY` (or fill the per-purpose fields in either
   monitor, saved to `data/config/waha_chat_id_{index,details,status,system,summary}.txt`);
-  anything left blank uses the default destination. If messages do not
+  anything left blank uses the default destination; if there is no default and exactly one purpose-specific chat id exists, that one chat id is used as the single fallback group. If messages do not
   send, verify `PC_WAHA_ENABLED=1`, the WAHA server/session is running,
   `PC_NOTIFY_WHATSAPP` is not `0`, and `PC_WAHA_NOTIFY_EVENTS` includes
   `new`, `update`, `none`, and `done` as needed.

@@ -1653,7 +1653,7 @@ def run_tk() -> int:
     chat_entry = ttk.Entry(whatsapp, textvariable=waha_var)
     chat_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(whatsapp, text="Optional per-purpose chat ids (blank = default above, so one group receives all messages):", style="Card.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
+    ttk.Label(whatsapp, text="Optional per-purpose chat ids (blank = default; if default is blank and exactly one purpose is filled, it becomes the one group):", style="Card.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
     for _row, (_label, _var, _tip) in enumerate((
         ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
         ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),

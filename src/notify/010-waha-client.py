@@ -53,28 +53,60 @@ def _read_chat_file(path: Path) -> str:
     return ""
 
 
-def configured_chat_id(purpose: str = "") -> str:
-    """Destination chat id for a purpose: PC_WAHA_CHAT_ID_<PURPOSE> env first,
-    then the monitor-saved per-purpose file, then the default destination
-    (PC_WAHA_CHAT_ID env, then waha_chat_id.txt)."""
-    if purpose in CHAT_PURPOSES:
-        env_value = os.environ.get(f"PC_WAHA_CHAT_ID_{purpose.upper()}", "").strip()
-        if env_value:
-            return env_value
-        file_value = _read_chat_file(chat_id_path(purpose))
-        if file_value:
-            return file_value
+def _purpose_chat_id_without_fallback(purpose: str) -> str:
+    """Purpose-specific chat id from env/file only, without default fallback."""
+    if purpose not in CHAT_PURPOSES:
+        return ""
+    env_value = os.environ.get(f"PC_WAHA_CHAT_ID_{purpose.upper()}", "").strip()
+    if env_value:
+        return env_value
+    return _read_chat_file(chat_id_path(purpose))
+
+
+def _default_chat_id() -> str:
     chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
     if chat_id:
         return chat_id
     return _read_chat_file(CHAT_ID_PATH)
 
 
+def _single_purpose_fallback_chat_id() -> str:
+    """If the operator filled exactly one purpose field, treat it as one group.
+
+    This prevents the common misconfiguration where only Summary/System is filled:
+    the final summary sends, but index/detail messages silently have no default.
+    When multiple purpose-specific fields exist and the default is blank, missing
+    purposes still skip so we do not guess between different groups.
+    """
+    values = []
+    for purpose in CHAT_PURPOSES:
+        value = _purpose_chat_id_without_fallback(purpose)
+        if value and value not in values:
+            values.append(value)
+    return values[0] if len(values) == 1 else ""
+
+
+def configured_chat_id(purpose: str = "") -> str:
+    """Destination chat id for a purpose.
+
+    Order: purpose-specific env/file, default env/file, then an exactly-one
+    purpose-specific fallback. The last case makes "one group" work even if the
+    chat id was accidentally placed in Summary/System/Index instead of Default.
+    """
+    purpose_value = _purpose_chat_id_without_fallback(purpose)
+    if purpose_value:
+        return purpose_value
+    default_value = _default_chat_id()
+    if default_value:
+        return default_value
+    return _single_purpose_fallback_chat_id()
+
+
 def any_destination_configured() -> bool:
     """True when the default destination or any per-purpose destination is set."""
-    if configured_chat_id():
+    if _default_chat_id():
         return True
-    return any(configured_chat_id(purpose) for purpose in CHAT_PURPOSES)
+    return any(_purpose_chat_id_without_fallback(purpose) for purpose in CHAT_PURPOSES)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
