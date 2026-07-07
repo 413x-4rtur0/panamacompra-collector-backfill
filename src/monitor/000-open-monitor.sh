@@ -123,6 +123,15 @@ open_url_if_possible() {
     return 1
   fi
 
+  # Prefer a chromeless app window (no browser header, no Firefox dependency);
+  # the helper falls back to the default browser when no app-mode browser exists.
+  if [ -x "$APP_ROOT/src/tools/130-open-web-app.sh" ]; then
+    if "$APP_ROOT/src/tools/130-open-web-app.sh" "$MONITOR_URL" >> "$OPEN_LOG" 2>&1; then
+      log "Opened web monitor via app-window helper: $MONITOR_URL."
+      return 0
+    fi
+  fi
+
   if command -v xdg-open >/dev/null 2>&1; then
     nohup xdg-open "$MONITOR_URL" >/dev/null 2>&1 &
     log "Opened web monitor with xdg-open: $MONITOR_URL."

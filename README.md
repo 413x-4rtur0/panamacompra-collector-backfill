@@ -464,13 +464,13 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/tools/020-record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. Also manageable from both monitors (source folder, file selection, apply-to-all, copy-to-selected-records). |
 | `src/tools/010-docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
 | `src/tools/100-migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
-| `src/monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window with a vertical scrollbar; no Firefox/browser or web server required. It includes locked automatic/restart/manual/test run controls, **Records Pendings**, **Records Completed**, a detailed DB summary of the elements/columns composing the archive, Settings, record index, grouped manual actions, stop buttons, test-sandbox folder opening after test-zone completion, and an Index + Detail KPI tab with item-line analysis, item keywords, trend/status mix, and decision guidance. |
+| `src/monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window; no Firefox/browser or web server required. Organized into the same five unified tabs as the web monitor — **Operations** (locked automatic/restart/manual/test run controls, live diagnostics, grouped manual actions, logs), **Settings** (window/paths/collector/timer/integrations/templates/reset, grouped in a fixed order), **WhatsApp** (all destinations, filters, delivery, WAHA server + dashboard login, message formats), **KPIs** (decision cards, item-line analysis, item keywords, trend/status mix, drawn diagrams of groups/entities/locations/monthly trend, database review) and **Records & Database** (Records Pendings/Completed, record selector, opportunity calendar) — under an always-visible live progress header. |
 | `src/monitor/002-next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop (about 30 px down) counting down to the next live run. The countdown is anchored to the **last live run's start time** (from `run_all_progress.env`) plus the interval, so it tracks the real cadence and rolls forward if a run is overdue (falling back to clock boundaries when no previous run is recorded), and turns amber in the final minute. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
-| `src/monitor/001b-monitor-web.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, offers the same locked automatic/restart/manual/test controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, separated Settings/WhatsApp tabs, an interactive calendar heatmap, and an Index + Detail KPI dashboard with item-line analysis, item keywords, trend/status charts, and decision recommendations. |
+| `src/monitor/001b-monitor-web.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and mirrors the native monitor's five unified tabs (Operations / Settings / WhatsApp / KPIs / Records & Database) with the same locked run controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, an interactive calendar heatmap, and a KPIs tab with decision cards, item-line analysis, item keywords, and bar diagrams of status mix, groups, monthly trend, contracting entities and detail locations. |
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/monitor/000-open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `src/pipeline/130b-run-status.sh` | One-shot status snapshot. |
-| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), archive + WhatsApp backlog counters (`db`) including detail item-line analysis and top item keywords, monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
 | `src/pipeline/130a-queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `src/pipeline/120a-stop-everything.sh` | Emergency stop for stuck index/detail/worker processes. |
@@ -480,6 +480,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/tools/070-rename-record-folders.py` | Rename record folders to `<finish>--<numero>--<desc>` from already-saved data. Dry-run by default; `--apply` to act. |
 | `src/tools/110-reset.py` | Reset/"review from zero" helpers shared by both monitors, one subcommand per action: `requeue-details`, `reset-notify`, `wipe-db`, `wipe-all`. The two destructive actions refuse to run without `--yes`. Used by the monitors' Reset panel. |
 | `src/tools/060-import-selected-calendars.py` | Export/open `.ics` calendar files for one or more selected record NUMEROs; used by the monitors' **Import selected calendars** action. |
+| `src/tools/130-open-web-app.sh` | Opens the web monitor / changedetection / WAHA dashboards in a **chromeless app window** independent of Firefox (Chromium-family `--app=` mode, lightweight-browser fallback, default browser as last resort). Starts the web-monitor server on demand for the `monitor` target. Also available as `pcc open` and used by the desktop launchers and the monitors' *Open …* buttons. Controlled by `PC_WEB_APP_BROWSER` / `PC_WEB_APP_MODE`. |
 | `src/tools/120-setup-git-credentials.sh` | One-time helper that points this checkout's Git credential helper at `store` (instead of the desktop keyring) and optionally pre-seeds a GitHub token, so the desktop updater launcher never has to prompt for a password. |
 | `src/tools/050-maintain-database.py` | Browser-free DB maintenance/backfill tool. Applies schema migrations, reviews existing `opportunities` rows, and backfills metadata about record folder leaf names, split detail/table counts and file layout version. Run manually with `--apply`; update scripts run it automatically after code refresh. |
 | `src/pipeline/040-build-detail-views.py` | Backfill the `summary` / numbered `items` / `calendar` views into existing `detail.json` files from saved text/tables (browser-free), and writes split `detail_sections/*.json` files. Dry-run by default; `--apply` to act. The worker uses `--since "$PC_RUN_STARTED_AT"` so only detail files touched in the current run are refreshed before packaging. |
@@ -535,8 +536,8 @@ Behavior is controlled with environment variables (all optional):
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
 | `PC_UPDATE_INSTALL_MONITOR_SHORTCUT` | `1` | `update-local-copy.sh` | Installs/refreshes the **PanamaCompra Update + Monitor** desktop/application-menu shortcut during updates. The shortcut opens the separate updater loader first, then starts the native monitor only after the updater exits successfully. Set to `0` to skip. |
 | `PC_SETUP_LOG_FILE` | `data/logs/setup_YYYYMMDD_HHMMSS.log` | `setup.sh` | Full tee log for every setup run. Override to force a specific log path. Setup prints the path at start and again on success/failure. |
-| `PC_SETUP_INSTALL_MONITOR_SHORTCUT` | `1` | `setup.sh` | Installs/refreshes the desktop/application-menu launcher suite during first setup: Update + Monitor, changedetection.io, WAHA, Integration URLs, and Docker Integrations. The setup script creates these launchers before browser validation so they still appear if Playwright Firefox/headless browser installation needs to be fixed later. Set to `0` to skip on headless/server installs. |
-| `PC_INTEGRATION_CREDENTIALS_FILE` | `data/config/integration-access.txt` | setup / docker stack | Local secret note written after setup or docker-stack `up|restart`; includes the generated WAHA API key, webhook trigger URLs/token, changedetection URL, and where each secret is stored. changedetection.io is noted separately because this stack does not invent an app username/password for it; set one in its UI if the Docker host is reachable from another machine. Keep it private. |
+| `PC_SETUP_INSTALL_MONITOR_SHORTCUT` | `1` | `setup.sh` | Installs/refreshes the desktop/application-menu launcher suite during first setup: Update + Monitor, changedetection.io, WAHA, Integration URLs, and Docker Integrations — each with its own generated SVG icon (regenerated on every install, so no launcher is ever left without one). The setup script creates these launchers before browser validation so they still appear if Playwright Firefox/headless browser installation needs to be fixed later. Set to `0` to skip on headless/server installs. |
+| `PC_INTEGRATION_CREDENTIALS_FILE` | `data/config/integration-access.txt` | setup / docker stack | Local secret note written after setup or docker-stack `up|restart`; includes the WAHA dashboard login (default `admin` / `12345678` until you change it), the generated WAHA API key, webhook trigger URLs/token, changedetection URL, and where each secret is stored. changedetection.io is noted separately because this stack does not invent an app username/password for it; set one in its UI if the Docker host is reachable from another machine. Keep it private. |
 | `PC_UPDATE_RESTART_WEBHOOK` | `auto` | `update-local-copy.sh` | Controls whether the updater restores `src/webhook/010-webhook-listener.py` after stopping it for a safe code update. `auto` now starts/restores it after Update + Monitor so the monitor does not stay OFF; `1` also forces a start; `0` is the explicit opt-out. |
 | `PC_REQUEST_OPEN_MONITOR` | `1` | `src/pipeline/110a-request-run.sh` | When `0`, queue/start the worker without opening the monitor. `update-local-copy.sh` uses this for optional smoke runs so no monitor appears before the update is fully done. |
 | `PC_WEBHOOK_HOST` | `0.0.0.0` | webhook listener | Bind address. Keep `0.0.0.0` for Docker; use `127.0.0.1` to restrict to localhost. |
@@ -579,6 +580,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
 | `PC_WAHA_CHAT_ID_STATUS` | `data/config/waha_chat_id_status.txt` fallback | WAHA notifier | Optional destination for **status-change messages** (Programada → Abierta, cancellations, “🔄 Actualización de Items”). Blank = default destination. |
 | `PC_WAHA_API_KEY` | `WAHA_API_KEY` fallback | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. When unset, `lib/env.sh` defaults it to the container-side `WAHA_API_KEY` from `.env`, so one value protects the server and authenticates the notifier. |
+| `PC_WEB_APP_BROWSER` | auto-detect | web-app opener | Exact browser command `src/tools/130-open-web-app.sh` / `pcc open` should use for the chromeless dashboard windows (tried with `--app=` first, then with the plain URL). Blank = auto-detect a Chromium-family browser, then a lightweight browser, then the default browser. |
+| `PC_WEB_APP_MODE` | `app` | web-app opener | `app` opens the dashboards as chromeless app windows (no browser header, independent of Firefox); `browser` skips the app-window attempts and always uses the regular default browser. |
+| `WAHA_DASHBOARD_USERNAME` | `admin` | WAHA container | Login user for the WAHA review dashboard (`http://localhost:3000`). Editable from either monitor's WhatsApp tab; applied on the next docker stack restart. |
+| `WAHA_DASHBOARD_PASSWORD` | `12345678` | WAHA container | Login password the WAHA dashboard asks for after an install/reinstall. The stack seeds the documented default `12345678` into `.env` so you can always get in to review/pair the session; change it in `.env` or the monitors' WhatsApp tab whenever you like (applied on the next stack restart). |
 | `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label used in the rich opportunity message headings (e.g. `Nueva Oportunidad - <source>`) and shown as `📌 Fuente:` in the “sin nuevas entradas” status. |
@@ -596,9 +601,22 @@ Behavior is controlled with environment variables (all optional):
 
 The detail limit can also be passed positionally for manual runs: `./src/pipeline/110a-request-run.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
-#### Native monitor layout
+#### Monitor layout — unified tabs
 
-The native Tk monitor is organized top-to-bottom into clear sections:
+Both monitors share the same five-tab layout, so switching between the native
+window and the browser page never means relearning where a control lives. The
+live header (progress bar, message, process pills and queue state) always stays
+visible above the tab bar:
+
+| Tab | Contents |
+|-----|----------|
+| **Operations** | Run controls, live diagnostics, grouped manual action buttons, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), worker/current logs. |
+| **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, changedetection integration, work templates, and the Reset / review-from-zero actions. |
+| **WhatsApp** | Every WhatsApp/WAHA option in one place: toggles, destinations, per-destination filters, delivery options, the WAHA server/container settings (port, API key, dashboard username/password) and the message-format editor. |
+| **KPIs** | The whole KPI dashboard with **filters** (time window · index group · contracting entity) that slice every card and diagram: decision cards, item analysis, trend/status mix, decision guidance, the drawn diagrams (index groups, top contracting entities, locations/buying units parsed from the details, monthly intake trend, **daily intake for the last 14 days**, **most frequent items**), a **latest parsed items** feed, and the database review snapshot. |
+| **Records & Database** | Records Pendings/Completed counters, the pending/completed browsers, the full record selector and filters, and the opportunity calendar with a **graphical month grid** (per-day counts, today highlighted, click a day to open its detail) above the text views. |
+
+Inside the tabs, the sections are:
 
 1. **Run controls** — the mode selector always shows `automatic` (display-only for changedetection/webhook), `run pending only` (queued normal collector), `manual run` (start worker immediately), and `test run` (sandbox). Index page cap and Detail limit are separate: the index cap is normally `0` (all pages until no Next page; use a positive number only for testing), while detail controls saved detail pages or sandbox records.
 2. **Live diagnostics** — phase/status/record counters laid out as two label/value column pairs, grouped left-to-right and top-to-bottom (lifecycle → progress → timing → record counters). The label columns stay narrow while the value columns expand, so large counters and long values stay readable; the free-text **Extra** note gets its own full-width row. Placed directly under Run controls so the live run status is visible without scrolling. The worker writes an estimated time remaining (`ETA`) while a phase is running, and while the WhatsApp MESSAGING step runs, a `messaging` process pill lights up and the Phase/Step/Item fields track each message being sent. Every section after the top progress card has a **Hide/Show** control so the monitor can stay compact during long runs.
@@ -609,18 +627,40 @@ The native Tk monitor is organized top-to-bottom into clear sections:
    - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
    - Per-destination WhatsApp filters: shared + index/details/status rule fields with AND (`+`), OR (commas) and NOT (`-`) operators (native monitor Settings; web monitor **WhatsApp filters** card backed by `/api/waha-filters`).
    - WhatsApp message formats editor: pick index/details/status, edit the `{placeholder}` template, Preview with sample data, Save or Reset (native monitor Settings block; web monitor card backed by `/api/waha-format`).
-   - Opportunity calendar panel: day/week/month/year views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor section; web monitor card backed by `/api/calendar`).
+   - Opportunity calendar panel: a **graphical month calendar** (7-column day grid with per-day opportunity counts, amber outline on today, busiest days highlighted; click any day to jump to its detail) plus the day/week/month/year text views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor canvas + web monitor grid backed by `/api/calendar-grid` and `/api/calendar`).
    - Work templates: source folder plus a multi-select list of template files (native monitor Settings panel; the web monitor has a dedicated **Work templates** card with checkboxes). Selection is shared with `pcc templates`; both monitors also offer **Apply work templates** (all records) and **Copy templates to selected** in the record selector.
    - **Notify by WhatsApp** can disable the automatic post-detail MESSAGING step without stopping collection. Manual selected-record sends are still available.
    - **Import/open generated calendar events** sets `PC_CALENDAR_AUTO_IMPORT=1` for the worker/calendar builder so new `.ics` packages open after they are written.
    - Records folder, calendar packages folder, and test sandbox folder path fields set `PC_RECORDS_DIR`, `PC_CALENDAR_DIR`, and `PC_RECORDS_TEST_DIR` for worker/manual actions.
    - Values persist to `data/config/monitor_settings.env` (and the WhatsApp chat id/keywords to their own files), so they survive restarts and are picked up by the worker/notifier. Settings are grouped into readable blocks, including timer-window sizing/position, refresh/stale timing, WAHA, and test-zone controls.
-5. **Index + Detail KPI dashboard** — a decision-focused panel in the native monitor that separates index intake (found/new/existing/archive/alert backlog), detail throughput (pending/saved/failed/detail JSON coverage), WAHA delivery, deadline repair pressure, and recent monthly trend/status mix. The web monitor has the same **Index + Detail KPIs** tab, and `pcc db` prints the same CLI summary.
+5. **KPIs tab** — every KPI in one dedicated tab in both monitors, with a **filter bar** (time window: 7/30/90/365 days or all · index group · contracting entity) that slices every card and diagram to the same subset: decision cards separating index intake (found/new/existing/archive/alert backlog), detail throughput (pending/saved/failed/detail JSON coverage), WAHA delivery and deadline repair pressure; an items analysis line (parsed item lines, records with items, largest record, top item keywords); trend/status mix; and **diagrams to base decisions on** — bar charts of the index groups, the top contracting entities, the locations/buying units parsed from the saved detail pages (`Lugar`/`Provincia`/`Unidad de compra`, falling back to the index `dependencia` column until details carry a location), the monthly intake trend, the **daily intake of the last 14 days** and the **most frequent items**, plus a **latest parsed items** feed with quantities and save dates. The database review snapshot lives in the same tab, and the web version adds sci-fi board touches (pulsing LIVE stamp, blueprint-grid charts with neon hover). `pcc db` (alias `pcc kpi`, filters via `--days N --grupo X --entidad Y`) prints the same summary plus terminal bar charts.
 6. **Record index** — a **type-to-filter box plus a dedicated, self-scrolling, multi-select list** of every collected record as `(DL local-download timestamp | DTSTART start | DTEND deadline status) NUMERO — description`, read straight from `data/panamacompra_archive.db`. Ctrl/Shift-click selects one or many records. Filter by text, deadline status/date, or **Downloaded on/after** to isolate records that were saved locally during a specific run/window. The full number/description/downloaded timestamp/start date/deadline of the current selection are echoed on a wide line; **Open record folder** (or double-click a row) opens the archived `records/…` folder and **Open in portal** opens the PanamaCompra page. **Notify selected WhatsApp** sends manual notifications for the selected NUMEROs, and **Import selected calendars** exports/opens `.ics` files for the selected NUMEROs. Use **Refresh list** after a new collection. Empty until the collector has run at least once.
 7. **Manual script buttons** — grouped by zone (Collector Runners → Updater & Migration → Data Tools → Testing & Validation → Folder Management) in a compact grid. Use **Start webhook listener** if the webhook pill is OFF; it runs `src/webhook/020-start-listener.sh --replace-port-owner`, returns immediately, and writes startup output to `data/logs/manual_actions.log`. **Hover any button** to see a tooltip explaining exactly what it does before clicking.
 8. **Recent worker / current action logs**.
 
 Transparency, refresh cadence, WhatsApp/calendar toggles, section Hide/Show state and the auto-close countdown can all be changed from the monitor without restarting a run. The web monitor (`src/monitor/001b-monitor-web.py`) exposes the same ETA, toggles, path settings, multi-select record-index actions, downloaded-date filter and `/api/record-index` endpoint.
+
+#### Opening the dashboards without Firefox (chromeless app windows)
+
+None of the operator UIs requires Firefox (Playwright Firefox is only the
+collector's scraping engine):
+
+- The **native Tk monitor** (`pcc monitor`, the default) is a real desktop app —
+  no browser at all — and its **Settings/WhatsApp tabs are the settings app for
+  the dependencies**: changedetection URL, WAHA port, API key and dashboard
+  username/password are all edited there (or with `pcc get`/`pcc set`) and
+  applied to the containers on the next docker stack restart.
+- The **web dashboards** (web monitor, changedetection.io, WAHA) can be opened
+  in a **chromeless app window** — no address bar, tabs or browser header —
+  with `src/tools/130-open-web-app.sh`, also exposed as `pcc open
+  monitor|changedetection|waha|URL` and used by the desktop launchers and both
+  monitors' *Open …* buttons. It prefers any Chromium-family browser's
+  `--app=` mode, then a lightweight browser (GNOME Web, Falkon, …), and only
+  falls back to the regular default browser when nothing lighter exists.
+  `pcc open monitor` also starts the web-monitor server first when it is not
+  running yet.
+- `PC_WEB_APP_BROWSER` picks the exact browser command; `PC_WEB_APP_MODE=browser`
+  disables the app-window attempts and always uses the default browser.
 
 ### Optional WAHA private WhatsApp group alerts
 
@@ -649,6 +689,16 @@ Test the notifier without running the collector:
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
 bridge, not the official WhatsApp Business Cloud API, so the safest use is a
 private alert group controlled by you.
+
+**WAHA dashboard login.** After an install or reinstall the WAHA dashboard at
+`http://localhost:3000` asks for a username and password before you can review
+or pair the WhatsApp session. The stack always seeds the documented default
+**`admin` / `12345678`** (written to `.env` and to
+`data/config/integration-access.txt`), so you are never locked out of the
+review page. Change the password whenever you like — in `.env`
+(`WAHA_DASHBOARD_PASSWORD=…`), or from either monitor's **WhatsApp** tab
+(*Dashboard password* field) — and restart the docker stack (Operations →
+Integrations → **Restart docker stack**) to apply it.
 
 #### Rich “what is new” opportunity messages
 
@@ -1148,9 +1198,12 @@ development/portable mode, the XDG state dir in installed mode; override with
 `PC_INTEGRATIONS_DIR`. A legacy repo-root `./integrations/` folder is moved there
 automatically on the first `010-docker-stack.sh` run (a compatibility symlink is left
 behind). The helper also applies the container settings saved from the monitors'
-Settings panels (`CHANGEDETECTION_BASE_URL`, `WAHA_PORT`, `WAHA_API_KEY`) on the
-next `up`/`restart`, so changedetection and WAHA can be adjusted without editing
-`.env`. Raw `docker compose up -d` still works from the checkout root and uses
+Settings/WhatsApp tabs (`CHANGEDETECTION_BASE_URL`, `WAHA_PORT`, `WAHA_API_KEY`,
+`WAHA_DASHBOARD_USERNAME`, `WAHA_DASHBOARD_PASSWORD`) on the next
+`up`/`restart`, so changedetection and WAHA can be adjusted without editing
+`.env`, and seeds the WAHA dashboard login with the documented default
+`admin` / `12345678` so the review page is always reachable after an
+install/reinstall. Raw `docker compose up -d` still works from the checkout root and uses
 the same `var/integrations` default.
 
 **Why the webhook container only “enqueues”.** The real collector (Playwright
@@ -1327,6 +1380,20 @@ json://192.168.10.20:8765/panamacompra/YOUR_TOKEN?method=POST&format=text&overfl
 
 Before using the LAN URL, test it from inside the changedetection.io container.
 
+**Where to SEE these values after setup.** The trigger token is generated
+**automatically** by setup (`docker stack up` writes `.webhook_token` when it is
+missing) — you never have to invent one. Three places show the live values —
+the token, the `json://webhook:8765/panamacompra/<TOKEN>?method=POST&format=text&overflow=truncate&rto=15&cto=10`
+notification URL, the `http://host.docker.internal:8765/panamacompra/<TOKEN>`
+host URL and the `http://127.0.0.1:8765/panamacompra/<TOKEN>` local test URL:
+
+- Both monitors → **Operations → Webhook trigger access** (with a Refresh
+  button; values are re-read from disk on every refresh, so after an update or
+  a re-run of setup the panel always shows the CURRENT settings).
+- `pcc webhook info` in a terminal.
+- The access note at `data/config/integration-access.txt` (also carries the
+  WAHA dashboard login and API key).
+
 ### Persistent webhook listener with systemd
 
 For regular use, run the listener as a user service so it survives terminal
@@ -1374,7 +1441,7 @@ Launcher maintenance commands:
 
 For operators who prefer filenames to show workflow order, `scripts/tasks/` contains ordered wrapper names such as `001a-setup-development.sh`, `001b-install-update-monitor-launcher.sh`, `020-start-collector.sh`, and `090-uninstall-or-purge.sh`; see `scripts/README.md` for the naming methodology.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, an Index + Detail KPI dashboard, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash
@@ -1384,7 +1451,7 @@ This mini-monitor counts down to the next run, anchored to the last live run's s
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh`,
-then open `http://127.0.0.1:8766/`; this dashboard is served by Python and opened in your normal desktop browser (not Playwright). The collector itself uses Playwright Firefox headless to read PanamaCompra pages; `setup.sh` installs that browser unless `PC_SETUP_SKIP_BROWSER=1` is set. The web monitor mirrors the Tk monitor zones, stop button, test-sandbox folder opening, Index + Detail KPI tab, and live-run-only auto-close behavior. The terminal UI is still available with
+then open `http://127.0.0.1:8766/`; this dashboard is served by Python and opened in your normal desktop browser (not Playwright). The collector itself uses Playwright Firefox headless to read PanamaCompra pages; `setup.sh` installs that browser unless `PC_SETUP_SKIP_BROWSER=1` is set. The web monitor mirrors the Tk monitor zones, stop button, test-sandbox folder opening, unified tab layout (Operations / Settings / WhatsApp / KPIs / Records & Database), and live-run-only auto-close behavior. The terminal UI is still available with
 `PC_MONITOR_MODE=terminal ./src/monitor/000-open-monitor.sh`. If no GUI can be opened, use
 `./src/pipeline/130b-run-status.sh` or `./src/pipeline/130c-follow-run.sh` from any terminal.
 

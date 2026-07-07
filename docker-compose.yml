@@ -64,6 +64,11 @@ services:
       # collector so it can authenticate to /api/sendText.
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
+      # Dashboard login asked after every install/reinstall. Defaults to
+      # admin / 12345678 so the review dashboard is always reachable; change it
+      # in .env or the monitor Settings tab (applied on the next stack restart).
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-12345678}
     volumes:
       - ${PC_INTEGRATIONS_DIR:-./var/integrations}/waha:/app/.sessions
     networks:

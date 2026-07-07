@@ -115,6 +115,10 @@ VALUE_SETTING_DEFAULTS = {
     "PC_TEMPLATES_SRC_DIR": "",
     "WAHA_PORT": "3000",
     "WAHA_API_KEY": "",
+    # WAHA dashboard login (container side). The stack seeds admin / 12345678 on
+    # install/reinstall so review access always works; edit here to change it.
+    "WAHA_DASHBOARD_USERNAME": "admin",
+    "WAHA_DASHBOARD_PASSWORD": "12345678",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
@@ -163,7 +167,9 @@ MANUAL_ACTIONS = [
     ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/pipeline/060-build-calendar.py --all"), "Rebuilds and opens generated ICS files."),
     ManualAction("Settings", "Webhook listener", ("./src/webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
     ManualAction("Settings", "Install webhook service", ("./src/webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
-    ManualAction("Settings", "Open web monitor", ("bash", "-lc", "PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh"), "Starts/opens the browser monitor."),
+    ManualAction("Settings", "Open web monitor", ("./src/tools/130-open-web-app.sh", "monitor"), "Starts/opens the browser monitor (chromeless app window when available)."),
+    ManualAction("Integrations", "Open changedetection app window", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io dashboard in a chromeless app window on the desktop — independent of Firefox, no browser header."),
+    ManualAction("Integrations", "Open WAHA app window", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window on the desktop (login defaults to admin / 12345678)."),
 ]
 
 DEFAULT_PROGRESS = {
@@ -366,61 +372,94 @@ def load_record_index(limit: int = 500) -> list[dict[str, str]]:
     ]
 
 
-def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
-    """Best-effort item loader for KPI dashboards; never raises."""
+def load_detail_payload_for_kpi(detail_json_path: str | None) -> tuple[list[dict], dict]:
+    """Best-effort loader of a saved detail JSON for the KPI dashboards.
+
+    Returns (items, summary); handles split item files and never raises."""
     if not detail_json_path:
-        return []
+        return [], {}
     path = Path(str(detail_json_path))
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return [], {}
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     items = data.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
-    split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
-    descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
-    rel = descriptor.get("file")
-    if rel:
-        try:
-            split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
-            if isinstance(split_items, list):
-                return [item for item in split_items if isinstance(item, dict)]
-        except Exception:
-            return []
-    return []
+    if not isinstance(items, list):
+        items = []
+        split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
+        descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
+        rel = descriptor.get("file")
+        if rel:
+            try:
+                split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
+                if isinstance(split_items, list):
+                    items = split_items
+            except Exception:
+                items = []
+    return [item for item in items if isinstance(item, dict)], summary
 
 
-def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[str, object]:
-    """Summarize detail items for decision KPIs without scanning unbounded data."""
+def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
+    """Best-effort item loader for KPI dashboards; never raises."""
+    return load_detail_payload_for_kpi(detail_json_path)[0]
+
+
+# Detail-summary labels that describe WHERE the opportunity is bought/delivered.
+# Used to build the KPI location diagram from the saved detail pages.
+LOCATION_SUMMARY_KEYS = ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia")
+
+
+def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300,
+                            flt: str = "", flt_params: tuple = ()) -> dict[str, object]:
+    """Summarize detail items for decision KPIs without scanning unbounded data.
+
+    ``flt``/``flt_params`` is an optional extra WHERE fragment (same filters the
+    KPI dashboard applies to the archive queries)."""
     rows = conn.execute(
-        "SELECT numero, descripcion, detail_json_path FROM opportunities "
+        "SELECT numero, descripcion, detail_json_path, "
+        "COALESCE(detail_saved_at, first_seen, '') AS saved_at FROM opportunities "
         "WHERE COALESCE(detail_json_path, '') <> '' "
-        "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
-        (limit,),
+        + (f"AND {flt} " if flt else "")
+        + "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
+        (*flt_params, limit),
     ).fetchall()
     total_items = 0
     with_items = 0
     max_items = {"numero": "", "descripcion": "", "count": 0}
     keyword_counts: Counter[str] = Counter()
+    location_counts: Counter[str] = Counter()
+    item_name_counts: Counter[str] = Counter()
     sample_items: list[dict[str, str]] = []
     for row in rows:
-        items = load_detail_items_for_kpi(str(row["detail_json_path"] or ""))
+        items, summary = load_detail_payload_for_kpi(str(row["detail_json_path"] or ""))
+        for key in LOCATION_SUMMARY_KEYS:
+            place = str(summary.get(key) or "").strip()
+            if place:
+                location_counts[place[:60]] += 1
+                break
         if items:
             with_items += 1
         total_items += len(items)
         if len(items) > int(max_items["count"]):
             max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
         for item in items:
+            name = str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "").strip()
+            if name:
+                # Normalized item name so the SAME product bought repeatedly
+                # surfaces as a "most frequent item" bar.
+                item_name_counts[name.lower()[:48]] += 1
             text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
             for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
                 if not word.isdigit():
                     keyword_counts[word] += 1
-            if len(sample_items) < 8:
+            if len(sample_items) < 10:
+                # Rows come newest-first, so these are the LATEST parsed items.
                 sample_items.append({
                     "numero": str(row["numero"] or ""),
-                    "descripcion": str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "")[:90],
+                    "descripcion": name[:90],
                     "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
+                    "saved_at": str(row["saved_at"] or "")[:16].replace("T", " "),
                 })
     avg_items = round(total_items / with_items, 1) if with_items else 0
     return {
@@ -430,18 +469,25 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300) -> dict[
         "avg_items_per_record": avg_items,
         "max_items_record": max_items,
         "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
+        "top_items": [{"label": k, "count": v} for k, v in item_name_counts.most_common(10)],
+        "top_locations": [{"label": k, "count": v} for k, v in location_counts.most_common(10)],
         "sample_items": sample_items,
     }
 
-def db_review_stats() -> dict[str, object]:
+def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[str, object]:
     """Aggregate counts for the web Database-review card (mirror of the Tk
     monitor's panel): totals, detail-queue state, notification state, and a
-    per-group breakdown. Never raises; a missing/locked DB yields zeros."""
+    per-group breakdown. Never raises; a missing/locked DB yields zeros.
+
+    ``days``/``grupo``/``entidad`` are the KPI dashboard filters: 0/blank means
+    no filter; otherwise every aggregate is restricted to records first seen in
+    the window and/or matching the group/entity."""
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
         "failed": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0, "needs_deadline": 0,
-        "with_detail_json": 0, "item_analysis": {}, "groups": [],
+        "with_detail_json": 0, "item_analysis": {}, "groups": [], "entities": [], "dependencias": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [],
+        "daily_intake": [], "filters": {"days": days, "grupo": grupo, "entidad": entidad},
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -454,9 +500,28 @@ def db_review_stats() -> dict[str, object]:
         columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
         has_notified = "notified_at" in columns
 
+        # Optional dashboard filters applied to EVERY aggregate below, so the
+        # cards, diagrams and item analysis all answer for the same slice.
+        flt_conditions: list[str] = []
+        flt_params: list[str] = []
+        if days and int(days) > 0:
+            flt_conditions.append(
+                "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
+            flt_params.append(f"-{int(days)} day")
+        if grupo:
+            flt_conditions.append("COALESCE(grupo, '') = ?")
+            flt_params.append(grupo)
+        if entidad and "entidad" in columns:
+            flt_conditions.append("COALESCE(entidad, '') = ?")
+            flt_params.append(entidad)
+        flt = " AND ".join(flt_conditions)
+        flt_where = f" WHERE {flt}" if flt else ""
+        flt_and = f" AND {flt}" if flt else ""
+
         def count(where: str = "") -> int:
-            sql = "SELECT COUNT(*) FROM opportunities" + (f" WHERE {where}" if where else "")
-            return int(conn.execute(sql).fetchone()[0])
+            clauses = [c for c in (where, flt) if c]
+            sql = "SELECT COUNT(*) FROM opportunities" + ((" WHERE " + " AND ".join(clauses)) if clauses else "")
+            return int(conn.execute(sql, flt_params if flt else []).fetchone()[0])
 
         column_details = []
         for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
@@ -468,7 +533,9 @@ def db_review_stats() -> dict[str, object]:
         status_rows = [
             {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
             for r in conn.execute(
-                "SELECT detail_status, COUNT(*) AS c FROM opportunities GROUP BY detail_status ORDER BY c DESC"
+                "SELECT detail_status, COUNT(*) AS c FROM opportunities" + flt_where
+                + " GROUP BY detail_status ORDER BY c DESC",
+                flt_params,
             ).fetchall()
         ]
         # Records the "Repair missing deadlines" action would act on: blank
@@ -494,19 +561,23 @@ def db_review_stats() -> dict[str, object]:
             ) if has_notified and "detail_notified_at" in columns else 0,
             "needs_deadline": count(needs_deadline_where),
             "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
-            "item_analysis": summarize_items_for_kpi(conn),
+            "item_analysis": summarize_items_for_kpi(conn, flt=flt, flt_params=tuple(flt_params)),
             "recent": [
                 {"numero": str(r["numero"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or ""), "detail_status": str(r["detail_status"] or "")}
                 for r in conn.execute(
-                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities "
-                    "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 12"
+                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities"
+                    + flt_where +
+                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 12",
+                    flt_params,
                 ).fetchall()
             ],
             "completed_recent": [
                 {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
                 for r in conn.execute(
                     "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
-                    "WHERE detail_status = 'saved' ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5"
+                    "WHERE detail_status = 'saved'" + flt_and +
+                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5",
+                    flt_params,
                 ).fetchall()
             ],
             "columns": column_details,
@@ -515,16 +586,47 @@ def db_review_stats() -> dict[str, object]:
                 {"label": str(r["period"] or "unknown"), "count": int(r["c"])}
                 for r in conn.execute(
                     "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
-                    "FROM opportunities GROUP BY period ORDER BY period DESC LIMIT 12"
+                    "FROM opportunities" + flt_where + " GROUP BY period ORDER BY period DESC LIMIT 12",
+                    flt_params,
+                ).fetchall()
+            ],
+            # Records first seen per day, newest first — the "how alive is the
+            # intake" diagram for the KPI dashboard.
+            "daily_intake": [
+                {"label": str(r["day"]), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') AS day, COUNT(*) AS c "
+                    "FROM opportunities" + flt_where + " GROUP BY day HAVING day <> '' ORDER BY day DESC LIMIT 14",
+                    flt_params,
                 ).fetchall()
             ],
             "groups": [
                 {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
                 for r in conn.execute(
-                    "SELECT grupo, COUNT(*) AS c FROM opportunities "
-                    "GROUP BY grupo ORDER BY c DESC"
+                    "SELECT grupo, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY grupo ORDER BY c DESC",
+                    flt_params,
                 ).fetchall()
             ],
+            # WHO buys and WHERE: contracting entities and their dependencies,
+            # for the KPI location/buyer diagrams.
+            "entities": [
+                {"label": str(r["entidad"] or "(sin entidad)"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT entidad, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY entidad ORDER BY c DESC LIMIT 12",
+                    flt_params,
+                ).fetchall()
+            ] if "entidad" in columns else [],
+            "dependencias": [
+                {"label": str(r["dependencia"] or "(sin dependencia)"), "count": int(r["c"])}
+                for r in conn.execute(
+                    "SELECT dependencia, COUNT(*) AS c FROM opportunities"
+                    + flt_where + " GROUP BY dependencia ORDER BY c DESC LIMIT 12",
+                    flt_params,
+                ).fetchall()
+            ] if "dependencia" in columns else [],
+            "filters": {"days": int(days or 0), "grupo": grupo, "entidad": entidad},
         }
     except sqlite3.Error:
         return empty
@@ -555,6 +657,39 @@ def webhook_running() -> bool:
         return "webhook" in result.stdout.lower()
     except Exception:
         return False
+
+def webhook_access_payload() -> dict[str, object]:
+    """Live view of the webhook trigger access: the token generated by setup
+    (docker-stack `ensure_access_credentials` writes `.webhook_token`) plus the
+    exact URLs changedetection / external tools must use. Read fresh on every
+    call, so the monitor always shows the CURRENT settings even right after an
+    update or a re-run of setup."""
+    token_path = BASE_DIR / ".webhook_token"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip() if token_path.exists() else ""
+    except OSError:
+        token = ""
+    settings_file = parse_settings_file()
+    port = str(os.environ.get("PC_WEBHOOK_PORT") or settings_file.get("PC_WEBHOOK_PORT") or "8765")
+    public_host = str(os.environ.get("PC_WEBHOOK_PUBLIC_HOST") or settings_file.get("PC_WEBHOOK_PUBLIC_HOST") or "host.docker.internal")
+    shown = token or "YOUR_TOKEN"
+    query = "?method=POST&format=text&overflow=truncate&rto=15&cto=10"
+    return {
+        "token": token,
+        "token_exists": bool(token),
+        "token_file": str(token_path),
+        "port": port,
+        "listener_running": webhook_running(),
+        # changedetection notification URL over the compose network (preferred).
+        "changedetection_url": f"json://webhook:8765/panamacompra/{shown}{query}",
+        # Docker container -> host-run listener.
+        "docker_to_host_url": f"http://{public_host}:{port}/panamacompra/{shown}",
+        # Local test from the host itself.
+        "local_url": f"http://127.0.0.1:{port}/panamacompra/{shown}",
+        "access_note": str(pc_common.DATA_CONFIG_DIR / "integration-access.txt"),
+        "generated_by": "setup.sh → docker stack up (auto-generates .webhook_token when missing); also src/webhook/040-diagnose-webhook.sh",
+    }
+
 
 def process_snapshot() -> dict[str, bool]:
     worker = running("[r]un-worker.sh")
@@ -758,7 +893,26 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .kpi {{ background: linear-gradient(135deg, #172554, #0f172a); border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; box-shadow: 0 0 18px #0ea5e933; }}
 .kpi b {{ display: block; font-size: 1.7rem; color: #67e8f9; }}
 .diagram-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }}
-.chart {{ background: #020617; border: 1px solid #334155; border-radius: 10px; padding: 12px; min-height: 180px; }}
+/* Sci-fi board: faint blueprint grid behind every chart, neon hover glow, and
+   a pulsing LIVE beacon next to the last-refresh stamp. */
+.chart {{ background: #020617 linear-gradient(#38bdf80d 1px, transparent 1px) 0 0 / 100% 22px, #020617 linear-gradient(90deg, #38bdf808 1px, transparent 1px) 0 0 / 22px 100%; border: 1px solid #334155; border-radius: 10px; padding: 12px; min-height: 180px; transition: border-color .2s ease, box-shadow .2s ease; }}
+.chart:hover {{ border-color: #38bdf8; box-shadow: 0 0 16px #0ea5e955, inset 0 0 24px #0ea5e911; }}
+.kpi-live {{ color: #22d3ee; font-weight: 700; text-shadow: 0 0 8px #22d3ee; }}
+.kpi-live::before {{ content: '●'; margin-right: 5px; animation: kpiPulse 1.6s ease-in-out infinite; }}
+@keyframes kpiPulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: .25; }} }}
+.kpi-filter-bar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 12px; padding: 8px 10px; border: 1px solid #164e63; border-radius: 10px; background: #0b1220; }}
+.item-line {{ border-left: 3px solid #38bdf8; padding: 3px 8px; margin: 4px 0; font-size: .85rem; color: #cbd5e1; }}
+.item-line b {{ color: #67e8f9; }}
+/* Graphical month calendar. */
+.calgrid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 8px 0; }}
+.calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .8rem; padding: 2px 0; }}
+.calgrid .day {{ min-height: 54px; border: 1px solid #334155; border-radius: 8px; padding: 4px 6px; cursor: pointer; background: #0b1220; transition: border-color .15s ease, box-shadow .15s ease; }}
+.calgrid .day:hover {{ border-color: #38bdf8; box-shadow: 0 0 10px #0ea5e955; }}
+.calgrid .day.blank {{ visibility: hidden; }}
+.calgrid .day.today {{ border-color: #facc15; box-shadow: 0 0 8px #facc1555; }}
+.calgrid .day .num {{ color: #94a3b8; font-size: .78rem; }}
+.calgrid .day .cnt {{ display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: #14532d; color: #bbf7d0; font-weight: 700; }}
+.calgrid .day.hot .cnt {{ background: #713f12; color: #fde68a; }}
 .bar-row {{ display: grid; grid-template-columns: minmax(90px, 1fr) 4fr 48px; gap: 8px; align-items: center; margin: 7px 0; font-size: .9rem; }}
 .bar-track {{ height: 12px; background: #1e293b; border-radius: 999px; overflow: hidden; }}
 .bar-fill {{ height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }}
@@ -783,20 +937,21 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="decision" onclick="showTab('decision')">Index + Detail KPIs</button><button data-tab-button="records" onclick="showTab('records')">Records & Database</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" onclick="showTab('records')">Records & Database</button></div>
 <div class="card" data-tab="operations"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
-<div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p></div><div class="subsection"><h3>Storage paths</h3><p><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
-<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Run cadence</h3><div class="settings-grid"><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details></div>
+<div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
+<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details></div>
 <div class="card" data-tab="operations"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
+<div class="card" data-tab="operations"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the <code>json://</code> URL into the changedetection notification settings.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp destinations & toggles</h2><p class="small">Dedicated WhatsApp section: default and per-purpose destinations, notification toggles, and test send. These fields mirror the quick controls in Operations.</p><textarea id="waha-message-wa" placeholder="Default WhatsApp group/channel chat ID destination"></textarea><p class="small"><label>Index alerts <input id="waha-index-wa" size="26" placeholder="…@g.us"></label> <label>Item details <input id="waha-details-wa" size="26" placeholder="…@g.us"></label> <label>Status changes <input id="waha-status-wa" size="26" placeholder="…@g.us"></label></p><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label> <label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label> <button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div>
 
-<div class="card" data-tab="whatsapp"><h2>WhatsApp advanced delivery settings</h2><p class="small">WAHA server, retry, event and deadline-notification settings live here so the Settings tab stays focused on collector/timer options.</p><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label></p></div>
+<div class="card" data-tab="whatsapp"><h2>WhatsApp advanced delivery settings</h2><p class="small">WAHA server, retry, event and deadline-notification settings live here so the Settings tab stays focused on collector/timer options.</p><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (default 12345678) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label> <button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></div><p class="small">The WAHA dashboard login defaults to admin / 12345678 after every install/reinstall so the review page is always reachable; change the password here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label></p></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 
-<div class="card" data-tab="decision"><h2>Index + Detail KPI Dashboard</h2><p class="small">Decision board focused on index scan intake, detail download throughput, WAHA delivery, deadline repair, and recent archive trends.</p><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups / buyers</h3><div id="decision-groups"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div><div class="chart"><h3>Command keywords</h3><div id="decision-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh decision KPIs</button></p></div>
+<div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
 <div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
@@ -860,7 +1015,7 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const note = document.getElementById('done-note');
   if (data.done) {{
@@ -997,6 +1152,7 @@ async function loadCalendar(shift) {{
     calendarAnchor = data.anchor;
     if (document.activeElement !== dateBox) dateBox.value = data.anchor;
     document.getElementById('calendar-text').textContent = data.text;
+    renderCalendarVisual();
   }} catch (err) {{ document.getElementById('calendar-text').textContent = 'Calendar unavailable: ' + err; }}
 }}
 function saveTemplatesSelection() {{
@@ -1009,7 +1165,7 @@ function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
 function saveAdvancedSettings() {{
-  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
+  ['PC_WAHA_SOURCE','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 let recordIndex = [];
 let recordFiltered = [];
@@ -1131,15 +1287,34 @@ function applyRecordFilter() {{
   }}).join('');
   renderRecordDetail();
 }}
-function renderCalendarVisual() {{
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+async function renderCalendarVisual() {{
+  // Graphical month calendar: a real 7-column grid with per-day opportunity
+  // counts (driven by the selected date field), today highlighted, and every
+  // day clickable to jump the text calendar to that date.
   const node = document.getElementById('calendar-visual');
   if (!node) return;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const rows = [];
-  for (let i = 0; i < 14; i++) {{ const d = new Date(today.getTime() + i * 86400000); rows.push({{date:d, label:d.toISOString().slice(0,10), count:0}}); }}
-  recordIndex.forEach(rec => {{ const d = parseDeadline(rec); if (!d) return; d.setHours(0,0,0,0); const idx = Math.round((d - today) / 86400000); if (idx >= 0 && idx < rows.length) rows[idx].count++; }});
-  const max = Math.max(1, ...rows.map(r => r.count));
-  node.innerHTML = '<h3>Next 14 days deadline heatmap</h3>' + rows.map(r => `<button title="Show calendar at ${{r.label}}" onclick="document.getElementById('cal-date').value='${{r.label}}'; loadCalendar()" style="min-width:86px;margin:3px;background:${{r.count ? '#14532d' : '#1f2937'}}">${{r.label.slice(5)}}<br><b>${{r.count}}</b></button>`).join('') + '<p class="small">Click a day to jump the calendar anchor. Counts come from collected DTEND/deadline values.</p>';
+  const field = (document.getElementById('cal-field') || {{}}).value || 'end';
+  const anchor = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
+  let params = 'field=' + encodeURIComponent(field);
+  if (anchor) params += '&date=' + encodeURIComponent(anchor);
+  try {{
+    const g = await (await fetch('/api/calendar-grid?' + params, {{cache: 'no-store'}})).json();
+    const counts = g.counts || {{}};
+    const monthLabel = (g.month_start || '').slice(0, 7);
+    const maxCount = Math.max(1, ...Object.values(counts).map(Number));
+    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
+    for (let i = 0; i < (g.first_weekday || 0); i++) cells += '<div class="day blank"></div>';
+    for (let dayNumber = 1; dayNumber <= (g.days_in_month || 0); dayNumber++) {{
+      const iso = monthLabel + '-' + String(dayNumber).padStart(2, '0');
+      const count = Number(counts[iso] || 0);
+      const classes = ['day'];
+      if (iso === g.today) classes.push('today');
+      if (count && count >= maxCount * 0.7) classes.push('hot');
+      cells += `<div class="${{classes.join(' ')}}" title="${{iso}}: ${{count}} opportunit${{count === 1 ? 'y' : 'ies'}} by ${{esc(field)}} date" onclick="document.getElementById('cal-date').value='${{iso}}'; document.getElementById('cal-view').value='day'; loadCalendar()"><span class="num">${{dayNumber}}</span><br>${{count ? `<span class="cnt">${{count}}</span>` : ''}}</div>`;
+    }}
+    node.innerHTML = `<h3>Month ${{esc(monthLabel)}} · by ${{esc(field)}} date</h3><div class="calgrid">${{cells}}</div><p class="small">Click a day to open its detail in the text calendar below. Amber ring = today; amber badge = busiest days.</p>`;
+  }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
   try {{
@@ -1186,23 +1361,78 @@ function bars(nodeId, rows) {{
   const max = Math.max(1, ...rows.map(r => Number(r.count || 0)));
   node.innerHTML = rows.length ? rows.map(r => `<div class="bar-row"><span>${{esc(String(r.label || r.status || r.grupo || '—').slice(0, 28))}}</span><span class="bar-track"><span class="bar-fill" style="display:block;width:${{Math.max(4, Number(r.count || 0) / max * 100)}}%"></span></span><b>${{r.count || 0}}</b></div>`).join('') : '<span class="small">No data yet.</span>';
 }}
+function kpiFilterParams() {{
+  const days = (document.getElementById('kpi-days') || {{}}).value || '0';
+  const grupo = ((document.getElementById('kpi-grupo') || {{}}).value || '').trim();
+  const entidad = ((document.getElementById('kpi-entidad') || {{}}).value || '').trim();
+  return 'days=' + encodeURIComponent(days) + '&grupo=' + encodeURIComponent(grupo) + '&entidad=' + encodeURIComponent(entidad);
+}}
+function resetKpiFilters() {{
+  const days = document.getElementById('kpi-days'); if (days) days.value = '0';
+  ['kpi-grupo', 'kpi-entidad'].forEach(id => {{ const el = document.getElementById(id); if (el) el.value = ''; }});
+  refreshDecisionDashboard();
+}}
+async function loadWebhookAccess() {{
+  const node = document.getElementById('webhook-access');
+  if (!node) return;
+  try {{
+    const w = await (await fetch('/api/webhook-access', {{cache: 'no-store'}})).json();
+    node.textContent =
+      `Webhook token: ${{w.token_exists ? w.token : '(not generated yet — run ./setup.sh or ./src/tools/010-docker-stack.sh up)'}}\n` +
+      `Token file:    ${{w.token_file}}\n` +
+      `Listener:      ${{w.listener_running ? 'RUNNING' : 'off'}} on port ${{w.port}}\n\n` +
+      `changedetection notification URL (compose network, preferred):\n  ${{w.changedetection_url}}\n` +
+      `From a Docker container to a HOST-run listener:\n  ${{w.docker_to_host_url}}\n` +
+      `Local test from this machine:\n  ${{w.local_url}}\n\n` +
+      `Generated by: ${{w.generated_by}}\n` +
+      `Full access note (incl. WAHA login/API key): ${{w.access_note}}`;
+  }} catch (err) {{ node.textContent = 'Webhook access unavailable: ' + err; }}
+}}
 async function refreshDecisionDashboard() {{
-  const s = await (await fetch('/api/db-stats', {{cache: 'no-store'}})).json();
+  const s = await (await fetch('/api/db-stats?' + kpiFilterParams(), {{cache: 'no-store'}})).json();
+  const stamp = document.getElementById('kpi-live-stamp');
+  if (stamp) stamp.textContent = 'LIVE · ' + new Date().toLocaleTimeString();
+  const fstate = document.getElementById('kpi-filter-state');
+  if (fstate) {{
+    const f = s.filters || {{}};
+    const parts = [];
+    if (Number(f.days || 0) > 0) parts.push('last ' + f.days + ' days');
+    if (f.grupo) parts.push('group ' + f.grupo);
+    if (f.entidad) parts.push('entity ' + f.entidad);
+    fstate.textContent = parts.length ? 'Filtered: ' + parts.join(' · ') : 'Showing all records';
+  }}
+  // Selector suggestions come from the CURRENT slice so drilling down stays easy.
+  const grupoList = document.getElementById('kpi-grupo-list');
+  if (grupoList) grupoList.innerHTML = (s.groups || []).map(g => `<option value="${{esc(g.grupo)}}">`).join('');
+  const entidadList = document.getElementById('kpi-entidad-list');
+  if (entidadList) entidadList.innerHTML = (s.entities || []).map(e => `<option value="${{esc(e.label)}}">`).join('');
   const k = document.getElementById('decision-kpis');
   const closure = Number(s.total || 0) ? Math.round(Number(s.saved || 0) / Number(s.total || 1) * 100) : 0;
   const items = s.item_analysis || {{}};
   k.innerHTML = [ ['Index archive total', s.total || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
   bars('decision-status', (s.status_breakdown || []).map(r => ({{label: r.status, count: r.count}})));
   bars('decision-groups', (s.groups || []).slice(0, 10).map(r => ({{label: r.grupo, count: r.count}})));
-  bars('decision-deadlines', [{{label:'Completed', count:s.saved||0}},{{label:'Pending', count:s.pending||0}},{{label:'Failed', count:s.failed||0}},{{label:'Needs repair', count:s.needs_deadline||0}},{{label:'Notify backlog', count:s.notify_backlog||0}}].concat((s.monthly_trend || []).slice(0, 6)));
+  bars('decision-daily', (s.daily_intake || []).slice(0, 14));
+  bars('decision-trend', (s.monthly_trend || []).slice(0, 12));
+  bars('decision-entities', (s.entities || []).slice(0, 10));
+  bars('decision-locations', ((items.top_locations || []).length ? items.top_locations : (s.dependencias || [])).slice(0, 10));
+  bars('decision-top-items', (items.top_items || []).slice(0, 10));
+  const latestNode = document.getElementById('decision-latest-items');
+  if (latestNode) {{
+    const latest = items.sample_items || [];
+    latestNode.innerHTML = latest.length
+      ? latest.map(it => `<div class="item-line"><b>${{esc(it.numero || '?')}}</b>${{it.saved_at ? ' · ' + esc(it.saved_at) : ''}}${{it.cantidad ? ' · qty ' + esc(it.cantidad) : ''}}<br>${{esc(it.descripcion || '(item without description)')}}</div>`).join('')
+      : '<span class="small">No parsed items yet — run a collection with detail downloads.</span>';
+  }}
+  bars('decision-deadlines', [{{label:'Completed', count:s.saved||0}},{{label:'Pending', count:s.pending||0}},{{label:'Failed', count:s.failed||0}},{{label:'Needs repair', count:s.needs_deadline||0}},{{label:'Notify backlog', count:s.notify_backlog||0}}]);
   bars('decision-items', [{{label:'Records sampled', count:items.sampled_records||0}},{{label:'Records with items', count:items.records_with_items||0}},{{label:'Total item lines', count:items.total_items||0}},{{label:'Largest record items', count:(items.max_items_record||{{}}).count||0}}]);
   const itemWords = (items.top_item_keywords || []).map(r => r.label || '').filter(Boolean);
   document.getElementById('decision-item-keywords').innerHTML = itemWords.length ? itemWords.map((w,i) => `<span style="font-size:${{0.85 + (itemWords.length-i)/18}}rem">${{esc(w)}}</span>`).join('') : '<span class="small">No parsed item keywords yet.</span>';
-  const words = ['index scan','new records','existing','detail queue','saved details','failed details','WAHA','deadline repair','calendar','trend','webhook','manual notify','items analysis','largest item record'];
-  document.getElementById('decision-keywords').innerHTML = words.map((w,i) => `<span style="font-size:${{0.85 + (words.length-i)/18}}rem">${{w}}</span>`).join('');
   const biggest = items.max_items_record || {{}};
-  const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\n');
-  document.getElementById('decision-recommendations').textContent = `Index/detail/items decision signals\n• If Details failed > 0, repair collector/detail issues before expanding index page caps.\n• If Details pending grows, prioritize detail download capacity over more index scans.\n• Item lines parsed: ${{items.total_items || 0}} across ${{items.records_with_items || 0}} records; largest record: ${{biggest.numero || '-'}} with ${{biggest.count || 0}} items.\n• If item keywords cluster around a buyer/product family, prioritize those folders for review and WhatsApp detail follow-up.\n• If Deadline repairs > 0, repair missing DTEND before calendar/export decisions.\n• If Notify backlog grows, verify WAHA destinations/settings before running more scans.\nRecent parsed items:\n${{sampleLines || '  - no item rows parsed yet'}}`;
+  const topEntity = (s.entities || [])[0] || {{}};
+  const topLocation = ((items.top_locations || [])[0]) || {{}};
+  const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\\n');
+  document.getElementById('decision-recommendations').textContent = `Index/detail/items decision signals\n• If Details failed > 0, repair collector/detail issues before expanding index page caps.\n• If Details pending grows, prioritize detail download capacity over more index scans.\n• Item lines parsed: ${{items.total_items || 0}} across ${{items.records_with_items || 0}} records; largest record: ${{biggest.numero || '-'}} with ${{biggest.count || 0}} items.\n• Most active entity: ${{topEntity.label || '-'}} (${{topEntity.count || 0}} records)${{topLocation.label ? ' · most frequent location/unit: ' + topLocation.label + ' (' + (topLocation.count || 0) + ')' : ''}} — focus review capacity where the volume is.\n• If item keywords cluster around a buyer/product family, prioritize those folders for review and WhatsApp detail follow-up.\n• If Deadline repairs > 0, repair missing DTEND before calendar/export decisions.\n• If Notify backlog grows, verify WAHA destinations/settings before running more scans.\nRecent parsed items:\n${{sampleLines || '  - no item rows parsed yet'}}`;
 }}
 function initCollapsibleSections() {{
   // Every card except the live-progress header starts COLLAPSED so the monitor
@@ -1232,8 +1462,8 @@ function renderQueue(data) {{
     `Collector request: ${{q.collector_state || 'none'}} (since ${{q.collector_since || '-'}}) · ` +
     `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}})`;
   document.getElementById('queue-log').textContent =
-    'Recent collector queue log:\n' + (q.request_log || '(missing)') +
-    '\nRecent Update + Monitor queue log:\n' + (q.update_log || '(missing)');
+    'Recent collector queue log:\\n' + (q.request_log || '(missing)') +
+    '\\nRecent Update + Monitor queue log:\\n' + (q.update_log || '(missing)');
 }}
 
 function renderRecordSummary(data) {{
@@ -1260,7 +1490,7 @@ async function refreshDbReview(targetId = 'db-review') {{
     const groups = (s.groups || []).map(g => `${{g.grupo}}: ${{g.count}}`).join('   ·   ') || '—';
     const statuses = (s.status_breakdown || []).map(r => `${{r.status}}: ${{r.count}}`).join('   ·   ') || '—';
     const columns = (s.columns || []).map(c => `${{c.name}}[${{c.type || 'TEXT'}}]=${{c.nonempty}}`).join('   ·   ') || '—';
-    const recent = (s.recent || []).map(r => `  • ${{r.numero}} [${{r.detail_status || 'unknown'}}] — ${{(r.descripcion || '').slice(0, 120)}}`).join('\n') || '  • —';
+    const recent = (s.recent || []).map(r => `  • ${{r.numero}} [${{r.detail_status || 'unknown'}}] — ${{(r.descripcion || '').slice(0, 120)}}`).join('\\n') || '  • —';
     node.textContent =
       `Total records: ${{s.total}}\n` +
       `Records Completed (saved): ${{s.saved}}   ·   Records Pendings: ${{s.pending}}   ·   Failed: ${{s.failed}}\n` +
@@ -1317,6 +1547,7 @@ loadWahaFormat();
 loadWahaFilters();
 refreshDbReview();
 refreshDecisionDashboard();
+loadWebhookAccess();
 poll();
 </script>
 </body>
@@ -1573,7 +1804,51 @@ class MonitorHandler(BaseHTTPRequestHandler):
             self.send_text(200, json.dumps(load_record_index(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/db-stats":
-            self.send_text(200, json.dumps(db_review_stats(), ensure_ascii=False), "application/json; charset=utf-8")
+            params = parse_qs(urlparse(self.path).query)
+            try:
+                days = max(0, int(params.get("days", ["0"])[0] or 0))
+            except (TypeError, ValueError):
+                days = 0
+            grupo = params.get("grupo", [""])[0].strip()
+            entidad = params.get("entidad", [""])[0].strip()
+            self.send_text(200, json.dumps(db_review_stats(days=days, grupo=grupo, entidad=entidad), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/webhook-access":
+            self.send_text(200, json.dumps(webhook_access_payload(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/calendar-grid":
+            # Per-day event counts for one month, for the graphical calendar.
+            params = parse_qs(urlparse(self.path).query)
+            field = (params.get("field", ["end"])[0] or "end").lower()
+            if field not in opportunity_calendar.FIELDS:
+                field = "end"
+            try:
+                anchor = opportunity_calendar.parse_anchor(params.get("date", [""])[0])
+            except SystemExit:
+                anchor = opportunity_calendar.parse_anchor("")
+            start, end = opportunity_calendar.view_range("month", anchor)
+            day_counts: dict[str, int] = {}
+            try:
+                conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                conn.row_factory = sqlite3.Row
+                try:
+                    events = opportunity_calendar.fetch_events(conn, field, start, end)
+                    day_counts = {day: len(rows) for day, rows in events.items()}
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                day_counts = {}
+            payload = {
+                "field": field,
+                "anchor": anchor.isoformat(),
+                "month_start": start.isoformat(),
+                "month_end": end.isoformat(),
+                "first_weekday": start.weekday(),
+                "days_in_month": end.day,
+                "today": time.strftime("%Y-%m-%d"),
+                "counts": day_counts,
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")

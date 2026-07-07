@@ -124,6 +124,11 @@ if [[ -f "$settings" ]]; then
   source "$settings"
   set +a
 fi
+# Chromeless app window when possible (no Firefox needed, no browser header);
+# the helper falls back to the default browser by itself.
+if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" changedetection
+fi
 url="${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi
 if command -v sensible-browser >/dev/null 2>&1; then exec sensible-browser "$url"; fi
@@ -142,6 +147,11 @@ if [[ -f "$settings" ]]; then
   # shellcheck disable=SC1090
   source "$settings"
   set +a
+fi
+# Chromeless app window when possible (no Firefox needed, no browser header);
+# the helper falls back to the default browser by itself.
+if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" waha
 fi
 url="http://localhost:${WAHA_PORT:-3000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi
@@ -191,21 +201,24 @@ SH
 
 write_desktop_entry() {
   local target_app="$1" target_desktop="$2" name="$3" comment="$4" exec_value="$5" terminal="$6" categories="$7"
-  local selected_icon="$icon_path" quoted_icon
+  local selected_icon="$icon_path"
   case "$target_app" in
     *changedetection*) selected_icon="$changedetection_icon_path" ;;
     *waha*) selected_icon="$waha_icon_path" ;;
     *docker-integrations*) selected_icon="$docker_icon_path" ;;
     *integration-urls*) selected_icon="$urls_icon_path" ;;
   esac
-  quoted_icon="$(quote_desktop_value "$selected_icon")"
+  # The icon file is (re)generated on every install so no launcher is ever left
+  # without one. Icon= is a plain string field in the Desktop Entry spec: it
+  # must NOT be quoted — quotes become part of the path and the icon breaks.
+  [[ -f "$selected_icon" ]] || write_icon
   cat > "$target_app" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=$name
 Comment=$comment
 Exec=$exec_value
-Icon=$quoted_icon
+Icon=$selected_icon
 Terminal=$terminal
 Categories=$categories
 StartupNotify=false
