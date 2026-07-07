@@ -251,7 +251,7 @@ The scripts resolve their own location, so the project can live in **any directo
 - Playwright Firefox browser — installed automatically by `./setup.sh`, including Debian/Ubuntu browser libraries when apt is available; or manually in the active virtualenv with `python -m playwright install --with-deps firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`, and a desktop opener such as `xdg-open` for opening the test sandbox folder after monitor-launched tests
 - Optional: `sqlite3` CLI for manual inspection
-- Optional: `git` — only required for the self-update commands (`./update-local-copy.sh`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
+- Optional: `git` — only required for the self-update/upload commands (`./update-local-copy.sh`, `./bin/pcc upload-github`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
 
 
 ### Updating an existing local copy
@@ -283,6 +283,30 @@ half-way. To request a small smoke run after the update, use:
 cd ~/Apps/panamacompra-collector
 PC_UPDATE_TEST_DETAIL_LIMIT=5 ./update-local-copy.sh
 ```
+
+### Uploading local changes to GitHub
+
+If you edited this local checkout first and want GitHub/cloud to receive those
+changes before another machine runs `./update-local-copy.sh`, use the upload helper:
+
+```bash
+cd ~/Apps/panamacompra-collector
+./bin/pcc upload-github --message "Describe the local fix"
+```
+
+The helper stages Git-tracked/unignored changes, commits them when needed, and
+pushes `HEAD` to the current branch on `origin` (override with `--remote` or
+`--branch`). Runtime data such as `data/`, `records/`, `var/`, `.venv`, and
+integrations stay protected by `.gitignore`. Preview without changing GitHub with:
+
+```bash
+./bin/pcc upload-github --dry-run
+```
+
+If the remote uses HTTPS and credentials are missing, run
+`./src/tools/120-setup-git-credentials.sh` once or configure SSH credentials, then
+repeat the upload. Both monitors also include **Upload local changes to GitHub**
+in the updater/migration actions.
 
 #### Recovering from a blocked merge or PR checkout
 
@@ -470,7 +494,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/monitor/000-open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `src/pipeline/130b-run-status.sh` | One-shot status snapshot. |
-| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), full diagnostics (`full-report`), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), full diagnostics (`full-report`), upload local Git changes (`upload-github`), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
 | `src/pipeline/130a-queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `src/pipeline/120a-stop-everything.sh` | Emergency stop for stuck index/detail/worker processes. |
@@ -531,6 +555,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 7) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `src/pipeline/000-update-before-run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update-local-copy.sh` and `src/pipeline/000-update-before-run.sh`. |
+| `PC_UPLOAD_REMOTE` | `PC_UPDATE_REMOTE` / `origin` | upload helper | Git remote used by `./bin/pcc upload-github` / `src/tools/150-upload-github.sh`. |
+| `PC_UPLOAD_BRANCH` | current branch | upload helper | Branch pushed by the upload helper. Override when running from detached HEAD or when publishing to a specific branch. |
+| `PC_UPLOAD_COMMIT_MESSAGE` | timestamped message | upload helper | Default commit message used when `--message` is not passed. |
+| `PC_UPLOAD_RUN_CHECKS` | `0` | upload helper | Set `1` or pass `--run-checks` to run lightweight syntax/diff checks before committing and pushing. |
 | `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update-local-copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `src/pipeline/000-update-before-run.sh` uses it (or the current branch) for its lightweight refresh. |
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update-local-copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
@@ -1479,7 +1507,7 @@ Launcher maintenance commands:
 
 For operators who prefer filenames to show workflow order, `scripts/tasks/` contains ordered wrapper names such as `001a-setup-development.sh`, `001b-install-update-monitor-launcher.sh`, `020-start-collector.sh`, and `090-uninstall-or-purge.sh`; see `scripts/README.md` for the naming methodology.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. Log panes intentionally show compact tails (worker: 10 lines, action: 14 lines) with their own scrollbars to avoid large blank panels when logs are quiet. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The **Full diagnostic report** action (also `./bin/pcc full-report`) writes a Markdown report under `data/reports/` with paths, settings (secrets redacted), integration URLs, process state, Docker status, queue flags, database counters, key files and recent logs. WhatsApp format editors now cover `index`, `details`, `status`, `system`, and `summary` messages, so System health / worker / test notifications and the final per-round summary are not left out. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. Log panes intentionally show compact tails (worker: 10 lines, action: 14 lines) with their own scrollbars to avoid large blank panels when logs are quiet. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The updater/migration actions include **Upload local changes to GitHub**, which runs `./bin/pcc upload-github` to commit local edits and push the current branch before another workstation updates. The **Full diagnostic report** action (also `./bin/pcc full-report`) writes a Markdown report under `data/reports/` with paths, settings (secrets redacted), integration URLs, process state, Docker status, queue flags, database counters, key files and recent logs. WhatsApp format editors now cover `index`, `details`, `status`, `system`, and `summary` messages, so System health / worker / test notifications and the final per-round summary are not left out. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash

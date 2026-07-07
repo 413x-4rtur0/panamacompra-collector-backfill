@@ -130,6 +130,8 @@ required_scripts=(
   "src/tools/090b-migrate-previous-records.py"
   "src/tools/090a-migrate-previous-records.sh"
   "src/tools/120-setup-git-credentials.sh"
+  "src/tools/140-full-report.py"
+  "src/tools/150-upload-github.sh"
   "setup.sh"
   "update-local-copy.sh"
 )

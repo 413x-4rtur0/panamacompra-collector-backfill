@@ -170,6 +170,7 @@ MANUAL_ACTIONS = [
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
     ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
     ManualAction("Updater & Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh used before worker iterations (no browser install)."),
+    ManualAction("Updater & Migration", "Upload local changes to GitHub", ("./bin/pcc", "upload-github"), "Commits local checkout changes and pushes the current branch to GitHub/origin. Use after local edits when you want the cloud repo updated before pulling elsewhere."),
     ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
     ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
 

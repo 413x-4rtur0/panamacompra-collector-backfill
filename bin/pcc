@@ -50,6 +50,7 @@ WhatsApp:
   health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
                                             message uses system/default/index/details/status/summary
   full-report [--stdout] [--no-logs]        Generate a full diagnostic Markdown report
+  upload-github [args]                       Commit local changes and push them to GitHub
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
   format [list|show|preview|set|reset|placeholders] [index|details|status|system|summary]
                                             Customize the WhatsApp message formats
@@ -61,6 +62,7 @@ Work templates (copied into templates/ inside each record folder):
   templates apply [--numero N] [--overwrite] [--apply]   Copy into record folders (dry-run without --apply)
 
 Maintenance:
+  upload [args]                             Alias for upload-github
   migrate [args]                            Run the existing layout migration helper
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
@@ -460,6 +462,9 @@ PYEOF
   full-report|diagnostic-report|report)
     load_monitor_settings
     exec "$PY_BIN" "$APP_ROOT/src/tools/140-full-report.py" "$@"
+    ;;
+  upload-github|push-github|upload|publish)
+    exec "$APP_ROOT/src/tools/150-upload-github.sh" "$@"
     ;;
   notify)
     [[ $# -ge 1 ]] || { echo "Usage: pcc notify NUMERO [NUMERO...] [--force]" >&2; exit 2; }
