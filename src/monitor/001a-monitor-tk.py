@@ -192,7 +192,7 @@ MANUAL_ACTIONS = [
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
-    ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary."),
+    ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary; on completion WAHA sends a System health message to the status destination (override with pcc health --chat-id/--purpose)."),
 
     # --- 6. Folder Management: open data storage locations -------------------
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.DATA_DIR / 'index'))}"), "Opens the main index folder where collected records are stored."),
@@ -899,8 +899,8 @@ def status_snapshot() -> dict[str, object]:
         "auto_close_enabled": done and progress.get("MODE", "IDLE").upper() == "AUTO" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
-        "worker_log": tail(WORKER_LOG, 18),
-        "current_log": tail(CURRENT_LOG, 28),
+        "worker_log": tail(WORKER_LOG, 10),
+        "current_log": tail(CURRENT_LOG, 14),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
@@ -2772,7 +2772,7 @@ def run_tk() -> int:
         frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-        text = tk.Text(frame, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
+        text = tk.Text(frame, height=8, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
         bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=bar.set)
         text.grid(row=0, column=0, sticky="nsew")
@@ -2850,8 +2850,8 @@ def run_tk() -> int:
         if not waha_status_var.get():
             waha_status_var.set(str(snap.get("waha_chat_id_status", "")))
 
-        set_text(worker_text, str(snap["worker_log"]))
-        set_text(current_text, str(snap["current_log"]))
+        set_text(worker_text, str(snap.get("worker_log") or "(no recent worker log lines)"))
+        set_text(current_text, str(snap.get("current_log") or "(no current action log lines)"))
 
         counting_down = False
         if not snap["done"]:

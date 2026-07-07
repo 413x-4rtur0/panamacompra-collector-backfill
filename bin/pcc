@@ -46,6 +46,8 @@ Settings (same files the GUI monitors use):
 
 WhatsApp:
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
+  health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
+                                            message uses status/default/index/details
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
   format [list|show|preview|set|reset|placeholders] [index|details|status]
                                             Customize the WhatsApp message formats
@@ -448,6 +450,10 @@ PYEOF
     load_monitor_settings
     exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST --force-send --purpose status \
       --message "${1:-Prueba de notificación desde la CLI pcc.}"
+    ;;
+  health|system-health|review)
+    load_monitor_settings
+    exec "$APP_ROOT/review-system.sh" "$@"
     ;;
   notify)
     [[ $# -ge 1 ]] || { echo "Usage: pcc notify NUMERO [NUMERO...] [--force]" >&2; exit 2; }

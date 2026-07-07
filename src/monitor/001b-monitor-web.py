@@ -154,7 +154,7 @@ MANUAL_ACTIONS = [
     ManualAction("Runners", "Stop active run", ("./src/pipeline/120b-stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
     ManualAction("Runners", "Show run status", ("./src/pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Tests", "Test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
-    ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary."),
+    ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary; on completion WAHA sends a System health message to the status destination (override with pcc health --chat-id/--purpose)."),
     ManualAction("Updater / Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
     ManualAction("Updater / Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
     ManualAction("Updater / Migration", "Rename folders", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
@@ -814,8 +814,8 @@ def status_payload() -> dict[str, object]:
         "auto_close_enabled": done and progress.get("MODE", "IDLE").upper() == "AUTO" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
-        "worker_log": tail(WORKER_LOG, 20),
-        "current_log": tail(CURRENT_LOG, 35),
+        "worker_log": tail(WORKER_LOG, 10),
+        "current_log": tail(CURRENT_LOG, 14),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
@@ -857,6 +857,7 @@ table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ text-align: left; border-bottom: 1px solid #334155; padding: 7px 10px; vertical-align: top; }}
 th {{ width: 220px; color: #93c5fd; }}
 pre {{ white-space: pre-wrap; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 12px; max-height: 360px; overflow: auto; }}
+pre.log-pane {{ max-height: 180px; min-height: 2.8rem; }}
 /* Process status is a tidy flex grid of small chips instead of one crowded
    wrapped line: green = RUNNING, gray = off, even gaps. */
 .proc-wrap {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
@@ -964,8 +965,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
 <div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
-<div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log"></pre></div>
-<div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log"></pre></div>
+<div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
+<div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <script>
 let doneSince = null;
 let timer = null;
@@ -1002,8 +1003,8 @@ function render(data) {{
   updateRunControls(data);
   renderQueue(data);
   renderRecordSummary(data);
-  document.getElementById('worker-log').textContent = data.worker_log || '';
-  document.getElementById('current-log').textContent = data.current_log || '';
+  document.getElementById('worker-log').textContent = data.worker_log || '(no recent worker log lines)';
+  document.getElementById('current-log').textContent = data.current_log || '(no current action log lines)';
   const waha = document.getElementById('waha-message');
   if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
   const wahawa = document.getElementById('waha-message-wa'); if (wahawa && document.activeElement !== wahawa) wahawa.value = data.waha_chat_id || '';
