@@ -10,13 +10,34 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import *
 
-# Optional WAHA baseline helper. This does not send messages; it only marks the
-# pre-existing archive before new detail rows are saved so later messaging can
-# distinguish genuinely new records from the historical baseline.
+# Optional WAHA notifier. Used for the first-use baseline (marks the
+# pre-existing archive before new detail rows are saved) and, when enabled, the
+# inline per-record detail message sent right after each download completes.
 try:
     pc_notify = load_script("src/pipeline/020-notify-whatsapp.py", "notify_new_records")
 except Exception:  # noqa: BLE001 - notifications are strictly optional
     pc_notify = None
+
+
+def inline_details_enabled():
+    """Whether each record's 'Detalles Completos' WhatsApp message is sent
+    inline, right after that record's detail page downloads. This spreads the
+    messages across the download phase (one every ~download cycle) instead of
+    delivering them all at once in the later MESSAGING step, which stays as the
+    idempotent catch-up for anything missed here (guarded by detail_notified_at).
+    Disable with PC_NOTIFY_DETAILS_INLINE=0 to keep the batch-at-the-end flow."""
+    if pc_notify is None:
+        return False
+    # Until the detail-notify baseline exists (first run after installing this
+    # feature), leave all follow-ups to the MESSAGING step: ensure_detail_baseline
+    # runs there and knows which older records must stay silent.
+    if not pc_notify.DETAIL_BASELINE_MARKER.exists():
+        return False
+    return (
+        pc_notify.cfg_bool("PC_NOTIFY_WHATSAPP", True)
+        and pc_notify.cfg_bool("PC_NOTIFY_DETAILS", True)
+        and pc_notify.cfg_bool("PC_NOTIFY_DETAILS_INLINE", True)
+    )
 
 DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
@@ -659,6 +680,8 @@ def main():
     saved = 0
     skipped = 0
     failed = 0
+    inline_notified = 0
+    notify_inline = inline_details_enabled()
 
     if not rows:
         write_run_progress(
@@ -725,6 +748,18 @@ def main():
             else:
                 failed += 1
 
+            # Inline detail message: announce this record's downloaded items now,
+            # so follow-ups arrive one by one while the next download runs instead
+            # of as one burst after the whole batch. notify_detail_ready is
+            # guarded by detail_notified_at, so the later MESSAGING step never
+            # re-sends these; a failed send here is retried by that step.
+            if result == "saved" and notify_inline:
+                try:
+                    if pc_notify.notify_detail_ready(conn, row["numero"]):
+                        inline_notified += 1
+                except Exception as exc:  # noqa: BLE001 - never break a download
+                    print(f"Inline detail notify failed for {row['numero']}: {exc}", file=sys.stderr)
+
             elapsed = time.monotonic() - loop_start
             write_run_progress(
                 "DETAIL",
@@ -770,6 +805,7 @@ def main():
         f"Saved: {saved}\n"
         f"Skipped complete: {skipped}\n"
         f"Failed: {failed}\n"
+        f"Inline detail messages sent: {inline_notified} (inline mode: {'on' if notify_inline else 'off'})\n"
         f"Remaining pending: {pending}\n"
     )
 

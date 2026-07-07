@@ -413,9 +413,13 @@ PY
     # announced from the index in this or a previous run whose detail page is
     # now downloaded (and its views rebuilt), send the follow-up "Detalles
     # Completos" WhatsApp message with the real items, one by one with monitor
-    # progress. Disable with PC_NOTIFY_DETAILS=0 (monitor Settings), in which
-    # case the downloaded items are absorbed silently so no duplicate "items
-    # updated" message fires next run.
+    # progress. With inline detail messages on (PC_NOTIFY_DETAILS_INLINE=1, the
+    # default) most follow-ups are already sent during STEP 3 right after each
+    # download, so this step is the idempotent catch-up for anything missed
+    # (guarded by detail_notified_at — never a duplicate). Disable with
+    # PC_NOTIFY_DETAILS=0 (monitor Settings), in which case the downloaded
+    # items are absorbed silently so no duplicate "items updated" message fires
+    # next run.
     if [ "$VIEW_EXIT" -eq 0 ]; then
       NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
       if [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
