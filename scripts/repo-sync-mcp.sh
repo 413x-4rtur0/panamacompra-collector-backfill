@@ -287,7 +287,7 @@ do_snapshot() {
 
     local WORKDIR
     WORKDIR="$(mktemp -d)"
-    trap 'rm -rf "$WORKDIR"' EXIT
+    trap '[[ -n "${WORKDIR:-}" && -d "${WORKDIR:-}" ]] && rm -rf "$WORKDIR"' EXIT
 
     local SNAPSHOT_FILE="codebase-memory-${REPO_NAME}-${TS}.db.zst"
     cp "$SRC" "$WORKDIR/$SNAPSHOT_FILE"
