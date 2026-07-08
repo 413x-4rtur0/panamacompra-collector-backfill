@@ -1838,7 +1838,7 @@ def run_tk() -> int:
     ttk.Label(kpi_frame, textvariable=kpi_vars["lastrun"], style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 4))
     ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=6, column=0, columnspan=3, sticky="w")
     ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
-    add_section_toggle(kpi_frame, button_column=2, start_hidden=False)
+    add_section_toggle(kpi_frame, button_column=2)
 
     # KPI diagrams: horizontal bar charts drawn on plain Tk canvases about the
     # collected data — index groups, contracting entities, locations parsed
@@ -1873,7 +1873,7 @@ def run_tk() -> int:
                                insertbackground="#e5e7eb", font=("monospace", 8))
     latest_items_box.grid(row=5, column=0, columnspan=2, sticky="ew", padx=4)
     latest_items_box.configure(state="disabled")
-    add_section_toggle(kpi_charts, button_column=1, start_hidden=False)
+    add_section_toggle(kpi_charts, button_column=1)
 
     def draw_bars(chart: tk.Canvas, rows: list[tuple[str, int]], color: str = "#38bdf8") -> None:
         chart.delete("all")

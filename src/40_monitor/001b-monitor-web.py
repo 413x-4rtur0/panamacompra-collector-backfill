@@ -1358,10 +1358,11 @@ async function refreshDecisionDashboard() {{
 function initCollapsibleSections() {{
   // Every card except the live-progress header starts COLLAPSED so the monitor
   // opens compact; the operator expands only the panels they need (matches the
-  // Tk monitor's default-hidden sections).
+  // Tk monitor's default-hidden sections). Tab cards are also collapsed when
+  // their tab is active, leaving only the section title and Show button visible.
   document.querySelectorAll('.card').forEach((card, idx) => {{
     const heading = card.querySelector('h1, h2');
-    if (idx === 0 || card.dataset.tab) return;
+    if (idx === 0) return;
     if (!heading || heading.querySelector('.section-toggle')) return;
     card.classList.add('collapsed');
     const btn = document.createElement('button');
