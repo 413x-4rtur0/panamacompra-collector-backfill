@@ -74,18 +74,33 @@ Rules:
 
 ## Run-all pipeline map (`src/pipeline/`)
 
+Worker execution order as driven by `100-run-worker.sh` (see
+`docs/ARCHITECTURE.md` for the full flow with citations):
+
 | Step | Script | Purpose |
 | --- | --- | --- |
 | 0 | `000-update-before-run.sh` | Pre-run git/dependency refresh. |
-| 1 | `010-collect-index.py` | Index scan (Programadas + Abiertas). |
-| 2 | `030-collect-details.py` | Detail download (imported by STEP 4/7 tools; see naming exception above). |
-| 3 | `040-build-detail-views.py` | Rebuild summary/items/calendar views. |
-| 4 | `050-repair-missing-deadlines.py` | Verify/repair failed + missing-deadline records. |
-| 5 | `060-build-calendar.py` | Build timestamped `.ics` packages (imported by STEP 7; naming exception). |
-| 6 | `020-notify-whatsapp.py` | WhatsApp announcements (imported by `src/tools/060-import-selected-calendars.py`; naming exception). |
-| 7 | `070-test-zone.py` | Optional sandbox re-run of the last N records. |
+| 1 | `015-import-index-snapshot.py` | AUTO runs: import the index from the changedetection snapshot (no browser); partial snapshots fall through to the crawler for the unhealthy groups. |
+| 1 | `010-collect-index.py` | Index crawl (Programadas + Abiertas) — manual runs and snapshot fallback. |
+| 2 | `020-notify-whatsapp.py --announce` | WhatsApp index alerts, sent before the long download phase. |
+| 3 | `030-collect-details.py` | Detail download (sends inline detail messages when enabled). |
+| 4 | `040-build-detail-views.py` | Rebuild summary/items/calendar views + per-record `.ics`; then work templates are applied. |
+| 5 | `020-notify-whatsapp.py --announce-details` | WhatsApp detail follow-ups (idempotent catch-up). |
+| 6 | `050-repair-missing-deadlines.py` | Verify (py_compile) + repair failed/missing-deadline records. |
+| 7 | `060-build-calendar.py` | Build timestamped `.ics` packages. |
+| 8 | `070-test-zone.py` | Optional (opt-in) sandbox re-run when the run had no new records. |
 
 Numbered runner/inspector helpers in the same folder (`100-run-worker.sh`, `110a-request-run.sh`,
 `110b-run-now.sh`, `130a-queue-status.sh`, `130b-run-status.sh`, `130c-follow-run.sh`,
 `120a-stop-everything.sh`, `120b-stop-collectors.sh`) orchestrate or inspect the sequence
 above rather than being a step in it.
+
+## Legacy one-time tools
+
+These completed their purpose and are kept only for reference/recovery; do not
+extend them (see `docs/CODEBASE_AUDIT_PLAN.md` §5):
+
+- `src/tools/090a-migrate-previous-records.sh` + `090b-migrate-previous-records.py`
+  — one-time migration of pre-layout record archives.
+- `src/tools/100-migrate-apps-layout.sh` — one-time Apps-layout migration
+  (still reachable via `pcc migrate`).
