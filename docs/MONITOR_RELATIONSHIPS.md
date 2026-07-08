@@ -101,13 +101,20 @@ maintenance cost of the dashboard layer (every KPI change is made twice):
 | `tail` | ✔ | ✔ |
 | `webhook_running` | ✔ | ✔ |
 
-Third copy: the KPI heredoc in `bin/pcc:190-341` re-implements the KPI queries.
-Fourth-ish: `guess_finish_date_from_text` exists in both `src/common.py` and
-`src/tools/090b-migrate-previous-records.py`.
+**Phase 4 status (implemented):** the KPI/data engine now lives in
+`src/monitor/monitor_common.py` — `db_review_stats`, `summarize_items_for_kpi`,
+`load_detail_payload_for_kpi`/`load_detail_items_for_kpi`, `load_record_index`,
+`finish_stamp_from_folder`/`finish_stamp_from_detail_json`,
+`read_last_summary`, `stats_to_csv`, plus a `--json`/`--csv` CLI. Both monitors
+import it, and `pcc kpi` executes it directly (the former `bin/pcc` heredoc is
+gone). Number parity pcc == web == tk was verified against the live DB.
 
-**Planned resolution (Phase 4 of DASHBOARD_KPI_PLAN.md):** extract into a
-shared `src/monitor/monitor_common.py` with a `--json` CLI mode; acceptance is
-number-parity across web, tk, and `pcc kpi`.
+Still duplicated (lower value, deferred): `parse_progress_file`, `is_done`,
+`progress_stale`, `queue_snapshot`/`queue_payload`,
+`status_snapshot`/`status_payload`, `tail`, `webhook_running` — candidates for
+a follow-up extraction. Also `guess_finish_date_from_text` in both
+`src/common.py` and `src/tools/090b-migrate-previous-records.py` (legacy tool,
+leave as-is).
 
 ## Legacy / one-time scripts
 
