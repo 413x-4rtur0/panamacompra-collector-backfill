@@ -29,9 +29,24 @@ sys.path.insert(0, str(_SRC_DIR))
 import common as pc_common
 
 VIEWS = ("day", "week", "month", "year")
+# "fecha" is the raw index-scrape field, stored in the portal's native
+# DD-MM-YYYY format (e.g. "07-07-2026 10:13 AM") -- unlike every other date
+# column here, which is already normalized to YYYY-MM-DD. The "start" field
+# falls back to it for brand-new records whose detail page (which computes
+# start_date_guess) has not been downloaded yet. Without reordering it to
+# YYYY-MM-DD first, its first 10 characters ("07-07-2026") sort/compare
+# nothing like the YYYY-MM-DD range bounds used below, so those records were
+# silently invisible from every day/week/month/year view. The AM/PM time
+# suffix is left as-is (a cosmetic-only quirk for that narrow fallback case;
+# it does not affect which day a record is grouped under).
+_FECHA_TO_ISO = (
+    "CASE WHEN substr(fecha,3,1)='-' AND substr(fecha,6,1)='-' AND length(fecha)>=10 "
+    "THEN substr(fecha,7,4) || '-' || substr(fecha,4,2) || '-' || substr(fecha,1,2) || substr(fecha,11) "
+    "ELSE fecha END"
+)
 FIELDS = {
     "end": ("COALESCE(finish_date_guess, '')", "deadline (end date)"),
-    "start": ("COALESCE(NULLIF(start_date_guess, ''), fecha, '')", "start date"),
+    "start": (f"COALESCE(NULLIF(start_date_guess, ''), {_FECHA_TO_ISO}, '')", "start date"),
     "downloaded": ("COALESCE(detail_saved_at, '')", "local download date"),
 }
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
