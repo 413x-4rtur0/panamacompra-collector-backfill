@@ -47,6 +47,9 @@ _nnr_spec.loader.exec_module(notify_formats)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
+# Written by 100-run-worker.sh on every clean completion: started/finished
+# stamps, per-stage seconds and the index source. Feeds the KPI health line.
+LAST_SUMMARY_FILE = pc_common.LOG_DIR / "run_all_last_summary.env"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
@@ -251,6 +254,24 @@ def parse_progress_file() -> dict[str, str]:
             data[key] = parsed[0] if parsed else ""
         except ValueError:
             data[key] = raw_value.strip().strip("'").strip('"')
+    return data
+
+
+def read_last_summary() -> dict[str, str]:
+    """Parse run_all_last_summary.env (KEY='value' lines written by the worker
+    on clean completion). Unknown/missing file yields an empty dict."""
+    data: dict[str, str] = {}
+    if not LAST_SUMMARY_FILE.exists():
+        return data
+    for line in LAST_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        try:
+            parsed = shlex.split(raw_value, posix=True)
+            data[key.strip()] = parsed[0] if parsed else ""
+        except ValueError:
+            data[key.strip()] = raw_value.strip().strip("'").strip('"')
     return data
 
 
@@ -468,6 +489,7 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
     empty = {
         "total": 0, "saved": 0, "pending": 0, "failed": 0,
         "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
+        "new_today": 0, "closing_soon": 0, "soon_days": 7, "abiertas": 0, "programadas": 0,
         "needs_deadline": 0, "with_detail_json": 0, "item_analysis": {},
         "groups": [], "entities": [], "dependencias": [], "daily_intake": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
@@ -533,12 +555,23 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
         needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
                                 + " OR ".join(deadline_predicates) + ")")
 
+        # "Closing soon" window follows the operator's deadline-soon setting so
+        # the KPI card, the record-list legend and the repair tools agree.
+        first_seen_day = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
+
         stats = {
             "db_exists": True,
             "total": count(),
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "new_today": count(f"{first_seen_day} = date('now')"),
+            "closing_soon": count(
+                "substr(COALESCE(finish_date_guess, ''), 1, 10) >= date('now') "
+                f"AND substr(COALESCE(finish_date_guess, ''), 1, 10) <= date('now', '+{SOON_DAYS} day')"),
+            "soon_days": SOON_DAYS,
+            "abiertas": count("COALESCE(grupo, '') = 'Abiertas'"),
+            "programadas": count("COALESCE(grupo, '') = 'Programadas'"),
             "new_records": count("detail_status = 'pending'"),
             "existing_records": count("detail_status = 'saved'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
@@ -1958,6 +1991,7 @@ def run_tk() -> int:
         "whatsapp": tk.StringVar(value="WhatsApp: —"),
         "items": tk.StringVar(value="Items analysis: —"),
         "trend": tk.StringVar(value="Trend: —"),
+        "lastrun": tk.StringVar(value="Last run: no completed run recorded yet."),
         "decision": tk.StringVar(value="Decision signals loading…"),
     }
     kpi_colors = {"index": ("#172554", "#bfdbfe"), "details": ("#064e3b", "#bbf7d0"), "whatsapp": ("#3b0764", "#e9d5ff")}
@@ -1967,8 +2001,9 @@ def run_tk() -> int:
                  padx=12, pady=10, font=("Sans", 10, "bold")).grid(row=2, column=idx, sticky="nsew", padx=4, pady=(0, 8))
     ttk.Label(kpi_frame, textvariable=kpi_vars["items"], style="Card.TLabel", justify="left", wraplength=900).grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
     ttk.Label(kpi_frame, textvariable=kpi_vars["trend"], style="Card.TLabel", justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 4))
-    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w")
-    ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["lastrun"], style="Card.TLabel", justify="left", wraplength=900).grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Label(kpi_frame, textvariable=kpi_vars["decision"], style="Card.TLabel", justify="left", wraplength=900).grid(row=6, column=0, columnspan=3, sticky="w")
+    ttk.Label(kpi_frame, text=kpi_guide_text, style="Card.TLabel", justify="left", wraplength=900).grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
     add_section_toggle(kpi_frame, button_column=2, start_hidden=False)
 
     # KPI diagrams: horizontal bar charts drawn on plain Tk canvases about the
@@ -2076,7 +2111,8 @@ def run_tk() -> int:
         kpi_vars["index"].set(
             "Index scan KPIs\n"
             f"Found now: {progress.get('RECORDS_FOUND', '-')} · New: {progress.get('RECORDS_NEW', '-')} · Existing: {progress.get('RECORDS_EXISTING', '-')}\n"
-            f"Archive total: {total} · Notify backlog: {s.get('notify_backlog', 0)}"
+            f"Archive total: {total} · New today: {s.get('new_today', 0)} · Notify backlog: {s.get('notify_backlog', 0)}\n"
+            f"Abiertas: {s.get('abiertas', 0)} · Programadas: {s.get('programadas', 0)} · Closing ≤{s.get('soon_days', 7)}d: {s.get('closing_soon', 0)}"
         )
         kpi_vars["details"].set(
             "Detail download KPIs\n"
@@ -2099,6 +2135,22 @@ def run_tk() -> int:
         trend = " · ".join(f"{label}: {count}" for label, count in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
         statuses = " · ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "no status data"
         kpi_vars["trend"].set(f"Trend windows: {trend}\nDetail status mix: {statuses}")
+        last = read_last_summary()
+        if last.get("FINISHED_AT"):
+            stage_parts = " · ".join(
+                f"{label} {last.get(key)}s" for label, key in (
+                    ("update", "UPDATE_SECONDS"), ("index", "INDEX_SECONDS"), ("messaging", "MESSAGING_SECONDS"),
+                    ("details", "DETAIL_SECONDS"), ("views", "VIEW_SECONDS"), ("verify", "VERIFY_SECONDS"),
+                    ("calendar", "CALENDAR_SECONDS"),
+                ) if str(last.get(key) or "").strip() not in {"", "0"}
+            )
+            kpi_vars["lastrun"].set(
+                f"Last run: finished {last.get('FINISHED_AT')} · duration {last.get('TOTAL_TEXT') or last.get('TOTAL_SECONDS', '?') + 's'}"
+                f" · index source: {last.get('INDEX_SOURCE') or 'crawler'}"
+                + (f"\nStages: {stage_parts}" if stage_parts else "")
+            )
+        else:
+            kpi_vars["lastrun"].set("Last run: no completed run recorded yet — stage durations appear after the first clean run.")
         entities = s.get("entities", []) or []
         top_entity = entities[0] if entities else {}
         decision_extra = (

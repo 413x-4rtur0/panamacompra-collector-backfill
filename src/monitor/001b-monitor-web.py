@@ -27,6 +27,9 @@ BASE_DIR = pc_common.APP_ROOT
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
+# Written by 100-run-worker.sh on every clean completion: started/finished
+# stamps, per-stage seconds and the index source. Feeds the Overview tab.
+LAST_SUMMARY_FILE = pc_common.LOG_DIR / "run_all_last_summary.env"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
@@ -231,6 +234,24 @@ def parse_progress_file() -> dict[str, str]:
             data[key] = raw_value.strip().strip("'").strip('"')
     return data
 
+
+
+def read_last_summary() -> dict[str, str]:
+    """Parse run_all_last_summary.env (KEY='value' lines written by the worker
+    on clean completion). Unknown/missing file yields an empty dict."""
+    data: dict[str, str] = {}
+    if not LAST_SUMMARY_FILE.exists():
+        return data
+    for line in LAST_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        try:
+            parsed = shlex.split(raw_value, posix=True)
+            data[key.strip()] = parsed[0] if parsed else ""
+        except ValueError:
+            data[key.strip()] = raw_value.strip().strip("'").strip('"')
+    return data
 
 
 def parse_settings_file() -> dict[str, str]:
@@ -498,6 +519,7 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
         "failed": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0, "needs_deadline": 0,
+        "new_today": 0, "closing_soon": 0, "soon_days": 7, "abiertas": 0, "programadas": 0,
         "with_detail_json": 0, "item_analysis": {}, "groups": [], "entities": [], "dependencias": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [],
         "daily_intake": [], "filters": {"days": days, "grupo": grupo, "entidad": entidad},
@@ -561,12 +583,27 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
         needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
                                 + " OR ".join(deadline_predicates) + ")")
 
+        # "Closing soon" window follows the operator's deadline-soon setting so
+        # the KPI card, the record-list legend and the repair tools agree.
+        try:
+            soon_days = max(1, int(load_monitor_settings().get("PC_MONITOR_DEADLINE_SOON_DAYS", "7")))
+        except (TypeError, ValueError):
+            soon_days = 7
+        first_seen_day = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
+
         return {
             "db_exists": True,
             "total": count(),
             "saved": count("detail_status = 'saved'"),
             "pending": count("detail_status = 'pending'"),
             "failed": count("detail_status = 'failed'"),
+            "new_today": count(f"{first_seen_day} = date('now')"),
+            "closing_soon": count(
+                "substr(COALESCE(finish_date_guess, ''), 1, 10) >= date('now') "
+                f"AND substr(COALESCE(finish_date_guess, ''), 1, 10) <= date('now', '+{soon_days} day')"),
+            "soon_days": soon_days,
+            "abiertas": count("COALESCE(grupo, '') = 'Abiertas'"),
+            "programadas": count("COALESCE(grupo, '') = 'Programadas'"),
             "notified": count("notified_at IS NOT NULL") if has_notified else 0,
             "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
             "detail_notify_backlog": count(
@@ -833,6 +870,7 @@ def status_payload() -> dict[str, object]:
         "waha_chat_id_system": read_chat_file(WAHA_CHAT_ID_SYSTEM_PATH),
         "waha_chat_id_summary": read_chat_file(WAHA_CHAT_ID_SUMMARY_PATH),
         "settings": load_monitor_settings(),
+        "last_summary": read_last_summary(),
     }
 
 ACTIONS_JSON = json.dumps([
@@ -961,7 +999,10 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="settings" onclick="showTab('settings')">Collector Settings</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" onclick="showTab('records')">Records & Database</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
+<div class="card" data-tab="overview"><h2>System health <span class="kpi-live" id="overview-live-stamp">LIVE</span></h2><p class="small">Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.</p><div id="overview-kpis" class="kpi-grid">Loading overview…</div></div>
+<div class="card" data-tab="overview"><h2>Last run stages</h2><p class="small" id="overview-last-run">No completed run recorded yet.</p><div id="overview-stages" class="chart"></div></div>
+<div class="card" data-tab="overview"><h2>Services</h2><div id="overview-services" class="small">Loading services…</div><p class="small">Webhook access details and the changedetection script live in the Integrations tab.</p></div>
 <div class="card" data-tab="operations"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
 <div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="99" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records.</p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
 <div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label></p></details></div>
@@ -1380,6 +1421,55 @@ function showTab(tab) {{
   document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
   document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
   if (tab === 'decision') refreshDecisionDashboard();
+  if (tab === 'overview') refreshOverview();
+}}
+
+async function refreshOverview() {{
+  try {{
+    const [st, db] = await Promise.all([
+      (await fetch('/api/status', {{cache: 'no-store'}})).json(),
+      (await fetch('/api/db-stats', {{cache: 'no-store'}})).json(),
+    ]);
+    const stamp = document.getElementById('overview-live-stamp');
+    if (stamp) stamp.textContent = 'LIVE · ' + new Date().toLocaleTimeString();
+    const last = st.last_summary || {{}};
+    const progress = st.progress || {{}};
+    const running = !st.done;
+    const k = document.getElementById('overview-kpis');
+    if (k) k.innerHTML = [
+      ['Run state', running ? (progress.PHASE || 'RUNNING') : (progress.STATUS || 'IDLE')],
+      ['Last completed', last.FINISHED_AT || '—'],
+      ['Duration', last.TOTAL_TEXT || '—'],
+      ['Index source', last.INDEX_SOURCE || '—'],
+      ['New today', db.new_today || 0],
+      ['Closing ≤' + (db.soon_days || 7) + 'd', db.closing_soon || 0],
+      ['Abiertas', db.abiertas || 0],
+      ['Alerts sent', db.notified || 0],
+    ].map(x => `<div class="kpi"><span>${{esc(String(x[0]))}}</span><b>${{esc(String(x[1]))}}</b></div>`).join('');
+    const lastLine = document.getElementById('overview-last-run');
+    if (lastLine) lastLine.textContent = last.FINISHED_AT
+      ? `Started ${{last.STARTED_AT || '?'}} · finished ${{last.FINISHED_AT}} · total ${{last.TOTAL_TEXT || last.TOTAL_SECONDS + 's'}} · index source: ${{last.INDEX_SOURCE || 'crawler'}}`
+      : 'No completed run recorded yet — stage durations appear after the first clean run.';
+    const stageRows = [
+      ['Update', last.UPDATE_SECONDS], ['Index', last.INDEX_SECONDS], ['Messaging', last.MESSAGING_SECONDS],
+      ['Details', last.DETAIL_SECONDS], ['Views', last.VIEW_SECONDS], ['Verify', last.VERIFY_SECONDS], ['Calendar', last.CALENDAR_SECONDS],
+    ].map(r => ({{label: r[0], count: Number(r[1] || 0)}})).filter(r => r.count > 0);
+    bars('overview-stages', stageRows);
+    const p = st.processes || {{}};
+    const q = st.queue || {{}};
+    const settings = st.settings || {{}};
+    const chip = (ok, onText, offText) => `<span style="color:${{ok ? '#86efac' : '#fca5a5'}};font-weight:700">${{ok ? onText : offText}}</span>`;
+    const services = document.getElementById('overview-services');
+    if (services) services.innerHTML =
+      `Worker: ${{chip(p.worker, 'RUNNING', 'idle')}} · ` +
+      `Webhook listener: ${{chip(p.webhook, 'RUNNING', 'OFF')}} · ` +
+      `WhatsApp (WAHA): ${{chip(String(settings.PC_WAHA_ENABLED || '0') === '1', 'enabled', 'disabled')}} · ` +
+      `Queue: ${{esc(q.collector_state || 'none')}}${{q.collector_state === 'PENDING' ? ' since ' + esc(q.collector_since || '?') : ''}} · ` +
+      `Details pending: <b>${{db.pending || 0}}</b> · failed: <b>${{db.failed || 0}}</b>`;
+  }} catch (err) {{
+    const k = document.getElementById('overview-kpis');
+    if (k) k.textContent = 'Overview unavailable: ' + err;
+  }}
 }}
 function bars(nodeId, rows) {{
   const node = document.getElementById(nodeId);
@@ -1464,7 +1554,7 @@ async function refreshDecisionDashboard() {{
   const k = document.getElementById('decision-kpis');
   const closure = Number(s.total || 0) ? Math.round(Number(s.saved || 0) / Number(s.total || 1) * 100) : 0;
   const items = s.item_analysis || {{}};
-  k.innerHTML = [ ['Index archive total', s.total || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
+  k.innerHTML = [ ['Index archive total', s.total || 0], ['New today', s.new_today || 0], ['Closing ≤' + (s.soon_days || 7) + 'd', s.closing_soon || 0], ['Abiertas', s.abiertas || 0], ['Programadas', s.programadas || 0], ['Alerts sent', s.notified || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
   bars('decision-status', (s.status_breakdown || []).map(r => ({{label: r.status, count: r.count}})));
   bars('decision-groups', (s.groups || []).slice(0, 10).map(r => ({{label: r.grupo, count: r.count}})));
   bars('decision-daily', (s.daily_intake || []).slice(0, 14));
@@ -1593,7 +1683,7 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
   const el = document.getElementById(id);
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
 }});
-showTab('operations');
+showTab('overview');
 initCollapsibleSections();
 refreshRecordIndex();
 loadTemplates();
