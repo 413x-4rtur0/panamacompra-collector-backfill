@@ -32,3 +32,16 @@ venv/
 # in the background, so tracking it produces a permanently dirty tree and
 # blocks rebases. Local data stays on disk; it is just not versioned.
 /.codebase-memory/
+
+# Local MCP/codebase-memory index
+.codebase-memory/
+
+# Secrets and local environment
+.env.*
+!.env.example
+
+# Heavy/generated local files
+node_modules/
+*.zip
+*.tar
+*.tar.gz
