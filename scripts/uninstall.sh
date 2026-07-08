@@ -108,7 +108,7 @@ stop_host_processes() {
     '[u]pdate-loader.py'
     '[0]00-update-before-run.sh'
     '[p]ython3? -u .*src/10_webhook/010-webhook-listener.py'
-    '[s]rc/webhook/010-webhook-listener.py'
+    '[s]rc/10_webhook/010-webhook-listener.py'
   )
   for pattern in "${patterns[@]}"; do
     run pkill -TERM -f "$pattern" 2>/dev/null || true

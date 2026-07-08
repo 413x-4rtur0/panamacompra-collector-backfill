@@ -47,7 +47,7 @@ queue_update_monitor_request() {
 }
 
 webhook_listener_running() {
-  pgrep -f "[s]rc/webhook/010-webhook-listener.py" >/dev/null 2>&1
+  pgrep -f "[s]rc/10_webhook/010-webhook-listener.py" >/dev/null 2>&1
 }
 
 restart_webhook_listener() {
@@ -250,7 +250,7 @@ trap restore_webhook_on_exit EXIT
 # converted into a queued Update + Monitor request instead. We only pause the
 # webhook listener during the actual update window so a fresh notification is
 # enqueued for after the update instead of racing code/dependency changes.
-pkill -TERM -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
+pkill -TERM -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
 
 echo ""
 echo "3) Preserve any local changes to tracked files so the update always proceeds"

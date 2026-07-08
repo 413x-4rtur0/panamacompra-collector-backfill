@@ -378,7 +378,7 @@ def running(pattern: str) -> bool:
 
 
 def webhook_running() -> bool:
-    if running("[s]rc/webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/10_webhook/010-webhook-listener.py"):
+    if running("[s]rc/10_webhook/010-webhook-listener.py") or running("[p]ython3? -u .*src/10_webhook/010-webhook-listener.py"):
         return True
     try:
         result = subprocess.run(["docker", "compose", "ps", "--status", "running", "webhook"], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3)

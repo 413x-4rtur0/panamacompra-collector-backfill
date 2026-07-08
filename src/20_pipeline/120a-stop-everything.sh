@@ -61,7 +61,7 @@ pkill -TERM -f "[1]30c-follow-run.sh" 2>/dev/null || true
 # ============================================================================
 echo "6) Stopping webhook listener..."
 pkill -TERM -f "[p]ython3? -u .*src/10_webhook/010-webhook-listener.py" 2>/dev/null || true
-pkill -TERM -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
+pkill -TERM -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
 
 # Give processes a short window to terminate gracefully. Keep this snappy so the
 # STOP action (and update-local-copy.sh, which relies on a fast stop) does not
@@ -78,7 +78,7 @@ pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate-local-copy.sh" 2>/dev/null || true
 pkill -9 -f "[0]01a-monitor-tk.py" 2>/dev/null || true
-pkill -9 -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
+pkill -9 -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
 
 sleep 1
 
