@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -643,16 +644,29 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .kpi-filter-bar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 12px; padding: 8px 10px; border: 1px solid #164e63; border-radius: 10px; background: #0b1220; }}
 .item-line {{ border-left: 3px solid #38bdf8; padding: 3px 8px; margin: 4px 0; font-size: .85rem; color: #cbd5e1; }}
 .item-line b {{ color: #67e8f9; }}
-/* Graphical month calendar. */
-.calgrid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 8px 0; }}
-.calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .8rem; padding: 2px 0; }}
-.calgrid .day {{ min-height: 54px; border: 1px solid #334155; border-radius: 8px; padding: 4px 6px; cursor: pointer; background: #0b1220; transition: border-color .15s ease, box-shadow .15s ease; }}
-.calgrid .day:hover {{ border-color: #38bdf8; box-shadow: 0 0 10px #0ea5e955; }}
-.calgrid .day.blank {{ visibility: hidden; }}
-.calgrid .day.today {{ border-color: #facc15; box-shadow: 0 0 8px #facc1555; }}
-.calgrid .day .num {{ color: #94a3b8; font-size: .78rem; }}
-.calgrid .day .cnt {{ display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: #14532d; color: #bbf7d0; font-weight: 700; }}
-.calgrid .day.hot .cnt {{ background: #713f12; color: #fde68a; }}
+/* Ubuntu-style opportunity calendar with boxed events inside each date cell. */
+.calendar-board {{ background: #020617; border: 1px solid #334155; border-radius: 10px; overflow: hidden; }}
+.calendar-title {{ display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }}
+.calendar-title h3 {{ margin: 0; color: #bfdbfe; }}
+.calgrid {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
+.calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .78rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }}
+.calcell {{ min-height: 126px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 6px; cursor: pointer; background: #020617; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; overflow: hidden; }}
+.calcell:hover {{ background: #0b1220; box-shadow: inset 0 0 0 1px #38bdf8; }}
+.calcell.blank {{ background: #02061799; cursor: default; }}
+.calcell.today {{ box-shadow: inset 0 0 0 2px #facc15; }}
+.calcell .num {{ color: #cbd5e1; font-size: .82rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }}
+.calcell .count {{ color: #94a3b8; font-size: .72rem; font-weight: 400; }}
+.calevent {{ display: block; margin: 3px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .76rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.calevent.soon {{ border-left-color: #facc15; background: #422006; color: #fde68a; }}
+.calevent.expired {{ border-left-color: #f87171; background: #450a0a; color: #fecaca; }}
+.calevent.more {{ border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }}
+.day-agenda .calcell {{ min-height: 260px; }}
+.week-agenda .calcell {{ min-height: 220px; }}
+.year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
+.month-box {{ border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }}
+.month-box:hover {{ border-color: #38bdf8; }}
+.month-box b {{ color: #bfdbfe; }}
+.month-box .bar-track {{ margin-top: 8px; }}
 .bar-row {{ display: grid; grid-template-columns: minmax(90px, 1fr) 4fr 48px; gap: 8px; align-items: center; margin: 7px 0; font-size: .9rem; }}
 .bar-track {{ height: 12px; background: #1e293b; border-radius: 999px; overflow: hidden; }}
 .bar-fill {{ height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }}
@@ -1085,32 +1099,60 @@ function applyRecordFilter() {{
   renderRecordDetail();
 }}
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function calendarEventClass(ev) {{
+  const st = String(ev.status || '').toLowerCase();
+  if (st.includes('venc') || st.includes('expired')) return 'expired';
+  const when = parseIsoLike(ev.date || '');
+  if (when) {{
+    const now = new Date();
+    if (when < now) return 'expired';
+    if (when <= new Date(now.getTime() + RECORD_SOON_DAYS * 86400000)) return 'soon';
+  }}
+  return '';
+}}
+function renderCalendarEvent(ev) {{
+  const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
+  const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
+  return `<span class="calevent ${{calendarEventClass(ev)}}" title="${{esc(title)}}">${{esc(clock + title)}}</span>`;
+}}
+function renderCalendarDayCell(day, events, blank) {{
+  if (blank) return '<div class="calcell blank"></div>';
+  const shown = (events || []).slice(0, 4).map(renderCalendarEvent).join('');
+  const more = (events || []).length > 4 ? `<span class="calevent more">+${{events.length - 4}} more</span>` : '';
+  const classes = ['calcell'];
+  if (day.iso === day.today) classes.push('today');
+  return `<div class="${{classes.join(' ')}}" onclick="document.getElementById('cal-date').value='${{day.iso}}'; document.getElementById('cal-view').value='day'; loadCalendar()"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
+}}
 async function renderCalendarVisual() {{
-  // Graphical month calendar: a real 7-column grid with per-day opportunity
-  // counts (driven by the selected date field), today highlighted, and every
-  // day clickable to jump the text calendar to that date.
   const node = document.getElementById('calendar-visual');
   if (!node) return;
   const field = (document.getElementById('cal-field') || {{}}).value || 'end';
+  const view = (document.getElementById('cal-view') || {{}}).value || 'month';
   const anchor = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
-  let params = 'field=' + encodeURIComponent(field);
+  let params = 'field=' + encodeURIComponent(field) + '&view=' + encodeURIComponent(view);
   if (anchor) params += '&date=' + encodeURIComponent(anchor);
   try {{
     const g = await (await fetch('/api/calendar-grid?' + params, {{cache: 'no-store'}})).json();
-    const counts = g.counts || {{}};
-    const monthLabel = (g.month_start || '').slice(0, 7);
-    const maxCount = Math.max(1, ...Object.values(counts).map(Number));
-    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
-    for (let i = 0; i < (g.first_weekday || 0); i++) cells += '<div class="day blank"></div>';
-    for (let dayNumber = 1; dayNumber <= (g.days_in_month || 0); dayNumber++) {{
-      const iso = monthLabel + '-' + String(dayNumber).padStart(2, '0');
-      const count = Number(counts[iso] || 0);
-      const classes = ['day'];
-      if (iso === g.today) classes.push('today');
-      if (count && count >= maxCount * 0.7) classes.push('hot');
-      cells += `<div class="${{classes.join(' ')}}" title="${{iso}}: ${{count}} opportunit${{count === 1 ? 'y' : 'ies'}} by ${{esc(field)}} date" onclick="document.getElementById('cal-date').value='${{iso}}'; document.getElementById('cal-view').value='day'; loadCalendar()"><span class="num">${{dayNumber}}</span><br>${{count ? `<span class="cnt">${{count}}</span>` : ''}}</div>`;
+    const grouped = g.events || {{}};
+    const title = `${{g.label || view}} · ${{g.start}} to ${{g.end}} · ${{g.total || 0}} opportunities`;
+    if (view === 'year') {{
+      const peak = Math.max(1, ...Object.values(g.month_counts || {{}}).map(Number));
+      const boxes = (g.months || []).map(m => {{
+        const count = Number((g.month_counts || {{}})[m.value] || 0);
+        const width = Math.round(100 * count / peak);
+        return `<div class="month-box" onclick="document.getElementById('cal-date').value='${{m.value}}-01'; document.getElementById('cal-view').value='month'; loadCalendar()"><b>${{esc(m.label)}}</b><div class="small">${{count}} opportunities</div><div class="bar-track"><div class="bar-fill" style="width:${{width}}%"></div></div></div>`;
+      }}).join('');
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a month to open it.</span></div><div class="year-grid">${{boxes}}</div></div>`;
+      return;
     }}
-    node.innerHTML = `<h3>Month ${{esc(monthLabel)}} · by ${{esc(field)}} date</h3><div class="calgrid">${{cells}}</div><p class="small">Click a day to open its detail in the text calendar below. Amber ring = today; amber badge = busiest days.</p>`;
+    const days = g.days || [];
+    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
+    if (view === 'month') {{
+      for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
+    }}
+    cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
+    const modeClass = view === 'day' ? 'day-agenda' : view === 'week' ? 'week-agenda' : '';
+    node.innerHTML = `<div class="calendar-board ${{modeClass}}"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
@@ -1772,8 +1814,13 @@ class MonitorHandler(BaseHTTPRequestHandler):
             self.send_text(200, script_text, "text/javascript; charset=utf-8")
             return
         if path == "/api/calendar-grid":
-            # Per-day event counts for one month, for the graphical calendar.
+            # Lightweight event data for the graphical day/week/month/year
+            # calendar. The text renderer remains the source for CLI parity;
+            # this endpoint is only for browser layout.
             params = parse_qs(urlparse(self.path).query)
+            view = (params.get("view", ["month"])[0] or "month").lower()
+            if view not in opportunity_calendar.VIEWS:
+                view = "month"
             field = (params.get("field", ["end"])[0] or "end").lower()
             if field not in opportunity_calendar.FIELDS:
                 field = "end"
@@ -1781,27 +1828,58 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 anchor = opportunity_calendar.parse_anchor(params.get("date", [""])[0])
             except SystemExit:
                 anchor = opportunity_calendar.parse_anchor("")
-            start, end = opportunity_calendar.view_range("month", anchor)
-            day_counts: dict[str, int] = {}
+            start, end = opportunity_calendar.view_range(view, anchor)
+            grouped_events: dict[str, list[dict[str, str]]] = {}
+            month_counts: dict[str, int] = {}
             try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
                     events = opportunity_calendar.fetch_events(conn, field, start, end)
-                    day_counts = {day: len(rows) for day, rows in events.items()}
+                    for day_key, rows in events.items():
+                        grouped_events[day_key] = []
+                        month_counts[day_key[:7]] = month_counts.get(day_key[:7], 0) + len(rows)
+                        for row in rows:
+                            value = opportunity_calendar.normalize_value(row["event_date"])
+                            desc = (row["descripcion"] or row["short_description"] or "").strip()
+                            grouped_events[day_key].append({
+                                "numero": str(row["numero"] or ""),
+                                "description": desc[:96],
+                                "status": str(row["estado"] or row["grupo"] or ""),
+                                "date": value,
+                                "clock": value[11:16] if len(value) >= 16 else "--:--",
+                            })
                 finally:
                     conn.close()
             except sqlite3.Error:
-                day_counts = {}
+                grouped_events = {}
+                month_counts = {}
+            days = [
+                {
+                    "iso": (start + timedelta(days=offset)).isoformat(),
+                    "label": str((start + timedelta(days=offset)).day),
+                    "today": time.strftime("%Y-%m-%d"),
+                }
+                for offset in range((end - start).days + 1)
+            ]
+            months = [
+                {"value": f"{anchor.year}-{month:02d}", "label": date(anchor.year, month, 1).strftime("%b %Y")}
+                for month in range(1, 13)
+            ] if view == "year" else []
             payload = {
+                "view": view,
                 "field": field,
                 "anchor": anchor.isoformat(),
-                "month_start": start.isoformat(),
-                "month_end": end.isoformat(),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "label": opportunity_calendar.FIELDS[field][1],
                 "first_weekday": start.weekday(),
-                "days_in_month": end.day,
                 "today": time.strftime("%Y-%m-%d"),
-                "counts": day_counts,
+                "days": days,
+                "events": grouped_events,
+                "total": sum(len(rows) for rows in grouped_events.values()),
+                "months": months,
+                "month_counts": month_counts,
             }
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
