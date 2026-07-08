@@ -28,10 +28,25 @@ def index_page_cap():
 MAX_PAGES_PER_GROUP = index_page_cap()
 INDEX_HARD_SAFETY_CAP = env_int("PC_INDEX_HARD_SAFETY_CAP", "500", minimum=1)
 
-GROUPS = [
+ALL_GROUPS = [
     {"name": "Programadas", "radio_id": "btnradio2"},
     {"name": "Abiertas", "radio_id": "btnradio1"},
 ]
+
+
+def selected_groups():
+    """Portal groups to crawl. PC_INDEX_GROUPS (comma-separated, e.g. "Abiertas")
+    limits the crawl to specific groups — used by the worker when a changedetection
+    snapshot already covered the others. Empty/unmatched values crawl everything,
+    so a typo can never silently skip a group."""
+    wanted = {g.strip().lower() for g in os.environ.get("PC_INDEX_GROUPS", "").split(",") if g.strip()}
+    if not wanted:
+        return ALL_GROUPS
+    picked = [g for g in ALL_GROUPS if g["name"].lower() in wanted]
+    return picked or ALL_GROUPS
+
+
+GROUPS = selected_groups()
 
 def close_popup(page):
     page.evaluate("""

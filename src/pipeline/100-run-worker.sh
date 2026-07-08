@@ -264,18 +264,62 @@ while true; do
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  write_progress "INDEX" "RUNNING" "10" "Step 1/7: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
 
-  {
-    echo ""
-    echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
-    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
-  } >> "$CURRENT_LOG"
-
+  # STEP 1: index. AUTO (webhook) runs try the changedetection snapshot first —
+  # changedetection already crawled the table with the browser-steps script, so a
+  # fresh healthy snapshot replaces the duplicate Firefox index crawl entirely.
+  # A partial snapshot (e.g. Abiertas failed inside changedetection) imports what
+  # it has and the crawler covers only the unhealthy groups. Manual/restart/test
+  # runs, and any snapshot failure, use the full crawler as before. Disable with
+  # PC_INDEX_FROM_SNAPSHOT=0.
   INDEX_START_EPOCH="$(date '+%s')"
-  PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
-  INDEX_EXIT=$?
+  INDEX_SOURCE="crawler"
+  INDEX_CRAWL_GROUPS=""
+  SNAPSHOT_RESULT_FILE="$PC_QUEUE_DIR/index_snapshot_result.env"
+  if [ "${PC_RUN_MODE:-RESTART}" = "AUTO" ] && [ "${PC_INDEX_FROM_SNAPSHOT:-1}" != "0" ] && [ -x "$PIPELINE_DIR/015-import-index-snapshot.py" ]; then
+    write_progress "INDEX" "RUNNING" "10" "Step 1/7: importing index from the changedetection snapshot (no browser)..." "$STARTED"
+    {
+      echo ""
+      echo "-------------------- STEP 1: INDEX (SNAPSHOT IMPORT) ------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Command: timeout 10m ${PYTHON_BIN} -u $PIPELINE_DIR/015-import-index-snapshot.py"
+    } >> "$CURRENT_LOG"
+    rm -f "$SNAPSHOT_RESULT_FILE"
+    PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS="${PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS:-3600}" \
+      timeout 10m "$PYTHON_BIN" -u "$PIPELINE_DIR/015-import-index-snapshot.py" >> "$CURRENT_LOG" 2>&1
+    SNAPSHOT_EXIT=$?
+    case "$SNAPSHOT_EXIT" in
+      0) INDEX_SOURCE="snapshot" ;;
+      3)
+        INDEX_SOURCE="snapshot+crawler"
+        INDEX_CRAWL_GROUPS="$(sed -n "s/^SNAPSHOT_UNHEALTHY_GROUPS='\(.*\)'\$/\1/p" "$SNAPSHOT_RESULT_FILE" 2>/dev/null | head -n1)"
+        ;;
+      *) INDEX_SOURCE="crawler" ;;
+    esac
+    {
+      echo "Snapshot import exit code: $SNAPSHOT_EXIT (source=$INDEX_SOURCE${INDEX_CRAWL_GROUPS:+; crawler covers: $INDEX_CRAWL_GROUPS})"
+    } >> "$CURRENT_LOG"
+    log "ITERATION $ITERATION snapshot import exit=$SNAPSHOT_EXIT source=$INDEX_SOURCE crawl_groups=${INDEX_CRAWL_GROUPS:-none}"
+  fi
+
+  INDEX_EXIT=0
+  if [ "$INDEX_SOURCE" != "snapshot" ]; then
+    if [ -n "$INDEX_CRAWL_GROUPS" ]; then
+      write_progress "INDEX" "RUNNING" "12" "Step 1/7: snapshot imported; crawling only $INDEX_CRAWL_GROUPS, index_page_cap=$INDEX_LIMIT..." "$STARTED"
+    else
+      write_progress "INDEX" "RUNNING" "10" "Step 1/7: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
+    fi
+
+    {
+      echo ""
+      echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT${INDEX_CRAWL_GROUPS:+ PC_INDEX_GROUPS=$INDEX_CRAWL_GROUPS} timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
+    } >> "$CURRENT_LOG"
+
+    PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" PC_INDEX_GROUPS="$INDEX_CRAWL_GROUPS" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
+    INDEX_EXIT=$?
+  fi
   INDEX_SECONDS=$(( $(date '+%s') - INDEX_START_EPOCH ))
 
   {

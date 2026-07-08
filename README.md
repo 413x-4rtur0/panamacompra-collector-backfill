@@ -160,7 +160,15 @@ Example: changedetection sees a new PanamaCompra row OC-2026-000123
 [7 Summary] worker sends one final run summary after all steps finish
 ```
 
-Key point: the webhook only starts/queues the run. Two notifier phases: the index
+Key point: the webhook only starts/queues the run — but AUTO runs no longer
+re-crawl what changedetection already saw: the browser-steps script's rendered
+report (stored as a `.txt.br` snapshot in changedetection's datastore) carries
+every index field including the detail links, so STEP 1 imports it directly
+(`src/pipeline/015-import-index-snapshot.py`) and only opens Firefox for groups
+the snapshot failed on. Manual/restart runs, and any snapshot problem, use the
+full crawler (`PC_INDEX_FROM_SNAPSHOT=0` forces it always).
+
+Two notifier phases: the index
 alert is sent right after the index step — before the long download phase — so
 subscribers hear about a new opportunity immediately, and once its detail page is
 downloaded a follow-up message delivers the full record (items, location, dates)
@@ -477,7 +485,8 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | Script | Role |
 |--------|------|
 | `src/common.py` | Shared module: paths, DB schema, JSON helpers, URL/date detection. **Not run directly.** |
-| `src/pipeline/010-collect-index.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. |
+| `src/pipeline/010-collect-index.py` | Index scan. Crawls Programadas + Abiertas, writes index JSON and DB records. `PC_INDEX_GROUPS` limits it to specific groups (used by the snapshot hybrid flow). |
+| `src/pipeline/015-import-index-snapshot.py` | Snapshot index import. Reads the newest changedetection.io datastore snapshot (the report produced by `config/changedetection-browser-steps.js`, stored as `.txt.br` under `var/integrations/changedetection/<watch-uuid>/`), picks the latest via each watch's `history.txt`, and feeds every record through the same `insert_or_update_index` path as the crawler — same NUMERO dedup, same Programada→Abierta transition flag — without opening a browser. Reports per-group health so the worker crawls only groups the snapshot failed on. |
 | `src/pipeline/030-collect-details.py` | Detail download. Saves HTML/text/metadata/tables for pending records. |
 | `src/pipeline/110a-request-run.sh` | **Main entry point.** Requests a full run and starts the worker if idle. |
 | `src/pipeline/100-run-worker.sh` | Locked sequential worker: pre-run update, **index → WhatsApp index alerts → details/downloads → storing/per-record calendars/detail views → WhatsApp item-detail follow-ups → verification → calendar packages**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
@@ -562,6 +571,11 @@ Behavior is controlled with environment variables (all optional):
 | `PC_CALENDAR_DIR` | `data/calendar/` | calendar paths | Timestamped calendar package output root. Set from monitor Settings when calendar packages should be stored elsewhere. |
 | `PC_RECORDS_TEST_DIR` | `records_test/` | test paths | Isolated test-zone sandbox root. Set from monitor Settings when test output should live elsewhere. |
 | `PC_DATA_DIR` | `data/` | data paths | Optional root for logs/config/database/CSV defaults. Path-specific variables above override their individual targets. |
+| `PC_INDEX_FROM_SNAPSHOT` | `1` | run-all worker | AUTO (webhook) runs import the index from the latest changedetection snapshot first — changedetection already crawled the table, so a fresh healthy snapshot **replaces the duplicate Firefox index crawl**. A partial snapshot imports what it has and the crawler covers only the failed groups; any snapshot problem falls back to the full crawler. Manual/restart/test runs always use the crawler. Set `0` to always crawl. |
+| `PC_CHANGEDETECTION_DATASTORE` | `$PC_INTEGRATIONS_DIR/changedetection` | snapshot import | Root of changedetection's datastore (the Docker volume with one `<watch-uuid>/` folder per watch). Override when changedetection stores data elsewhere. |
+| `PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS` | `3600` (worker), `0` standalone | snapshot import | Refuse snapshots older than this and fall back to the crawler, so a stalled changedetection cannot feed stale data to AUTO runs. `0` = accept any age. |
+| `PC_INDEX_SNAPSHOT_FILE` | unset | snapshot import | Explicit snapshot file (`.txt` or `.txt.br`) to import instead of discovering the newest one in the datastore — for manual imports and tests. |
+| `PC_INDEX_GROUPS` | unset | index crawler | Comma-separated portal groups to crawl (e.g. `Abiertas`). Empty or unmatched crawls everything, so a typo can never silently skip a group. Set by the worker for the snapshot hybrid flow. |
 | automatic changedetection index cap | `0` | `src/webhook/060-run-collector.sh` | AUTO runs do not use the manual/test page cap; they crawl all available index pages until no Next page. |
 | automatic changedetection detail cap | `0` | `src/webhook/060-run-collector.sh` / detail downloader | AUTO runs do not use the manual/test detail cap; `0` means download every pending detail row. |
 | `PC_TEST_ZONE_AUTORUN` | `0` | run-all worker | When `1`, the worker runs the idle testing zone (STEP 7) automatically when a run finds no new records. Default `0` keeps the autostart from launching it; the test zone stays available as a manual monitor action. |

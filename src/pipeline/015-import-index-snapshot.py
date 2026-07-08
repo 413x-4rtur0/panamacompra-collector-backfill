@@ -28,6 +28,10 @@ Exit codes let the worker branch:
   0  imported, and every expected group was healthy in the snapshot
   3  imported, but at least one group was unhealthy/partial -> crawl the rest
   4  no usable snapshot found (or too old) -> fall back to the browser crawler
+
+A machine-readable result is also written to data/queue/index_snapshot_result.env
+(SNAPSHOT_STATUS, SNAPSHOT_UNHEALTHY_GROUPS, counters) so the run-all worker can
+decide which groups still need the browser crawler without parsing stdout.
 """
 import gzip
 import os
@@ -322,6 +326,33 @@ def _max_age_seconds():
     return env_int("PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS", "0", minimum=0)
 
 
+RESULT_ENV_PATH = QUEUE_DIR / "index_snapshot_result.env"
+
+
+def write_result_env(status, groups=None, stats=None, snapshot_path=None, reason=""):
+    """Publish the import outcome for the run-all worker.
+
+    ``SNAPSHOT_UNHEALTHY_GROUPS`` names the groups the browser crawler must still
+    cover (comma-separated). Written atomically on every exit path so a stale
+    result from a previous run can never steer the current one."""
+    ensure_dirs()
+    unhealthy = ",".join(g for g, info in (groups or {}).items() if not info["healthy"])
+    stats = stats or {}
+    fields = {
+        "SNAPSHOT_STATUS": status,
+        "SNAPSHOT_UNHEALTHY_GROUPS": unhealthy,
+        "SNAPSHOT_PATH": str(snapshot_path or ""),
+        "SNAPSHOT_REASON": reason,
+        "SNAPSHOT_NEW": stats.get("new", 0),
+        "SNAPSHOT_EXISTING": stats.get("existing", 0),
+        "SNAPSHOT_UNIQUE": stats.get("unique", 0),
+        "SNAPSHOT_WRITTEN_AT": now_iso(),
+    }
+    tmp = RESULT_ENV_PATH.with_suffix(RESULT_ENV_PATH.suffix + ".tmp")
+    tmp.write_text("".join(f"{key}={shell_quote(value)}\n" for key, value in fields.items()), encoding="utf-8")
+    tmp.replace(RESULT_ENV_PATH)
+
+
 def resolve_snapshot():
     """Return (path, text, reason). Explicit PC_INDEX_SNAPSHOT_FILE wins; else the
     newest marked snapshot in the datastore."""
@@ -345,6 +376,7 @@ def main(argv=None):
     if not text:
         msg = f"No usable index snapshot: {reason}"
         print(msg)
+        write_result_env("unavailable", reason=reason)
         write_run_progress("INDEX", "DONE", 5, f"Snapshot import skipped: {reason}",
                            step_current=1, step_total=7, extra="snapshot=unavailable")
         return 4
@@ -354,11 +386,13 @@ def main(argv=None):
         age = time.time() - Path(path).stat().st_mtime
         if age > max_age:
             print(f"Snapshot {path} is {int(age)}s old (> {max_age}s); falling back to crawler.")
+            write_result_env("unavailable", snapshot_path=path, reason=f"stale: {int(age)}s > {max_age}s")
             return 4
 
     parsed = parse_snapshot(text)
     if not parsed["marker_ok"]:
         print(f"Snapshot {path} is missing the {SNAPSHOT_MARKER} marker; not importing.")
+        write_result_env("unavailable", snapshot_path=path, reason="missing PANAMACOMPRA_MONITOR marker")
         return 4
 
     groups = parsed["groups"]
@@ -374,6 +408,7 @@ def main(argv=None):
 
     conn = init_db()
     stats = import_records(conn, parsed["records"])
+    write_result_env("partial" if unhealthy else "imported", groups=groups, stats=stats, snapshot_path=path)
     db_total = conn.execute("SELECT COUNT(*) AS c FROM opportunities").fetchone()["c"]
     pending = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]
 
