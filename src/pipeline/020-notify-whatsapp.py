@@ -20,6 +20,20 @@ records that still have no ``notified_at`` timestamp; ``--sync-snapshots
 (PC_NOTIFY_DETAILS=0) so the downloaded items do not fire a duplicate "items
 updated" message on the next run.
 
+Readability controls (all also readable from monitor_settings.env):
+
+* ``PC_WAHA_SEND_DELAY_SECONDS`` (default 3) paces consecutive sends so a batch
+  arrives as separate readable messages instead of one burst; 0 disables.
+* ``PC_NOTIFY_INDEX_DIGEST_THRESHOLD`` (default 10) collapses the index alerts
+  into compact digest message(s) when a run finds more new records than the
+  threshold; each record still gets its own detail follow-up. 0 disables.
+* ``PC_NOTIFY_IDLE_EVERY_HOURS`` (default 6) throttles the idle status message
+  so frequent webhook runs do not repeat "Sin nuevas entradas"; 0 = every run.
+* ``PC_NOTIFY_DETAILS_INLINE`` (default 1, read by 030-collect-details.py)
+  sends each record's detail follow-up right after ITS download finishes, so
+  those messages arrive naturally spaced across the download phase. The
+  ``--announce-details`` step stays as the idempotent catch-up.
+
 Design notes
 ------------
 * Dependency-free: reuses pc_common (stdlib only) for the archive DB and
@@ -40,6 +54,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -55,6 +70,9 @@ KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
 BASELINE_MARKER = CONFIG_DIR / "waha_notify_initialized"
 DETAIL_BASELINE_MARKER = CONFIG_DIR / "waha_detail_notify_initialized"
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
+# Timestamp of the last "⚪ Sin nuevas entradas" message, so idle status is
+# throttled (PC_NOTIFY_IDLE_EVERY_HOURS) instead of repeating on every run.
+IDLE_MARKER = CONFIG_DIR / "waha_idle_last_sent.txt"
 
 DASH = "—"
 
@@ -759,6 +777,79 @@ def send_text(event: str, text: str, purpose: str = "") -> bool:
         return False
 
 
+def send_delay_seconds() -> float:
+    """Pause between consecutive WhatsApp sends so a batch stays readable on the
+    phone instead of arriving as one burst. PC_WAHA_SEND_DELAY_SECONDS (env or
+    monitor settings), default 3 seconds; 0 disables pacing."""
+    raw = cfg("PC_WAHA_SEND_DELAY_SECONDS", "3").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 3.0
+
+
+def pace_after_send(index: int, total: int) -> None:
+    """Sleep the configured send delay, except after the batch's last message."""
+    delay = send_delay_seconds()
+    if delay > 0 and index < total:
+        time.sleep(delay)
+
+
+def index_digest_threshold() -> int:
+    """New-record count above which the index alerts collapse into digest
+    messages. PC_NOTIFY_INDEX_DIGEST_THRESHOLD, default 10; 0 disables the
+    digest so every new record keeps its own message."""
+    value = cfg_int("PC_NOTIFY_INDEX_DIGEST_THRESHOLD")
+    return 10 if value is None else max(0, value)
+
+
+# Records listed per digest message; more new records roll into "parte 2/2"
+# messages so no single WhatsApp message becomes unreadably long.
+DIGEST_RECORDS_PER_MESSAGE = 20
+
+
+def idle_every_hours() -> float:
+    """Minimum hours between "Sin nuevas entradas" idle messages.
+    PC_NOTIFY_IDLE_EVERY_HOURS, default 6; 0 restores one message per run."""
+    raw = cfg("PC_NOTIFY_IDLE_EVERY_HOURS", "6").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 6.0
+
+
+def idle_message_due() -> bool:
+    hours = idle_every_hours()
+    if hours <= 0:
+        return True
+    stamp = waha.read_saved_text(IDLE_MARKER)
+    if not stamp:
+        return True
+    try:
+        last = datetime.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return True
+    return datetime.now() - last >= timedelta(hours=hours)
+
+
+def mark_idle_sent() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    IDLE_MARKER.write_text(now_str() + "\n", encoding="utf-8")
+
+
+def send_idle_message(conn) -> bool:
+    """Send the idle status, throttled by PC_NOTIFY_IDLE_EVERY_HOURS."""
+    if not idle_message_due():
+        print("WAHA idle message suppressed: sent recently "
+              f"(every {idle_every_hours():g}h; see {IDLE_MARKER.name}).")
+        return False
+    total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+    if send_text("none", build_empty_message(total_records), purpose="index"):
+        mark_idle_sent()
+        return True
+    return False
+
+
 def ensure_baseline(conn) -> bool:
     """Mark the records that already existed when WAHA was first enabled as
     already-announced. Returns True if the baseline was established on this call.
@@ -1081,6 +1172,7 @@ def announce_details_with_progress(conn) -> int:
         )
         if notify_detail_ready(conn, row["numero"]):
             sent += 1
+            pace_after_send(index, total)
         else:
             skipped += 1
 
@@ -1131,9 +1223,10 @@ def flush_unannounced(conn) -> int:
         "ORDER BY first_seen, last_seen"
     ).fetchall()
     sent = 0
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         if notify_saved_record(conn, row["numero"]):
             sent += 1
+            pace_after_send(index, len(rows))
     return sent
 
 
@@ -1156,6 +1249,93 @@ def _percent_int(name: str, default: int) -> int:
         return int(os.environ.get(name, "") or default)
     except (TypeError, ValueError):
         return default
+
+
+def _digest_trim(value, limit: int) -> str:
+    text = clean_field(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def build_index_digest_messages(rows) -> list[tuple[list, str]]:
+    """Compose the digest message(s) for many new records at once.
+
+    Returns [(chunk_rows, text), ...] so the caller can mark exactly the records
+    whose message was accepted. Each record takes two compact lines; chunks of
+    DIGEST_RECORDS_PER_MESSAGE keep any single WhatsApp message readable."""
+    chunks = [
+        rows[i:i + DIGEST_RECORDS_PER_MESSAGE]
+        for i in range(0, len(rows), DIGEST_RECORDS_PER_MESSAGE)
+    ]
+    out = []
+    for part, chunk in enumerate(chunks, start=1):
+        heading = f"🔔 *Nuevas Oportunidades ({len(rows)}) - {SOURCE_NAME}*"
+        if len(chunks) > 1:
+            heading += f" — parte {part}/{len(chunks)}"
+        lines = [heading, ""]
+        for offset, row in enumerate(chunk, start=1):
+            position = (part - 1) * DIGEST_RECORDS_PER_MESSAGE + offset
+            fecha = fmt_dt(row["finish_date_guess"] or row["fecha"])
+            lines.append(f"{position}. *{clean_field(row['numero'])}* — "
+                         f"{_digest_trim(row['descripcion'] or row['short_description'], 90)}")
+            lines.append(f"    🏛 {_digest_trim(row['entidad'], 60)} · 📅 {fecha}")
+        lines += ["", f"🕒 {now_str()} · 📥 Cada registro envía sus detalles completos al terminar su descarga"]
+        out.append((chunk, "\n".join(lines)))
+    return out
+
+
+def collect_digest_rows(conn, numeros) -> list:
+    """Apply the same guards as notify_saved_record (baseline, deadline window,
+    keyword filter) to not-yet-announced records. Records that must never send
+    are settled silently (marked notified), 'too_far' ones are left for a later
+    run, and the rows eligible for announcing are returned."""
+    eligible = []
+    if not BASELINE_MARKER.exists():
+        return eligible
+    for numero in numeros:
+        try:
+            row = fetch_row(conn, numero)
+            if row is None or row["notified_at"]:
+                continue
+            decision = deadline_decision(row)
+            if decision == "expired":
+                mark_notified(conn, numero)
+                mark_detail_notified(conn, numero)
+                continue
+            if decision == "too_far":
+                continue
+            summary = load_detail_summary(row["detail_json_path"])
+            if match_line_for(row, summary, "index") is None:
+                mark_notified(conn, numero)
+                mark_detail_notified(conn, numero)
+                continue
+            eligible.append(row)
+        except Exception as exc:  # noqa: BLE001 - never break a run
+            print(f"WAHA digest eligibility error for {numero}: {exc}", file=sys.stderr)
+    return eligible
+
+
+def announce_index_digest(conn, rows) -> tuple[int, int]:
+    """Send the eligible new records as digest message(s). Returns
+    (messages_sent, records_announced). A chunk's records are marked notified
+    only after its message is accepted, so a failed send retries next run.
+    Digested records keep detail_notified_at unset: each still gets its full
+    'Detalles Completos' message once its detail page is downloaded."""
+    sent_messages = 0
+    announced = 0
+    chunks = build_index_digest_messages(rows)
+    for index, (chunk_rows, text) in enumerate(chunks, start=1):
+        if not send_text("new", text, purpose="index"):
+            break  # leave the remaining chunks unmarked; the next run retries
+        sent_messages += 1
+        for row in chunk_rows:
+            try:
+                export_record_calendar(conn, row)
+                mark_notified(conn, row["numero"])
+                announced += 1
+            except Exception as exc:  # noqa: BLE001 - keep marking the rest
+                print(f"WAHA digest mark error for {row['numero']}: {exc}", file=sys.stderr)
+        pace_after_send(index, len(chunks))
+    return sent_messages, announced
 
 
 def announce_with_progress(conn) -> int:
@@ -1181,6 +1361,21 @@ def announce_with_progress(conn) -> int:
         "SELECT numero FROM opportunities WHERE notified_at IS NULL "
         "ORDER BY first_seen, last_seen"
     ).fetchall()
+    new_numbers = [r["numero"] for r in new_rows]
+
+    # Digest mode: when a run finds many new records, collapse them into one
+    # (or a few) compact digest message(s) instead of a long per-record burst.
+    digest_rows: list = []
+    threshold = index_digest_threshold()
+    if threshold and len(new_rows) > threshold:
+        eligible = collect_digest_rows(conn, new_numbers)
+        if len(eligible) > threshold:
+            digest_rows = eligible
+            new_numbers = []
+        else:
+            # After deadline/keyword settling only a few remain: keep the
+            # richer per-record messages for them.
+            new_numbers = [row["numero"] for row in eligible]
     update_rows = conn.execute(
         "SELECT numero FROM opportunities WHERE pending_status_change IS NOT NULL "
         "ORDER BY last_seen, first_seen"
@@ -1210,16 +1405,15 @@ def announce_with_progress(conn) -> int:
         elif full["last_notified_items_hash"] != items_hash:
             changed_rows.append(row)
     queue = (
-        [("new", r["numero"]) for r in new_rows]
+        [("new", numero) for numero in new_numbers]
         + [("update", r["numero"]) for r in update_rows]
         + [("status", r["numero"]) for r in detected_status_rows]
         + [("items", r["numero"]) for r in changed_rows]
     )
     total = len(queue)
 
-    if total == 0:
-        total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records), purpose="index")
+    if total == 0 and not digest_rows:
+        send_idle_message(conn)
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING", percent_done - 1,
             f"Step {step_current}/{step_total}: no new opportunities or status changes to send.",
@@ -1230,6 +1424,20 @@ def announce_with_progress(conn) -> int:
 
     sent = 0
     skipped = 0
+
+    if digest_rows:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", percent_base,
+            f"Step {step_current}/{step_total}: sending WhatsApp digest for {len(digest_rows)} new records...",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=total or 1,
+            records_new=len(digest_rows),
+        )
+        digest_messages, digest_announced = announce_index_digest(conn, digest_rows)
+        sent += digest_messages
+        print(f"WAHA digest: {digest_announced} new record(s) announced in {digest_messages} message(s).")
+        if digest_messages and total:
+            pace_after_send(0, 1)  # pause before the per-record messages below
     for index, (kind, numero) in enumerate(queue, start=1):
         full_row = fetch_row(conn, numero)
         label = _short_label(full_row) if full_row is not None else numero
@@ -1271,17 +1479,19 @@ def announce_with_progress(conn) -> int:
             ok = notify_saved_record(conn, numero)
         if ok:
             sent += 1
+            pace_after_send(index, total)
         else:
             skipped += 1
 
+    digest_note = f", {len(digest_rows)} new in digest" if digest_rows else ""
     pc_common.write_run_progress(
         "MESSAGING", "RUNNING", percent_done,
-        f"Step {step_current}/{step_total}: WhatsApp done — {sent} sent, {skipped} skipped of {total} ({len(new_rows)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
+        f"Step {step_current}/{step_total}: WhatsApp done — {sent} sent, {skipped} skipped of {total}{digest_note} ({len(new_numbers)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
         step_current=step_current, step_total=step_total,
         item_current=total, item_total=total,
-        records_new=len(new_rows), records_saved=sent,
+        records_new=len(digest_rows) or len(new_numbers), records_saved=sent,
     )
-    print(f"WAHA announce complete: {sent} sent, {skipped} skipped of {total}.")
+    print(f"WAHA announce complete: {sent} sent, {skipped} skipped of {total}{digest_note}.")
     return sent
 
 
@@ -1330,8 +1540,7 @@ def main(argv=None) -> int:
         if just_baselined:
             # Right after establishing the baseline, do not claim "no new entries".
             return 0
-        total_records = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-        send_text("none", build_empty_message(total_records), purpose="index")
+        send_idle_message(conn)
         return 0
 
     if just_baselined:

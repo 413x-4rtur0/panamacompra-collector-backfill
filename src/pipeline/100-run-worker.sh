@@ -264,18 +264,69 @@ while true; do
   } > "$CURRENT_LOG"
 
   log "ITERATION $ITERATION started."
-  write_progress "INDEX" "RUNNING" "10" "Step 1/7: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
 
-  {
-    echo ""
-    echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
-    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
-  } >> "$CURRENT_LOG"
-
+  # STEP 1: index. AUTO (webhook) runs try the changedetection snapshot first —
+  # changedetection already crawled the table with the browser-steps script, so a
+  # fresh healthy snapshot replaces the duplicate Firefox index crawl entirely.
+  # A partial snapshot (e.g. Abiertas failed inside changedetection) imports what
+  # it has and the crawler covers only the unhealthy groups. Manual/restart/test
+  # runs, and any snapshot failure, use the full crawler as before. Disable with
+  # PC_INDEX_FROM_SNAPSHOT=0.
   INDEX_START_EPOCH="$(date '+%s')"
-  PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
-  INDEX_EXIT=$?
+  INDEX_SOURCE="crawler"
+  INDEX_CRAWL_GROUPS=""
+  SNAPSHOT_RESULT_FILE="$PC_QUEUE_DIR/index_snapshot_result.env"
+  # Same precedence as PC_NOTIFY_WHATSAPP: environment variable first, then the
+  # monitor Settings file, then the default (on) — so the monitors' checkbox works.
+  INDEX_FROM_SNAPSHOT="${PC_INDEX_FROM_SNAPSHOT:-}"
+  if [ -z "$INDEX_FROM_SNAPSHOT" ] && [ -f "$MONITOR_SETTINGS" ]; then
+    INDEX_FROM_SNAPSHOT="$(sed -n "s/^PC_INDEX_FROM_SNAPSHOT=[\"']*\([^\"']*\)[\"']*\$/\1/p" "$MONITOR_SETTINGS" | head -n1)"
+  fi
+  INDEX_FROM_SNAPSHOT="${INDEX_FROM_SNAPSHOT:-1}"
+  if [ "${PC_RUN_MODE:-RESTART}" = "AUTO" ] && [ "$INDEX_FROM_SNAPSHOT" != "0" ] && [ -x "$PIPELINE_DIR/015-import-index-snapshot.py" ]; then
+    write_progress "INDEX" "RUNNING" "10" "Step 1/7: importing index from the changedetection snapshot (no browser)..." "$STARTED"
+    {
+      echo ""
+      echo "-------------------- STEP 1: INDEX (SNAPSHOT IMPORT) ------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Command: timeout 10m ${PYTHON_BIN} -u $PIPELINE_DIR/015-import-index-snapshot.py"
+    } >> "$CURRENT_LOG"
+    rm -f "$SNAPSHOT_RESULT_FILE"
+    PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS="${PC_INDEX_SNAPSHOT_MAX_AGE_SECONDS:-3600}" \
+      timeout 10m "$PYTHON_BIN" -u "$PIPELINE_DIR/015-import-index-snapshot.py" >> "$CURRENT_LOG" 2>&1
+    SNAPSHOT_EXIT=$?
+    case "$SNAPSHOT_EXIT" in
+      0) INDEX_SOURCE="snapshot" ;;
+      3)
+        INDEX_SOURCE="snapshot+crawler"
+        INDEX_CRAWL_GROUPS="$(sed -n "s/^SNAPSHOT_UNHEALTHY_GROUPS='\(.*\)'\$/\1/p" "$SNAPSHOT_RESULT_FILE" 2>/dev/null | head -n1)"
+        ;;
+      *) INDEX_SOURCE="crawler" ;;
+    esac
+    {
+      echo "Snapshot import exit code: $SNAPSHOT_EXIT (source=$INDEX_SOURCE${INDEX_CRAWL_GROUPS:+; crawler covers: $INDEX_CRAWL_GROUPS})"
+    } >> "$CURRENT_LOG"
+    log "ITERATION $ITERATION snapshot import exit=$SNAPSHOT_EXIT source=$INDEX_SOURCE crawl_groups=${INDEX_CRAWL_GROUPS:-none}"
+  fi
+
+  INDEX_EXIT=0
+  if [ "$INDEX_SOURCE" != "snapshot" ]; then
+    if [ -n "$INDEX_CRAWL_GROUPS" ]; then
+      write_progress "INDEX" "RUNNING" "12" "Step 1/7: snapshot imported; crawling only $INDEX_CRAWL_GROUPS, index_page_cap=$INDEX_LIMIT..." "$STARTED"
+    else
+      write_progress "INDEX" "RUNNING" "10" "Step 1/7: opening PanamaCompra and collecting Programadas + Abiertas tables, index_page_cap=$INDEX_LIMIT..." "$STARTED"
+    fi
+
+    {
+      echo ""
+      echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT${INDEX_CRAWL_GROUPS:+ PC_INDEX_GROUPS=$INDEX_CRAWL_GROUPS} timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
+    } >> "$CURRENT_LOG"
+
+    PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" PC_INDEX_GROUPS="$INDEX_CRAWL_GROUPS" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
+    INDEX_EXIT=$?
+  fi
   INDEX_SECONDS=$(( $(date '+%s') - INDEX_START_EPOCH ))
 
   {
@@ -413,9 +464,13 @@ PY
     # announced from the index in this or a previous run whose detail page is
     # now downloaded (and its views rebuilt), send the follow-up "Detalles
     # Completos" WhatsApp message with the real items, one by one with monitor
-    # progress. Disable with PC_NOTIFY_DETAILS=0 (monitor Settings), in which
-    # case the downloaded items are absorbed silently so no duplicate "items
-    # updated" message fires next run.
+    # progress. With inline detail messages on (PC_NOTIFY_DETAILS_INLINE=1, the
+    # default) most follow-ups are already sent during STEP 3 right after each
+    # download, so this step is the idempotent catch-up for anything missed
+    # (guarded by detail_notified_at — never a duplicate). Disable with
+    # PC_NOTIFY_DETAILS=0 (monitor Settings), in which case the downloaded
+    # items are absorbed silently so no duplicate "items updated" message fires
+    # next run.
     if [ "$VIEW_EXIT" -eq 0 ]; then
       NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
       if [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
@@ -561,6 +616,7 @@ PY
       echo "VERIFY_SECONDS='$VERIFY_SECONDS'"
       echo "CALENDAR_SECONDS='$CALENDAR_SECONDS'"
       echo "MESSAGING_SECONDS='$MESSAGING_SECONDS'"
+      echo "INDEX_SOURCE='$(quote_value "$INDEX_SOURCE")'"
       echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
     } > "$LAST_SUMMARY_FILE"
 
@@ -568,6 +624,7 @@ PY
 Inicio: $STARTED
 Fin: $FINISHED
 Duración total: $(format_eta "$TOTAL_SECONDS")
+Fuente del índice: $INDEX_SOURCE
 Etapas: index $(format_eta "$INDEX_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), verification $(format_eta "$VERIFY_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS")
 Iteración: $ITERATION
 $SUMMARY_COUNTS" "summary"

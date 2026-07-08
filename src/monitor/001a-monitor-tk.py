@@ -1394,6 +1394,8 @@ def run_tk() -> int:
     keywords_status_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_status.txt"))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
     notify_details_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS", "1") != "0")
+    notify_details_inline_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS_INLINE", "1") != "0")
+    index_from_snapshot_var = tk.BooleanVar(value=setting("PC_INDEX_FROM_SNAPSHOT", "1") != "0")
     import_calendar_var = tk.BooleanVar(value=setting("PC_CALENDAR_AUTO_IMPORT", "0") == "1")
     records_dir_var = tk.StringVar(value=setting("PC_RECORDS_DIR", str(pc_common.RECORDS_DIR)))
     calendar_dir_var = tk.StringVar(value=setting("PC_CALENDAR_DIR", str(pc_common.CALENDAR_DIR)))
@@ -1409,6 +1411,9 @@ def run_tk() -> int:
     webhook_detail_var = tk.StringVar(value=setting("PC_WEBHOOK_DETAIL_LIMIT", "0"))
     within_days_var = tk.StringVar(value=setting("PC_NOTIFY_WITHIN_DAYS", ""))
     retries_var = tk.StringVar(value=setting("PC_WAHA_RETRIES", "2"))
+    send_delay_var = tk.StringVar(value=setting("PC_WAHA_SEND_DELAY_SECONDS", "3"))
+    digest_threshold_var = tk.StringVar(value=setting("PC_NOTIFY_INDEX_DIGEST_THRESHOLD", "10"))
+    idle_hours_var = tk.StringVar(value=setting("PC_NOTIFY_IDLE_EVERY_HOURS", "6"))
     waha_base_var = tk.StringVar(value=setting("PC_WAHA_BASE_URL", "http://127.0.0.1:3000"))
     waha_session_var = tk.StringVar(value=setting("PC_WAHA_SESSION", "default"))
     waha_events_var = tk.StringVar(value=setting("PC_WAHA_NOTIFY_EVENTS", "info,start,done,failed,timeout,resume,update,new,none"))
@@ -1551,6 +1556,11 @@ def run_tk() -> int:
             "PC_WAHA_SOURCE": source_var.get().strip() or "Panamá Compra",
             "PC_NOTIFY_WHATSAPP": "1" if notify_whatsapp_var.get() else "0",
             "PC_NOTIFY_DETAILS": "1" if notify_details_var.get() else "0",
+            "PC_NOTIFY_DETAILS_INLINE": "1" if notify_details_inline_var.get() else "0",
+            "PC_INDEX_FROM_SNAPSHOT": "1" if index_from_snapshot_var.get() else "0",
+            "PC_WAHA_SEND_DELAY_SECONDS": send_delay_var.get().strip() or "3",
+            "PC_NOTIFY_INDEX_DIGEST_THRESHOLD": digest_threshold_var.get().strip() or "10",
+            "PC_NOTIFY_IDLE_EVERY_HOURS": idle_hours_var.get().strip() or "6",
             "PC_TEMPLATES_SRC_DIR": templates_src_var.get().strip(),
             "PC_CALENDAR_AUTO_IMPORT": "1" if import_calendar_var.get() else "0",
             "PC_RECORDS_DIR": records_dir_var.get().strip() or str(pc_common.RECORDS_DIR),
@@ -1701,20 +1711,31 @@ def run_tk() -> int:
     add_tooltip(whatsapp_apply_button, "Same as the Settings tab Apply: persists every setting from both tabs and saves the WhatsApp destination/keywords files.")
     ttk.Label(whatsapp, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    group_title(whatsapp, 27, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
+    group_title(whatsapp, 40, "Readability & index source")
+    field(whatsapp, 41, 0, "Delay between sends (s):", send_delay_var, 8, "Seconds to pause between consecutive WhatsApp sends so a batch arrives as separate readable messages instead of one burst. 0 disables pacing. Env: PC_WAHA_SEND_DELAY_SECONDS.")
+    field(whatsapp, 41, 2, "Digest above N new:", digest_threshold_var, 8, "When one run finds more new records than this, the index alerts collapse into compact digest message(s) (20 records per message); each record still gets its own detail follow-up. 0 = always one message per record. Env: PC_NOTIFY_INDEX_DIGEST_THRESHOLD.")
+    field(whatsapp, 42, 0, "Idle status every N hours:", idle_hours_var, 8, "Minimum hours between '⚪ Sin nuevas entradas' idle messages so frequent webhook runs do not repeat it. 0 = send on every idle run. Env: PC_NOTIFY_IDLE_EVERY_HOURS.")
+    inline_details_check = ttk.Checkbutton(whatsapp, text="Send each detail message right after its download", variable=notify_details_inline_var, style="Card.TCheckbutton")
+    inline_details_check.grid(row=42, column=2, columnspan=2, sticky="w", pady=3)
+    add_tooltip(inline_details_check, "Send each record's '📥 Detalles Completos' follow-up inline, right after ITS detail page downloads, so follow-ups arrive naturally spaced across the download phase instead of as one batch at the end. Env: PC_NOTIFY_DETAILS_INLINE. The later MESSAGING step stays as the idempotent catch-up.")
+    snapshot_index_check = ttk.Checkbutton(whatsapp, text="AUTO runs import index from changedetection snapshot", variable=index_from_snapshot_var, style="Card.TCheckbutton")
+    snapshot_index_check.grid(row=43, column=0, columnspan=4, sticky="w", pady=3)
+    add_tooltip(snapshot_index_check, "Webhook (AUTO) runs import the index from the latest changedetection datastore snapshot instead of re-crawling it with Firefox; partial snapshots crawl only the missing group, and any snapshot problem falls back to the full crawler. Manual/restart runs always crawl. Env: PC_INDEX_FROM_SNAPSHOT.")
+
+    group_title(whatsapp, 45, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
     format_kind_var = tk.StringVar(value="index")
     format_controls = ttk.Frame(whatsapp, style="Card.TFrame")
-    format_controls.grid(row=28, column=0, columnspan=4, sticky="w", pady=3)
+    format_controls.grid(row=46, column=0, columnspan=4, sticky="w", pady=3)
     ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
     format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=notify_formats.FORMAT_KINDS, width=12, state="readonly")
     format_kind_combo.grid(row=0, column=1, padx=(0, 10))
     add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with items; status = cambios/cancelaciones/items; system = health/worker/test messages; summary = final run summary per round.")
 
     format_text = tk.Text(whatsapp, height=8, wrap="word")
-    format_text.grid(row=29, column=0, columnspan=4, sticky="ew", pady=3)
+    format_text.grid(row=47, column=0, columnspan=4, sticky="ew", pady=3)
     add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
     format_preview = tk.Text(whatsapp, height=8, wrap="word", state="disabled")
-    format_preview.grid(row=30, column=0, columnspan=4, sticky="ew", pady=3)
+    format_preview.grid(row=48, column=0, columnspan=4, sticky="ew", pady=3)
 
     def _set_preview(text: str) -> None:
         format_preview.configure(state="normal")
