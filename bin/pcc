@@ -14,11 +14,11 @@ Run control:
   stop                                      Stop collector, monitor, updater, and webhook processes
   status                                    Show queue and process status
   watch                                     Live terminal monitor (no GUI needed)
-  db | kpi [--days N] [--grupo X] [--entidad Y]
-                                            KPI summary + diagrams (same numbers as the
-                                            monitors' KPIs tab: counters, groups, entities,
-                                            locations, latest/most-frequent items, daily
-                                            intake, trend), sliceable with the same filters
+  db | kpi [--days N] [--grupo X] [--entidad Y] [--json|--csv]
+                                            KPI summary + diagrams from the shared engine
+                                            (src/monitor/monitor_common.py) — the exact
+                                            numbers the monitors' KPIs tab shows, sliceable
+                                            with the same filters; --json/--csv for scripts
   calendar [day|week|month|year] [--date D] [--field end|start|downloaded]
                                             Opportunities calendar (deadlines by default)
 
@@ -175,170 +175,11 @@ EOF
     esac
     ;;
   db|stats|kpi|kpis)
-    # Optional KPI filters mirroring the monitors' KPIs tab:
-    #   pcc kpi --days 30 --grupo Abiertas --entidad "Ministerio de Salud"
-    KPI_DAYS="" KPI_GRUPO="" KPI_ENTIDAD=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --days) KPI_DAYS="${2:-}"; shift 2 ;;
-        --grupo|--group) KPI_GRUPO="${2:-}"; shift 2 ;;
-        --entidad|--entity) KPI_ENTIDAD="${2:-}"; shift 2 ;;
-        *) echo "Unknown kpi option: $1 (use --days N, --grupo X, --entidad Y)" >&2; exit 2 ;;
-      esac
-    done
-    export KPI_DAYS KPI_GRUPO KPI_ENTIDAD
-    exec "$PY_BIN" - <<'PY'
-import json
-import re
-import sys
-from collections import Counter
-from pathlib import Path
-sys.path.insert(0, __import__("os").environ["APP_ROOT"] + "/src")
-from common import init_db
-conn = init_db()
-cols = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
-
-# Optional filters (same slicing as the monitors' KPIs tab).
-import os as _os
-FLT = []
-FLT_PARAMS = []
-_days = (_os.environ.get("KPI_DAYS") or "").strip()
-if _days.isdigit() and int(_days) > 0:
-    FLT.append("REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
-    FLT_PARAMS.append(f"-{int(_days)} day")
-_grupo = (_os.environ.get("KPI_GRUPO") or "").strip()
-if _grupo:
-    FLT.append("COALESCE(grupo, '') = ?")
-    FLT_PARAMS.append(_grupo)
-_entidad = (_os.environ.get("KPI_ENTIDAD") or "").strip()
-if _entidad and "entidad" in cols:
-    FLT.append("COALESCE(entidad, '') = ?")
-    FLT_PARAMS.append(_entidad)
-FLT_SQL = " AND ".join(FLT)
-FLT_WHERE = f" WHERE {FLT_SQL}" if FLT_SQL else ""
-FLT_AND = f" AND {FLT_SQL}" if FLT_SQL else ""
-
-def count(where=""):
-    clauses = [c for c in (where, FLT_SQL) if c]
-    sql = "SELECT COUNT(*) FROM opportunities" + ((" WHERE " + " AND ".join(clauses)) if clauses else "")
-    return conn.execute(sql, FLT_PARAMS if FLT_SQL else []).fetchone()[0]
-total = count()
-saved = count("detail_status = 'saved'")
-pending = count("detail_status = 'pending'")
-failed = count("detail_status = 'failed'")
-detail_json = count("COALESCE(detail_json_path, '') <> ''") if "detail_json_path" in cols else 0
-closure = round((saved / total) * 100) if total else 0
-print("Index + Detail KPI summary")
-_active = []
-if _days.isdigit() and int(_days) > 0:
-    _active.append(f"last {_days} days")
-if _grupo:
-    _active.append(f"group {_grupo}")
-if _entidad:
-    _active.append(f"entity {_entidad}")
-if _active:
-    print("Filters:                           " + " · ".join(_active))
-print(f"Index archive total:               {total}")
-print(f"Index records awaiting alert:      {count('notified_at IS NULL') if 'notified_at' in cols else 'n/a'}")
-print(f"Details saved:                     {saved}")
-print(f"Details pending:                   {pending}")
-print(f"Details failed:                    {failed}")
-print(f"Detail JSON coverage:              {detail_json}/{total} ({closure}% saved)")
-item_total = 0
-item_records = 0
-item_terms = Counter()
-item_locations = Counter()
-item_names = Counter()
-latest_items = []
-max_item_record = ("-", 0)
-if "detail_json_path" in cols:
-    for numero, detail_path in conn.execute(
-        "SELECT numero, detail_json_path FROM opportunities WHERE COALESCE(detail_json_path, '') <> ''"
-        + FLT_AND + " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC LIMIT 300",
-        FLT_PARAMS,
-    ):
-        try:
-            path = Path(detail_path)
-            data = json.loads(path.read_text(encoding="utf-8"))
-            summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-            for key in ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia"):
-                place = str(summary.get(key) or "").strip()
-                if place:
-                    item_locations[place[:60]] += 1
-                    break
-            items = data.get("items")
-            if not isinstance(items, list):
-                split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
-                descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
-                rel = descriptor.get("file")
-                items = json.loads((path.parent / rel).read_text(encoding="utf-8")) if rel else []
-            items = [item for item in items if isinstance(item, dict)]
-        except Exception:
-            items = []
-        if items:
-            item_records += 1
-        item_total += len(items)
-        if len(items) > max_item_record[1]:
-            max_item_record = (str(numero or "-"), len(items))
-        for item in items:
-            name = str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "").strip()
-            if name:
-                item_names[name.lower()[:48]] += 1
-                if len(latest_items) < 8:
-                    qty = str(item.get("cantidad") or item.get("qty") or item.get("quantity") or "")
-                    latest_items.append(f"  - {numero}: {name[:80]}{' · qty ' + qty if qty else ''}")
-            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
-            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
-                if not word.isdigit():
-                    item_terms[word] += 1
-    avg_items = round(item_total / item_records, 1) if item_records else 0
-    print(f"Item lines parsed (latest 300):     {item_total} across {item_records} records; avg={avg_items}")
-    print(f"Largest item record:               {max_item_record[0]} ({max_item_record[1]} items)")
-    if item_terms:
-        print("Top item keywords:                 " + " · ".join(f"{k}={v}" for k, v in item_terms.most_common(8)))
-if "notified_at" in cols:
-    print(f"WAHA index alerts sent:            {count('notified_at IS NOT NULL')}")
-if "detail_notified_at" in cols:
-    detail_backlog = count("detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL")
-    print(f"WAHA detail follow-up backlog:     {detail_backlog}")
-try:
-    rows = conn.execute("SELECT detail_status, COUNT(*) AS c FROM opportunities" + FLT_WHERE + " GROUP BY detail_status ORDER BY c DESC", FLT_PARAMS).fetchall()
-    print("Detail status mix:                 " + " · ".join(f"{r[0] or '(blank)'}={r[1]}" for r in rows))
-    trend = conn.execute("SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c FROM opportunities" + FLT_WHERE + " GROUP BY period ORDER BY period DESC LIMIT 6", FLT_PARAMS).fetchall()
-    print("Recent index/detail trend:         " + " · ".join(f"{r[0] or 'unknown'}={r[1]}" for r in trend))
-except Exception:
-    pass
-if latest_items:
-    print("Latest parsed items:")
-    print("\n".join(latest_items))
-
-# KPI diagrams (same data as the monitors' KPIs tab): terminal bar charts about
-# groups, contracting entities and the locations parsed from the detail pages.
-def bar_rows(title, rows, width=28):
-    rows = [(str(label), int(count)) for label, count in rows if str(label).strip()][:8]
-    if not rows:
-        return
-    print()
-    print(title)
-    top = max(count for _, count in rows) or 1
-    for label, count in rows:
-        bar = "█" * max(1, round(width * count / top))
-        print(f"  {label[:36]:<36} {bar} {count}")
-
-try:
-    bar_rows("Index groups:", conn.execute(
-        "SELECT COALESCE(NULLIF(grupo, ''), '(sin grupo)') AS g, COUNT(*) FROM opportunities" + FLT_WHERE + " GROUP BY g ORDER BY COUNT(*) DESC LIMIT 8", FLT_PARAMS).fetchall())
-    if "entidad" in cols:
-        bar_rows("Top contracting entities:", conn.execute(
-            "SELECT COALESCE(NULLIF(entidad, ''), '(sin entidad)') AS e, COUNT(*) FROM opportunities" + FLT_WHERE + " GROUP BY e ORDER BY COUNT(*) DESC LIMIT 8", FLT_PARAMS).fetchall())
-    bar_rows("Locations / buying units (from details):", item_locations.most_common(8))
-    bar_rows("Most frequent items:", item_names.most_common(8))
-    bar_rows("Daily intake (last 14 days):", conn.execute(
-        "SELECT REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') AS day, COUNT(*) "
-        "FROM opportunities" + FLT_WHERE + " GROUP BY day HAVING day <> '' ORDER BY day DESC LIMIT 14", FLT_PARAMS).fetchall())
-except Exception:
-    pass
-PY
+    # KPI summary + diagrams from the SHARED engine (src/monitor/monitor_common.py),
+    # the same code both GUI monitors use — so the numbers always match the
+    # monitors' KPIs tab. Supports --json/--csv plus the usual filters.
+    load_monitor_settings
+    exec "$PY_BIN" "$APP_ROOT/src/monitor/monitor_common.py" "$@"
     ;;
   get)
     key="${1:-}"

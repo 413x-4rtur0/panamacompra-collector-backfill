@@ -753,13 +753,37 @@ def record_events_respect_filter() -> bool:
     return cfg_bool("PC_WAHA_RECORD_EVENTS_RESPECT_FILTER", False)
 
 
-def send_text(event: str, text: str, purpose: str = "") -> bool:
+def record_send_outcome(conn, numero: str, ok: bool, error: str = "") -> None:
+    """Persist the WhatsApp delivery outcome on the record row.
+
+    ``notify_attempts`` counts every real send try; ``notify_error`` keeps the
+    last failure reason and clears on success, so the monitors can show a
+    "Failed alerts" KPI (attempted-and-failed vs never-attempted). Skipped
+    sends (no destination / filtered out) are NOT counted as attempts. Never
+    raises: outcome tracking must not break a notification run."""
+    if conn is None or not numero:
+        return
+    try:
+        conn.execute(
+            "UPDATE opportunities SET notify_attempts = COALESCE(notify_attempts, 0) + 1, "
+            "notify_error = ? WHERE numero = ?",
+            ((error or "")[:300] or None, numero),
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - delivery tracking is best-effort
+        pass
+
+
+def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str = "") -> bool:
     """Send through WAHA, routed to the per-purpose destination.
 
     Record-level sends are controlled by PC_NOTIFY_WHATSAPP plus destination and
     keyword/date filters. They intentionally bypass PC_WAHA_NOTIFY_EVENTS unless
     PC_WAHA_RECORD_EVENTS_RESPECT_FILTER=1, so changedetection page updates are
     not hidden while only the final `done` summary continues to send.
+
+    When ``conn``/``numero`` are given, the delivery outcome is persisted on the
+    record row (notify_attempts / notify_error) for the Failed-alerts KPI.
     """
     if record_events_respect_filter() and not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
@@ -771,9 +795,11 @@ def send_text(event: str, text: str, purpose: str = "") -> bool:
         return False
     try:
         waha.send_text(text, purpose=purpose)
+        record_send_outcome(conn, numero, True)
         return True
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
+        record_send_outcome(conn, numero, False, str(exc))
         return False
 
 
@@ -894,7 +920,7 @@ def notify_manual_record(conn, numero: str, *, force: bool = False) -> bool:
             return False
         summary = load_detail_summary(row["detail_json_path"])
         text = build_record_message(row, summary, variant="manual", match_line="Enviado manualmente desde el monitor")
-        if not send_text("new", text):
+        if not send_text("new", text, conn=conn, numero=numero):
             return False
         export_record_calendar(conn, row)
         mark_notified(conn, numero)
@@ -939,7 +965,7 @@ def notify_saved_record(conn, numero: str) -> bool:
             mark_notified(conn, numero)
             mark_detail_notified(conn, numero)
             return False
-        if not send_text("new", build_opportunity_message(row, summary, match_line), purpose="index"):
+        if not send_text("new", build_opportunity_message(row, summary, match_line), purpose="index", conn=conn, numero=numero):
             # Leave notified_at unset so a later --flush retries it.
             return False
         export_record_calendar(conn, row)
@@ -981,7 +1007,7 @@ def notify_status_change(conn, numero: str) -> bool:
         if match_line is None:
             clear_status_change(conn, numero)
             return False
-        sent = send_text("update", build_status_change_message(row, summary, change_code, match_line=match_line), purpose=purpose)
+        sent = send_text("update", build_status_change_message(row, summary, change_code, match_line=match_line), purpose=purpose, conn=conn, numero=numero)
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -1045,7 +1071,7 @@ def notify_items_change(conn, numero: str) -> bool:
         if match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
-        sent = send_text("update", build_items_changed_message(row, summary), purpose="status")
+        sent = send_text("update", build_items_changed_message(row, summary), purpose="status", conn=conn, numero=numero)
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -1108,7 +1134,7 @@ def notify_detail_ready(conn, numero: str) -> bool:
             mark_detail_notified(conn, numero)
             mark_snapshot(conn, numero)
             return False
-        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line), purpose="details"):
+        if not send_text("new", build_record_message(row, summary, variant="details", match_line=match_line), purpose="details", conn=conn, numero=numero):
             # Leave detail_notified_at unset so the next run retries.
             return False
         export_record_calendar(conn, row)
@@ -1325,10 +1351,15 @@ def announce_index_digest(conn, rows) -> tuple[int, int]:
     chunks = build_index_digest_messages(rows)
     for index, (chunk_rows, text) in enumerate(chunks, start=1):
         if not send_text("new", text, purpose="index"):
+            # Track the failed attempt on every record of this chunk so the
+            # Failed-alerts KPI counts them, then let the next run retry.
+            for row in chunk_rows:
+                record_send_outcome(conn, row["numero"], False, "index digest send failed")
             break  # leave the remaining chunks unmarked; the next run retries
         sent_messages += 1
         for row in chunk_rows:
             try:
+                record_send_outcome(conn, row["numero"], True)
                 export_record_calendar(conn, row)
                 mark_notified(conn, row["numero"])
                 announced += 1

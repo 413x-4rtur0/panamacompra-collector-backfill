@@ -23,6 +23,21 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
 
+# Shared KPI/data engine (audit Phase 4): the archive aggregates and detail
+# helpers live in monitor_common.py so this monitor, the web monitor and
+# `pcc kpi` always report the same numbers.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from monitor_common import (  # noqa: E402
+    db_review_stats,
+    finish_stamp_from_detail_json,
+    finish_stamp_from_folder,
+    load_detail_items_for_kpi,
+    load_detail_payload_for_kpi,
+    load_record_index,
+    read_last_summary,
+    summarize_items_for_kpi,
+)
+
 BASE_DIR = pc_common.APP_ROOT
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 
@@ -47,9 +62,6 @@ _nnr_spec.loader.exec_module(notify_formats)
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
-# Written by 100-run-worker.sh on every clean completion: started/finished
-# stamps, per-stage seconds and the index source. Feeds the KPI health line.
-LAST_SUMMARY_FILE = pc_common.LOG_DIR / "run_all_last_summary.env"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
@@ -194,7 +206,7 @@ MANUAL_ACTIONS = [
     ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
     ManualAction("Integrations (Docker)", "Open changedetection UI", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io interface in a chromeless app window (no Firefox needed; falls back to the default browser) to configure the PanamaCompra watch and its trigger/webhook URL."),
     ManualAction("Integrations (Docker)", "Print changedetection JS setup", ("./bin/pcc", "changedetection-script"), "Writes the Browser Steps Execute JS instructions/script for Programadas + Abiertas pagination to data/logs/manual_actions.log so you can copy it into changedetection."),
-    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login defaults to admin / 12345678 (see data/config/integration-access.txt)."),
+    ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login: admin + the password from data/config/integration-access.txt (see data/config/integration-access.txt)."),
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
@@ -257,401 +269,11 @@ def parse_progress_file() -> dict[str, str]:
     return data
 
 
-def read_last_summary() -> dict[str, str]:
-    """Parse run_all_last_summary.env (KEY='value' lines written by the worker
-    on clean completion). Unknown/missing file yields an empty dict."""
-    data: dict[str, str] = {}
-    if not LAST_SUMMARY_FILE.exists():
-        return data
-    for line in LAST_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not line or line.lstrip().startswith("#") or "=" not in line:
-            continue
-        key, raw_value = line.split("=", 1)
-        try:
-            parsed = shlex.split(raw_value, posix=True)
-            data[key.strip()] = parsed[0] if parsed else ""
-        except ValueError:
-            data[key.strip()] = raw_value.strip().strip("'").strip('"')
-    return data
-
-
 def tail(path: Path, lines: int) -> str:
     if not path.exists():
         return f"No {path.name} yet."
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(content[-lines:])
-
-
-def finish_stamp_from_folder(record_folder: str) -> str:
-    """Fallback DTEND for records whose finish_date_guess column is empty: read the
-    close stamp from the folder leaf '(YYYY-MM-DD_HH_MM)-(numero)-(desc)'. Returns
-    'YYYY-MM-DD HH:MM' (or 'YYYY-MM-DD'), or '' when the folder carries no stamp."""
-    name = os.path.basename((record_folder or "").rstrip("/"))
-    # Only inspect the first parenthesized token so the NUMERO (which also holds
-    # digits and dashes) cannot be mistaken for the close date.
-    if name.startswith("(") and ")" in name:
-        name = name[1:name.index(")")]
-    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
-    if not match:
-        return ""
-    if match.group(2) and match.group(3):
-        return f"{match.group(1)} {match.group(2)}:{match.group(3)}"
-    return match.group(1)
-
-
-def finish_stamp_from_detail_json(detail_json_path: str) -> str:
-    """Fallback DTEND from saved detail JSON calendar/summary fields."""
-    if not detail_json_path:
-        return ""
-    try:
-        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
-    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-    return str(
-        calendar.get("dtend")
-        or data.get("finish_date_guess")
-        or data.get("date_end_opportunity")
-        or summary.get("date_end_opportunity")
-        or ""
-    )
-
-
-def load_record_index(limit: int = 500) -> list[dict[str, str]]:
-    """Read collected records (NUMERO + description + folder/link) from the
-    archive DB for the monitor's record-index selector. Newest first.
-
-    Never raises: a missing, empty or locked database simply yields an empty
-    list so the monitor keeps working before the collector has ever run.
-    """
-    if not ARCHIVE_DB.exists():
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
-    except sqlite3.Error:
-        return []
-    try:
-        conn.row_factory = sqlite3.Row
-        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
-        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
-        rows = conn.execute(
-            "SELECT numero, "
-            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
-            "COALESCE(record_folder, '') AS record_folder, "
-            "COALESCE(link, '') AS link, "
-            "COALESCE(detail_status, '') AS detail_status, "
-            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(detail_json_path, '') AS detail_json_path, "
-            "COALESCE(first_seen, '') AS first_seen, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
-            f"{start_expr} AS start_date_guess "
-            "FROM opportunities "
-            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
-            "LIMIT ?",
-            (limit,),
-        ).fetchall()
-    except sqlite3.Error:
-        rows = []
-    finally:
-        conn.close()
-    return [
-        {
-            "numero": str(row["numero"] or ""),
-            "descripcion": str(row["descripcion"] or ""),
-            "record_folder": str(row["record_folder"] or ""),
-            "link": str(row["link"] or ""),
-            "detail_status": str(row["detail_status"] or ""),
-            "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "first_seen": str(row["first_seen"] or ""),
-            "detail_json_path": str(row["detail_json_path"] or ""),
-            "finish_date_guess": (
-                str(row["finish_date_guess"] or "")
-                or finish_stamp_from_folder(str(row["record_folder"] or ""))
-                or finish_stamp_from_detail_json(str(row["detail_json_path"] or ""))
-            ),
-            "start_date_guess": str(row["start_date_guess"] or ""),
-        }
-        for row in rows
-    ]
-
-
-def load_detail_payload_for_kpi(detail_json_path: str | None) -> tuple[list[dict], dict]:
-    """Best-effort loader of a saved detail JSON for the KPI dashboards.
-
-    Returns (items, summary); handles split item files and never raises."""
-    if not detail_json_path:
-        return [], {}
-    path = Path(str(detail_json_path))
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return [], {}
-    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-    items = data.get("items")
-    if not isinstance(items, list):
-        items = []
-        split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
-        descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
-        rel = descriptor.get("file")
-        if rel:
-            try:
-                split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
-                if isinstance(split_items, list):
-                    items = split_items
-            except Exception:
-                items = []
-    return [item for item in items if isinstance(item, dict)], summary
-
-
-def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
-    """Best-effort item loader for KPI dashboards; never raises."""
-    return load_detail_payload_for_kpi(detail_json_path)[0]
-
-
-# Detail-summary labels that describe WHERE the opportunity is bought/delivered.
-# Used to build the KPI location diagram from the saved detail pages.
-LOCATION_SUMMARY_KEYS = ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia")
-
-
-def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300,
-                            flt: str = "", flt_params: tuple = ()) -> dict[str, object]:
-    """Summarize detail items for decision KPIs without scanning unbounded data.
-
-    ``flt``/``flt_params`` is an optional extra WHERE fragment (same filters the
-    KPI dashboard applies to the archive queries)."""
-    rows = conn.execute(
-        "SELECT numero, descripcion, detail_json_path, "
-        "COALESCE(detail_saved_at, first_seen, '') AS saved_at FROM opportunities "
-        "WHERE COALESCE(detail_json_path, '') <> '' "
-        + (f"AND {flt} " if flt else "")
-        + "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
-        (*flt_params, limit),
-    ).fetchall()
-    total_items = 0
-    with_items = 0
-    max_items = {"numero": "", "descripcion": "", "count": 0}
-    keyword_counts: Counter[str] = Counter()
-    location_counts: Counter[str] = Counter()
-    item_name_counts: Counter[str] = Counter()
-    sample_items: list[dict[str, str]] = []
-    for row in rows:
-        items, summary = load_detail_payload_for_kpi(str(row["detail_json_path"] or ""))
-        for key in LOCATION_SUMMARY_KEYS:
-            place = str(summary.get(key) or "").strip()
-            if place:
-                location_counts[place[:60]] += 1
-                break
-        if items:
-            with_items += 1
-        total_items += len(items)
-        if len(items) > int(max_items["count"]):
-            max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
-        for item in items:
-            name = str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "").strip()
-            if name:
-                # Normalized item name so the SAME product bought repeatedly
-                # surfaces as a "most frequent item" bar.
-                item_name_counts[name.lower()[:48]] += 1
-            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
-            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
-                if not word.isdigit():
-                    keyword_counts[word] += 1
-            if len(sample_items) < 10:
-                # Rows come newest-first, so these are the LATEST parsed items.
-                sample_items.append({
-                    "numero": str(row["numero"] or ""),
-                    "descripcion": name[:90],
-                    "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
-                    "saved_at": str(row["saved_at"] or "")[:16].replace("T", " "),
-                })
-    avg_items = round(total_items / with_items, 1) if with_items else 0
-    return {
-        "sampled_records": len(rows),
-        "records_with_items": with_items,
-        "total_items": total_items,
-        "avg_items_per_record": avg_items,
-        "max_items_record": max_items,
-        "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
-        "top_items": [{"label": k, "count": v} for k, v in item_name_counts.most_common(10)],
-        "top_locations": [{"label": k, "count": v} for k, v in location_counts.most_common(10)],
-        "sample_items": sample_items,
-    }
-
-def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[str, object]:
-    """Aggregate counts for the Database review panel (totals, detail-queue state,
-    notification state, and a per-group breakdown). Never raises; a missing/locked
-    DB yields zeros so the panel renders before the collector has ever run.
-
-    ``days``/``grupo``/``entidad`` are the KPI dashboard filters: 0/blank means
-    no filter; otherwise every aggregate is restricted to records first seen in
-    the window and/or matching the group/entity."""
-    empty = {
-        "total": 0, "saved": 0, "pending": 0, "failed": 0,
-        "new_records": 0, "existing_records": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0,
-        "new_today": 0, "closing_soon": 0, "soon_days": 7, "abiertas": 0, "programadas": 0,
-        "needs_deadline": 0, "with_detail_json": 0, "item_analysis": {},
-        "groups": [], "entities": [], "dependencias": [], "daily_intake": [],
-        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [], "db_exists": ARCHIVE_DB.exists(),
-    }
-    if not ARCHIVE_DB.exists():
-        return empty
-    try:
-        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
-    except sqlite3.Error:
-        return empty
-    try:
-        conn.row_factory = sqlite3.Row
-        columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
-        has_notified = "notified_at" in columns
-
-        # Optional dashboard filters applied to EVERY aggregate below, so the
-        # cards, diagrams and item analysis all answer for the same slice.
-        flt_conditions: list[str] = []
-        flt_params: list[str] = []
-        if days and int(days) > 0:
-            flt_conditions.append(
-                "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
-            flt_params.append(f"-{int(days)} day")
-        if grupo:
-            flt_conditions.append("COALESCE(grupo, '') = ?")
-            flt_params.append(grupo)
-        if entidad and "entidad" in columns:
-            flt_conditions.append("COALESCE(entidad, '') = ?")
-            flt_params.append(entidad)
-        flt = " AND ".join(flt_conditions)
-        flt_where = f" WHERE {flt}" if flt else ""
-        flt_and = f" AND {flt}" if flt else ""
-
-        def count(where: str = "") -> int:
-            clauses = [c for c in (where, flt) if c]
-            sql = "SELECT COUNT(*) FROM opportunities" + ((" WHERE " + " AND ".join(clauses)) if clauses else "")
-            return int(conn.execute(sql, flt_params if flt else []).fetchone()[0])
-
-        column_details = []
-        for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
-            name = col[1]
-            nonempty = int(conn.execute(
-                f"SELECT COUNT(*) FROM opportunities WHERE COALESCE(CAST({name} AS TEXT), '') <> ''"
-            ).fetchone()[0])
-            column_details.append({"name": name, "type": col[2], "nonempty": nonempty})
-
-        status_rows = [
-            {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
-            for r in conn.execute(
-                "SELECT detail_status, COUNT(*) AS c FROM opportunities" + flt_where
-                + " GROUP BY detail_status ORDER BY c DESC",
-                flt_params,
-            ).fetchall()
-        ]
-
-        # Records the "Repair missing deadlines" action would act on: blank
-        # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
-        deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
-                               "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
-        if "record_folder_leaf" in columns:
-            deadline_predicates.insert(1, "UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'")
-        needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
-                                + " OR ".join(deadline_predicates) + ")")
-
-        # "Closing soon" window follows the operator's deadline-soon setting so
-        # the KPI card, the record-list legend and the repair tools agree.
-        first_seen_day = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
-
-        stats = {
-            "db_exists": True,
-            "total": count(),
-            "saved": count("detail_status = 'saved'"),
-            "pending": count("detail_status = 'pending'"),
-            "failed": count("detail_status = 'failed'"),
-            "new_today": count(f"{first_seen_day} = date('now')"),
-            "closing_soon": count(
-                "substr(COALESCE(finish_date_guess, ''), 1, 10) >= date('now') "
-                f"AND substr(COALESCE(finish_date_guess, ''), 1, 10) <= date('now', '+{SOON_DAYS} day')"),
-            "soon_days": SOON_DAYS,
-            "abiertas": count("COALESCE(grupo, '') = 'Abiertas'"),
-            "programadas": count("COALESCE(grupo, '') = 'Programadas'"),
-            "new_records": count("detail_status = 'pending'"),
-            "existing_records": count("detail_status = 'saved'"),
-            "notified": count("notified_at IS NOT NULL") if has_notified else 0,
-            "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
-            "detail_notify_backlog": count(
-                "detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL"
-            ) if has_notified and "detail_notified_at" in columns else 0,
-            "needs_deadline": count(needs_deadline_where),
-            "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
-            "item_analysis": summarize_items_for_kpi(conn, flt=flt, flt_params=tuple(flt_params)),
-            "recent": [
-                (str(r["numero"] or ""), str(r["descripcion"] or r["short_description"] or ""), str(r["detail_status"] or ""))
-                for r in conn.execute(
-                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities"
-                    + flt_where +
-                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 8",
-                    flt_params,
-                ).fetchall()
-            ],
-            "completed_recent": [
-                (str(r["numero"] or ""), str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), str(r["descripcion"] or r["short_description"] or ""))
-                for r in conn.execute(
-                    "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
-                    "WHERE detail_status = 'saved'" + flt_and +
-                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5",
-                    flt_params,
-                ).fetchall()
-            ],
-            "columns": column_details,
-            "status_breakdown": status_rows,
-            "monthly_trend": [
-                (str(r["period"] or "unknown"), int(r["c"]))
-                for r in conn.execute(
-                    "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
-                    "FROM opportunities" + flt_where + " GROUP BY period ORDER BY period DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ],
-            # Records first seen per day, newest first — the "how alive is the
-            # intake" diagram for the KPI dashboard.
-            "daily_intake": [
-                {"label": str(r["day"]), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') AS day, COUNT(*) AS c "
-                    "FROM opportunities" + flt_where + " GROUP BY day HAVING day <> '' ORDER BY day DESC LIMIT 14",
-                    flt_params,
-                ).fetchall()
-            ],
-            "groups": [
-                (str(r["grupo"] or "(sin grupo)"), int(r["c"]))
-                for r in conn.execute(
-                    "SELECT grupo, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY grupo ORDER BY c DESC",
-                    flt_params,
-                ).fetchall()
-            ],
-            # WHO buys and WHERE: contracting entities and their dependencies,
-            # for the KPI location/buyer diagrams.
-            "entities": [
-                {"label": str(r["entidad"] or "(sin entidad)"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT entidad, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY entidad ORDER BY c DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ] if "entidad" in columns else [],
-            "dependencias": [
-                {"label": str(r["dependencia"] or "(sin dependencia)"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT dependencia, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY dependencia ORDER BY c DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ] if "dependencia" in columns else [],
-        }
-    except sqlite3.Error:
-        return empty
-    finally:
-        conn.close()
-    return stats
 
 
 # How many days ahead still counts as "next to expire" (amber) instead of a calm
@@ -1462,11 +1084,12 @@ def run_tk() -> int:
     webhook_public_host_var = tk.StringVar(value=setting("PC_WEBHOOK_PUBLIC_HOST", os.environ.get("PC_WEBHOOK_PUBLIC_HOST", "host.docker.internal")))
     waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
     waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
-    # WAHA dashboard login: the docker stack seeds admin / 12345678 on every
-    # install/reinstall so the review dashboard is always reachable; change the
-    # password here whenever desired (applied on the next stack restart).
+    # WAHA dashboard login: setup / `pcc docker up` generates a RANDOM password
+    # into .env and data/config/integration-access.txt so the review dashboard
+    # is always reachable; change it here whenever desired (applied on the next
+    # stack restart). Blank keeps the generated .env value.
     waha_dash_user_var = tk.StringVar(value=setting("WAHA_DASHBOARD_USERNAME", "admin"))
-    waha_dash_pass_var = tk.StringVar(value=setting("WAHA_DASHBOARD_PASSWORD", "12345678"))
+    waha_dash_pass_var = tk.StringVar(value=setting("WAHA_DASHBOARD_PASSWORD", ""))
     waha_enabled_var = tk.BooleanVar(value=setting("PC_WAHA_ENABLED", "0").lower() in _truthy)
     skip_expired_var = tk.BooleanVar(value=setting("PC_NOTIFY_SKIP_EXPIRED", "0").lower() in _truthy)
     test_autorun_var = tk.BooleanVar(value=setting("PC_TEST_ZONE_AUTORUN", "0").lower() in _truthy)
@@ -1621,7 +1244,7 @@ def run_tk() -> int:
             "WAHA_PORT": waha_port_var.get().strip() or "3000",
             "WAHA_API_KEY": waha_server_key_var.get().strip(),
             "WAHA_DASHBOARD_USERNAME": waha_dash_user_var.get().strip() or "admin",
-            "WAHA_DASHBOARD_PASSWORD": waha_dash_pass_var.get().strip() or "12345678",
+            "WAHA_DASHBOARD_PASSWORD": waha_dash_pass_var.get().strip(),
             "PC_WAHA_ENABLED": "1" if waha_enabled_var.get() else "0",
             "PC_NOTIFY_SKIP_EXPIRED": "1" if skip_expired_var.get() else "0",
             "PC_TEST_ZONE_AUTORUN": "1" if test_autorun_var.get() else "0",
@@ -1736,8 +1359,8 @@ def run_tk() -> int:
     field(whatsapp, 22, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
     field(whatsapp, 22, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
     field(whatsapp, 23, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
-    field(whatsapp, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. A fresh install/reinstall seeds the default 12345678 so you can always get in — change it here whenever you like. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
-    ttk.Label(whatsapp, text="Dashboard login defaults to admin / 12345678 after every install/reinstall; change the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
+    field(whatsapp, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. Setup generates a random one (saved in .env and data/config/integration-access.txt); blank here keeps that value. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
+    ttk.Label(whatsapp, text="Dashboard login: user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. To change it, set the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     whatsapp_apply_button = ttk.Button(whatsapp, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     whatsapp_apply_button.grid(row=25, column=0, sticky="w", pady=(10, 0))
@@ -1899,15 +1522,18 @@ def run_tk() -> int:
         pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
         s = db_review_stats()
         end_dates = "; ".join(
-            f"{num} ends {(finish or 'no date').replace('T', ' ').replace('_', ' ')}"
-            for num, finish, _desc in s.get("completed_recent", [])[:3]
+            f"{rec['numero']} ends {(rec['finish_date_guess'] or 'no date').replace('T', ' ').replace('_', ' ')}"
+            for rec in s.get("completed_recent", [])[:3]
         ) or "No completed end dates yet"
         completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
         if not s.get("db_exists"):
             set_previous_db_text("Previous database data: no archive database yet.")
             return
-        recent = "\n".join(f"  • {num} [{status or 'unknown'}] — {desc[:90]}" for num, desc, status in s.get("recent", [])) or "  • —"
-        groups = ", ".join(f"{name}: {qty}" for name, qty in s.get("groups", [])) or "—"
+        recent = "\n".join(
+            f"  • {rec['numero']} [{rec['detail_status'] or 'unknown'}] — {rec['descripcion'][:90]}"
+            for rec in s.get("recent", [])[:8]
+        ) or "  • —"
+        groups = ", ".join(f"{row['grupo']}: {row['count']}" for row in s.get("groups", [])) or "—"
         statuses = ", ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "—"
         columns = ", ".join(f"{col['name']}[{col['type'] or 'TEXT'}]={col['nonempty']}" for col in s.get("columns", [])[:24]) or "—"
         set_previous_db_text(
@@ -2065,7 +1691,7 @@ def run_tk() -> int:
 
     def update_kpi_charts(s: dict[str, object]) -> None:
         items = s.get("item_analysis", {}) if isinstance(s.get("item_analysis"), dict) else {}
-        draw_bars(groups_chart, [(name, qty) for name, qty in s.get("groups", [])])
+        draw_bars(groups_chart, [(row.get("grupo", ""), row.get("count", 0)) for row in s.get("groups", [])])
         draw_bars(entities_chart, [(row.get("label", ""), row.get("count", 0)) for row in s.get("entities", [])], color="#22c55e")
         locations = items.get("top_locations") or []
         if not locations:
@@ -2074,7 +1700,7 @@ def run_tk() -> int:
             locations = s.get("dependencias", [])
         draw_bars(locations_chart, [(row.get("label", ""), row.get("count", 0)) for row in locations], color="#facc15")
         # Oldest→newest so the trend reads left/top to bottom chronologically.
-        draw_bars(trend_chart, [(label, count) for label, count in reversed(list(s.get("monthly_trend", [])))], color="#a78bfa")
+        draw_bars(trend_chart, [(row.get("label", ""), row.get("count", 0)) for row in reversed(list(s.get("monthly_trend", [])))], color="#a78bfa")
         draw_bars(daily_chart, [(row.get("label", ""), row.get("count", 0)) for row in s.get("daily_intake", [])], color="#38bdf8")
         draw_bars(top_items_chart, [(row.get("label", ""), row.get("count", 0)) for row in items.get("top_items", [])], color="#f472b6")
         latest = items.get("sample_items", []) or []
@@ -2092,7 +1718,7 @@ def run_tk() -> int:
         s = db_review_stats(**filters)
         # Keep the selector suggestion lists in sync with the current slice so
         # drilling down (pick group → see its entities) stays easy.
-        kpi_grupo_box["values"] = tuple(name for name, _qty in s.get("groups", []))
+        kpi_grupo_box["values"] = tuple(row.get("grupo", "") for row in s.get("groups", []))
         kpi_entidad_box["values"] = tuple(row.get("label", "") for row in s.get("entities", []))
         active_parts = []
         if filters["days"]:
@@ -2121,8 +1747,8 @@ def run_tk() -> int:
         )
         kpi_vars["whatsapp"].set(
             "Decision delivery KPIs\n"
-            f"Index alerts sent: {s.get('notified', 0)} · Details follow-up backlog: {s.get('detail_notify_backlog', 0)}\n"
-            f"Needs deadline repair: {s.get('needs_deadline', 0)}"
+            f"Index alerts sent: {s.get('notified', 0)} · Failed alerts: {s.get('alerts_failed', 0)}\n"
+            f"Details follow-up backlog: {s.get('detail_notify_backlog', 0)} · Needs deadline repair: {s.get('needs_deadline', 0)}"
         )
         items = s.get("item_analysis", {}) if isinstance(s.get("item_analysis"), dict) else {}
         max_item_record = items.get("max_items_record", {}) if isinstance(items.get("max_items_record"), dict) else {}
@@ -2132,7 +1758,7 @@ def run_tk() -> int:
             f"Parsed item lines: {items.get('total_items', 0)} · Records with items: {items.get('records_with_items', 0)}/{items.get('sampled_records', 0)} · Avg items/record: {items.get('avg_items_per_record', 0)}\n"
             f"Largest record: {max_item_record.get('numero', '-')} ({max_item_record.get('count', 0)} items) · Top item keywords: {item_keywords}"
         )
-        trend = " · ".join(f"{label}: {count}" for label, count in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
+        trend = " · ".join(f"{row['label']}: {row['count']}" for row in s.get("monthly_trend", [])[:6]) or "no monthly trend yet"
         statuses = " · ".join(f"{row['status']}: {row['count']}" for row in s.get("status_breakdown", [])) or "no status data"
         kpi_vars["trend"].set(f"Trend windows: {trend}\nDetail status mix: {statuses}")
         last = read_last_summary()
@@ -2750,7 +2376,7 @@ def run_tk() -> int:
         if not s.get("db_exists"):
             db_review_var.set("No database yet (data/panamacompra_archive.db). Run the collector first.")
             return
-        groups = "   ·   ".join(f"{name}: {qty}" for name, qty in s["groups"]) or "—"
+        groups = "   ·   ".join(f"{row['grupo']}: {row['count']}" for row in s["groups"]) or "—"
         db_review_var.set(
             f"Total records: {s['total']}\n"
             f"Detail status   ·   saved: {s['saved']}   ·   pending: {s['pending']}   ·   failed: {s['failed']}\n"

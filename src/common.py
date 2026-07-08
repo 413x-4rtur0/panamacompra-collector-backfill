@@ -1179,6 +1179,12 @@ def ensure_db_schema(conn):
         # announced as Programada moves to the Abiertas list). Cleared once the
         # MESSAGING step sends the update message.
         "pending_status_change": "ALTER TABLE opportunities ADD COLUMN pending_status_change TEXT",
+        # WhatsApp delivery tracking (audit Phase 3): attempts increment on
+        # every record-level send try; notify_error keeps the LAST failure
+        # reason and is cleared by the next successful send. Together they let
+        # the monitors distinguish "never attempted" from "attempted and failed".
+        "notify_attempts": "ALTER TABLE opportunities ADD COLUMN notify_attempts INTEGER DEFAULT 0",
+        "notify_error": "ALTER TABLE opportunities ADD COLUMN notify_error TEXT",
         "last_notified_status": "ALTER TABLE opportunities ADD COLUMN last_notified_status TEXT",
         "last_notified_items_hash": "ALTER TABLE opportunities ADD COLUMN last_notified_items_hash TEXT",
         "last_notified_signature": "ALTER TABLE opportunities ADD COLUMN last_notified_signature TEXT",

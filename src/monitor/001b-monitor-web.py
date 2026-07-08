@@ -23,13 +23,26 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
 
+# Shared KPI/data engine (audit Phase 4): the archive aggregates and detail
+# helpers live in monitor_common.py so this monitor, the Tk monitor and
+# `pcc kpi` always report the same numbers.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from monitor_common import (  # noqa: E402
+    db_review_stats,
+    finish_stamp_from_detail_json,
+    finish_stamp_from_folder,
+    load_detail_items_for_kpi,
+    load_detail_payload_for_kpi,
+    load_record_index,
+    read_last_summary,
+    stats_to_csv,
+    summarize_items_for_kpi,
+)
+
 BASE_DIR = pc_common.APP_ROOT
 PROGRESS_FILE = pc_common.PROGRESS_PATH
 WORKER_LOG = pc_common.LOG_DIR / "run_all_worker.log"
 CURRENT_LOG = pc_common.LOG_DIR / "run_all_current.log"
-# Written by 100-run-worker.sh on every clean completion: started/finished
-# stamps, per-stage seconds and the index source. Feeds the Overview tab.
-LAST_SUMMARY_FILE = pc_common.LOG_DIR / "run_all_last_summary.env"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
@@ -126,10 +139,11 @@ VALUE_SETTING_DEFAULTS = {
     "WAHA_API_KEY": "",
     "PC_WEBHOOK_PORT": "8765",
     "PC_WEBHOOK_PUBLIC_HOST": "host.docker.internal",
-    # WAHA dashboard login (container side). The stack seeds admin / 12345678 on
-    # install/reinstall so review access always works; edit here to change it.
+    # WAHA dashboard login (container side). Setup generates a RANDOM password
+    # into .env and data/config/integration-access.txt so review access always
+    # works; edit here to change it. Blank keeps the generated .env value.
     "WAHA_DASHBOARD_USERNAME": "admin",
-    "WAHA_DASHBOARD_PASSWORD": "12345678",
+    "WAHA_DASHBOARD_PASSWORD": "",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
@@ -185,7 +199,7 @@ MANUAL_ACTIONS = [
     ManualAction("Settings", "Open web monitor", ("./src/tools/130-open-web-app.sh", "monitor"), "Starts/opens the browser monitor (chromeless app window when available)."),
     ManualAction("Integrations", "Open changedetection app window", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io dashboard in a chromeless app window on the desktop — independent of Firefox, no browser header."),
     ManualAction("Integrations", "Print changedetection JS setup", ("./bin/pcc", "changedetection-script"), "Writes the Browser Steps Execute JS instructions/script for Programadas + Abiertas pagination to the manual action log."),
-    ManualAction("Integrations", "Open WAHA app window", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window on the desktop (login defaults to admin / 12345678)."),
+    ManualAction("Integrations", "Open WAHA app window", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window on the desktop (login: admin + the password from data/config/integration-access.txt)."),
 ]
 
 DEFAULT_PROGRESS = {
@@ -234,24 +248,6 @@ def parse_progress_file() -> dict[str, str]:
             data[key] = raw_value.strip().strip("'").strip('"')
     return data
 
-
-
-def read_last_summary() -> dict[str, str]:
-    """Parse run_all_last_summary.env (KEY='value' lines written by the worker
-    on clean completion). Unknown/missing file yields an empty dict."""
-    data: dict[str, str] = {}
-    if not LAST_SUMMARY_FILE.exists():
-        return data
-    for line in LAST_SUMMARY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not line or line.lstrip().startswith("#") or "=" not in line:
-            continue
-        key, raw_value = line.split("=", 1)
-        try:
-            parsed = shlex.split(raw_value, posix=True)
-            data[key.strip()] = parsed[0] if parsed else ""
-        except ValueError:
-            data[key.strip()] = raw_value.strip().strip("'").strip('"')
-    return data
 
 
 def parse_settings_file() -> dict[str, str]:
@@ -315,373 +311,6 @@ def tail(path: Path, lines: int) -> str:
         return f"No {path.name} yet."
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return "\n".join(content[-lines:])
-
-
-def finish_stamp_from_folder(record_folder: str) -> str:
-    """Fallback DTEND from the record folder leaf '(YYYY-MM-DD_HH_MM)-(numero)-(desc)'
-    when the finish_date_guess column is empty (older records). Returns
-    'YYYY-MM-DD HH:MM' (or 'YYYY-MM-DD'), or '' when the folder carries no stamp."""
-    name = os.path.basename((record_folder or "").rstrip("/"))
-    # Only the first parenthesized token, so the NUMERO cannot be mistaken for it.
-    if name.startswith("(") and ")" in name:
-        name = name[1:name.index(")")]
-    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
-    if not match:
-        return ""
-    if match.group(2) and match.group(3):
-        return f"{match.group(1)} {match.group(2)}:{match.group(3)}"
-    return match.group(1)
-
-
-def finish_stamp_from_detail_json(detail_json_path: str) -> str:
-    """Fallback DTEND from saved detail JSON calendar/summary fields."""
-    if not detail_json_path:
-        return ""
-    try:
-        data = json.loads(Path(detail_json_path).read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    calendar = data.get("calendar") if isinstance(data.get("calendar"), dict) else {}
-    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-    return str(
-        calendar.get("dtend")
-        or data.get("finish_date_guess")
-        or data.get("date_end_opportunity")
-        or summary.get("date_end_opportunity")
-        or ""
-    )
-
-
-def load_record_index(limit: int = 500) -> list[dict[str, str]]:
-    """Read collected records (NUMERO + description + folder/link) from the
-    archive DB for the record-index selector. Newest first; never raises."""
-    if not ARCHIVE_DB.exists():
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
-    except sqlite3.Error:
-        return []
-    try:
-        conn.row_factory = sqlite3.Row
-        column_names = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
-        start_expr = "COALESCE(start_date_guess, '')" if "start_date_guess" in column_names else "''"
-        rows = conn.execute(
-            "SELECT numero, "
-            "COALESCE(NULLIF(short_description, ''), descripcion, '') AS descripcion, "
-            "COALESCE(record_folder, '') AS record_folder, "
-            "COALESCE(link, '') AS link, "
-            "COALESCE(detail_status, '') AS detail_status, "
-            "COALESCE(detail_saved_at, '') AS detail_saved_at, "
-            "COALESCE(detail_json_path, '') AS detail_json_path, "
-            "COALESCE(first_seen, '') AS first_seen, "
-            "COALESCE(finish_date_guess, '') AS finish_date_guess, "
-            f"{start_expr} AS start_date_guess "
-            "FROM opportunities "
-            "ORDER BY COALESCE(first_seen, '') DESC, numero DESC "
-            "LIMIT ?",
-            (limit,),
-        ).fetchall()
-    except sqlite3.Error:
-        rows = []
-    finally:
-        conn.close()
-    return [
-        {
-            "numero": str(row["numero"] or ""),
-            "descripcion": str(row["descripcion"] or ""),
-            "record_folder": str(row["record_folder"] or ""),
-            "link": str(row["link"] or ""),
-            "detail_status": str(row["detail_status"] or ""),
-            "detail_saved_at": str(row["detail_saved_at"] or ""),
-            "first_seen": str(row["first_seen"] or ""),
-            "detail_json_path": str(row["detail_json_path"] or ""),
-            "finish_date_guess": (
-                str(row["finish_date_guess"] or "")
-                or finish_stamp_from_folder(str(row["record_folder"] or ""))
-                or finish_stamp_from_detail_json(str(row["detail_json_path"] or ""))
-            ),
-            "start_date_guess": str(row["start_date_guess"] or ""),
-        }
-        for row in rows
-    ]
-
-
-def load_detail_payload_for_kpi(detail_json_path: str | None) -> tuple[list[dict], dict]:
-    """Best-effort loader of a saved detail JSON for the KPI dashboards.
-
-    Returns (items, summary); handles split item files and never raises."""
-    if not detail_json_path:
-        return [], {}
-    path = Path(str(detail_json_path))
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return [], {}
-    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-    items = data.get("items")
-    if not isinstance(items, list):
-        items = []
-        split = data.get("_split") if isinstance(data.get("_split"), dict) else {}
-        descriptor = split.get("items") if isinstance(split.get("items"), dict) else {}
-        rel = descriptor.get("file")
-        if rel:
-            try:
-                split_items = json.loads((path.parent / str(rel)).read_text(encoding="utf-8"))
-                if isinstance(split_items, list):
-                    items = split_items
-            except Exception:
-                items = []
-    return [item for item in items if isinstance(item, dict)], summary
-
-
-def load_detail_items_for_kpi(detail_json_path: str | None) -> list[dict]:
-    """Best-effort item loader for KPI dashboards; never raises."""
-    return load_detail_payload_for_kpi(detail_json_path)[0]
-
-
-# Detail-summary labels that describe WHERE the opportunity is bought/delivered.
-# Used to build the KPI location diagram from the saved detail pages.
-LOCATION_SUMMARY_KEYS = ("Lugar", "lugar", "Provincia", "provincia", "Unidad de compra", "Dependencia")
-
-
-def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300,
-                            flt: str = "", flt_params: tuple = ()) -> dict[str, object]:
-    """Summarize detail items for decision KPIs without scanning unbounded data.
-
-    ``flt``/``flt_params`` is an optional extra WHERE fragment (same filters the
-    KPI dashboard applies to the archive queries)."""
-    rows = conn.execute(
-        "SELECT numero, descripcion, detail_json_path, "
-        "COALESCE(detail_saved_at, first_seen, '') AS saved_at FROM opportunities "
-        "WHERE COALESCE(detail_json_path, '') <> '' "
-        + (f"AND {flt} " if flt else "")
-        + "ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT ?",
-        (*flt_params, limit),
-    ).fetchall()
-    total_items = 0
-    with_items = 0
-    max_items = {"numero": "", "descripcion": "", "count": 0}
-    keyword_counts: Counter[str] = Counter()
-    location_counts: Counter[str] = Counter()
-    item_name_counts: Counter[str] = Counter()
-    sample_items: list[dict[str, str]] = []
-    for row in rows:
-        items, summary = load_detail_payload_for_kpi(str(row["detail_json_path"] or ""))
-        for key in LOCATION_SUMMARY_KEYS:
-            place = str(summary.get(key) or "").strip()
-            if place:
-                location_counts[place[:60]] += 1
-                break
-        if items:
-            with_items += 1
-        total_items += len(items)
-        if len(items) > int(max_items["count"]):
-            max_items = {"numero": str(row["numero"] or ""), "descripcion": str(row["descripcion"] or ""), "count": len(items)}
-        for item in items:
-            name = str(item.get("descripcion") or item.get("description") or item.get("nombre") or item.get("name") or "").strip()
-            if name:
-                # Normalized item name so the SAME product bought repeatedly
-                # surfaces as a "most frequent item" bar.
-                item_name_counts[name.lower()[:48]] += 1
-            text = " ".join(str(item.get(k, "")) for k in ("descripcion", "description", "nombre", "name", "codigo", "code"))
-            for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
-                if not word.isdigit():
-                    keyword_counts[word] += 1
-            if len(sample_items) < 10:
-                # Rows come newest-first, so these are the LATEST parsed items.
-                sample_items.append({
-                    "numero": str(row["numero"] or ""),
-                    "descripcion": name[:90],
-                    "cantidad": str(item.get("cantidad") or item.get("qty") or item.get("quantity") or ""),
-                    "saved_at": str(row["saved_at"] or "")[:16].replace("T", " "),
-                })
-    avg_items = round(total_items / with_items, 1) if with_items else 0
-    return {
-        "sampled_records": len(rows),
-        "records_with_items": with_items,
-        "total_items": total_items,
-        "avg_items_per_record": avg_items,
-        "max_items_record": max_items,
-        "top_item_keywords": [{"label": k, "count": v} for k, v in keyword_counts.most_common(12)],
-        "top_items": [{"label": k, "count": v} for k, v in item_name_counts.most_common(10)],
-        "top_locations": [{"label": k, "count": v} for k, v in location_counts.most_common(10)],
-        "sample_items": sample_items,
-    }
-
-def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[str, object]:
-    """Aggregate counts for the web Database-review card (mirror of the Tk
-    monitor's panel): totals, detail-queue state, notification state, and a
-    per-group breakdown. Never raises; a missing/locked DB yields zeros.
-
-    ``days``/``grupo``/``entidad`` are the KPI dashboard filters: 0/blank means
-    no filter; otherwise every aggregate is restricted to records first seen in
-    the window and/or matching the group/entity."""
-    empty = {
-        "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
-        "failed": 0, "notified": 0, "notify_backlog": 0, "detail_notify_backlog": 0, "needs_deadline": 0,
-        "new_today": 0, "closing_soon": 0, "soon_days": 7, "abiertas": 0, "programadas": 0,
-        "with_detail_json": 0, "item_analysis": {}, "groups": [], "entities": [], "dependencias": [],
-        "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [],
-        "daily_intake": [], "filters": {"days": days, "grupo": grupo, "entidad": entidad},
-    }
-    if not ARCHIVE_DB.exists():
-        return empty
-    try:
-        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
-    except sqlite3.Error:
-        return empty
-    try:
-        conn.row_factory = sqlite3.Row
-        columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)").fetchall()}
-        has_notified = "notified_at" in columns
-
-        # Optional dashboard filters applied to EVERY aggregate below, so the
-        # cards, diagrams and item analysis all answer for the same slice.
-        flt_conditions: list[str] = []
-        flt_params: list[str] = []
-        if days and int(days) > 0:
-            flt_conditions.append(
-                "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
-            flt_params.append(f"-{int(days)} day")
-        if grupo:
-            flt_conditions.append("COALESCE(grupo, '') = ?")
-            flt_params.append(grupo)
-        if entidad and "entidad" in columns:
-            flt_conditions.append("COALESCE(entidad, '') = ?")
-            flt_params.append(entidad)
-        flt = " AND ".join(flt_conditions)
-        flt_where = f" WHERE {flt}" if flt else ""
-        flt_and = f" AND {flt}" if flt else ""
-
-        def count(where: str = "") -> int:
-            clauses = [c for c in (where, flt) if c]
-            sql = "SELECT COUNT(*) FROM opportunities" + ((" WHERE " + " AND ".join(clauses)) if clauses else "")
-            return int(conn.execute(sql, flt_params if flt else []).fetchone()[0])
-
-        column_details = []
-        for col in conn.execute("PRAGMA table_info(opportunities)").fetchall():
-            name = col[1]
-            nonempty = int(conn.execute(
-                f"SELECT COUNT(*) FROM opportunities WHERE COALESCE(CAST({name} AS TEXT), '') <> ''"
-            ).fetchone()[0])
-            column_details.append({"name": name, "type": col[2], "nonempty": nonempty})
-        status_rows = [
-            {"status": str(r["detail_status"] or "(blank)"), "count": int(r["c"])}
-            for r in conn.execute(
-                "SELECT detail_status, COUNT(*) AS c FROM opportunities" + flt_where
-                + " GROUP BY detail_status ORDER BY c DESC",
-                flt_params,
-            ).fetchall()
-        ]
-        # Records the "Repair missing deadlines" action would act on: blank
-        # finish_date_guess or a (NO-DATE) folder. Mirrors the predicate in
-        # 050-repair-missing-deadlines.py so the count matches what that tool processes.
-        deadline_predicates = ["COALESCE(finish_date_guess, '') = ''",
-                               "UPPER(COALESCE(record_folder, '')) LIKE '%/(NO-DATE)%'"]
-        if "record_folder_leaf" in columns:
-            deadline_predicates.insert(1, "UPPER(COALESCE(record_folder_leaf, '')) LIKE '(NO-DATE)%'")
-        needs_deadline_where = ("COALESCE(link, '') <> '' AND COALESCE(record_folder, '') <> '' AND ("
-                                + " OR ".join(deadline_predicates) + ")")
-
-        # "Closing soon" window follows the operator's deadline-soon setting so
-        # the KPI card, the record-list legend and the repair tools agree.
-        try:
-            soon_days = max(1, int(load_monitor_settings().get("PC_MONITOR_DEADLINE_SOON_DAYS", "7")))
-        except (TypeError, ValueError):
-            soon_days = 7
-        first_seen_day = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
-
-        return {
-            "db_exists": True,
-            "total": count(),
-            "saved": count("detail_status = 'saved'"),
-            "pending": count("detail_status = 'pending'"),
-            "failed": count("detail_status = 'failed'"),
-            "new_today": count(f"{first_seen_day} = date('now')"),
-            "closing_soon": count(
-                "substr(COALESCE(finish_date_guess, ''), 1, 10) >= date('now') "
-                f"AND substr(COALESCE(finish_date_guess, ''), 1, 10) <= date('now', '+{soon_days} day')"),
-            "soon_days": soon_days,
-            "abiertas": count("COALESCE(grupo, '') = 'Abiertas'"),
-            "programadas": count("COALESCE(grupo, '') = 'Programadas'"),
-            "notified": count("notified_at IS NOT NULL") if has_notified else 0,
-            "notify_backlog": count("notified_at IS NULL") if has_notified else 0,
-            "detail_notify_backlog": count(
-                "detail_status = 'saved' AND notified_at IS NOT NULL AND detail_notified_at IS NULL"
-            ) if has_notified and "detail_notified_at" in columns else 0,
-            "needs_deadline": count(needs_deadline_where),
-            "with_detail_json": count("COALESCE(detail_json_path, '') <> ''"),
-            "item_analysis": summarize_items_for_kpi(conn, flt=flt, flt_params=tuple(flt_params)),
-            "recent": [
-                {"numero": str(r["numero"] or ""), "descripcion": str(r["descripcion"] or r["short_description"] or ""), "detail_status": str(r["detail_status"] or "")}
-                for r in conn.execute(
-                    "SELECT numero, descripcion, short_description, detail_status FROM opportunities"
-                    + flt_where +
-                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ],
-            "completed_recent": [
-                {"numero": str(r["numero"] or ""), "finish_date_guess": str(r["finish_date_guess"] or "") or finish_stamp_from_folder(str(r["record_folder"] or "")) or finish_stamp_from_detail_json(str(r["detail_json_path"] or "")), "descripcion": str(r["descripcion"] or r["short_description"] or "")}
-                for r in conn.execute(
-                    "SELECT numero, finish_date_guess, record_folder, detail_json_path, descripcion, short_description FROM opportunities "
-                    "WHERE detail_status = 'saved'" + flt_and +
-                    " ORDER BY COALESCE(detail_saved_at, first_seen, '') DESC, numero DESC LIMIT 5",
-                    flt_params,
-                ).fetchall()
-            ],
-            "columns": column_details,
-            "status_breakdown": status_rows,
-            "monthly_trend": [
-                {"label": str(r["period"] or "unknown"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, finish_date_guess, 'unknown'), 1, 7) AS period, COUNT(*) AS c "
-                    "FROM opportunities" + flt_where + " GROUP BY period ORDER BY period DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ],
-            # Records first seen per day, newest first — the "how alive is the
-            # intake" diagram for the KPI dashboard.
-            "daily_intake": [
-                {"label": str(r["day"]), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') AS day, COUNT(*) AS c "
-                    "FROM opportunities" + flt_where + " GROUP BY day HAVING day <> '' ORDER BY day DESC LIMIT 14",
-                    flt_params,
-                ).fetchall()
-            ],
-            "groups": [
-                {"grupo": str(r["grupo"] or "(sin grupo)"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT grupo, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY grupo ORDER BY c DESC",
-                    flt_params,
-                ).fetchall()
-            ],
-            # WHO buys and WHERE: contracting entities and their dependencies,
-            # for the KPI location/buyer diagrams.
-            "entities": [
-                {"label": str(r["entidad"] or "(sin entidad)"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT entidad, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY entidad ORDER BY c DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ] if "entidad" in columns else [],
-            "dependencias": [
-                {"label": str(r["dependencia"] or "(sin dependencia)"), "count": int(r["c"])}
-                for r in conn.execute(
-                    "SELECT dependencia, COUNT(*) AS c FROM opportunities"
-                    + flt_where + " GROUP BY dependencia ORDER BY c DESC LIMIT 12",
-                    flt_params,
-                ).fetchall()
-            ] if "dependencia" in columns else [],
-            "filters": {"days": int(days or 0), "grupo": grupo, "entidad": entidad},
-        }
-    except sqlite3.Error:
-        return empty
-    finally:
-        conn.close()
 
 
 # Reset actions exposed as separate buttons (per operator request). Maps the
@@ -1014,10 +643,10 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp destinations & toggles</h2><p class="small">Use one group by filling only the default destination, or split messages by purpose with the optional fields below. Blank per-purpose destinations fall back to the default group; if default is blank and exactly one purpose field is filled, that one field becomes the single group for every category.</p><div class="destination-grid"><label>Default / one group</label><textarea id="waha-message-wa" rows="2" placeholder="12036...@g.us (used when a purpose-specific group is blank)"></textarea><label>Index alerts</label><input id="waha-index-wa" size="32" placeholder="blank = default group"><label>Item details</label><input id="waha-details-wa" size="32" placeholder="blank = default group"><label>Status changes</label><input id="waha-status-wa" size="32" placeholder="blank = default group"><label>System health</label><input id="waha-system-wa" size="32" placeholder="blank = default group"><label>Final summary per round</label><input id="waha-summary-wa" size="32" placeholder="blank = default group"></div><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label><br><label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label></p><p><button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div>
 
-<div class="card" data-tab="whatsapp"><h2>WhatsApp advanced delivery settings</h2><p class="small">WAHA server, retry, event and deadline-notification settings live here so the Settings tab stays focused on collector/timer options.</p><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (default 12345678) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label> <button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></div><p class="small">The WAHA dashboard login defaults to admin / 12345678 after every install/reinstall so the review page is always reachable; change the password here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div>
+<div class="card" data-tab="whatsapp"><h2>WhatsApp advanced delivery settings</h2><p class="small">WAHA server, retry, event and deadline-notification settings live here so the Settings tab stays focused on collector/timer options.</p><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (generated by setup) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label> <button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></div><p class="small">The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp filters</h2><p class="small">Per-destination rules deciding which opportunities are announced. OR between comma-separated rules · AND with '+' (<code>salud + panama</code>) · NOT with '-' (<code>-construccion</code> excludes even when another rule matches). Blank destination = the shared filter; everything blank = announce all.</p><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div><div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option><option value="system">System / health</option><option value="summary">Final summary</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div><div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div><div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div><div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#86efac;font-weight:700">upcoming</span> · <span style="color:#fcd34d;font-weight:700">next to expire</span> · <span style="color:#fca5a5;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 
-<div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
+<div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
 <div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
@@ -1445,6 +1074,7 @@ async function refreshOverview() {{
       ['Closing ≤' + (db.soon_days || 7) + 'd', db.closing_soon || 0],
       ['Abiertas', db.abiertas || 0],
       ['Alerts sent', db.notified || 0],
+      ['Failed alerts', db.alerts_failed || 0],
     ].map(x => `<div class="kpi"><span>${{esc(String(x[0]))}}</span><b>${{esc(String(x[1]))}}</b></div>`).join('');
     const lastLine = document.getElementById('overview-last-run');
     if (lastLine) lastLine.textContent = last.FINISHED_AT
@@ -1554,7 +1184,7 @@ async function refreshDecisionDashboard() {{
   const k = document.getElementById('decision-kpis');
   const closure = Number(s.total || 0) ? Math.round(Number(s.saved || 0) / Number(s.total || 1) * 100) : 0;
   const items = s.item_analysis || {{}};
-  k.innerHTML = [ ['Index archive total', s.total || 0], ['New today', s.new_today || 0], ['Closing ≤' + (s.soon_days || 7) + 'd', s.closing_soon || 0], ['Abiertas', s.abiertas || 0], ['Programadas', s.programadas || 0], ['Alerts sent', s.notified || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
+  k.innerHTML = [ ['Index archive total', s.total || 0], ['New today', s.new_today || 0], ['Closing ≤' + (s.soon_days || 7) + 'd', s.closing_soon || 0], ['Abiertas', s.abiertas || 0], ['Programadas', s.programadas || 0], ['Alerts sent', s.notified || 0], ['Failed alerts', s.alerts_failed || 0], ['Details saved', s.saved || 0], ['Details pending', s.pending || 0], ['Details failed', s.failed || 0], ['Item lines parsed', items.total_items || 0], ['Avg items / record', items.avg_items_per_record || 0], ['Deadline repairs', s.needs_deadline || 0], ['Detail closure', closure + '%'] ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
   bars('decision-status', (s.status_breakdown || []).map(r => ({{label: r.status, count: r.count}})));
   bars('decision-groups', (s.groups || []).slice(0, 10).map(r => ({{label: r.grupo, count: r.count}})));
   bars('decision-daily', (s.daily_intake || []).slice(0, 14));
@@ -1963,6 +1593,26 @@ class MonitorHandler(BaseHTTPRequestHandler):
             grupo = params.get("grupo", [""])[0].strip()
             entidad = params.get("entidad", [""])[0].strip()
             self.send_text(200, json.dumps(db_review_stats(days=days, grupo=grupo, entidad=entidad), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/kpi-export":
+            # CSV of the current filtered KPI slice (audit Phase 3) — same
+            # payload as /api/db-stats, flattened by the shared engine.
+            params = parse_qs(urlparse(self.path).query)
+            try:
+                days = max(0, int(params.get("days", ["0"])[0] or 0))
+            except (TypeError, ValueError):
+                days = 0
+            grupo = params.get("grupo", [""])[0].strip()
+            entidad = params.get("entidad", [""])[0].strip()
+            csv_text = stats_to_csv(db_review_stats(days=days, grupo=grupo, entidad=entidad))
+            encoded = csv_text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="panamacompra_kpis.csv"')
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(encoded)
             return
         if path == "/api/webhook-access":
             self.send_text(200, json.dumps(webhook_access_payload(), ensure_ascii=False), "application/json; charset=utf-8")
