@@ -137,6 +137,7 @@ required_scripts=(
   "src/50_tools/120-setup-git-credentials.sh"
   "src/50_tools/140-full-report.py"
   "src/50_tools/150-upload-github.sh"
+  "src/50_tools/160-manage-cron-schedule.py"
   "setup.sh"
   "update-local-copy.sh"
 )

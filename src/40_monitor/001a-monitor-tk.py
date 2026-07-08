@@ -891,21 +891,23 @@ def run_tk() -> int:
             apply_hidden(True)
 
     # ========================================================================
-    # UNIFIED TABS - the same five tabs as the web monitor: Operations ·
-    # Settings · WhatsApp · KPIs · Records & Database. The live header
-    # (progress, process chips, queue) stays visible above the tab bar.
+    # UNIFIED TABS - the same six tabs as the web monitor: Operations ·
+    # Settings · WhatsApp · Scheduler · KPIs · Records & Database. The live
+    # header (progress, process chips, queue) stays visible above the tab bar.
     # ========================================================================
     tabs = ttk.Notebook(content)
     tabs.grid(row=1, column=0, sticky="nsew", padx=14, pady=8)
     ops_tab = ttk.Frame(tabs, style="TFrame")
     settings_tab = ttk.Frame(tabs, style="TFrame")
     whatsapp_tab = ttk.Frame(tabs, style="TFrame")
+    scheduler_tab = ttk.Frame(tabs, style="TFrame")
     kpi_tab = ttk.Frame(tabs, style="TFrame")
     records_tab = ttk.Frame(tabs, style="TFrame")
     for tab_frame, tab_title in (
         (ops_tab, "Operations"),
         (settings_tab, "Settings"),
         (whatsapp_tab, "WhatsApp"),
+        (scheduler_tab, "Scheduler"),
         (kpi_tab, "KPIs"),
         (records_tab, "Records & Database"),
     ):
@@ -1534,6 +1536,113 @@ def run_tk() -> int:
     load_clients()
 
     add_section_toggle(whatsapp, button_column=3)
+
+    # ========================================================================
+    # SCHEDULER TAB - cron-based automatic run scheduling (day pattern + time
+    # window + repeat interval), installed as a real crontab entry via
+    # src/50_tools/160-manage-cron-schedule.py so no manual `crontab -e` step
+    # is needed. Enabling it sets Auto-run source to cron (exclusive with the
+    # changedetection webhook, same rule as the existing Settings tab select).
+    # ========================================================================
+    scheduler = ttk.Frame(scheduler_tab, style="Card.TFrame", padding=14)
+    scheduler.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+    scheduler.columnconfigure(1, weight=1)
+    scheduler.columnconfigure(3, weight=1)
+
+    ttk.Label(scheduler, text="Automatic scheduler (cron)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    ttk.Label(
+        scheduler,
+        text="Runs the collector on a repeating schedule instead of the changedetection webhook trigger. "
+             "Enabling this sets Auto-run source to cron and installs a crontab entry; disabling it removes "
+             "that entry and switches Auto-run source back to changedetection.",
+        style="Card.TLabel", wraplength=820,
+    ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+    cron_enabled_var = tk.BooleanVar(value=setting("PC_AUTORUN_SOURCE", "changedetection") == "cron")
+    cron_days_var = tk.StringVar(value=setting("PC_CRON_DAYS", "daily"))
+    cron_custom_days_var = tk.StringVar(value=setting("PC_CRON_CUSTOM_DAYS", ""))
+    cron_start_var = tk.StringVar(value=setting("PC_CRON_START_TIME", "08:00"))
+    cron_end_var = tk.StringVar(value=setting("PC_CRON_END_TIME", "18:00"))
+    cron_interval_var = tk.StringVar(value=setting("PC_CRON_INTERVAL_MINUTES", "30"))
+
+    cron_enabled_check = ttk.Checkbutton(scheduler, text="Enable scheduled automatic runs", variable=cron_enabled_var, style="Card.TCheckbutton")
+    cron_enabled_check.grid(row=2, column=0, columnspan=4, sticky="w", pady=3)
+
+    ttk.Label(scheduler, text="Days:", style="Card.TLabel").grid(row=3, column=0, sticky="nw", pady=3)
+    days_frame = ttk.Frame(scheduler, style="Card.TFrame")
+    days_frame.grid(row=3, column=1, columnspan=3, sticky="w", pady=3)
+    for value, label in (("daily", "Daily"), ("weekdays", "Weekdays (Mon-Fri)"), ("weekends", "Weekends (Sat-Sun)"), ("custom", "Custom")):
+        ttk.Radiobutton(days_frame, text=label, value=value, variable=cron_days_var, style="Card.TRadiobutton").pack(side="left", padx=(0, 12))
+
+    ttk.Label(scheduler, text="Custom days (0=Sun..6=Sat):", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=3)
+    custom_days_entry = ttk.Entry(scheduler, textvariable=cron_custom_days_var, width=20)
+    custom_days_entry.grid(row=4, column=1, sticky="w", pady=3)
+    add_tooltip(custom_days_entry, "Comma-separated day numbers, cron convention: 0=Sunday, 1=Monday, ... 6=Saturday. Only used when Days=Custom.")
+
+    ttk.Label(scheduler, text="Start time (HH:MM):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    start_entry = ttk.Entry(scheduler, textvariable=cron_start_var, width=10)
+    start_entry.grid(row=5, column=1, sticky="w", pady=3)
+    ttk.Label(scheduler, text="End time (HH:MM):", style="Card.TLabel").grid(row=5, column=2, sticky="e", pady=3)
+    end_entry = ttk.Entry(scheduler, textvariable=cron_end_var, width=10)
+    end_entry.grid(row=5, column=3, sticky="w", pady=3)
+
+    ttk.Label(scheduler, text="Repeat every (minutes):", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=3)
+    interval_entry = ttk.Entry(scheduler, textvariable=cron_interval_var, width=10)
+    interval_entry.grid(row=6, column=1, sticky="w", pady=3)
+    add_tooltip(interval_entry, "e.g. 30 = every 30 minutes within the window. Values of 60 or more must be a whole number of hours (60, 120, ...).")
+
+    scheduler_status_var = tk.StringVar(value="")
+
+    def apply_scheduler() -> None:
+        updates = {
+            "PC_CRON_DAYS": cron_days_var.get(),
+            "PC_CRON_CUSTOM_DAYS": cron_custom_days_var.get().strip(),
+            "PC_CRON_START_TIME": cron_start_var.get().strip() or "08:00",
+            "PC_CRON_END_TIME": cron_end_var.get().strip() or "18:00",
+            "PC_CRON_INTERVAL_MINUTES": cron_interval_var.get().strip() or "30",
+        }
+        merged = load_settings_file()
+        merged.update(updates)
+        if cron_enabled_var.get():
+            merged["PC_AUTORUN_SOURCE"] = "cron"
+        elif merged.get("PC_AUTORUN_SOURCE") == "cron":
+            merged["PC_AUTORUN_SOURCE"] = "changedetection"
+        lines = [
+            "# PanamaCompra monitor settings (KEY=VALUE).",
+            "# Edited from the monitor Settings panel; same-named environment",
+            "# variables override these at startup.",
+        ]
+        lines += [f"{key}={shlex.quote(str(merged[key]))}" for key in sorted(merged)]
+        SETTINGS_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _SETTINGS_FILE.clear()
+        _SETTINGS_FILE.update(merged)
+
+        script = str(BASE_DIR / "src/50_tools/160-manage-cron-schedule.py")
+        if not cron_enabled_var.get():
+            result = subprocess.run([script, "remove"], cwd=BASE_DIR, env=monitor_env(), capture_output=True, text=True)
+            scheduler_status_var.set(result.stdout.strip() or result.stderr.strip() or "Schedule disabled.")
+            return
+
+        args = [script, "install", "--days", cron_days_var.get(), "--custom-days", cron_custom_days_var.get().strip(),
+                "--start", cron_start_var.get().strip() or "08:00", "--end", cron_end_var.get().strip() or "18:00",
+                "--interval", cron_interval_var.get().strip() or "30"]
+        result = subprocess.run(args, cwd=BASE_DIR, env=monitor_env(), capture_output=True, text=True)
+        if result.returncode != 0:
+            scheduler_status_var.set(f"NOT applied: {result.stderr.strip() or result.stdout.strip()}")
+        else:
+            scheduler_status_var.set(result.stdout.strip())
+
+    def refresh_scheduler_status() -> None:
+        script = str(BASE_DIR / "src/50_tools/160-manage-cron-schedule.py")
+        result = subprocess.run([script, "show"], cwd=BASE_DIR, env=monitor_env(), capture_output=True, text=True)
+        scheduler_status_var.set(f"Currently installed: {result.stdout.strip()}")
+
+    apply_scheduler_button = ttk.Button(scheduler, text="Save & Apply schedule", command=apply_scheduler, style="Accent.TButton")
+    apply_scheduler_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
+    ttk.Button(scheduler, text="Refresh status", command=refresh_scheduler_status).grid(row=7, column=1, sticky="w", pady=(8, 0))
+    ttk.Label(scheduler, textvariable=scheduler_status_var, style="Card.TLabel", wraplength=820).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    refresh_scheduler_status()
+    add_section_toggle(scheduler, button_column=3)
 
     # ========================================================================
     # OPERATIONS TAB / LIVE DIAGNOSTICS - Phase, Mode, Item, Started, etc.

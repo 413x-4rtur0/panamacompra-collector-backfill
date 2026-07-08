@@ -606,6 +606,12 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `src/10_webhook/060-run-collector.sh`, so a host runner performs the actual collection. |
 | `PC_WEBHOOK_AUTO_RUN` | `1` | webhook listener | Manual/automatic scheduler switch, also a checkbox in both monitors' Settings tab ("Automatic runs from changedetection (webhook)"). `1` (default) triggers a collector run on every changedetection webhook call, same as before. `0` puts the listener in manual mode: it keeps running (so status/health checks stay accurate and it never needs to be stopped/restarted) but acknowledges and ignores incoming triggers instead of starting a run. Re-read on every request, so toggling it from the monitor takes effect immediately. |
 | `PC_RUNNER_POLL_SECONDS` | `5` | `src/10_webhook/050-watch-queue-flag.sh` | How often the host runner polls for an enqueued run request. |
+| `PC_AUTORUN_SOURCE` | `changedetection` | `src/20_pipeline/115-cron-run.sh` | Exclusive automatic-trigger source: `changedetection` (default, webhook-driven) or `cron` (time-based schedule below). Set from the monitor's Scheduler tab. |
+| `PC_CRON_DAYS` | `daily` | Scheduler tab | Day pattern for the cron schedule: `daily`, `weekdays`, `weekends`, or `custom` (with `PC_CRON_CUSTOM_DAYS`). |
+| `PC_CRON_CUSTOM_DAYS` | (empty) | Scheduler tab | Comma-separated cron day-of-week numbers (`0`=Sunday .. `6`=Saturday) used when `PC_CRON_DAYS=custom`. |
+| `PC_CRON_START_TIME` / `PC_CRON_END_TIME` | `08:00` / `18:00` | Scheduler tab | Daily time window (`HH:MM`) the schedule runs within. The window must not cross midnight. |
+| `PC_CRON_INTERVAL_MINUTES` | `30` | Scheduler tab | How often to run within the window. Under 60: any value (`*/N` minutes). 60+: must be a whole number of hours (`60`, `120`, ...). |
+| `PC_CRON_INDEX_LIMIT` / `PC_CRON_DETAIL_LIMIT` | `0` / `0` | `src/20_pipeline/115-cron-run.sh` | Index page cap / detail limit for cron-triggered runs, same idea as the webhook equivalents. |
 | `PC_MONITOR_MODE` | `tk` | monitor opener | `tk` opens the native Tk monitor; `web` starts the browser monitor; `terminal` tries the old graphical-terminal monitor. |
 | `PC_MONITOR_TK_REFRESH_SECONDS` | `3` | native monitor | Native Tk monitor refresh interval while a run is active. Minimum is 2 seconds. |
 | `PC_MONITOR_TK_IDLE_REFRESH_SECONDS` | `15` | native monitor | Slower native Tk refresh interval after the system is idle/done. |
@@ -661,6 +667,44 @@ Behavior is controlled with environment variables (all optional):
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | detail-notify baseline | `data/config/waha_detail_notify_initialized` | new-record notifier | Marker for the second (item-details) notifier phase so previously announced records do not get a burst of follow-up messages when upgrading. Delete it to re-baseline the detail phase. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `src/30_notify/010-waha-client.py --save-message`; used on later notifications when no one-off message is passed. |
+
+### Automatic scheduler (cron)
+
+The **Scheduler** tab in either monitor lets an operator run the collector on a
+repeating time-based schedule instead of relying on the changedetection webhook
+trigger. Configure a day pattern (Daily, Weekdays, Weekends, or Custom days),
+a start/end time window, and a repeat interval (e.g. every 30 minutes), then
+**Save & Apply schedule**. This:
+
+1. Saves the choice to `monitor_settings.env` (`PC_CRON_DAYS`,
+   `PC_CRON_CUSTOM_DAYS`, `PC_CRON_START_TIME`, `PC_CRON_END_TIME`,
+   `PC_CRON_INTERVAL_MINUTES`).
+2. Sets `PC_AUTORUN_SOURCE=cron` (exclusive with `changedetection` — enabling
+   one disables the other, same rule already used by the Settings tab's
+   Auto-run source selector).
+3. Installs a single, clearly-marked entry (`# PANAMACOMPRA-CRON-SCHEDULE`)
+   into your user crontab via `src/50_tools/160-manage-cron-schedule.py
+   install`, which computes the actual cron expression and calls
+   `crontab -`. Only that one tagged line is ever touched — any other
+   crontab entries you already have are left alone.
+
+Unchecking **Enable scheduled automatic runs** removes that crontab entry
+(`160-manage-cron-schedule.py remove`) and switches `PC_AUTORUN_SOURCE` back to
+`changedetection`. `src/20_pipeline/115-cron-run.sh` (the script the crontab
+entry actually calls) ignores its own trigger whenever `PC_AUTORUN_SOURCE` is
+not `cron`, so a stale/forgotten crontab entry never double-triggers a run
+alongside the webhook. You can also drive it directly:
+```
+./src/50_tools/160-manage-cron-schedule.py install --days weekdays --start 08:00 --end 17:00 --interval 30
+./src/50_tools/160-manage-cron-schedule.py show
+./src/50_tools/160-manage-cron-schedule.py remove
+```
+Overnight windows (end time before start time) are not supported — use two
+separate periods, or a Custom day pattern, instead. Intervals of 60+ minutes
+must be a whole number of hours (60, 120, ...); cron has no sub-hour "stop
+exactly at the end time" boundary, so the last run in a window's final hour
+can land a few minutes after the configured end time — a known cron
+limitation, not a bug.
 
 ### WhatsApp message categories and routing
 
