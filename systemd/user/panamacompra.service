@@ -4,12 +4,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# `pcc start` queues the run request and exits after spawning the detached
+# worker, so this unit is a ONE-SHOT trigger, not a long-running daemon
+# (audit Phase 5: it was previously misdeclared Type=simple, leaving the unit
+# "inactive (dead)" after every successful start). The webhook unit provides
+# the durable service; start this one (or `pcc start`) to queue a run.
+Type=oneshot
 Environment=APP_MODE=installed
 WorkingDirectory=%h/.local/share/panamacompra
 ExecStart=%h/.local/share/panamacompra/bin/pcc start
-Restart=on-failure
-RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=panamacompra

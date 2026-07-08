@@ -120,10 +120,11 @@ ensure_access_credentials() {
     note "Generated WAHA_API_KEY in .env for the WAHA dashboard/API."
   fi
 
-  # WAHA dashboard login. A fresh install/reinstall always gets the documented
-  # default (admin / 12345678) written to .env, so the review dashboard is never
-  # locked behind an unknown password; the user changes it later from .env or
-  # the monitor Settings tab.
+  # WAHA dashboard login. A fresh install/reinstall generates a RANDOM
+  # password (audit Phase 5 — the previous fixed default meant every install
+  # shipped a known login on the WAHA port). It is written to .env and to the
+  # access note below, so the dashboard is never locked behind an unknown
+  # password; change it any time from .env or the monitor Settings tab.
   waha_dash_user="${WAHA_DASHBOARD_USERNAME:-}"
   [ -n "$waha_dash_user" ] || waha_dash_user="$(current_env_value WAHA_DASHBOARD_USERNAME .env)"
   if [ -z "$waha_dash_user" ]; then
@@ -135,10 +136,10 @@ ensure_access_credentials() {
   waha_dash_pass="${WAHA_DASHBOARD_PASSWORD:-}"
   [ -n "$waha_dash_pass" ] || waha_dash_pass="$(current_env_value WAHA_DASHBOARD_PASSWORD .env)"
   if [ -z "$waha_dash_pass" ]; then
-    waha_dash_pass="12345678"
+    waha_dash_pass="$(random_secret | cut -c1-16)"
     set_env_value WAHA_DASHBOARD_PASSWORD "$waha_dash_pass"
     generated_any=1
-    note "WAHA dashboard login set to the default $waha_dash_user / 12345678 — change it in .env or the monitor Settings tab."
+    note "Generated a random WAHA dashboard password for user '$waha_dash_user' — saved in .env and in the access note."
   fi
   export WAHA_DASHBOARD_PASSWORD="$waha_dash_pass"
 
@@ -151,7 +152,7 @@ ensure_access_credentials() {
     printf 'WAHA WhatsApp dashboard/API\n'
     printf '  URL: http://localhost:%s\n' "${WAHA_PORT:-3000}"
     printf '  Dashboard username: %s\n' "$waha_dash_user"
-    printf '  Dashboard password: %s%s\n' "$waha_dash_pass" "$([ "$waha_dash_pass" = "12345678" ] && printf ' (default — change it in .env or the monitor Settings tab)')"
+    printf '  Dashboard password: %s%s\n' "$waha_dash_pass" "$([ "$waha_dash_pass" = "12345678" ] && printf ' (legacy fixed default — change it in .env or the monitor Settings tab)')"
     printf '  API key (X-Api-Key header for /api requests): %s\n\n' "$waha_key"
     printf 'Webhook trigger for changedetection notifications\n'
     printf '  changedetection URL (Docker -> host, recommended): json://host.docker.internal:%s/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "${PC_WEBHOOK_PORT:-8765}" "$webhook_token"

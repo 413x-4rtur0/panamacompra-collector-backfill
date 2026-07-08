@@ -8,6 +8,9 @@ cd "$APP_ROOT"
 
 HEALTH_NOTIFY_PURPOSE="${PC_SYSTEM_HEALTH_NOTIFY_PURPOSE:-system}"
 HEALTH_NOTIFY_CHAT_ID="${PC_SYSTEM_HEALTH_CHAT_ID:-}"
+# Set by the data-freshness section; initialized here so the EXIT trap can
+# reference it under `set -u` even when the script fails earlier.
+FRESHNESS_NOTE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --chat-id) HEALTH_NOTIFY_CHAT_ID="${2:-}"; shift 2 ;;
@@ -57,7 +60,7 @@ send_health_notification() {
     --event done \
     --status "SYSTEM HEALTH $status_label" \
     "${purpose_args[@]}" \
-    --message "System health review finished with status: $status_label. Check data/logs/manual_actions.log or the terminal output for details." \
+    --message "System health review finished with status: $status_label.${FRESHNESS_NOTE:+ $FRESHNESS_NOTE} Check data/logs/manual_actions.log or the terminal output for details." \
     >/dev/null 2>&1 || true
 }
 trap 'status=$?; send_health_notification "$status"; exit "$status"' EXIT
@@ -74,17 +77,19 @@ echo "----------------------"
 cat <<'TXT'
 changedetection.io
   -> src/webhook/010-webhook-listener.py
-  -> src/webhook/060-run-collector.sh
+  -> src/webhook/060-run-collector.sh (or 050-watch-queue-flag.sh for the docker listener)
   -> src/pipeline/110a-request-run.sh
   -> src/pipeline/100-run-worker.sh
        STEP 0: src/pipeline/000-update-before-run.sh
-       STEP 1: src/pipeline/010-collect-index.py
-       STEP 2: src/pipeline/030-collect-details.py
-       STEP 3: src/pipeline/040-build-detail-views.py
-       STEP 4: src/pipeline/050-repair-missing-deadlines.py (verify/repair)
-       STEP 5: src/pipeline/060-build-calendar.py -> data/calendar/YY-MM-DD/*.ics
-       STEP 6: src/pipeline/020-notify-whatsapp.py --announce (WhatsApp)
-       STEP 7: src/pipeline/070-test-zone.py -> records_test/latest_5 + records_test/calendar/YY-MM-DD/*.ics (idle/no-new-records only)
+       STEP 1: src/pipeline/015-import-index-snapshot.py (AUTO) / 010-collect-index.py
+       STEP 2: src/pipeline/020-notify-whatsapp.py --announce (WhatsApp index alerts)
+       STEP 3: src/pipeline/030-collect-details.py (+ inline detail messages)
+       STEP 4: src/pipeline/040-build-detail-views.py (+ work templates)
+       STEP 5: src/pipeline/020-notify-whatsapp.py --announce-details
+       STEP 6: py_compile + src/pipeline/050-repair-missing-deadlines.py (verify/repair)
+       STEP 7: src/pipeline/060-build-calendar.py -> data/calendar/YY-MM-DD/*.ics
+       STEP 8: src/pipeline/070-test-zone.py (opt-in, idle/no-new-records only)
+See docs/ARCHITECTURE.md for the full verified flow.
 TXT
 
 echo ""
@@ -228,7 +233,37 @@ else
 fi
 
 echo ""
-echo "8) Recommended commands"
+echo "8) Data freshness"
+echo "-----------------"
+# Warn when the last SUCCESSFUL run is older than PC_FRESHNESS_MAX_HOURS
+# (default 24). Kept out of the exit status so a quiet weekend does not turn
+# every health message into FAILED; the note still reaches the WAHA message.
+FRESHNESS_NOTE=""
+FRESHNESS_MAX_HOURS="${PC_FRESHNESS_MAX_HOURS:-24}"
+LAST_SUMMARY_FILE="$PC_LOG_DIR/run_all_last_summary.env"
+if [ -f "$LAST_SUMMARY_FILE" ]; then
+  # shellcheck disable=SC1090
+  FINISHED_AT="$(. "$LAST_SUMMARY_FILE" 2>/dev/null; printf '%s' "${FINISHED_AT:-}")"
+  finished_epoch="$(date -d "$FINISHED_AT" '+%s' 2>/dev/null || echo "")"
+  if [ -n "$finished_epoch" ]; then
+    age_hours=$(( ( $(date '+%s') - finished_epoch ) / 3600 ))
+    if [ "$age_hours" -gt "$FRESHNESS_MAX_HOURS" ]; then
+      FRESHNESS_NOTE="WARNING: last successful run finished ${age_hours}h ago ($FINISHED_AT), older than ${FRESHNESS_MAX_HOURS}h — check changedetection, the webhook listener and the worker."
+      echo "$FRESHNESS_NOTE"
+    else
+      echo "OK: last successful run finished ${age_hours}h ago ($FINISHED_AT; threshold ${FRESHNESS_MAX_HOURS}h)."
+    fi
+  else
+    FRESHNESS_NOTE="WARNING: could not parse FINISHED_AT from $LAST_SUMMARY_FILE."
+    echo "$FRESHNESS_NOTE"
+  fi
+else
+  FRESHNESS_NOTE="WARNING: no completed run recorded yet ($LAST_SUMMARY_FILE missing)."
+  echo "$FRESHNESS_NOTE"
+fi
+
+echo ""
+echo "9) Recommended commands"
 echo "-----------------------"
 cat <<'TXT'
 Manual small test:   ./src/pipeline/110a-request-run.sh 5

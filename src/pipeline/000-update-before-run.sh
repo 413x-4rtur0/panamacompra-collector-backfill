@@ -42,8 +42,17 @@ echo "Branch: $BRANCH"
 git fetch --prune "$REMOTE"
 git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH" "$REMOTE/$BRANCH"
 if ! git pull --ff-only "$REMOTE" "$BRANCH"; then
-  echo "Fast-forward not possible; resetting $BRANCH to $REMOTE/$BRANCH."
-  git reset --hard "$REMOTE/$BRANCH"
+  # Appliance installs must always end up on the remote code, so they hard-reset.
+  # A DEVELOPMENT checkout may have local commits the operator cares about —
+  # discarding them silently is how work gets lost — so development mode keeps
+  # the local code and continues the run. Force the old behavior with
+  # PC_UPDATE_FORCE_RESET=1.
+  if [ "$APP_MODE" = "development" ] && [ "${PC_UPDATE_FORCE_RESET:-0}" != "1" ]; then
+    echo "Fast-forward not possible and APP_MODE=development: keeping the local branch (no hard reset). Set PC_UPDATE_FORCE_RESET=1 to force reset to $REMOTE/$BRANCH."
+  else
+    echo "Fast-forward not possible; resetting $BRANCH to $REMOTE/$BRANCH."
+    git reset --hard "$REMOTE/$BRANCH"
+  fi
 fi
 find . -maxdepth 4 \( -name "*.sh" -o -name "*.py" \) -not -path "./.venv/*" -exec chmod +x {} +
 chmod +x ./bin/pcc

@@ -64,9 +64,10 @@ services:
       # collector so it can authenticate to /api/sendText.
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
-      # Dashboard login asked after every install/reinstall. Defaults to
-      # admin / 12345678 so the review dashboard is always reachable; change it
-      # in .env or the monitor Settings tab (applied on the next stack restart).
+      # Dashboard login asked after every install/reinstall. setup.sh /
+      # src/tools/010-docker-stack.sh generate a RANDOM password into .env and
+      # data/config/integration-access.txt; the compose-only fallback below
+      # applies just when the stack is started bypassing those scripts.
       - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
       - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-12345678}
     volumes:
