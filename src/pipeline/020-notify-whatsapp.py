@@ -173,7 +173,7 @@ def waha_enabled() -> bool:
 
 def waha_destination() -> bool:
     """True when any WhatsApp destination is configured (the default chat id or
-    any of the per-purpose index/details/status destinations)."""
+    any of the per-purpose index/details/status/system/summary destinations)."""
     return waha.any_destination_configured()
 
 
@@ -376,6 +376,9 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     if variant == "new":
         heading = f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status}"
+    elif variant == "abierta":
+        heading = f"🟢 *Oportunidad Ahora Abierta - {SOURCE_NAME}*"
+        status_line = f"📊 *Estado:* [ANTERIOR: {clean_field(previous_status)}] ➡️ [ACTUAL: {status}]"
     elif variant == "cancelled":
         heading = f"❌ *Oportunidad Cancelada - {SOURCE_NAME}*"
         status_line = f"📊 *Estado:* {status.upper()}"
@@ -471,11 +474,11 @@ def build_empty_message(records_checked: int) -> str:
 
 # ---------------------------------------------------------------------------
 # Customizable message formats. Each message family (index alert / detail
-# follow-up / status change) can be reformatted by the operator: a template
+# follow-up / status change / operational system message) can be reformatted by the operator: a template
 # saved to data/config/waha_format_<kind>.txt (via `pcc format` or either
 # monitor) replaces the built-in layout. Templates use {placeholder} fields;
 # unknown placeholders are left literally so a typo never breaks a send.
-FORMAT_KINDS = ("index", "details", "status")
+FORMAT_KINDS = ("index", "details", "status", "system", "summary")
 
 PLACEHOLDERS = {
     "heading": "message heading with emoji (varies per message type)",
@@ -500,6 +503,11 @@ PLACEHOLDERS = {
     "fecha_limite": "deadline date on its own",
     "items_total": "number of items (⏳ before the detail download)",
     "dias_restantes": "whole days until the deadline (negative = expired)",
+    "event": "system event name for operational messages (start/done/failed/info)",
+    "status": "short system status label (for example SYSTEM HEALTH OK)",
+    "message": "operator/system message body",
+    "time": "send timestamp for operational messages",
+    "run": "friendly run mode for operational messages, or blank",
 }
 
 DEFAULT_FORMATS = {
@@ -517,6 +525,12 @@ DEFAULT_FORMATS = {
         "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
         "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
         "🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
+    ),
+    "system": (
+        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
+    ),
+    "summary": (
+        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
     ),
 }
 
@@ -543,7 +557,7 @@ def load_custom_format(kind: str) -> str:
 
 
 def kind_for_variant(variant: str) -> str:
-    if variant == "new":
+    if variant in ("new", "abierta"):
         return "index"
     if variant in ("details", "manual"):
         return "details"
@@ -551,11 +565,18 @@ def kind_for_variant(variant: str) -> str:
 
 
 def sample_context(kind: str) -> dict[str, str]:
-    """Fabricated values so templates can be previewed without a real record."""
+    """Fabricated values so templates can be previewed without a real record.
+
+    The "index" kind covers both 🔔 Nueva Oportunidad and 🟢 Oportunidad Ahora
+    Abierta messages (both use the same format template). The preview uses the
+    new-opportunity heading; the Abiertas variant differs only in {heading} and
+    {estado_linea}, which users can observe via `pcc format preview status`."""
     headings = {
         "index": f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*",
         "details": f"📥 *Detalles Completos - {SOURCE_NAME}*",
         "status": f"⚠️ *Cambio de Estado - {SOURCE_NAME}*",
+        "system": f"🛠️ *Sistema - {SOURCE_NAME}*",
+        "summary": f"📊 *Resumen final de ronda - {SOURCE_NAME}*",
     }
     items = (
         "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
@@ -585,6 +606,11 @@ def sample_context(kind: str) -> dict[str, str]:
         "fecha_limite": "2026-07-15 16:00",
         "items_total": "⏳" if kind == "index" else "2",
         "dias_restantes": "13",
+        "event": "done",
+        "status": "DONE" if kind == "summary" else "SYSTEM HEALTH OK",
+        "message": "Inicio: 2026-07-07 08:00:00\nFin: 2026-07-07 08:18:42\nDuración total: 18m 42s\nNuevos: 4\nDetalles guardados: 4" if kind == "summary" else "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
+        "time": "2026-07-07 10:30:00",
+        "run": "Manual",
     }
 
 
@@ -594,17 +620,32 @@ def render_format(kind: str, template: str | None = None) -> str:
     return text.format_map(_SafeDict(sample_context(kind)))
 
 
-# Human-readable label for a pending_status_change code stored by the index step.
+# Human-readable label for a pending_status_change code (used in monitor progress lines).
 STATUS_CHANGE_LABELS = {
     "abierta": "Programada → Abierta",
-    "cancelada": "Programada → Cancelada",  # planned future transition
+    "cancelada": "Programada → Cancelada",
+}
+
+# Previous-status fallback for the WhatsApp message when last_notified_status is not set.
+# Separate from STATUS_CHANGE_LABELS (which are full transition descriptions used only in
+# monitor progress previews, not in message bodies).
+_PREV_STATUS_FOR_CHANGE = {
+    "abierta": "Programada",
+    "cancelada": "Programada",
 }
 
 
-def build_status_change_message(row, summary: dict, change_code: str) -> str:
-    previous_status = row["last_notified_status"] or STATUS_CHANGE_LABELS.get(change_code, change_code or DASH)
-    variant = "cancelled" if is_cancelled_status(status_value(row)) else "status"
-    return build_record_message(row, summary, variant=variant, previous_status=previous_status)
+def build_status_change_message(row, summary: dict, change_code: str, match_line: str | None = None) -> str:
+    # _PREV_STATUS_FOR_CHANGE supplies just the previous status name ("Programada"),
+    # not the full transition label from STATUS_CHANGE_LABELS ("Programada → Abierta").
+    previous_status = row["last_notified_status"] or _PREV_STATUS_FOR_CHANGE.get(change_code, change_code or DASH)
+    if change_code == "abierta":
+        variant = "abierta"
+    elif is_cancelled_status(status_value(row)):
+        variant = "cancelled"
+    else:
+        variant = "status"
+    return build_record_message(row, summary, variant=variant, previous_status=previous_status, match_line=match_line)
 
 def export_record_calendar(conn, row) -> str:
     calendar = load_detail_calendar(row["detail_json_path"])
@@ -682,11 +723,27 @@ def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
     return evaluate_filter(haystack, includes, excludes)
 
 
+def record_events_respect_filter() -> bool:
+    """Whether rich opportunity messages should obey PC_WAHA_NOTIFY_EVENTS.
+
+    Default false: PC_NOTIFY_WHATSAPP is the record-notification switch, while
+    PC_WAHA_NOTIFY_EVENTS remains useful for short operational messages. This
+    avoids the confusing setup where only `done` is enabled, so the final summary
+    sends but changedetection/new-opportunity messages are silently filtered out.
+    Set PC_WAHA_RECORD_EVENTS_RESPECT_FILTER=1 to restore strict event filtering.
+    """
+    return cfg_bool("PC_WAHA_RECORD_EVENTS_RESPECT_FILTER", False)
+
+
 def send_text(event: str, text: str, purpose: str = "") -> bool:
-    """Send through WAHA respecting the per-event enable list, routed to the
-    per-purpose destination ('index', 'details', 'status'; '' = default chat).
-    Returns True only when the message was actually sent."""
-    if not waha.enabled_for_event(event):
+    """Send through WAHA, routed to the per-purpose destination.
+
+    Record-level sends are controlled by PC_NOTIFY_WHATSAPP plus destination and
+    keyword/date filters. They intentionally bypass PC_WAHA_NOTIFY_EVENTS unless
+    PC_WAHA_RECORD_EVENTS_RESPECT_FILTER=1, so changedetection page updates are
+    not hidden while only the final `done` summary continues to send.
+    """
+    if record_events_respect_filter() and not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
     if not waha.configured_chat_id(purpose):
@@ -814,19 +871,26 @@ def clear_status_change(conn, numero: str) -> None:
 def notify_status_change(conn, numero: str) -> bool:
     """Announce a single record's status transition (e.g. Programada → Abierta).
     Idempotent: clears the pending flag whether or not a message is sent. Returns
-    True only when a message was actually sent. Never raises."""
+    True only when a message was actually sent. Never raises.
+
+    Programadas→Abiertas transitions (change_code="abierta") are routed to the
+    "index" destination so they appear in the same feed as new-opportunity alerts.
+    All other status changes continue going to the "status" destination."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
         row = fetch_row(conn, numero)
         if row is None or not row["pending_status_change"]:
             return False
+        change_code = row["pending_status_change"]
+        # Abiertas transitions go to the index feed (new-opportunity channel).
+        purpose = "index" if change_code == "abierta" else "status"
         summary = load_detail_summary(row["detail_json_path"])
-        # Respect the status destination's keyword filter.
-        if match_line_for(row, summary, "status") is None:
+        match_line = match_line_for(row, summary, purpose)
+        if match_line is None:
             clear_status_change(conn, numero)
             return False
-        sent = send_text("update", build_status_change_message(row, summary, row["pending_status_change"]), purpose="status")
+        sent = send_text("update", build_status_change_message(row, summary, change_code, match_line=match_line), purpose=purpose)
         if sent:
             export_record_calendar(conn, row)
             mark_snapshot(conn, numero)
@@ -1172,8 +1236,11 @@ def announce_with_progress(conn) -> int:
         summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
         if kind == "update":
             change = full_row["pending_status_change"] if full_row is not None else ""
-            verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
-            preview = f"🔄 {label} ({verb})"
+            if change == "abierta":
+                preview = f"🟢 {label} (Ahora Abierta)"
+            else:
+                verb = STATUS_CHANGE_LABELS.get(change, change or "actualización")
+                preview = f"🔄 {label} ({verb})"
         elif kind == "status":
             preview = f"🟡 {label} (estado cambiado)"
         elif kind == "items":

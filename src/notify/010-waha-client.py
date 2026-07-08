@@ -30,11 +30,14 @@ DEFAULT_SESSION = "default"
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 SAVED_MESSAGE_PATH = CONFIG_DIR / "waha_message.txt"
 CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
+SYSTEM_FORMAT_PATH = CONFIG_DIR / "waha_format_system.txt"
+SUMMARY_FORMAT_PATH = CONFIG_DIR / "waha_format_summary.txt"
 
 # Per-purpose destinations, so the index alerts, the item-detail follow-ups and
-# the status-change messages can each go to a different group/channel. Every
-# purpose falls back to the default destination when not configured.
-CHAT_PURPOSES = ("index", "details", "status")
+# the status-change, system-health and final-summary messages can each go to a
+# different group/channel. Every purpose falls back to the default destination
+# when not configured.
+CHAT_PURPOSES = ("index", "details", "status", "system", "summary")
 
 
 def chat_id_path(purpose: str = "") -> Path:
@@ -50,28 +53,60 @@ def _read_chat_file(path: Path) -> str:
     return ""
 
 
-def configured_chat_id(purpose: str = "") -> str:
-    """Destination chat id for a purpose: PC_WAHA_CHAT_ID_<PURPOSE> env first,
-    then the monitor-saved per-purpose file, then the default destination
-    (PC_WAHA_CHAT_ID env, then waha_chat_id.txt)."""
-    if purpose in CHAT_PURPOSES:
-        env_value = os.environ.get(f"PC_WAHA_CHAT_ID_{purpose.upper()}", "").strip()
-        if env_value:
-            return env_value
-        file_value = _read_chat_file(chat_id_path(purpose))
-        if file_value:
-            return file_value
+def _purpose_chat_id_without_fallback(purpose: str) -> str:
+    """Purpose-specific chat id from env/file only, without default fallback."""
+    if purpose not in CHAT_PURPOSES:
+        return ""
+    env_value = os.environ.get(f"PC_WAHA_CHAT_ID_{purpose.upper()}", "").strip()
+    if env_value:
+        return env_value
+    return _read_chat_file(chat_id_path(purpose))
+
+
+def _default_chat_id() -> str:
     chat_id = os.environ.get("PC_WAHA_CHAT_ID", "").strip()
     if chat_id:
         return chat_id
     return _read_chat_file(CHAT_ID_PATH)
 
 
+def _single_purpose_fallback_chat_id() -> str:
+    """If the operator filled exactly one purpose field, treat it as one group.
+
+    This prevents the common misconfiguration where only Summary/System is filled:
+    the final summary sends, but index/detail messages silently have no default.
+    When multiple purpose-specific fields exist and the default is blank, missing
+    purposes still skip so we do not guess between different groups.
+    """
+    values = []
+    for purpose in CHAT_PURPOSES:
+        value = _purpose_chat_id_without_fallback(purpose)
+        if value and value not in values:
+            values.append(value)
+    return values[0] if len(values) == 1 else ""
+
+
+def configured_chat_id(purpose: str = "") -> str:
+    """Destination chat id for a purpose.
+
+    Order: purpose-specific env/file, default env/file, then an exactly-one
+    purpose-specific fallback. The last case makes "one group" work even if the
+    chat id was accidentally placed in Summary/System/Index instead of Default.
+    """
+    purpose_value = _purpose_chat_id_without_fallback(purpose)
+    if purpose_value:
+        return purpose_value
+    default_value = _default_chat_id()
+    if default_value:
+        return default_value
+    return _single_purpose_fallback_chat_id()
+
+
 def any_destination_configured() -> bool:
     """True when the default destination or any per-purpose destination is set."""
-    if configured_chat_id():
+    if _default_chat_id():
         return True
-    return any(configured_chat_id(purpose) for purpose in CHAT_PURPOSES)
+    return any(_purpose_chat_id_without_fallback(purpose) for purpose in CHAT_PURPOSES)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -122,15 +157,42 @@ def run_mode_label() -> str:
     return RUN_MODE_LABELS.get(mode, mode.title())
 
 
-def build_message(event: str, status: str, message: str) -> str:
+class _SafeDict(dict):
+    def __missing__(self, key):  # noqa: D105
+        return "{" + key + "}"
+
+
+def load_operational_format(kind: str) -> str:
+    path = SUMMARY_FORMAT_PATH if kind == "summary" else SYSTEM_FORMAT_PATH
+    if path.exists():
+        text = path.read_text(encoding="utf-8", errors="replace").strip("\n")
+        if text.strip():
+            return text
+    return ""
+
+
+def build_message(event: str, status: str, message: str, purpose: str = "") -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
     mode_label = run_mode_label()
+    body = message.strip() or saved_message()
+    kind = "summary" if purpose == "summary" else "system"
+    custom = load_operational_format(kind)
+    if custom:
+        return custom.format_map(_SafeDict({
+            "heading": f"{prefix} [{event.upper()}]",
+            "event": event,
+            "status": status,
+            "message": body,
+            "time": timestamp,
+            "run": mode_label,
+            "fuente": prefix,
+        }))
+
+    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
     if mode_label:
         parts.append(f"Run: {mode_label}")
     parts.append(f"Time: {timestamp}")
-    body = message.strip() or saved_message()
     if body:
         parts.append(body)
     return "\n".join(parts)
@@ -165,7 +227,7 @@ def send_text(text: str, purpose: str = "") -> None:
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
     chat_id = configured_chat_id(purpose)
-    api_key = os.environ.get("PC_WAHA_API_KEY", "").strip()
+    api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 
     if not chat_id:
@@ -202,22 +264,24 @@ def main() -> int:
     parser.add_argument("--status", default="INFO", help="Short status label for the message body.")
     parser.add_argument("--message", default="", help="Additional notification message text. If omitted, the saved reusable message is used.")
     parser.add_argument("--save-message", action="store_true", help="Save --message as the reusable group notification message for this and future runs.")
+    parser.add_argument("--force-send", action="store_true", help="Send even when PC_WAHA_ENABLED=0 or the event is not listed in PC_WAHA_NOTIFY_EVENTS (used for explicit tests).")
+    parser.add_argument("--purpose", default="", choices=["", *CHAT_PURPOSES], help="Use a purpose-specific destination, falling back to the default chat id.")
     args = parser.parse_args()
 
     if args.save_message:
         save_message(args.message)
         print(f"Saved reusable WAHA message to {SAVED_MESSAGE_PATH}.")
 
-    if not env_bool("PC_WAHA_ENABLED", False):
+    if not args.force_send and not env_bool("PC_WAHA_ENABLED", False):
         print("WAHA notification skipped: set PC_WAHA_ENABLED=1 and PC_WAHA_CHAT_ID to enable.")
         return 0
 
-    if not enabled_for_event(args.event):
+    if not args.force_send and not enabled_for_event(args.event):
         print(f"WAHA notification skipped: event {args.event!r} is not enabled.")
         return 0
 
     try:
-        send_text(build_message(args.event, args.status, args.message))
+        send_text(build_message(args.event, args.status, args.message, purpose=args.purpose), purpose=args.purpose)
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         return 1 if env_bool("PC_WAHA_STRICT", False) else 0

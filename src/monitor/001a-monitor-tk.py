@@ -57,6 +57,8 @@ WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_CHAT_ID_INDEX_PATH = CONFIG_DIR / "waha_chat_id_index.txt"
 WAHA_CHAT_ID_DETAILS_PATH = CONFIG_DIR / "waha_chat_id_details.txt"
 WAHA_CHAT_ID_STATUS_PATH = CONFIG_DIR / "waha_chat_id_status.txt"
+WAHA_CHAT_ID_SYSTEM_PATH = CONFIG_DIR / "waha_chat_id_system.txt"
+WAHA_CHAT_ID_SUMMARY_PATH = CONFIG_DIR / "waha_chat_id_summary.txt"
 
 
 def read_chat_file(path) -> str:
@@ -168,6 +170,7 @@ MANUAL_ACTIONS = [
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
     ManualAction("Updater & Migration", "Update local copy", ("./src/monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
     ManualAction("Updater & Migration", "Pre-run update only", ("./src/pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh used before worker iterations (no browser install)."),
+    ManualAction("Updater & Migration", "Upload local changes to GitHub", ("./bin/pcc", "upload-github"), "Commits local checkout changes and pushes the current branch to GitHub/origin. Use after local edits when you want the cloud repo updated before pulling elsewhere."),
     ManualAction("Updater & Migration", "Normalize folder names", ("./src/tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
     ManualAction("Updater & Migration", "Migrate old records", ("./src/tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
 
@@ -187,11 +190,13 @@ MANUAL_ACTIONS = [
     ManualAction("Integrations (Docker)", "Restart docker stack", ("./src/tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved from this panel (changedetection URL, WAHA port/API key)."),
     ManualAction("Integrations (Docker)", "Stop docker stack", ("./src/tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
     ManualAction("Integrations (Docker)", "Open changedetection UI", ("./src/tools/130-open-web-app.sh", "changedetection"), "Opens the changedetection.io interface in a chromeless app window (no Firefox needed; falls back to the default browser) to configure the PanamaCompra watch and its trigger/webhook URL."),
+    ManualAction("Integrations (Docker)", "Print changedetection JS setup", ("./bin/pcc", "changedetection-script"), "Writes the Browser Steps Execute JS instructions/script for Programadas + Abiertas pagination to data/logs/manual_actions.log so you can copy it into changedetection."),
     ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login defaults to admin / 12345678 (see data/config/integration-access.txt)."),
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
     ManualAction("Testing & Validation", "Run test zone", ("./src/pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
-    ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary."),
+    ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary; on completion WAHA sends a System health message to the system destination (override with pcc health --chat-id/--purpose)."),
+    ManualAction("Testing & Validation", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
 
     # --- 6. Folder Management: open data storage locations -------------------
     ManualAction("Folder Management", "Open index folder", ("bash", "-c", f"xdg-open {shlex.quote(str(pc_common.DATA_DIR / 'index'))}"), "Opens the main index folder where collected records are stored."),
@@ -770,9 +775,11 @@ def webhook_access_text() -> str:
         f"Webhook token: {token if token else '(not generated yet — run ./setup.sh or ./src/tools/010-docker-stack.sh up)'}\n"
         f"Token file:    {token_path}\n"
         f"Listener:      {'RUNNING' if webhook_running() else 'off'} on port {port}\n\n"
-        "changedetection notification URL (compose network, preferred):\n"
+        "changedetection notification URL (Docker → host, recommended):\n"
+        f"  json://{public_host}:{port}/panamacompra/{shown}{query}\n"
+        "Compose-only URL (use only if changedetection can resolve host 'webhook'):\n"
         f"  json://webhook:8765/panamacompra/{shown}{query}\n"
-        "From a Docker container to a HOST-run listener:\n"
+        "Docker container → host listener URL (plain HTTP test):\n"
         f"  http://{public_host}:{port}/panamacompra/{shown}\n"
         "Local test from this machine:\n"
         f"  http://127.0.0.1:{port}/panamacompra/{shown}\n\n"
@@ -896,13 +903,15 @@ def status_snapshot() -> dict[str, object]:
         "auto_close_enabled": done and progress.get("MODE", "IDLE").upper() == "AUTO" and not processes.get("test_run", False),
         "refresh_seconds": IDLE_REFRESH_SECONDS if done else REFRESH_SECONDS,
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
-        "worker_log": tail(WORKER_LOG, 18),
-        "current_log": tail(CURRENT_LOG, 28),
+        "worker_log": tail(WORKER_LOG, 10),
+        "current_log": tail(CURRENT_LOG, 14),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
         "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
         "waha_chat_id_status": read_chat_file(WAHA_CHAT_ID_STATUS_PATH),
+        "waha_chat_id_system": read_chat_file(WAHA_CHAT_ID_SYSTEM_PATH),
+        "waha_chat_id_summary": read_chat_file(WAHA_CHAT_ID_SUMMARY_PATH),
     }
 
 
@@ -1370,6 +1379,8 @@ def run_tk() -> int:
     waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
     waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
     waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
+    waha_system_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_SYSTEM_PATH))
+    waha_summary_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_SUMMARY_PATH))
 
     def read_filter_file(path: Path) -> str:
         if not path.exists():
@@ -1409,6 +1420,8 @@ def run_tk() -> int:
     timer_data_refresh_var = tk.StringVar(value=setting("PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS", "10"))
     monitor_stale_var = tk.StringVar(value=setting("PC_MONITOR_STALE_SECONDS", "120"))
     changedetection_url_var = tk.StringVar(value=setting("CHANGEDETECTION_BASE_URL", os.environ.get("CHANGEDETECTION_BASE_URL", "http://localhost:5000")))
+    webhook_port_var = tk.StringVar(value=setting("PC_WEBHOOK_PORT", os.environ.get("PC_WEBHOOK_PORT", "8765")))
+    webhook_public_host_var = tk.StringVar(value=setting("PC_WEBHOOK_PUBLIC_HOST", os.environ.get("PC_WEBHOOK_PUBLIC_HOST", "host.docker.internal")))
     waha_port_var = tk.StringVar(value=setting("WAHA_PORT", os.environ.get("WAHA_PORT", "3000")))
     waha_server_key_var = tk.StringVar(value=setting("WAHA_API_KEY", ""))
     # WAHA dashboard login: the docker stack seeds admin / 12345678 on every
@@ -1472,14 +1485,20 @@ def run_tk() -> int:
     # ---- Settings tab: Integrations ----------------------------------------
     group_title(settings, 17, "Integrations (changedetection container; applied on the next docker stack restart)")
     field(settings, 18, 0, "changedetection URL:", changedetection_url_var, 24, "Base URL the changedetection container advertises and the 'Open changedetection UI' button uses. Env: CHANGEDETECTION_BASE_URL. Applied to the container on the next docker stack restart.")
+    field(settings, 18, 2, "Webhook listener port:", webhook_port_var, 8, "Port used by the host webhook listener and the recommended changedetection json://host.docker.internal URL. Env: PC_WEBHOOK_PORT.")
+    field(settings, 19, 0, "Webhook public host:", webhook_public_host_var, 24, "Hostname changedetection containers use to reach the host listener. Keep host.docker.internal for Docker Desktop/modern Linux Docker. Env: PC_WEBHOOK_PUBLIC_HOST.")
 
     def send_test_whatsapp() -> None:
-        subprocess.Popen(
-            [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
-             "--message", "Prueba de notificación desde el monitor PanamaCompra."],
-            cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        button_status_var.set("WhatsApp test message requested (uses the saved WAHA settings; check the group and data/logs).")
+        MANUAL_ACTION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with MANUAL_ACTION_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} | WhatsApp / native test send =====\n")
+            subprocess.Popen(
+                [str(BASE_DIR / "src/notify/010-waha-client.py"), "--event", "info", "--status", "TEST",
+                 "--force-send", "--purpose", "system",
+                 "--message", "Prueba de notificación desde el monitor PanamaCompra."],
+                cwd=BASE_DIR, env=monitor_env(), stdout=log_file, stderr=subprocess.STDOUT,
+            )
+        button_status_var.set("WhatsApp test message requested. Output: data/logs/manual_actions.log")
 
     def apply_settings() -> None:
         def as_int(var: tk.StringVar, fallback: int, low: int) -> int:
@@ -1509,6 +1528,8 @@ def run_tk() -> int:
         WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_SYSTEM_PATH.write_text(waha_system_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_SUMMARY_PATH.write_text(waha_summary_var.get().strip() + "\n", encoding="utf-8")
 
         def write_filter_file(path: Path, raw: str) -> None:
             rules = [k.strip() for k in re.split(r"[,\n]", raw) if k.strip()]
@@ -1552,6 +1573,8 @@ def run_tk() -> int:
             "PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS": timer_data_refresh_var.get().strip() or "10",
             "PC_MONITOR_STALE_SECONDS": monitor_stale_var.get().strip() or "120",
             "CHANGEDETECTION_BASE_URL": changedetection_url_var.get().strip() or "http://localhost:5000",
+            "PC_WEBHOOK_PORT": webhook_port_var.get().strip() or "8765",
+            "PC_WEBHOOK_PUBLIC_HOST": webhook_public_host_var.get().strip() or "host.docker.internal",
             "WAHA_PORT": waha_port_var.get().strip() or "3000",
             "WAHA_API_KEY": waha_server_key_var.get().strip(),
             "WAHA_DASHBOARD_USERNAME": waha_dash_user_var.get().strip() or "admin",
@@ -1575,17 +1598,17 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=19, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=20, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately and persist EVERY setting from the Settings and WhatsApp tabs to data/config/monitor_settings.env (shell-quoted so the worker can source them).")
-    ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=20, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ---- Settings tab: Work templates ---------------------------------------
-    group_title(settings, 21, "Work templates (copied into templates/ inside each record folder)")
+    group_title(settings, 22, "Work templates (copied into templates/ inside each record folder)")
     templates_src_var = tk.StringVar(value=setting("PC_TEMPLATES_SRC_DIR", ""))
-    field(settings, 22, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
+    field(settings, 23, 0, "Templates source folder:", templates_src_var, 36, "Folder holding your reusable work files (bid forms, checklists, ...). Blank = var/templates. Env: PC_TEMPLATES_SRC_DIR. Click Apply, then Refresh template files to re-scan.")
     templates_listbox = tk.Listbox(settings, selectmode="multiple", height=5, activestyle="none", exportselection=False)
-    templates_listbox.grid(row=23, column=1, columnspan=3, sticky="ew", pady=3)
-    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=23, column=0, sticky="nw", pady=3)
+    templates_listbox.grid(row=24, column=1, columnspan=3, sticky="ew", pady=3)
+    ttk.Label(settings, text="Template files (Ctrl-click = multi-select):", style="Card.TLabel").grid(row=24, column=0, sticky="nw", pady=3)
     add_tooltip(templates_listbox, "Tick the template files to copy into each record's templates/ folder. Selection is saved on Apply to data/config/templates_selected.txt (shared with pcc templates). New downloads receive them automatically; files already inside a record are never overwritten.")
 
     def refresh_templates_list() -> None:
@@ -1631,67 +1654,67 @@ def run_tk() -> int:
     chat_entry = ttk.Entry(whatsapp, textvariable=waha_var)
     chat_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(whatsapp, text="Per-purpose chat ids (blank = default above):", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=3)
-    purpose_frame = ttk.Frame(whatsapp, style="Card.TFrame")
-    purpose_frame.grid(row=6, column=1, columnspan=3, sticky="ew", pady=3)
-    for _col, (_label, _var, _tip) in enumerate((
+    ttk.Label(whatsapp, text="Optional per-purpose chat ids (blank = default; if default is blank and exactly one purpose is filled, it becomes the one group):", style="Card.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
+    for _row, (_label, _var, _tip) in enumerate((
         ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
         ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
-        ("Status changes:", waha_status_var, "Group/channel that receives status-change/cancellation/items-updated messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
-    )):
-        ttk.Label(purpose_frame, text=_label, style="Card.TLabel").grid(row=0, column=_col * 2, sticky="w", padx=(0 if _col == 0 else 8, 4))
-        _entry = ttk.Entry(purpose_frame, textvariable=_var, width=22)
-        _entry.grid(row=0, column=_col * 2 + 1, sticky="ew")
+        ("Status changes:", waha_status_var, "Group/channel that receives status-change, cancellation and item-update messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
+        ("System health:", waha_system_var, "Group/channel that receives review-system, worker start/failure and test messages. Env: PC_WAHA_CHAT_ID_SYSTEM. Blank = default destination."),
+        ("Final summary per round:", waha_summary_var, "Group/channel that receives the one final run summary after each collector round. Env: PC_WAHA_CHAT_ID_SUMMARY. Blank = default destination."),
+    ), start=7):
+        ttk.Label(whatsapp, text=_label, style="Card.TLabel").grid(row=_row, column=0, sticky="w", pady=3)
+        _entry = ttk.Entry(whatsapp, textvariable=_var)
+        _entry.grid(row=_row, column=1, columnspan=3, sticky="ew", pady=3)
         add_tooltip(_entry, _tip)
 
-    group_title(whatsapp, 7, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
-    ttk.Label(whatsapp, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=8, column=0, sticky="w", pady=3)
+    group_title(whatsapp, 12, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
+    ttk.Label(whatsapp, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(whatsapp, textvariable=keywords_var)
-    kw_entry.grid(row=8, column=1, columnspan=3, sticky="ew", pady=3)
+    kw_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
-    field(whatsapp, 9, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
-    field(whatsapp, 9, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
-    field(whatsapp, 10, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+    field(whatsapp, 14, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(whatsapp, 14, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(whatsapp, 15, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
 
-    group_title(whatsapp, 11, "Delivery")
-    field(whatsapp, 12, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
-    field(whatsapp, 12, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
-    ttk.Label(whatsapp, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
+    group_title(whatsapp, 16, "Delivery")
+    field(whatsapp, 17, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
+    field(whatsapp, 17, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
+    ttk.Label(whatsapp, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=18, column=0, sticky="w", pady=3)
     events_entry = ttk.Entry(whatsapp, textvariable=waha_events_var)
-    events_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=3)
+    events_entry.grid(row=18, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
     test_whatsapp_button = ttk.Button(whatsapp, text="Send test WhatsApp", command=send_test_whatsapp)
-    test_whatsapp_button.grid(row=14, column=0, sticky="w", pady=3)
+    test_whatsapp_button.grid(row=19, column=0, sticky="w", pady=3)
     add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
 
-    group_title(whatsapp, 15, "WAHA server (container; applied on the next docker stack restart)")
-    field(whatsapp, 16, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
-    field(whatsapp, 16, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
-    field(whatsapp, 17, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
-    field(whatsapp, 17, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
-    field(whatsapp, 18, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
-    field(whatsapp, 18, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. A fresh install/reinstall seeds the default 12345678 so you can always get in — change it here whenever you like. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
-    ttk.Label(whatsapp, text="Dashboard login defaults to admin / 12345678 after every install/reinstall; change the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=19, column=0, columnspan=4, sticky="w", pady=(4, 0))
+    group_title(whatsapp, 20, "WAHA server (container; applied on the next docker stack restart)")
+    field(whatsapp, 21, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
+    field(whatsapp, 21, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
+    field(whatsapp, 22, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(whatsapp, 22, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
+    field(whatsapp, 23, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
+    field(whatsapp, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. A fresh install/reinstall seeds the default 12345678 so you can always get in — change it here whenever you like. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
+    ttk.Label(whatsapp, text="Dashboard login defaults to admin / 12345678 after every install/reinstall; change the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     whatsapp_apply_button = ttk.Button(whatsapp, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    whatsapp_apply_button.grid(row=20, column=0, sticky="w", pady=(10, 0))
+    whatsapp_apply_button.grid(row=25, column=0, sticky="w", pady=(10, 0))
     add_tooltip(whatsapp_apply_button, "Same as the Settings tab Apply: persists every setting from both tabs and saves the WhatsApp destination/keywords files.")
-    ttk.Label(whatsapp, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=21, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(whatsapp, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    group_title(whatsapp, 22, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
+    group_title(whatsapp, 27, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
     format_kind_var = tk.StringVar(value="index")
     format_controls = ttk.Frame(whatsapp, style="Card.TFrame")
-    format_controls.grid(row=23, column=0, columnspan=4, sticky="w", pady=3)
+    format_controls.grid(row=28, column=0, columnspan=4, sticky="w", pady=3)
     ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
-    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=("index", "details", "status"), width=9, state="readonly")
+    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=notify_formats.FORMAT_KINDS, width=12, state="readonly")
     format_kind_combo.grid(row=0, column=1, padx=(0, 10))
-    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with the items; status = cambios de estado/cancelaciones/items.")
+    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with items; status = cambios/cancelaciones/items; system = health/worker/test messages; summary = final run summary per round.")
 
     format_text = tk.Text(whatsapp, height=8, wrap="word")
-    format_text.grid(row=24, column=0, columnspan=4, sticky="ew", pady=3)
+    format_text.grid(row=29, column=0, columnspan=4, sticky="ew", pady=3)
     add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
     format_preview = tk.Text(whatsapp, height=8, wrap="word", state="disabled")
-    format_preview.grid(row=25, column=0, columnspan=4, sticky="ew", pady=3)
+    format_preview.grid(row=30, column=0, columnspan=4, sticky="ew", pady=3)
 
     def _set_preview(text: str) -> None:
         format_preview.configure(state="normal")
@@ -2739,7 +2762,7 @@ def run_tk() -> int:
     webhook_access_refresh = ttk.Button(webhook_access, text="Refresh webhook access", command=refresh_webhook_access)
     webhook_access_refresh.grid(row=2, column=0, sticky="w", pady=(8, 0))
     add_tooltip(webhook_access_refresh, "Re-read .webhook_token and the port settings so the URLs reflect the current setup (e.g. right after running setup or the docker stack).")
-    add_tooltip(webhook_access_box, "Copyable: token + the changedetection json:// URL, the host.docker.internal URL and the local test URL. Paste the json:// URL into the changedetection notification settings.")
+    add_tooltip(webhook_access_box, "Copyable: token + the changedetection json:// URL, the host.docker.internal URL and the local test URL. Paste the recommended json://host.docker.internal URL into changedetection; use json://webhook only in the same compose network.")
     refresh_webhook_access()
     add_section_toggle(webhook_access, button_column=0)
 
@@ -2759,7 +2782,7 @@ def run_tk() -> int:
         frame.grid(row=1, column=grid_col, sticky="nsew", padx=pad)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-        text = tk.Text(frame, height=18, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
+        text = tk.Text(frame, height=8, bg="#020617", fg="#e5e7eb", insertbackground="#e5e7eb", wrap="word")
         bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=bar.set)
         text.grid(row=0, column=0, sticky="nsew")
@@ -2836,9 +2859,13 @@ def run_tk() -> int:
             waha_details_var.set(str(snap.get("waha_chat_id_details", "")))
         if not waha_status_var.get():
             waha_status_var.set(str(snap.get("waha_chat_id_status", "")))
+        if not waha_system_var.get():
+            waha_system_var.set(str(snap.get("waha_chat_id_system", "")))
+        if not waha_summary_var.get():
+            waha_summary_var.set(str(snap.get("waha_chat_id_summary", "")))
 
-        set_text(worker_text, str(snap["worker_log"]))
-        set_text(current_text, str(snap["current_log"]))
+        set_text(worker_text, str(snap.get("worker_log") or "(no recent worker log lines)"))
+        set_text(current_text, str(snap.get("current_log") or "(no current action log lines)"))
 
         counting_down = False
         if not snap["done"]:

@@ -46,8 +46,11 @@ notify_waha() {
   local event="$1"
   local status="$2"
   local message="$3"
+  local purpose="${4:-system}"
+  local purpose_args=()
+  [ -z "$purpose" ] || purpose_args=(--purpose "$purpose")
   if [ -x "$APP_ROOT/src/notify/010-waha-client.py" ]; then
-    "$PYTHON_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" >> "$WORKER_LOG" 2>&1 || true
+    "$PYTHON_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" "${purpose_args[@]}" >> "$WORKER_LOG" 2>&1 || true
   fi
 }
 
@@ -567,7 +570,7 @@ Fin: $FINISHED
 Duración total: $(format_eta "$TOTAL_SECONDS")
 Etapas: index $(format_eta "$INDEX_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), verification $(format_eta "$VERIFY_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS")
 Iteración: $ITERATION
-$SUMMARY_COUNTS"
+$SUMMARY_COUNTS" "summary"
     {
       echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"

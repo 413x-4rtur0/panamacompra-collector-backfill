@@ -164,8 +164,11 @@ Key point: the webhook only starts/queues the run. Two notifier phases: the inde
 alert is sent right after the index step — before the long download phase — so
 subscribers hear about a new opportunity immediately, and once its detail page is
 downloaded a follow-up message delivers the full record (items, location, dates)
-in the rich format. Disable the follow-up with **PC_NOTIFY_DETAILS=0** to fold the
-items into the snapshot silently instead.
+in the rich format. Record-level changedetection notifications are controlled by
+`PC_NOTIFY_WHATSAPP`, destinations, keyword/date filters and the database delta;
+they no longer disappear just because `PC_WAHA_NOTIFY_EVENTS` was narrowed to
+`done` for operational summaries. Disable the follow-up with **PC_NOTIFY_DETAILS=0**
+to fold the items into the snapshot silently instead.
 
 ### Process diagram and test visibility
 
@@ -251,7 +254,7 @@ The scripts resolve their own location, so the project can live in **any directo
 - Playwright Firefox browser — installed automatically by `./setup.sh`, including Debian/Ubuntu browser libraries when apt is available; or manually in the active virtualenv with `python -m playwright install --with-deps firefox`
 - Shell tools: `bash`, `flock`, `timeout`, `pgrep`, `pkill`, `tail`, `sed`, `grep`, `find`, `date`, `tee`, and a desktop opener such as `xdg-open` for opening the test sandbox folder after monitor-launched tests
 - Optional: `sqlite3` CLI for manual inspection
-- Optional: `git` — only required for the self-update commands (`./update-local-copy.sh`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
+- Optional: `git` — only required for the self-update/upload commands (`./update-local-copy.sh`, `./bin/pcc upload-github`, the worker's pre-run auto-update step, the desktop **Update + Monitor** launcher). A checkout obtained by downloading and extracting a ZIP (no `.git` directory) installs and collects normally; a failed pre-run update is only logged as a warning and never blocks a run.
 
 
 ### Updating an existing local copy
@@ -283,6 +286,30 @@ half-way. To request a small smoke run after the update, use:
 cd ~/Apps/panamacompra-collector
 PC_UPDATE_TEST_DETAIL_LIMIT=5 ./update-local-copy.sh
 ```
+
+### Uploading local changes to GitHub
+
+If you edited this local checkout first and want GitHub/cloud to receive those
+changes before another machine runs `./update-local-copy.sh`, use the upload helper:
+
+```bash
+cd ~/Apps/panamacompra-collector
+./bin/pcc upload-github --message "Describe the local fix"
+```
+
+The helper stages Git-tracked/unignored changes, commits them when needed, and
+pushes `HEAD` to the current branch on `origin` (override with `--remote` or
+`--branch`). Runtime data such as `data/`, `records/`, `var/`, `.venv`, and
+integrations stay protected by `.gitignore`. Preview without changing GitHub with:
+
+```bash
+./bin/pcc upload-github --dry-run
+```
+
+If the remote uses HTTPS and credentials are missing, run
+`./src/tools/120-setup-git-credentials.sh` once or configure SSH credentials, then
+repeat the upload. Both monitors also include **Upload local changes to GitHub**
+in the updater/migration actions.
 
 #### Recovering from a blocked merge or PR checkout
 
@@ -470,7 +497,7 @@ PC_DETAIL_LIMIT=5 ./src/pipeline/030-collect-details.py   # download up to 5 pen
 | `src/monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/monitor/000-open-monitor.sh` | Opens/starts the native Tk monitor and the tiny next-run timer by default. Set `PC_MONITOR_MODE=web` for browser monitor or `PC_MONITOR_MODE=terminal` for terminal monitor. |
 | `src/pipeline/130b-run-status.sh` | One-shot status snapshot. |
-| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
+| `bin/pcc` | Unified headless CLI: run control (`start`/`stop`/`status`/`watch`), KPI summary and terminal diagrams (`db` / `kpi` with `--days/--grupo/--entidad` filters — the same numbers as the monitors' KPIs tab, including detail item-line analysis, latest/most-frequent items, daily intake, top item keywords, groups, contracting entities and detail locations), webhook trigger access (`webhook info` — token + changedetection/docker/local URLs), full diagnostics (`full-report`), upload local Git changes (`upload-github`), monitor settings (`get`/`set`), WhatsApp destinations (`chat default|index|details|status`), keyword filter (`keywords`), test message (`test-whatsapp`), manual record notifications (`notify`), Docker stack (`docker`), webhook, setup/uninstall/launcher. Writes the same `data/config` files as the GUI monitors, so CLI and monitors stay interchangeable. |
 | `src/pipeline/130a-queue-status.sh` | Prints the collector request queue, the Update + Monitor queue, runner/worker process state, the current progress snapshot, and recent log tails. Backs `bin/pcc status`. |
 | `data/logs/run_all_last_summary.env` | Last successful run duration summary used by monitor ETA and the next-run timer. |
 | `src/pipeline/120a-stop-everything.sh` | Emergency stop for stuck index/detail/worker processes. |
@@ -531,6 +558,10 @@ Behavior is controlled with environment variables (all optional):
 | `PC_TEST_ZONE_LIMIT` | `5` | run-all worker | How many recent records the idle testing zone (STEP 7) re-runs in the sandbox when `PC_TEST_ZONE_AUTORUN=1`. `0` disables it. |
 | `PC_RUN_UPDATE_BEFORE_RUN` | `1` | run-all worker | Run `src/pipeline/000-update-before-run.sh` before every worker iteration. Set `0` to skip automatic pre-run updates. |
 | `PC_UPDATE_REMOTE` | `origin` | update scripts | Git remote used by `update-local-copy.sh` and `src/pipeline/000-update-before-run.sh`. |
+| `PC_UPLOAD_REMOTE` | `PC_UPDATE_REMOTE` / `origin` | upload helper | Git remote used by `./bin/pcc upload-github` / `src/tools/150-upload-github.sh`. |
+| `PC_UPLOAD_BRANCH` | current branch | upload helper | Branch pushed by the upload helper. Override when running from detached HEAD or when publishing to a specific branch. |
+| `PC_UPLOAD_COMMIT_MESSAGE` | timestamped message | upload helper | Default commit message used when `--message` is not passed. |
+| `PC_UPLOAD_RUN_CHECKS` | `0` | upload helper | Set `1` or pass `--run-checks` to run lightweight syntax/diff checks before committing and pushing. |
 | `PC_UPDATE_BRANCH` | auto-detect | update scripts | Optional **hard override** that pins the branch to track. When empty (default), `update-local-copy.sh` auto-selects: it stays on `main` if the most recently updated remote branch is already merged into `main`, otherwise it switches to that latest branch. `src/pipeline/000-update-before-run.sh` uses it (or the current branch) for its lightweight refresh. |
 | `PC_UPDATE_TEST_DETAIL_LIMIT` | `0` | `update-local-copy.sh` | Optional smoke-run detail limit to request during the update. The updater suppresses the request script's monitor opener so the monitor still opens only after the full local update exits successfully. |
 | `PC_UPDATE_SKIP_BROWSER_INSTALL` | `0` | `update-local-copy.sh` | Set to `1` to skip automatic Playwright Firefox install during local updates. |
@@ -579,12 +610,15 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_CHAT_ID_INDEX` | `data/config/waha_chat_id_index.txt` fallback | WAHA notifier | Optional destination for the **index alerts** (immediate “🔔 Nueva Oportunidad” messages and the “⚪ Sin nuevas entradas” status). Blank = default destination. |
 | `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
 | `PC_WAHA_CHAT_ID_STATUS` | `data/config/waha_chat_id_status.txt` fallback | WAHA notifier | Optional destination for **status-change messages** (Programada → Abierta, cancellations, “🔄 Actualización de Items”). Blank = default destination. |
+| `PC_WAHA_CHAT_ID_SYSTEM` | `data/config/waha_chat_id_system.txt` fallback | WAHA notifier | Optional destination for **system health / worker / test messages**. Blank = default destination. |
+| `PC_WAHA_CHAT_ID_SUMMARY` | `data/config/waha_chat_id_summary.txt` fallback | WAHA notifier | Optional destination for the **final summary per collector round**. Blank = default destination. |
 | `PC_WAHA_API_KEY` | `WAHA_API_KEY` fallback | WAHA notifier | Optional WAHA `X-Api-Key` value when the WAHA server requires it. When unset, `lib/env.sh` defaults it to the container-side `WAHA_API_KEY` from `.env`, so one value protects the server and authenticates the notifier. |
 | `PC_WEB_APP_BROWSER` | auto-detect | web-app opener | Exact browser command `src/tools/130-open-web-app.sh` / `pcc open` should use for the chromeless dashboard windows (tried with `--app=` first, then with the plain URL). Blank = auto-detect a Chromium-family browser, then a lightweight browser, then the default browser. |
 | `PC_WEB_APP_MODE` | `app` | web-app opener | `app` opens the dashboards as chromeless app windows (no browser header, independent of Firefox); `browser` skips the app-window attempts and always uses the regular default browser. |
 | `WAHA_DASHBOARD_USERNAME` | `admin` | WAHA container | Login user for the WAHA review dashboard (`http://localhost:3000`). Editable from either monitor's WhatsApp tab; applied on the next docker stack restart. |
 | `WAHA_DASHBOARD_PASSWORD` | `12345678` | WAHA container | Login password the WAHA dashboard asks for after an install/reinstall. The stack seeds the documented default `12345678` into `.env` so you can always get in to review/pair the session; change it in `.env` or the monitors' WhatsApp tab whenever you like (applied on the next stack restart). |
-| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names to send. `new` = rich “nueva oportunidad” messages, `none` = “sin nuevas entradas” status. Use `all` to send every supported event. |
+| `PC_WAHA_NOTIFY_EVENTS` | `info,start,done,failed,timeout,resume,update,new,none` | WAHA notifier | Comma-separated event names for short operational sends. Record-level changedetection notifications (`new`, `update`, `none`) are controlled by `PC_NOTIFY_WHATSAPP` and bypass this list by default so page changes are not hidden while only final summaries send. |
+| `PC_WAHA_RECORD_EVENTS_RESPECT_FILTER` | `0` | record notifier | Set `1` only if rich opportunity messages should also obey `PC_WAHA_NOTIFY_EVENTS`. Leave `0` to ensure new/changed opportunities still notify even when the event list was narrowed to `done`. |
 | `PC_WAHA_STRICT` | `0` | WAHA notifier | Set `1` only if notification failures should fail the notifier command. Worker calls still ignore notifier failures. |
 | `PC_WAHA_SOURCE` | `Panamá Compra` | new-record notifier | Source label used in the rich opportunity message headings (e.g. `Nueva Oportunidad - <source>`) and shown as `📌 Fuente:` in the “sin nuevas entradas” status. |
 | `PC_WAHA_TIMEOUT_SECONDS` | `30` | WAHA notifier | Per-attempt HTTP timeout (seconds) for each WAHA `sendText` call. Raise it for a slow/remote WAHA; lower it to detect an unreachable endpoint faster. |
@@ -592,14 +626,37 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_BREAKER_THRESHOLD` | `3` | WAHA notifier | Consecutive failed sends in one run before retries are suppressed (each message still gets a single attempt; one success re-arms retries). Raise it to keep retrying longer through a flaky WAHA. |
 | `PC_NOTIFY_SKIP_EXPIRED` | `0` | new-record notifier | Set `1` to skip announcing opportunities whose deadline (DTEND) has already passed. Records with no detectable deadline are never suppressed. |
 | `PC_NOTIFY_WITHIN_DAYS` | unset | new-record notifier | When set to an integer N, only announce opportunities whose deadline is within the next N days; records further out are deferred and re-checked on later runs as their deadline approaches. |
-| message formats | `data/config/waha_format_{index,details,status}.txt` | notifier / monitors / CLI | Optional custom `{placeholder}` templates replacing the built-in WhatsApp layouts; delete (or `pcc format reset`) to restore the defaults. |
+| message formats | `data/config/waha_format_{index,details,status,system,summary}.txt` | notifier / monitors / CLI | Optional custom `{placeholder}` templates replacing the built-in WhatsApp layouts; delete (or `pcc format reset`) to restore the defaults. |
 | template selection | `data/config/templates_selected.txt` | record templates | One selected template file per line (relative to the source folder), written by `pcc templates select/unselect`. |
 | keyword filters | `data/config/waha_keywords.txt` + `waha_keywords_{index,details,status}.txt` | notifier / monitors / CLI | Optional per-destination rules deciding which opportunities are announced. One rule per line (commas also separate rules); **OR** between rules, **AND** inside a rule with `+` (`salud + panama`), **NOT** with a leading `-` (`-construccion` excludes even when another rule matches; `-obra + calle` excludes only when both words appear). Matching is accent/case-insensitive over description, entity, dependency and modality. A destination without rules falls back to the shared file; everything blank announces all. Matched rules appear in `🔎 Coincidencia`. Manage with `pcc keywords [global|index|details|status] list|set|clear|test` or from either monitor. |
 | notify baseline | `data/config/waha_notify_initialized` | new-record notifier | Marker written on first run so the existing archive is not announced as “new”. Delete it to re-baseline. |
 | detail-notify baseline | `data/config/waha_detail_notify_initialized` | new-record notifier | Marker for the second (item-details) notifier phase so previously announced records do not get a burst of follow-up messages when upgrading. Delete it to re-baseline the detail phase. |
 | saved WAHA message | `data/config/waha_message.txt` | WAHA notifier | Optional reusable message body saved by `src/notify/010-waha-client.py --save-message`; used on later notifications when no one-off message is passed. |
 
-The detail limit can also be passed positionally for manual runs: `./src/pipeline/110a-request-run.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save the WhatsApp group/channel destination that receives automated “what is new” messages for current and future runs. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
+### WhatsApp message categories and routing
+
+WhatsApp messages are separated into five operator-facing categories. You can keep
+everything in one group by setting only `PC_WAHA_CHAT_ID`, or route each category
+to a different group with the per-purpose fields in either monitor or with
+`./bin/pcc chat <purpose> <chat-id>`. Blank per-purpose destinations first fall
+back to the default group. If the default is blank and exactly one purpose field is
+filled, that one field is treated as the single group for every category; if
+multiple purpose fields are filled, only those categories are sent and missing
+purposes stay unsent until you add a default or that purpose-specific group.
+
+| Purpose | When it sends | Destination override | Format template | Common variants / placeholders |
+|---|---|---|---|---|
+| `index` | Immediately after the index scan for new Programadas/Abiertas records, plus the no-new-records notice. | `PC_WAHA_CHAT_ID_INDEX` / `waha_chat_id_index.txt` | `waha_format_index.txt` | New opportunity, no-new status; uses record fields like `{numero}`, `{descripcion}`, `{estado}`, `{grupo}`, `{fecha_limite}`. |
+| `details` | After detail pages are downloaded for records that were announced. | `PC_WAHA_CHAT_ID_DETAILS` / `waha_chat_id_details.txt` | `waha_format_details.txt` | Detail follow-up with parsed items; uses `{items}`, `{items_total}`, `{ubicacion}`, `{rango_fechas}`. |
+| `status` | Status changes, cancellations, and item-update notices. | `PC_WAHA_CHAT_ID_STATUS` / `waha_chat_id_status.txt` | `waha_format_status.txt` | Status changed/cancelled/items changed; uses `{estado_anterior}`, `{estado_linea}`, and the record fields. |
+| `system` | Health review, worker start/failure/resume/test messages. | `PC_WAHA_CHAT_ID_SYSTEM` / `waha_chat_id_system.txt` | `waha_format_system.txt` | Operational text; uses `{event}`, `{status}`, `{message}`, `{time}`, `{run}`. |
+| `summary` | One final summary after each collector round finishes. | `PC_WAHA_CHAT_ID_SUMMARY` / `waha_chat_id_summary.txt` | `waha_format_summary.txt` | Final per-round summary; uses `{message}` for the multiline counts/timing body plus `{status}`, `{time}`, `{run}`. |
+
+Use `./bin/pcc format placeholders` to see all fields, `./bin/pcc format preview
+<kind>` to preview a category, and `./bin/pcc format set <kind> --file
+template.txt` to personalize exactly which fields each message sends.
+
+The detail limit can also be passed positionally for manual runs: `./src/pipeline/110a-request-run.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save WhatsApp group/channel destinations. Fill only the default destination to send every message to one group, or fill per-purpose destinations for index alerts, item-detail follow-ups, and status changes, system-health messages, and final per-round summaries; blank per-purpose fields fall back to the default group. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Monitor layout — unified tabs
 
@@ -624,7 +681,7 @@ Inside the tabs, the sections are:
 4. **Settings (editable)** — entry fields pre-filled with the current values; change what you need and leave the rest, then click **Apply & save settings**:
    - Window transparency (`0.30`–`1.00`, default `0.85`; lower it for a more see-through window) — applied live.
    - Auto-close seconds, active refresh seconds, idle refresh seconds — applied live.
-   - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes, each optional), and keyword filter.
+   - WhatsApp source label, default destination chat id, per-purpose chat ids (index alerts / item details / status changes / system health / final summary, each optional), and keyword filter.
    - Per-destination WhatsApp filters: shared + index/details/status rule fields with AND (`+`), OR (commas) and NOT (`-`) operators (native monitor Settings; web monitor **WhatsApp filters** card backed by `/api/waha-filters`).
    - WhatsApp message formats editor: pick index/details/status, edit the `{placeholder}` template, Preview with sample data, Save or Reset (native monitor Settings block; web monitor card backed by `/api/waha-format`).
    - Opportunity calendar panel: a **graphical month calendar** (7-column day grid with per-day opportunity counts, amber outline on today, busiest days highlighted; click any day to jump to its detail) plus the day/week/month/year text views with Prev/Today/Next navigation, switchable between deadline, start, and downloaded dates (native monitor canvas + web monitor grid backed by `/api/calendar-grid` and `/api/calendar`).
@@ -797,10 +854,11 @@ Behavior notes:
   `http://127.0.0.1:3000`) and a destination chat id. Set
   `PC_WAHA_CHAT_ID` or save the destination from either monitor, which writes
   `data/config/waha_chat_id.txt` for the notifier to read. Each message type can
-  also go to its own group: set `PC_WAHA_CHAT_ID_INDEX`, `PC_WAHA_CHAT_ID_DETAILS`
-  and/or `PC_WAHA_CHAT_ID_STATUS` (or fill the per-purpose fields in either
-  monitor, saved to `data/config/waha_chat_id_{index,details,status}.txt`);
-  anything left blank uses the default destination. If messages do not
+  also go to its own group: set `PC_WAHA_CHAT_ID_INDEX`, `PC_WAHA_CHAT_ID_DETAILS`,
+  `PC_WAHA_CHAT_ID_STATUS`, `PC_WAHA_CHAT_ID_SYSTEM`, and/or
+  `PC_WAHA_CHAT_ID_SUMMARY` (or fill the per-purpose fields in either
+  monitor, saved to `data/config/waha_chat_id_{index,details,status,system,summary}.txt`);
+  anything left blank uses the default destination; if there is no default and exactly one purpose-specific chat id exists, that one chat id is used as the single fallback group. If messages do not
   send, verify `PC_WAHA_ENABLED=1`, the WAHA server/session is running,
   `PC_NOTIFY_WHATSAPP` is not `0`, and `PC_WAHA_NOTIFY_EVENTS` includes
   `new`, `update`, `none`, and `done` as needed.
@@ -1305,10 +1363,19 @@ https://www.panamacompra.gob.pa/Inicio/#/cotizaciones-en-linea/cotizaciones-en-l
 
 **Watch configuration**
 
-- Fetch method: Playwright / Firefox (JavaScript mode)
-- JS actions: close popup → click *Programadas* → set 50 rows/page → crawl pages →
-  click *Abiertas* → set 50 rows/page → crawl pages → output stable text keyed by `NUMERO`
+- Fetch method: Playwright / Firefox (JavaScript mode).
+- Browser Steps → Execute JS: paste the maintained script at
+  `config/changedetection-browser-steps.js` (also printable with
+  `./bin/pcc changedetection-script` and copyable with
+  `./bin/pcc changedetection-script --copy`). The native and web monitors also
+  expose this from the Integrations actions/panel.
+- The script closes popups, selects 50 rows/page, crawls **all** pagination pages
+  for *Programadas* first and then *Abiertas*, de-duplicates by `NUMERO`, and
+  writes stable text into `#pc-monitor-output`.
 - CSS filter: `#pc-monitor-output`
+- Visual Filter: empty / disabled
+- Remove elements: empty
+- Triggers: empty
 - Do **not** include visual row number, page number, or generated timestamps (they cause false alerts)
 
 **Webhook**
@@ -1322,9 +1389,12 @@ python src/webhook/010-webhook-listener.py
 ```
 
 The listener accepts requests at `/panamacompra/<TOKEN>` and responds with HTTP
-202 immediately, before queueing/starting collector work. For Docker Compose use
-`json://webhook:8765/...` with `format=text&overflow=truncate&rto=15&cto=10`; use `host.docker.internal:8765` only when you are
-intentionally targeting a listener running on the host. If
+202 immediately, before queueing/starting collector work. For changedetection running in Docker and a durable listener on the host, use the
+Docker-to-host URL shown by `./bin/pcc webhook info` or the monitors, for example
+`json://host.docker.internal:8765/panamacompra/YOUR_TOKEN?method=POST&format=text&overflow=truncate&rto=15&cto=10`.
+Use `json://webhook:8765/...` only when changedetection and the webhook service
+are in the same Docker Compose network and changedetection can resolve the
+`webhook` hostname. If
 `curl http://127.0.0.1:8765/health` returns JSON naming the old
 `panamacompra-webhook-receiver` service, then port 8765 is occupied by the old
 host listener. Run `./src/webhook/020-start-listener.sh --replace-port-owner` to stop
@@ -1441,7 +1511,7 @@ Launcher maintenance commands:
 
 For operators who prefer filenames to show workflow order, `scripts/tasks/` contains ordered wrapper names such as `001a-setup-development.sh`, `001b-install-update-monitor-launcher.sh`, `020-start-collector.sh`, and `090-uninstall-or-purge.sh`; see `scripts/README.md` for the naming methodology.
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
-diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
+diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. Log panes intentionally show compact tails (worker: 10 lines, action: 14 lines) with their own scrollbars to avoid large blank panels when logs are quiet. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The updater/migration actions include **Upload local changes to GitHub**, which runs `./bin/pcc upload-github` to commit local edits and push the current branch before another workstation updates. The **Full diagnostic report** action (also `./bin/pcc full-report`) writes a Markdown report under `data/reports/` with paths, settings (secrets redacted), integration URLs, process state, Docker status, queue flags, database counters, key files and recent logs. WhatsApp format editors now cover `index`, `details`, `status`, `system`, and `summary` messages, so System health / worker / test notifications and the final per-round summary are not left out. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
 For a tiny always-on-top countdown timer showing when the next live run is due, run:
 ```bash

@@ -6,6 +6,62 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/lib/env.sh"
 cd "$APP_ROOT"
 
+HEALTH_NOTIFY_PURPOSE="${PC_SYSTEM_HEALTH_NOTIFY_PURPOSE:-system}"
+HEALTH_NOTIFY_CHAT_ID="${PC_SYSTEM_HEALTH_CHAT_ID:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --chat-id) HEALTH_NOTIFY_CHAT_ID="${2:-}"; shift 2 ;;
+    --purpose) HEALTH_NOTIFY_PURPOSE="${2:-system}"; shift 2 ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: review-system.sh [--chat-id WAHA_CHAT_ID] [--purpose default|index|details|status|system|summary]
+
+Runs repository/system health checks. When WAHA is enabled, completion sends a
+"System health" message to the selected purpose destination (default:
+system). --chat-id overrides that destination for this run.
+USAGE
+      exit 0
+      ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+case "$HEALTH_NOTIFY_PURPOSE" in default|index|details|status|system|summary) ;; *) HEALTH_NOTIFY_PURPOSE="system" ;; esac
+
+SETTINGS_FILE="$PC_DATA_DIR/config/monitor_settings.env"
+load_monitor_settings_for_health() {
+  if [ -f "$SETTINGS_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$SETTINGS_FILE"
+    set +a
+  fi
+}
+
+send_health_notification() {
+  local exit_status="$1" status_label="OK"
+  [ "$exit_status" -eq 0 ] || status_label="FAILED"
+  load_monitor_settings_for_health
+  if [ -n "$HEALTH_NOTIFY_CHAT_ID" ]; then
+    case "$HEALTH_NOTIFY_PURPOSE" in
+      index) export PC_WAHA_CHAT_ID_INDEX="$HEALTH_NOTIFY_CHAT_ID" ;;
+      details) export PC_WAHA_CHAT_ID_DETAILS="$HEALTH_NOTIFY_CHAT_ID" ;;
+      status) export PC_WAHA_CHAT_ID_STATUS="$HEALTH_NOTIFY_CHAT_ID" ;;
+      system) export PC_WAHA_CHAT_ID_SYSTEM="$HEALTH_NOTIFY_CHAT_ID" ;;
+      summary) export PC_WAHA_CHAT_ID_SUMMARY="$HEALTH_NOTIFY_CHAT_ID" ;;
+      default) export PC_WAHA_CHAT_ID="$HEALTH_NOTIFY_CHAT_ID" ;;
+    esac
+  fi
+  local purpose_args=()
+  [ "$HEALTH_NOTIFY_PURPOSE" = "default" ] || purpose_args=(--purpose "$HEALTH_NOTIFY_PURPOSE")
+  "$APP_ROOT/src/notify/010-waha-client.py" \
+    --event done \
+    --status "SYSTEM HEALTH $status_label" \
+    "${purpose_args[@]}" \
+    --message "System health review finished with status: $status_label. Check data/logs/manual_actions.log or the terminal output for details." \
+    >/dev/null 2>&1 || true
+}
+trap 'status=$?; send_health_notification "$status"; exit "$status"' EXIT
+
 echo "============================================================"
 echo " PanamaCompra System Review"
 echo "============================================================"
@@ -74,6 +130,8 @@ required_scripts=(
   "src/tools/090b-migrate-previous-records.py"
   "src/tools/090a-migrate-previous-records.sh"
   "src/tools/120-setup-git-credentials.sh"
+  "src/tools/140-full-report.py"
+  "src/tools/150-upload-github.sh"
   "setup.sh"
   "update-local-copy.sh"
 )
