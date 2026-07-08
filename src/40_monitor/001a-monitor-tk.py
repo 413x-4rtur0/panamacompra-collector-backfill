@@ -891,9 +891,9 @@ def run_tk() -> int:
             apply_hidden(True)
 
     # ========================================================================
-    # UNIFIED TABS - the same six tabs as the web monitor: Operations ·
-    # Settings · WhatsApp · Scheduler · KPIs · Records & Database. The live
-    # header (progress, process chips, queue) stays visible above the tab bar.
+    # UNIFIED TABS - Operations · Settings · WhatsApp · Scheduler · KPIs ·
+    # Records & Database · Calendar. The live header (progress, process chips,
+    # queue) stays visible above the tab bar.
     # ========================================================================
     tabs = ttk.Notebook(content)
     tabs.grid(row=1, column=0, sticky="nsew", padx=14, pady=8)
@@ -903,6 +903,7 @@ def run_tk() -> int:
     scheduler_tab = ttk.Frame(tabs, style="TFrame")
     kpi_tab = ttk.Frame(tabs, style="TFrame")
     records_tab = ttk.Frame(tabs, style="TFrame")
+    calendar_tab = ttk.Frame(tabs, style="TFrame")
     for tab_frame, tab_title in (
         (ops_tab, "Operations"),
         (settings_tab, "Settings"),
@@ -910,6 +911,7 @@ def run_tk() -> int:
         (scheduler_tab, "Scheduler"),
         (kpi_tab, "KPIs"),
         (records_tab, "Records & Database"),
+        (calendar_tab, "Calendar"),
     ):
         tabs.add(tab_frame, text=tab_title)
         tab_frame.columnconfigure(0, weight=1)
@@ -2397,9 +2399,9 @@ def run_tk() -> int:
     # ========================================================================
     # Opportunity calendar: the collected opportunities by day/week/month/year,
     # driven by deadline/start/downloaded dates. Shares its renderer with
-    # `pcc calendar` and the web monitor's Calendar card.
-    calendar_card = ttk.Frame(records_tab, style="Card.TFrame", padding=14)
-    calendar_card.grid(row=4, column=0, sticky="ew", padx=6, pady=6)
+    # `pcc calendar` and the web monitor's Calendar tab.
+    calendar_card = ttk.Frame(calendar_tab, style="Card.TFrame", padding=14)
+    calendar_card.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     calendar_card.columnconfigure(6, weight=1)
     ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
 

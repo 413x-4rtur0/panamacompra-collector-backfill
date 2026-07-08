@@ -691,7 +691,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
 <div class="card" data-tab="overview"><h2>System health <span class="kpi-live" id="overview-live-stamp">LIVE</span></h2><p class="small">Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.</p><div id="overview-kpis" class="kpi-grid">Loading overview…</div></div>
 <div class="card" data-tab="overview"><h2>Last run stages</h2><p class="small" id="overview-last-run">No completed run recorded yet.</p><div id="overview-stages" class="chart"></div></div>
 <div class="card" data-tab="overview"><h2>Services</h2><div id="overview-services" class="small">Loading services…</div><p class="small">Webhook access details and the changedetection script live in the Integrations tab.</p></div>
@@ -1195,7 +1195,8 @@ function showTab(tab) {{
   document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
   if (tab === 'decision') refreshDecisionDashboard();
   if (tab === 'overview') refreshOverview();
-  if (tab === 'records') {{ loadCalendar(); refreshRecordIndex(); }}
+  if (tab === 'records') refreshRecordIndex();
+  if (tab === 'calendar') loadCalendar();
   if (tab === 'scheduler') refreshCronScheduleStatus();
 }}
 
@@ -1378,6 +1379,13 @@ function initCollapsibleSections() {{
   }});
 }}
 
+function assignDedicatedTabs() {{
+  document.querySelectorAll('.card[data-tab]').forEach(card => {{
+    const heading = (card.querySelector('h2') || {{}}).textContent || '';
+    if (heading.trim() === 'Opportunity calendar') card.dataset.tab = 'calendar';
+  }});
+}}
+
 function renderQueue(data) {{
   const q = data.queue || {{}};
   document.getElementById('queue-summary').textContent =
@@ -1460,6 +1468,7 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
   const el = document.getElementById(id);
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
 }});
+assignDedicatedTabs();
 showTab('overview');
 initCollapsibleSections();
 refreshRecordIndex();
