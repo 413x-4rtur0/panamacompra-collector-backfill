@@ -764,8 +764,8 @@ visible above the tab bar:
 
 | Tab | Contents |
 |-----|----------|
-| **Operations** | Run controls, live diagnostics, grouped manual action buttons, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), worker/current logs. |
-| **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, changedetection integration, work templates, and the Reset / review-from-zero actions. |
+| **Operations** | Run controls, live diagnostics, grouped manual action buttons, worker/current logs. |
+| **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, changedetection integration, work templates, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), and the Reset / review-from-zero actions. |
 | **WhatsApp** | Every WhatsApp/WAHA option in one place: toggles, destinations, per-destination filters, delivery options, the WAHA server/container settings (port, API key, dashboard username/password) and the message-format editor. |
 | **KPIs** | The whole KPI dashboard with **filters** (time window · index group · contracting entity) that slice every card and diagram: decision cards, item analysis, trend/status mix, decision guidance, the drawn diagrams (index groups, top contracting entities, locations/buying units parsed from the details, monthly intake trend, **daily intake for the last 14 days**, **most frequent items**), a **latest parsed items** feed, and the database review snapshot. |
 | **Records & Database** | Records Pendings/Completed counters, the pending/completed browsers, the full record selector and filters, plus database review panels. |
@@ -1566,7 +1566,7 @@ the token, the `json://webhook:8765/panamacompra/<TOKEN>?method=POST&format=text
 notification URL, the `http://host.docker.internal:8765/panamacompra/<TOKEN>`
 host URL and the `http://127.0.0.1:8765/panamacompra/<TOKEN>` local test URL:
 
-- Both monitors → **Operations → Webhook trigger access** (with a Refresh
+- Both monitors → **Settings → Webhook trigger access** (with a Refresh
   button; values are re-read from disk on every refresh, so after an update or
   a re-run of setup the panel always shows the CURRENT settings).
 - `pcc webhook info` in a terminal.
