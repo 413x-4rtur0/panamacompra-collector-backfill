@@ -120,6 +120,7 @@ required_scripts=(
   "src/20_pipeline/130a-queue-status.sh"
   "src/20_pipeline/120a-stop-everything.sh"
   "src/20_pipeline/120b-stop-collectors.sh"
+  "src/20_pipeline/120c-start-everything.sh"
   "src/20_pipeline/130c-follow-run.sh"
   "src/20_pipeline/110b-run-now.sh"
   "src/10_webhook/020-start-listener.sh"

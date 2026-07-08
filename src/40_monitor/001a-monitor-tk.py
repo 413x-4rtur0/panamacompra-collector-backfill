@@ -969,6 +969,13 @@ def run_tk() -> int:
         subprocess.Popen([str(BASE_DIR / "src/20_pipeline/120a-stop-everything.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Stop All requested: halting every PanamaCompra process, including this monitor.")
 
+    def start_all_now() -> None:
+        # Counterpart to Stop All: brings the Docker integrations and the
+        # webhook listener back up and opens the monitor. Does not queue a
+        # collector run on its own -- use "Request selected run" for that.
+        subprocess.Popen([str(BASE_DIR / "src/20_pipeline/120c-start-everything.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Start All requested: bringing Docker integrations and the webhook listener back up.")
+
     ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
     # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
@@ -994,6 +1001,8 @@ def run_tk() -> int:
     run_button.grid(row=2, column=4, sticky="w")
     stop_button = ttk.Button(controls, text="■ Stop run", command=stop_run_now, style="Danger.TButton")
     stop_button.grid(row=2, column=5, sticky="e")
+    start_all_button = ttk.Button(controls, text="▶ Start All", command=start_all_now, style="Accent.TButton")
+    start_all_button.grid(row=3, column=4, sticky="e", padx=(0, 8), pady=(6, 0))
     stop_all_button = ttk.Button(controls, text="⛔ Stop All", command=stop_all_now, style="Danger.TButton")
     stop_all_button.grid(row=3, column=5, sticky="e", pady=(6, 0))
     ttk.Label(controls, textvariable=button_status_var, style="Card.TLabel", wraplength=520).grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
@@ -1005,6 +1014,7 @@ def run_tk() -> int:
     add_tooltip(detail_limit_entry, "Maximum detail pages (restart/manual) or sandbox records (test) to process this run.")
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
     add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
+    add_tooltip(start_all_button, "Brings background infrastructure back up after Stop All: Docker integrations (changedetection/WAHA/sockpuppetbrowser), the webhook listener, and opens the monitor. Does not queue a collector run by itself.")
     add_tooltip(stop_all_button, "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters. This monitor closes too. Asks for confirmation first.")
     add_section_toggle(controls, button_column=5)
 

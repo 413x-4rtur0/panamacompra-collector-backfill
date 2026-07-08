@@ -60,6 +60,15 @@ pkill -TERM -f "[1]30c-follow-run.sh" 2>/dev/null || true
 # STEP 6: Stop webhook listener (background HTTP receiver)
 # ============================================================================
 echo "6) Stopping webhook listener..."
+# If it's managed by the panamacompra-webhook.service systemd unit
+# (Restart=on-failure), a plain pkill below looks like a crash to systemd,
+# which relaunches it a few seconds later -- silently undoing this stop. Stop
+# the unit itself first so it does not come back on its own; the pkill still
+# runs afterward as a fallback for hosts running the listener unmanaged.
+if systemctl --user is-active --quiet panamacompra-webhook.service 2>/dev/null; then
+  echo "   Stopping systemd unit: panamacompra-webhook.service"
+  systemctl --user stop panamacompra-webhook.service 2>/dev/null || true
+fi
 pkill -TERM -f "[p]ython3? -u .*src/10_webhook/010-webhook-listener.py" 2>/dev/null || true
 pkill -TERM -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
 
@@ -94,3 +103,28 @@ echo "All PanamaCompra processes stopped."
 echo "============================================================"
 echo "Remaining related processes (should be empty):"
 pgrep -af "100-run-worker.sh|050-watch-queue-flag.sh|070-test-zone.py|060-build-calendar.py|monitor-tk.py|monitor-web.py|src/10_webhook/010-webhook-listener.py|update-local-copy.sh" || echo "  None found - all stopped successfully."
+
+# This script only manages what belongs to THIS checkout. Docker integration
+# containers (changedetection, sockpuppetbrowser, WAHA, webhook) are a
+# separate lifecycle -- see src/50_tools/010-docker-stack.sh down/status --
+# and are intentionally left running. Likewise, unrelated systemd services
+# from an older/alternate setup on this host are not part of this repo and
+# are left alone; surfaced here only so they are not mistaken for "stopped".
+OTHER_SERVICES=""
+for svc in panamacompra-runner.service panamacompra-webhook-receiver.service; do
+  if systemctl --user is-active --quiet "$svc" 2>/dev/null; then
+    OTHER_SERVICES="$OTHER_SERVICES $svc"
+  fi
+done
+if [ -n "$OTHER_SERVICES" ]; then
+  echo ""
+  echo "NOTE: these unrelated systemd services are still running (not managed by"
+  echo "this script/repo):$OTHER_SERVICES"
+  echo "Stop manually if needed: systemctl --user stop <service>"
+fi
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
+   && [ -n "$(docker compose ps --status running -q 2>/dev/null)" ]; then
+  echo ""
+  echo "NOTE: Docker integration containers are still running (by design; use"
+  echo "./src/50_tools/010-docker-stack.sh down to stop them, or 'up' to restart)."
+fi

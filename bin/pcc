@@ -12,6 +12,7 @@ Usage: pcc <command> [args]
 Run control:
   start [detail_limit] [mode] [index_limit]  Queue/start the full collector run
   stop                                      Stop collector, monitor, updater, and webhook processes
+  start-all                                 Counterpart to stop: bring Docker integrations + webhook listener back up, open monitor
   status                                    Show queue and process status
   watch                                     Live terminal monitor (no GUI needed)
   db | kpi [--days N] [--grupo X] [--entidad Y] [--json|--csv]
@@ -100,6 +101,7 @@ cmd="${1:-help}"
 case "$cmd" in
   start|run) exec "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$@" ;;
   stop) exec "$APP_ROOT/src/20_pipeline/120a-stop-everything.sh" "$@" ;;
+  start-all) exec "$APP_ROOT/src/20_pipeline/120c-start-everything.sh" "$@" ;;
   status) exec "$APP_ROOT/src/20_pipeline/130a-queue-status.sh" "$@" ;;
   monitor) exec "$APP_ROOT/src/40_monitor/000-open-monitor.sh" "$@" ;;
   open|app) exec "$APP_ROOT/src/50_tools/130-open-web-app.sh" "$@" ;;
