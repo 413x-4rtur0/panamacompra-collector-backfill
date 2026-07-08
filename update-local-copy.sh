@@ -515,6 +515,21 @@ fi
 echo ""
 echo "13) Restore webhook listener after update"
 restart_webhook_listener
+
+if [ "${PC_UPDATE_START_ALL:-1}" != "0" ] && [ -x "$BASE_DIR/src/20_pipeline/120c-start-everything.sh" ]; then
+  echo ""
+  echo "13b) Bring Docker integrations back up (changedetection/WAHA/sockpuppetbrowser)"
+  # Reuses the same start-everything script the monitor's "Start All" button
+  # calls. Its own webhook step is idempotent (a quick systemctl restart even
+  # if restart_webhook_listener already just did one) -- the docker step is
+  # the part this run actually needs. The loader/caller is responsible for
+  # opening the monitor after this script exits, so suppress this script's
+  # own monitor-open to avoid a second window.
+  PC_START_ALL_OPEN_MONITOR=0 "$BASE_DIR/src/20_pipeline/120c-start-everything.sh" || echo "WARNING: Start All reported a problem; check ./src/50_tools/010-docker-stack.sh status."
+else
+  echo "Skipped bringing Docker integrations back up (PC_UPDATE_START_ALL=0)."
+fi
+
 cleanup_update_flags
 trap - EXIT
 
