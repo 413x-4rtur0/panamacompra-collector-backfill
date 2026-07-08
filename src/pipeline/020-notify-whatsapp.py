@@ -445,6 +445,30 @@ def date_range(row, summary: dict) -> str:
     return f"{start} al {end}" if start != DASH or end != DASH else DASH
 
 
+def contact_values(summary: dict) -> dict[str, str]:
+    contact = summary.get("contacto") if isinstance(summary.get("contacto"), dict) else {}
+    return {
+        "nombre": clean_field(contact.get("nombre") or summary.get("contacto_nombre")),
+        "cargo": clean_field(contact.get("cargo") or summary.get("contacto_cargo")),
+        "telefono": clean_field(contact.get("telefono") or summary.get("telefono")),
+        "correo": clean_field(contact.get("correo_electronico") or summary.get("correo_electronico") or summary.get("correo")),
+    }
+
+
+def format_contact_block(contact: dict[str, str]) -> str:
+    lines = []
+    if contact["nombre"] != DASH:
+        name = contact["nombre"]
+        if contact["cargo"] != DASH:
+            name = f"{name} ({contact['cargo']})"
+        lines.append(f"👤 *Contacto:* {name}")
+    if contact["telefono"] != DASH:
+        lines.append(f"☎️ *Teléfono:* {contact['telefono']}")
+    if contact["correo"] != DASH:
+        lines.append(f"✉️ *Correo:* {contact['correo']}")
+    return "\n".join(lines) if lines else DASH
+
+
 def build_record_message(row, summary: dict, *, variant: str, previous_status: str | None = None, match_line: str | None = None) -> str:
     detail_pending = row["detail_status"] != "saved"
     items = load_detail_items(row["detail_json_path"])
@@ -455,6 +479,8 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     created = fmt_dt(row["first_seen"] or row["fecha"])
     downloaded = fmt_dt(row["detail_saved_at"]) if row["detail_saved_at"] else ("⏳ En descarga" if detail_pending else fmt_dt(now_str()))
     numero = clean_field(row["numero"])
+    contact = contact_values(summary)
+    contact_block = DASH if detail_pending else format_contact_block(contact)
 
     if variant == "new":
         heading = f"🔔 *Nueva Oportunidad - {SOURCE_NAME}*"
@@ -509,6 +535,11 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
             "modalidad": clean_field(row["modalidad"]),
             "dependencia": clean_field(row["dependencia"]),
             "grupo": clean_field(row["grupo"]),
+            "contacto": contact_block,
+            "contacto_nombre": contact["nombre"],
+            "contacto_cargo": contact["cargo"],
+            "telefono": contact["telefono"],
+            "correo": contact["correo"],
             "fecha_inicio": fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion")),
             "fecha_limite": fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion")),
             "items_total": "⏳" if detail_pending else str(len(items)),
@@ -523,9 +554,10 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         f"📝 *Descripción:* {title}",
         f"📍 *Ubicación:* {location}",
         f"📅 *Rango Fechas:* {fechas}",
-        "",
-        items_block,
     ]
+    if contact_block != DASH:
+        parts.extend(["", contact_block])
+    parts.extend(["", items_block])
     if match_line:
         parts.extend(["", f"🔎 *Coincidencia:* {match_line}"])
     parts.extend([
@@ -582,6 +614,11 @@ PLACEHOLDERS = {
     "modalidad": "procurement modality",
     "dependencia": "entity dependency/office",
     "grupo": "portal list the record came from (Programadas/Abiertas)",
+    "contacto": "formatted detail contact block (name/role/phone/email), or — before download",
+    "contacto_nombre": "detail contact name",
+    "contacto_cargo": "detail contact role/title",
+    "telefono": "detail contact phone number",
+    "correo": "detail contact email address",
     "fecha_inicio": "start/publication date on its own",
     "fecha_limite": "deadline date on its own",
     "items_total": "number of items (⏳ before the detail download)",
@@ -601,7 +638,7 @@ DEFAULT_FORMATS = {
     ),
     "details": (
         "{heading}\n\n{estado_linea}\n🔢 *Número:* {numero}\n📝 *Descripción:* {descripcion}\n"
-        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{items}\n\n"
+        "📍 *Ubicación:* {ubicacion}\n📅 *Rango Fechas:* {rango_fechas}\n\n{contacto}\n\n{items}\n\n"
         "🔎 *Coincidencia:* {coincidencia}\n\n🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
     ),
     "status": (
@@ -685,6 +722,11 @@ def sample_context(kind: str) -> dict[str, str]:
         "modalidad": "Cotización en línea",
         "dependencia": "Dirección de Compras",
         "grupo": "Abiertas",
+        "contacto": "👤 *Contacto:* Ana Pérez (Oficial de compras)\n☎️ *Teléfono:* 507-555-0101\n✉️ *Correo:* compras@example.pa",
+        "contacto_nombre": "Ana Pérez",
+        "contacto_cargo": "Oficial de compras",
+        "telefono": "507-555-0101",
+        "correo": "compras@example.pa",
         "fecha_inicio": "2026-07-01 09:00",
         "fecha_limite": "2026-07-15 16:00",
         "items_total": "⏳" if kind == "index" else "2",
