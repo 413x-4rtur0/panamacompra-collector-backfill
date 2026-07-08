@@ -6,12 +6,12 @@
 #   changedetection.io  watches the PanamaCompra table (rendered by sockpuppetbrowser)
 #   sockpuppetbrowser   headless Chromium used by changedetection for JS pages
 #   waha                self-hosted WhatsApp HTTP API for the alerts
-#   webhook             src/webhook/010-webhook-listener.py in ENQUEUE-ONLY mode
+#   webhook             src/10_webhook/010-webhook-listener.py in ENQUEUE-ONLY mode
 #
 # IMPORTANT — why "enqueue only": the actual collector (Playwright Firefox writing
 # to the host ./records and ./data) runs on the HOST, not in a container. So the
 # containerized listener only *records the request* into the shared ./data/queue
-# volume; a tiny host service (./src/webhook/050-watch-queue-flag.sh, or the existing
+# volume; a tiny host service (./src/10_webhook/050-watch-queue-flag.sh, or the existing
 # systemd webhook unit) then launches the real run. See the README "Run the stack
 # with Docker Compose" section.
 #
@@ -19,7 +19,7 @@
 #
 # Container data (changedetection datastore, WAHA sessions) lives inside the
 # self-contained state directory: ${PC_INTEGRATIONS_DIR:-./var/integrations}.
-# Prefer starting the stack through ./src/tools/010-docker-stack.sh, which resolves
+# Prefer starting the stack through ./src/50_tools/010-docker-stack.sh, which resolves
 # PC_INTEGRATIONS_DIR for every mode (development/portable/installed), applies
 # monitor-saved container settings, and migrates a legacy ./integrations folder.
 
@@ -65,7 +65,7 @@ services:
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
       # Dashboard login asked after every install/reinstall. setup.sh /
-      # src/tools/010-docker-stack.sh generate a RANDOM password into .env and
+      # src/50_tools/010-docker-stack.sh generate a RANDOM password into .env and
       # data/config/integration-access.txt; the compose-only fallback below
       # applies just when the stack is started bypassing those scripts.
       - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
@@ -87,7 +87,7 @@ services:
       - PC_WEBHOOK_PORT=8765
       # Containerized listener cannot launch the host browser pipeline, so it only
       # writes the run request into the shared ./data/queue volume. The host runner
-      # (src/webhook/050-watch-queue-flag.sh / systemd) performs the actual collection.
+      # (src/10_webhook/050-watch-queue-flag.sh / systemd) performs the actual collection.
       - PC_WEBHOOK_ENQUEUE_ONLY=1
     volumes:
       # Bind-mount the checkout so the listener writes the request flag and reads

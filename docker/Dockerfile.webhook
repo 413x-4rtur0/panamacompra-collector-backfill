@@ -4,16 +4,16 @@
 # changedetection.io notification and records a run request into the shared
 # ./data/queue volume. The actual collection runs on the host. The repository is
 # bind-mounted at /app by docker-compose, so the image stays tiny and always runs
-# the current src/webhook/010-webhook-listener.py without a rebuild.
+# the current src/10_webhook/010-webhook-listener.py without a rebuild.
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# src/webhook/010-webhook-listener.py uses only the Python standard library, so there are no
+# src/10_webhook/010-webhook-listener.py uses only the Python standard library, so there are no
 # pip dependencies to install here.
 
 EXPOSE 8765
 
 # PC_WEBHOOK_ENQUEUE_ONLY=1 is set by docker-compose; the listener then writes the
 # request flag instead of trying to start the host worker.
-CMD ["python", "src/webhook/010-webhook-listener.py"]
+CMD ["python", "src/10_webhook/010-webhook-listener.py"]

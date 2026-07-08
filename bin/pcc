@@ -16,7 +16,7 @@ Run control:
   watch                                     Live terminal monitor (no GUI needed)
   db | kpi [--days N] [--grupo X] [--entidad Y] [--json|--csv]
                                             KPI summary + diagrams from the shared engine
-                                            (src/monitor/monitor_common.py) — the exact
+                                            (src/40_monitor/monitor_common.py) — the exact
                                             numbers the monitors' KPIs tab shows, sliceable
                                             with the same filters; --json/--csv for scripts
   calendar [day|week|month|year] [--date D] [--field end|start|downloaded]
@@ -98,16 +98,16 @@ chat_file_for() {
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 case "$cmd" in
-  start|run) exec "$APP_ROOT/src/pipeline/110a-request-run.sh" "$@" ;;
-  stop) exec "$APP_ROOT/src/pipeline/120a-stop-everything.sh" "$@" ;;
-  status) exec "$APP_ROOT/src/pipeline/130a-queue-status.sh" "$@" ;;
-  monitor) exec "$APP_ROOT/src/monitor/000-open-monitor.sh" "$@" ;;
-  open|app) exec "$APP_ROOT/src/tools/130-open-web-app.sh" "$@" ;;
+  start|run) exec "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$@" ;;
+  stop) exec "$APP_ROOT/src/20_pipeline/120a-stop-everything.sh" "$@" ;;
+  status) exec "$APP_ROOT/src/20_pipeline/130a-queue-status.sh" "$@" ;;
+  monitor) exec "$APP_ROOT/src/40_monitor/000-open-monitor.sh" "$@" ;;
+  open|app) exec "$APP_ROOT/src/50_tools/130-open-web-app.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true
     case "$sub" in
-      start) exec "$APP_ROOT/src/webhook/020-start-listener.sh" "$@" ;;
-      diag|diagnostic) exec "$APP_ROOT/src/webhook/040-diagnose-webhook.sh" "$@" ;;
+      start) exec "$APP_ROOT/src/10_webhook/020-start-listener.sh" "$@" ;;
+      diag|diagnostic) exec "$APP_ROOT/src/10_webhook/040-diagnose-webhook.sh" "$@" ;;
       info|access|token)
         # Live view of the trigger access: the token generated automatically by
         # setup (docker stack up writes .webhook_token when missing) plus the
@@ -120,7 +120,7 @@ case "$cmd" in
         public_host="${PC_WEBHOOK_PUBLIC_HOST:-host.docker.internal}"
         shown="${token:-YOUR_TOKEN}"
         query='?method=POST&format=text&overflow=truncate&rto=15&cto=10'
-        echo "Webhook token: ${token:-(not generated yet — run ./setup.sh or ./src/tools/010-docker-stack.sh up)}"
+        echo "Webhook token: ${token:-(not generated yet — run ./setup.sh or ./src/50_tools/010-docker-stack.sh up)}"
         echo "Token file:    $token_file"
         echo "Listener port: $port"
         echo
@@ -140,8 +140,8 @@ case "$cmd" in
         ;;
       *) echo "Unknown webhook command: $sub (use start|diag|info)" >&2; exit 2 ;;
     esac ;;
-  watch) exec "$APP_ROOT/src/monitor/001c-monitor-terminal.sh" "$@" ;;
-  docker|stack) exec "$APP_ROOT/src/tools/010-docker-stack.sh" "$@" ;;
+  watch) exec "$APP_ROOT/src/40_monitor/001c-monitor-terminal.sh" "$@" ;;
+  docker|stack) exec "$APP_ROOT/src/50_tools/010-docker-stack.sh" "$@" ;;
 
   changedetection-script|cd-script|browser-js)
     script="$APP_ROOT/config/changedetection-browser-steps.js"
@@ -175,11 +175,11 @@ EOF
     esac
     ;;
   db|stats|kpi|kpis)
-    # KPI summary + diagrams from the SHARED engine (src/monitor/monitor_common.py),
+    # KPI summary + diagrams from the SHARED engine (src/40_monitor/monitor_common.py),
     # the same code both GUI monitors use — so the numbers always match the
     # monitors' KPIs tab. Supports --json/--csv plus the usual filters.
     load_monitor_settings
-    exec "$PY_BIN" "$APP_ROOT/src/monitor/monitor_common.py" "$@"
+    exec "$PY_BIN" "$APP_ROOT/src/40_monitor/monitor_common.py" "$@"
     ;;
   get)
     key="${1:-}"
@@ -277,7 +277,7 @@ PY
         KW_PURPOSE="$kw_purpose" KW_TEXT="$2" "$PY_BIN" - <<'PYEOF'
 import importlib.util, os
 spec = importlib.util.spec_from_file_location(
-    "notify_new_records", os.environ["APP_ROOT"] + "/src/pipeline/020-notify-whatsapp.py")
+    "notify_new_records", os.environ["APP_ROOT"] + "/src/20_pipeline/020-notify-whatsapp.py")
 nnr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nnr)
 purpose = os.environ["KW_PURPOSE"]
@@ -293,7 +293,7 @@ PYEOF
     ;;
   test-whatsapp)
     load_monitor_settings
-    exec "$PY_BIN" "$APP_ROOT/src/notify/010-waha-client.py" --event info --status TEST --force-send --purpose system \
+    exec "$PY_BIN" "$APP_ROOT/src/30_notify/010-waha-client.py" --event info --status TEST --force-send --purpose system \
       --message "${1:-Prueba de notificación desde la CLI pcc.}"
     ;;
   health|system-health|review)
@@ -302,10 +302,10 @@ PYEOF
     ;;
   full-report|diagnostic-report|report)
     load_monitor_settings
-    exec "$PY_BIN" "$APP_ROOT/src/tools/140-full-report.py" "$@"
+    exec "$PY_BIN" "$APP_ROOT/src/50_tools/140-full-report.py" "$@"
     ;;
   upload-github|push-github|upload|publish)
-    exec "$APP_ROOT/src/tools/150-upload-github.sh" "$@"
+    exec "$APP_ROOT/src/50_tools/150-upload-github.sh" "$@"
     ;;
   notify)
     [[ $# -ge 1 ]] || { echo "Usage: pcc notify NUMERO [NUMERO...] [--force]" >&2; exit 2; }
@@ -314,12 +314,12 @@ PYEOF
     for arg in "$@"; do
       if [[ "$arg" == "--force" ]]; then args+=("--force"); else args+=("--record" "$arg"); fi
     done
-    exec "$PY_BIN" "$APP_ROOT/src/pipeline/020-notify-whatsapp.py" "${args[@]}"
+    exec "$PY_BIN" "$APP_ROOT/src/20_pipeline/020-notify-whatsapp.py" "${args[@]}"
     ;;
-  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/tools/020-record-templates.py" "$@" ;;
-  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/tools/030-opportunity-calendar.py" "$@" ;;
-  format|formats) exec "$PY_BIN" "$APP_ROOT/src/tools/040-message-formats.py" "$@" ;;
-  migrate) exec "$APP_ROOT/src/tools/100-migrate-apps-layout.sh" "$@" ;;
+  templates|tpl) exec "$PY_BIN" "$APP_ROOT/src/50_tools/020-record-templates.py" "$@" ;;
+  calendar|cal) exec "$PY_BIN" "$APP_ROOT/src/50_tools/030-opportunity-calendar.py" "$@" ;;
+  format|formats) exec "$PY_BIN" "$APP_ROOT/src/50_tools/040-message-formats.py" "$@" ;;
+  migrate) exec "$APP_ROOT/src/50_tools/100-migrate-apps-layout.sh" "$@" ;;
   setup|install) exec "$APP_ROOT/setup.sh" "$@" ;;
   uninstall) exec "$APP_ROOT/scripts/uninstall.sh" "$@" ;;
   launcher|desktop|shortcut) exec "$APP_ROOT/scripts/install-desktop-launcher.sh" "$@" ;;

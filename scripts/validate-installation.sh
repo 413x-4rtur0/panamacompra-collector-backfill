@@ -53,18 +53,18 @@ require_file config/defaults.env
 require_file requirements.txt
 require_file docker-compose.yml
 require_file docker/Dockerfile.webhook
-require_file src/pipeline/010-collect-index.py
-require_file src/pipeline/030-collect-details.py
-require_file src/pipeline/100-run-worker.sh
-require_file src/webhook/010-webhook-listener.py
-require_file src/monitor/000-open-monitor.sh
+require_file src/20_pipeline/010-collect-index.py
+require_file src/20_pipeline/030-collect-details.py
+require_file src/20_pipeline/100-run-worker.sh
+require_file src/10_webhook/010-webhook-listener.py
+require_file src/40_monitor/000-open-monitor.sh
 require_executable setup.sh
 require_executable bin/pcc
-require_executable src/pipeline/110a-request-run.sh
-require_executable src/pipeline/100-run-worker.sh
-require_executable src/pipeline/120a-stop-everything.sh
-require_executable src/monitor/000-open-monitor.sh
-require_executable src/webhook/020-start-listener.sh
+require_executable src/20_pipeline/110a-request-run.sh
+require_executable src/20_pipeline/100-run-worker.sh
+require_executable src/20_pipeline/120a-stop-everything.sh
+require_executable src/40_monitor/000-open-monitor.sh
+require_executable src/10_webhook/020-start-listener.sh
 
 # lib/env.sh already created $PC_DATA_DIR/config, $PC_RECORDS_DIR, $PC_RECORDS_TEST_DIR, etc.
 for dir in "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR"; do
@@ -114,15 +114,15 @@ case "${WAHA_ENABLED,,}" in
     fi
     ;;
   *)
-    echo "WhatsApp notifications: disabled (default). To enable: ./src/tools/010-docker-stack.sh up, pair the session (QR), then set PC_WAHA_ENABLED=1 and the chat id (see .env.example)."
+    echo "WhatsApp notifications: disabled (default). To enable: ./src/50_tools/010-docker-stack.sh up, pair the session (QR), then set PC_WAHA_ENABLED=1 and the chat id (see .env.example)."
     ;;
 esac
 
 # Informational: whether the changedetection/WAHA container stack can run here.
 if command -v docker >/dev/null 2>&1 && { docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; }; then
-  echo "Docker: available. Stack data: ${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations} — manage with ./src/tools/010-docker-stack.sh up|status|down."
+  echo "Docker: available. Stack data: ${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations} — manage with ./src/50_tools/010-docker-stack.sh up|status|down."
 else
-  echo "Docker: not installed — the changedetection/WAHA containers stay off until Docker is installed (./src/tools/010-docker-stack.sh up)."
+  echo "Docker: not installed — the changedetection/WAHA containers stay off until Docker is installed (./src/50_tools/010-docker-stack.sh up)."
 fi
 
 echo "PanamaCompra Collector installation validation passed."

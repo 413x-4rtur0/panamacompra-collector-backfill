@@ -17,7 +17,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
   │
   ├─[watch]─ changedetection container (docker-compose.yml) + browser-steps JS
   │             └─ notification json://host:8765/panamacompra/<token>
-  │                   └─ src/webhook/010-webhook-listener.py  (handle_trigger)
+  │                   └─ src/10_webhook/010-webhook-listener.py  (handle_trigger)
   │                        ├─ direct: 060-run-collector.sh → 110a-request-run.sh (PC_RUN_MODE=AUTO)
   │                        └─ enqueue-only (docker): touch run_all_requested.flag
   │                              └─ 050-watch-queue-flag.sh (host) → 110a-request-run.sh
@@ -25,7 +25,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
   └─[manual]─ pcc start / monitors' "Request run" → 110a / 110b
                     │
                     ▼
-      src/pipeline/100-run-worker.sh   (flock-locked loop)
+      src/20_pipeline/100-run-worker.sh   (flock-locked loop)
         STEP 0  000-update-before-run.sh
         STEP 1  015-import-index-snapshot.py (AUTO) / 010-collect-index.py
         STEP 2  020-notify-whatsapp.py --announce
@@ -34,7 +34,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
         STEP 5  020-notify-whatsapp.py --announce-details
         STEP 6  py_compile + 050-repair-missing-deadlines.py
         STEP 7  060-build-calendar.py
-        SUMMARY src/notify/010-waha-client.py (purpose=summary)
+        SUMMARY src/30_notify/010-waha-client.py (purpose=summary)
         STEP 8  070-test-zone.py (opt-in via PC_TEST_ZONE_AUTORUN)
         │
         └─ writes run_all_progress.env / run_all_last_summary.env / logs
@@ -74,7 +74,7 @@ Runtime settings written by the monitors and `pcc set` live in
 
 ## The pipeline orchestrator
 
-`src/pipeline/100-run-worker.sh` holds a `flock` on
+`src/20_pipeline/100-run-worker.sh` holds a `flock` on
 `/tmp/panamacompra_run_all_worker.lock` and loops while
 `run_all_requested.flag` exists in `PC_QUEUE_DIR`.
 
@@ -106,7 +106,7 @@ Step semantics (all verified in the file):
    `050-repair-missing-deadlines.py --include-failed --apply`.
 8. **Calendar**: `060-build-calendar.py` builds timestamped `.ics` packages
    under `data/calendar/<day>/`.
-9. **Summary**: `src/notify/010-waha-client.py` sends the run summary to the
+9. **Summary**: `src/30_notify/010-waha-client.py` sends the run summary to the
    `summary` purpose destination (`:623-630`), including per-stage durations.
 10. **Test zone** (opt-in, `PC_TEST_ZONE_AUTORUN=1`): `070-test-zone.py` re-runs
     the last N records in the isolated `records_test/` sandbox when the run had
@@ -123,7 +123,7 @@ set by a deliberate stop.
 - **Automatic**: changedetection (running the Browser Steps script from
   `config/changedetection-browser-steps.js`) fires its notification URL
   `json://<host>:8765/panamacompra/<token>`. The listener
-  (`src/webhook/010-webhook-listener.py`) validates the token with
+  (`src/10_webhook/010-webhook-listener.py`) validates the token with
   `hmac.compare_digest` on the URL path, replies 202 immediately, and either
   launches `060-run-collector.sh` (host mode) or, in `PC_WEBHOOK_ENQUEUE_ONLY=1`
   container mode, just touches `run_all_requested.flag`;
@@ -137,16 +137,16 @@ set by a deliberate stop.
 
 Two senders, deliberately split:
 
-- `src/notify/010-waha-client.py` — dependency-free plain-text sender for
+- `src/30_notify/010-waha-client.py` — dependency-free plain-text sender for
   system/summary events. Per-purpose destination routing
   (`default|index|details|status|system|summary`) with a documented fallback
   chain (`configured_chat_id`, `:89-102`), retry with exponential backoff, and
   an in-process circuit breaker (`send_text`, `:225-258`). Never blocks a run:
   missing configuration exits 0.
-- `src/pipeline/020-notify-whatsapp.py` — rich record messages (index alerts,
+- `src/20_pipeline/020-notify-whatsapp.py` — rich record messages (index alerts,
   detail follow-ups, status changes), per-destination keyword filters
   (`load_filter_rules`/`evaluate_filter`, also used by `pcc keywords test`),
-  customizable message formats (`src/tools/040-message-formats.py`), and
+  customizable message formats (`src/50_tools/040-message-formats.py`), and
   monitor-visible per-message progress.
 
 Both talk to WAHA's `POST /api/sendText` (container from `docker-compose.yml`,

@@ -89,7 +89,7 @@ export PC_INDEX_CSV_PATH="${PC_INDEX_CSV_PATH:-$PC_DATA_DIR/panamacompra_index.c
 export PC_CALENDAR_DIR="${PC_CALENDAR_DIR:-$PC_DATA_DIR/calendar}"
 export PC_RECORDS_TEST_DIR="${PC_RECORDS_TEST_DIR:-$PC_STATE_DIR/records_test}"
 # Docker bind-mount data for the changedetection + WAHA containers, kept inside
-# the self-contained state directory (see src/tools/010-docker-stack.sh).
+# the self-contained state directory (see src/50_tools/010-docker-stack.sh).
 export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
 
 # The WAHA container is protected with WAHA_API_KEY (docker-compose), while the

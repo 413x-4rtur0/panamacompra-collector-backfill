@@ -56,7 +56,7 @@ send_health_notification() {
   fi
   local purpose_args=()
   [ "$HEALTH_NOTIFY_PURPOSE" = "default" ] || purpose_args=(--purpose "$HEALTH_NOTIFY_PURPOSE")
-  "$APP_ROOT/src/notify/010-waha-client.py" \
+  "$APP_ROOT/src/30_notify/010-waha-client.py" \
     --event done \
     --status "SYSTEM HEALTH $status_label" \
     "${purpose_args[@]}" \
@@ -76,19 +76,19 @@ echo "1) Active architecture"
 echo "----------------------"
 cat <<'TXT'
 changedetection.io
-  -> src/webhook/010-webhook-listener.py
-  -> src/webhook/060-run-collector.sh (or 050-watch-queue-flag.sh for the docker listener)
-  -> src/pipeline/110a-request-run.sh
-  -> src/pipeline/100-run-worker.sh
-       STEP 0: src/pipeline/000-update-before-run.sh
-       STEP 1: src/pipeline/015-import-index-snapshot.py (AUTO) / 010-collect-index.py
-       STEP 2: src/pipeline/020-notify-whatsapp.py --announce (WhatsApp index alerts)
-       STEP 3: src/pipeline/030-collect-details.py (+ inline detail messages)
-       STEP 4: src/pipeline/040-build-detail-views.py (+ work templates)
-       STEP 5: src/pipeline/020-notify-whatsapp.py --announce-details
-       STEP 6: py_compile + src/pipeline/050-repair-missing-deadlines.py (verify/repair)
-       STEP 7: src/pipeline/060-build-calendar.py -> data/calendar/YY-MM-DD/*.ics
-       STEP 8: src/pipeline/070-test-zone.py (opt-in, idle/no-new-records only)
+  -> src/10_webhook/010-webhook-listener.py
+  -> src/10_webhook/060-run-collector.sh (or 050-watch-queue-flag.sh for the docker listener)
+  -> src/20_pipeline/110a-request-run.sh
+  -> src/20_pipeline/100-run-worker.sh
+       STEP 0: src/20_pipeline/000-update-before-run.sh
+       STEP 1: src/20_pipeline/015-import-index-snapshot.py (AUTO) / 010-collect-index.py
+       STEP 2: src/20_pipeline/020-notify-whatsapp.py --announce (WhatsApp index alerts)
+       STEP 3: src/20_pipeline/030-collect-details.py (+ inline detail messages)
+       STEP 4: src/20_pipeline/040-build-detail-views.py (+ work templates)
+       STEP 5: src/20_pipeline/020-notify-whatsapp.py --announce-details
+       STEP 6: py_compile + src/20_pipeline/050-repair-missing-deadlines.py (verify/repair)
+       STEP 7: src/20_pipeline/060-build-calendar.py -> data/calendar/YY-MM-DD/*.ics
+       STEP 8: src/20_pipeline/070-test-zone.py (opt-in, idle/no-new-records only)
 See docs/ARCHITECTURE.md for the full verified flow.
 TXT
 
@@ -96,47 +96,47 @@ echo ""
 echo "2) Required active scripts"
 echo "--------------------------"
 required_scripts=(
-  "src/webhook/010-webhook-listener.py"
-  "src/webhook/060-run-collector.sh"
-  "src/pipeline/110a-request-run.sh"
-  "src/pipeline/100-run-worker.sh"
-  "src/pipeline/000-update-before-run.sh"
-  "src/notify/010-waha-client.py"
-  "src/pipeline/020-notify-whatsapp.py"
-  "src/pipeline/010-collect-index.py"
-  "src/pipeline/030-collect-details.py"
-  "src/pipeline/040-build-detail-views.py"
-  "src/pipeline/050-repair-missing-deadlines.py"
-  "src/pipeline/060-build-calendar.py"
-  "src/pipeline/070-test-zone.py"
+  "src/10_webhook/010-webhook-listener.py"
+  "src/10_webhook/060-run-collector.sh"
+  "src/20_pipeline/110a-request-run.sh"
+  "src/20_pipeline/100-run-worker.sh"
+  "src/20_pipeline/000-update-before-run.sh"
+  "src/30_notify/010-waha-client.py"
+  "src/20_pipeline/020-notify-whatsapp.py"
+  "src/20_pipeline/010-collect-index.py"
+  "src/20_pipeline/030-collect-details.py"
+  "src/20_pipeline/040-build-detail-views.py"
+  "src/20_pipeline/050-repair-missing-deadlines.py"
+  "src/20_pipeline/060-build-calendar.py"
+  "src/20_pipeline/070-test-zone.py"
   "src/common.py"
-  "src/monitor/001c-monitor-terminal.sh"
-  "src/monitor/001a-monitor-tk.py"
-  "src/monitor/001b-monitor-web.py"
-  "src/monitor/000-open-monitor.sh"
-  "src/monitor/002-next-run-timer.py"
-  "src/monitor/003-update-loader.py"
-  "src/pipeline/130b-run-status.sh"
-  "src/pipeline/130a-queue-status.sh"
-  "src/pipeline/120a-stop-everything.sh"
-  "src/pipeline/120b-stop-collectors.sh"
-  "src/pipeline/130c-follow-run.sh"
-  "src/pipeline/110b-run-now.sh"
-  "src/webhook/020-start-listener.sh"
-  "src/webhook/030-install-service.sh"
-  "src/webhook/050-watch-queue-flag.sh"
-  "src/webhook/040-diagnose-webhook.sh"
-  "src/tools/070-rename-record-folders.py"
-  "src/tools/050-maintain-database.py"
-  "src/tools/080-update-day-folder.py"
-  "src/tools/110-reset.py"
-  "src/tools/060-import-selected-calendars.py"
-  "src/tools/100-migrate-apps-layout.sh"
-  "src/tools/090b-migrate-previous-records.py"
-  "src/tools/090a-migrate-previous-records.sh"
-  "src/tools/120-setup-git-credentials.sh"
-  "src/tools/140-full-report.py"
-  "src/tools/150-upload-github.sh"
+  "src/40_monitor/001c-monitor-terminal.sh"
+  "src/40_monitor/001a-monitor-tk.py"
+  "src/40_monitor/001b-monitor-web.py"
+  "src/40_monitor/000-open-monitor.sh"
+  "src/40_monitor/002-next-run-timer.py"
+  "src/40_monitor/003-update-loader.py"
+  "src/20_pipeline/130b-run-status.sh"
+  "src/20_pipeline/130a-queue-status.sh"
+  "src/20_pipeline/120a-stop-everything.sh"
+  "src/20_pipeline/120b-stop-collectors.sh"
+  "src/20_pipeline/130c-follow-run.sh"
+  "src/20_pipeline/110b-run-now.sh"
+  "src/10_webhook/020-start-listener.sh"
+  "src/10_webhook/030-install-service.sh"
+  "src/10_webhook/050-watch-queue-flag.sh"
+  "src/10_webhook/040-diagnose-webhook.sh"
+  "src/50_tools/070-rename-record-folders.py"
+  "src/50_tools/050-maintain-database.py"
+  "src/50_tools/080-update-day-folder.py"
+  "src/50_tools/110-reset.py"
+  "src/50_tools/060-import-selected-calendars.py"
+  "src/50_tools/100-migrate-apps-layout.sh"
+  "src/50_tools/090b-migrate-previous-records.py"
+  "src/50_tools/090a-migrate-previous-records.sh"
+  "src/50_tools/120-setup-git-credentials.sh"
+  "src/50_tools/140-full-report.py"
+  "src/50_tools/150-upload-github.sh"
   "setup.sh"
   "update-local-copy.sh"
 )
@@ -221,15 +221,15 @@ done
 echo ""
 echo "6) Current related processes"
 echo "----------------------------"
-pgrep -af "100-run-worker.sh|010-collect-index.py|030-collect-details.py|001c-monitor-terminal.sh|001a-monitor-tk.py|001b-monitor-web.py|timeout .*src/pipeline" || echo "No related active process."
+pgrep -af "100-run-worker.sh|010-collect-index.py|030-collect-details.py|001c-monitor-terminal.sh|001a-monitor-tk.py|001b-monitor-web.py|timeout .*src/20_pipeline" || echo "No related active process."
 
 echo ""
 echo "7) Current run-all status"
 echo "-------------------------"
-if [ -x "./src/pipeline/130b-run-status.sh" ]; then
-  ./src/pipeline/130b-run-status.sh
+if [ -x "./src/20_pipeline/130b-run-status.sh" ]; then
+  ./src/20_pipeline/130b-run-status.sh
 else
-  echo "src/pipeline/130b-run-status.sh missing."
+  echo "src/20_pipeline/130b-run-status.sh missing."
 fi
 
 echo ""
@@ -266,14 +266,14 @@ echo ""
 echo "9) Recommended commands"
 echo "-----------------------"
 cat <<'TXT'
-Manual small test:   ./src/pipeline/110a-request-run.sh 5
-Run all pending:     ./src/pipeline/110a-request-run.sh
-Open native monitor: ./src/monitor/000-open-monitor.sh
-Open web monitor:    PC_MONITOR_MODE=web ./src/monitor/000-open-monitor.sh
-Watch in terminal:   PC_MONITOR_MODE=terminal ./src/monitor/000-open-monitor.sh
-Follow logs:         ./src/pipeline/130c-follow-run.sh
-Check status:        ./src/pipeline/130b-run-status.sh
-Stop if stuck:       ./src/pipeline/120a-stop-everything.sh
+Manual small test:   ./src/20_pipeline/110a-request-run.sh 5
+Run all pending:     ./src/20_pipeline/110a-request-run.sh
+Open native monitor: ./src/40_monitor/000-open-monitor.sh
+Open web monitor:    PC_MONITOR_MODE=web ./src/40_monitor/000-open-monitor.sh
+Watch in terminal:   PC_MONITOR_MODE=terminal ./src/40_monitor/000-open-monitor.sh
+Follow logs:         ./src/20_pipeline/130c-follow-run.sh
+Check status:        ./src/20_pipeline/130b-run-status.sh
+Stop if stuck:       ./src/20_pipeline/120a-stop-everything.sh
 Or use the unified CLI: ./bin/pcc <start|stop|status|monitor|webhook|...>
 TXT
 

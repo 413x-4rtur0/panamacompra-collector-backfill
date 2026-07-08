@@ -89,8 +89,8 @@ stop_user_services() {
 
 stop_host_processes() {
   log "Stopping host runners, collectors, monitors, updater, and webhook listener."
-  if [[ -x "$APP_ROOT/src/pipeline/120a-stop-everything.sh" ]]; then
-    run "$APP_ROOT/src/pipeline/120a-stop-everything.sh" || true
+  if [[ -x "$APP_ROOT/src/20_pipeline/120a-stop-everything.sh" ]]; then
+    run "$APP_ROOT/src/20_pipeline/120a-stop-everything.sh" || true
   fi
 
   local patterns=(
@@ -107,7 +107,7 @@ stop_host_processes() {
     '[u]pdate-local-copy.sh'
     '[u]pdate-loader.py'
     '[0]00-update-before-run.sh'
-    '[p]ython3? -u .*src/webhook/010-webhook-listener.py'
+    '[p]ython3? -u .*src/10_webhook/010-webhook-listener.py'
     '[s]rc/webhook/010-webhook-listener.py'
   )
   for pattern in "${patterns[@]}"; do
@@ -170,7 +170,7 @@ purge_paths() {
 
 print_remaining() {
   log "Remaining related host processes:"
-  pgrep -af 'run-worker|010-collect-index|collect_detail|070-test-zone|build_calendar|monitor-tk|monitor-web|src/webhook/listener|update-local-copy|changedetection|waha' || true
+  pgrep -af 'run-worker|010-collect-index|collect_detail|070-test-zone|build_calendar|monitor-tk|monitor-web|src/10_webhook/listener|update-local-copy|changedetection|waha' || true
   detect_compose
   if [[ "${#compose_cmd[@]}" -gt 0 && -f "$APP_ROOT/docker-compose.yml" ]]; then
     log "Remaining compose services:"

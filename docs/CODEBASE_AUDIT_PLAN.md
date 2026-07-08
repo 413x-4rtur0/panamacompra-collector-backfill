@@ -28,7 +28,7 @@ Companion documents produced by this audit:
 | `scripts/tasks/0*.sh` | 5-line wrappers that `exec` into `pcc`/root scripts (desktop-launcher targets) | e.g. `scripts/tasks/020-start-collector.sh` → `exec $ROOT/bin/pcc start` |
 | `update-local-copy.sh`, `review-system.sh` | Root maintenance scripts, also reachable via `pcc` (`pcc health` → `review-system.sh`) | `bin/pcc:460` |
 
-### Monitors (`src/monitor/`)
+### Monitors (`src/40_monitor/`)
 
 - `000-open-monitor.sh` — chooser; default `PC_MONITOR_MODE=tk` (`:22`), starts
   `001a` (`:92`) or `001b` (`:114`).
@@ -39,7 +39,7 @@ Companion documents produced by this audit:
 - `002-next-run-timer.py` — countdown widget (next run, latest records, last summary).
 - `003-update-loader.py` — Tk loader running `update-local-copy.sh` then opening the monitor.
 
-### Pipeline (`src/pipeline/`) — numbered by execution order
+### Pipeline (`src/20_pipeline/`) — numbered by execution order
 
 - `000-update-before-run.sh` — git fetch/ff-or-hard-reset + DB maintenance + pip install.
 - `010-collect-index.py` — Playwright Firefox crawl of Programadas + Abiertas index tables.
@@ -50,7 +50,7 @@ Companion documents produced by this audit:
   (`load_filter_rules`/`evaluate_filter`; also used by `pcc keywords test`,
   `bin/pcc:436-448`).
 - `030-collect-details.py` — detail-page downloader; dynamically loads 020 for
-  inline detail messages (`load_script("src/pipeline/020-notify-whatsapp.py")`).
+  inline detail messages (`load_script("src/20_pipeline/020-notify-whatsapp.py")`).
 - `040-build-detail-views.py` — normalizer: rebuilds `summary`/`items`/`calendar`
   views inside each `*.detail.json`.
 - `050-repair-missing-deadlines.py` — re-fetches records missing DTEND.
@@ -63,20 +63,20 @@ Companion documents produced by this audit:
 
 ### Notification — two senders, deliberately split
 
-- `src/notify/010-waha-client.py` — plain system/summary messages; per-purpose
+- `src/30_notify/010-waha-client.py` — plain system/summary messages; per-purpose
   chat routing (`CHAT_PURPOSES`, `configured_chat_id` fallback chain `:89-102`),
   retry with backoff and an in-process circuit breaker (`send_text`, `:225-258`).
-- `src/pipeline/020-notify-whatsapp.py` — rich record messages (index alerts,
+- `src/20_pipeline/020-notify-whatsapp.py` — rich record messages (index alerts,
   detail follow-ups, status changes).
 
-### Webhook (`src/webhook/`)
+### Webhook (`src/10_webhook/`)
 
 `010-webhook-listener.py` (token-gated `hmac.compare_digest` `:100`;
 `ENQUEUE_ONLY` mode `:30`), `020-start-listener.sh`, `030-install-service.sh`,
 `040-diagnose-webhook.sh`, `050-watch-queue-flag.sh` (host-side poller for the
 dockerized listener), `060-run-collector.sh` (sets `PC_RUN_MODE=AUTO` → `110a`).
 
-### Tools (`src/tools/`)
+### Tools (`src/50_tools/`)
 
 `010-docker-stack.sh` (manages the compose stack; **generates `.webhook_token`**,
 `:101-106`), `020-record-templates.py`, `030-opportunity-calendar.py`,
@@ -110,7 +110,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
   │
   ├─[watch]─ changedetection container (docker-compose.yml:37) + browser-steps JS
   │             └─ notification json://host:8765/panamacompra/<token>
-  │                   └─ src/webhook/010-webhook-listener.py  (handle_trigger :97)
+  │                   └─ src/10_webhook/010-webhook-listener.py  (handle_trigger :97)
   │                        ├─ direct: 060-run-collector.sh → 110a-request-run.sh (PC_RUN_MODE=AUTO)
   │                        └─ enqueue-only (docker): touch run_all_requested.flag
   │                              └─ 050-watch-queue-flag.sh (host) → 110a-request-run.sh
@@ -118,7 +118,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
   └─[manual]─ pcc start / monitors' "Request run" → 110a / 110b
                     │
                     ▼
-      src/pipeline/100-run-worker.sh   (flock loop, :197-686)
+      src/20_pipeline/100-run-worker.sh   (flock loop, :197-686)
         STEP 0  000-update-before-run.sh                (:225-242)
         STEP 1  015-import-index-snapshot.py (AUTO)     (:286-310)
                 └ exit 3 → hybrid: 010-collect-index.py crawls unhealthy groups (:298-328)
@@ -132,7 +132,7 @@ SOURCE                 panamacompra.gob.pa (BASE_URL, src/common.py:76)
         STEP 5  020-notify-whatsapp.py --announce-details (:484)
         STEP 6  py_compile + 050-repair-missing-deadlines.py (:508-527)
         STEP 7  060-build-calendar.py                   (:550)   → data/calendar/*.ics
-        SUMMARY notify_waha via src/notify/010-waha-client.py (purpose=summary) (:623-630)
+        SUMMARY notify_waha via src/30_notify/010-waha-client.py (purpose=summary) (:623-630)
         STEP 8  070-test-zone.py (opt-in, PC_TEST_ZONE_AUTORUN) (:661-669)
         │
         └─ writes run_all_progress.env / run_all_last_summary.env / logs
@@ -200,11 +200,11 @@ proposed), error-handling/resume flow, and the entity/storage data model.
 - **KPI logic tripled**: ~150-line Python heredoc in `bin/pcc:190-341`
   re-implements the monitors' KPI queries.
 - `guess_finish_date_from_text` duplicated between `src/common.py` and
-  `src/tools/090b-migrate-previous-records.py`.
+  `src/50_tools/090b-migrate-previous-records.py`.
 
 ### Dead / legacy candidates
 
-- `src/tools/090a+090b-migrate-previous-records`, `src/tools/100-migrate-apps-layout.sh`
+- `src/50_tools/090a+090b-migrate-previous-records`, `src/50_tools/100-migrate-apps-layout.sh`
   — one-time migrations, likely done; document as legacy, do not extend.
 - `docs/reports/*.md` — three stale point-in-time review reports.
 - Root `__pycache__/` directory on disk (gitignored) plus `.pyc` caches under
@@ -236,7 +236,7 @@ proposed), error-handling/resume flow, and the entity/storage data model.
 - `.env` — contains `WAHA_API_KEY` (+ dashboard credentials). Gitignored ✅,
   file mode 600 ✅.
 - `.webhook_token` — trigger token, generated by
-  `src/tools/010-docker-stack.sh:101-106`. Gitignored ✅, mode 600 ✅.
+  `src/50_tools/010-docker-stack.sh:101-106`. Gitignored ✅, mode 600 ✅.
 - ⚠️ `config/defaults.env:17` and `docker-compose.yml:71` **commit the fixed
   default WAHA dashboard password** (`WAHA_DASHBOARD_PASSWORD`), documented in
   UI strings as a deliberate "always reachable" default. Consequence: every
@@ -250,10 +250,10 @@ proposed), error-handling/resume flow, and the entity/storage data model.
 | Phase | Scope | Files | Risk | Test | Rollback |
 |---|---|---|---|---|---|
 | **1** ✅ done | No-risk cleanup & docs: this doc set; pruned `docs/reports/`; legacy migration tools marked + pipeline map corrected in `scripts/README.md`; stray root `__pycache__` deleted. (`integrations` symlink ownership needs root — left as-is, see §5.) | `docs/*`, `scripts/README.md` | None | `bash -n` touched scripts; `pcc help` | `git revert` |
-| **2** ✅ done | Dashboard: web Overview tab (health cards, last-run stage bars from `run_all_last_summary.env`, services line) as the new default tab with reordered nav; `new_today`/`closing_soon`/`abiertas`/`programadas` counters and Alerts-sent card in both monitors; tk KPIs tab last-run line | `src/monitor/001b-monitor-web.py`, `src/monitor/001a-monitor-tk.py` | Low | `py_compile` both; `/api/db-stats` + `/api/status` smoke-tested; web↔tk number parity verified | revert 2 files |
-| **3** ✅ done | Delivery tracking: additive `notify_attempts`/`notify_error` columns via the migration map; `020-notify-whatsapp.py` persists per-record send outcomes; Failed-alerts KPI in both monitors; `/api/kpi-export` CSV endpoint + button | `src/common.py`, `src/pipeline/020-notify-whatsapp.py`, monitors | Medium (additive schema) | migration verified on a DB copy; smoke-tested | revert code; new columns stay inert |
-| **4** ✅ done | Shared KPI engine `src/monitor/monitor_common.py` consumed by both monitors and `pcc kpi` (heredoc removed); number parity verified across the three surfaces. Remaining monitor-local duplicates (progress/queue/status helpers) deferred to a follow-up | `src/monitor/monitor_common.py` (new), `001a`, `001b`, `bin/pcc` | Medium | `py_compile`; parity check pcc == web == tk | revert; no data touched |
-| **5** ✅ done | `panamacompra.service` → `Type=oneshot`; development-mode guard for `git reset --hard` (`PC_UPDATE_FORCE_RESET=1` opt-out); random WAHA dashboard password at setup (fixed default removed from shipped config/UI); data-freshness check in `review-system.sh` (`PC_FRESHNESS_MAX_HOURS`) | `systemd/user/panamacompra.service`, `src/pipeline/000-update-before-run.sh`, `src/tools/010-docker-stack.sh`, `review-system.sh`, `config/defaults.env`, `.env.example`, `docker-compose.yml` | Medium | `bash -n`; `systemd-analyze verify`; freshness smoke test | revert commit |
+| **2** ✅ done | Dashboard: web Overview tab (health cards, last-run stage bars from `run_all_last_summary.env`, services line) as the new default tab with reordered nav; `new_today`/`closing_soon`/`abiertas`/`programadas` counters and Alerts-sent card in both monitors; tk KPIs tab last-run line | `src/40_monitor/001b-monitor-web.py`, `src/40_monitor/001a-monitor-tk.py` | Low | `py_compile` both; `/api/db-stats` + `/api/status` smoke-tested; web↔tk number parity verified | revert 2 files |
+| **3** ✅ done | Delivery tracking: additive `notify_attempts`/`notify_error` columns via the migration map; `020-notify-whatsapp.py` persists per-record send outcomes; Failed-alerts KPI in both monitors; `/api/kpi-export` CSV endpoint + button | `src/common.py`, `src/20_pipeline/020-notify-whatsapp.py`, monitors | Medium (additive schema) | migration verified on a DB copy; smoke-tested | revert code; new columns stay inert |
+| **4** ✅ done | Shared KPI engine `src/40_monitor/monitor_common.py` consumed by both monitors and `pcc kpi` (heredoc removed); number parity verified across the three surfaces. Remaining monitor-local duplicates (progress/queue/status helpers) deferred to a follow-up | `src/40_monitor/monitor_common.py` (new), `001a`, `001b`, `bin/pcc` | Medium | `py_compile`; parity check pcc == web == tk | revert; no data touched |
+| **5** ✅ done | `panamacompra.service` → `Type=oneshot`; development-mode guard for `git reset --hard` (`PC_UPDATE_FORCE_RESET=1` opt-out); random WAHA dashboard password at setup (fixed default removed from shipped config/UI); data-freshness check in `review-system.sh` (`PC_FRESHNESS_MAX_HOURS`) | `systemd/user/panamacompra.service`, `src/20_pipeline/000-update-before-run.sh`, `src/50_tools/010-docker-stack.sh`, `review-system.sh`, `config/defaults.env`, `.env.example`, `docker-compose.yml` | Medium | `bash -n`; `systemd-analyze verify`; freshness smoke test | revert commit |
 
 Standing constraint: KPI numbers shown by the web monitor, tk monitor, and
 `pcc kpi` must stay in agreement at every phase.

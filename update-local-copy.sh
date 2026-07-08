@@ -31,8 +31,8 @@ collector_pipeline_running() {
 }
 
 open_monitor_best_effort() {
-  if [ "${PC_UPDATE_OPEN_MONITOR_WHEN_QUEUED:-1}" != "0" ] && [ -x ./src/monitor/000-open-monitor.sh ]; then
-    ./src/monitor/000-open-monitor.sh >/dev/null 2>&1 || true
+  if [ "${PC_UPDATE_OPEN_MONITOR_WHEN_QUEUED:-1}" != "0" ] && [ -x ./src/40_monitor/000-open-monitor.sh ]; then
+    ./src/40_monitor/000-open-monitor.sh >/dev/null 2>&1 || true
   fi
 }
 
@@ -94,7 +94,7 @@ restart_webhook_listener() {
     return 0
   fi
 
-  if ./src/webhook/020-start-listener.sh --replace-port-owner; then
+  if ./src/10_webhook/020-start-listener.sh --replace-port-owner; then
     echo "Webhook listener is available after update."
   else
     echo "WARNING: webhook listener did not start; check $PC_LOG_DIR/webhook_listener.out.log."
@@ -132,7 +132,7 @@ fi
 # Serialize manual/automatic Update + Monitor launchers. If changedetection (or
 # a user) asks for another update while the collector is still processing a
 # previous change, do NOT kill the active pipeline and do NOT start a second
-# updater. Leave a durable queue flag; src/pipeline/100-run-worker.sh consumes it
+# updater. Leave a durable queue flag; src/20_pipeline/100-run-worker.sh consumes it
 # after the current run finishes cleanly.
 exec 8>"$UPDATE_LOCK_FILE"
 if ! flock -n 8; then
@@ -409,7 +409,7 @@ fi
 
 echo ""
 echo "8) Review and update archive database metadata"
-python -u ./src/tools/050-maintain-database.py --apply
+python -u ./src/50_tools/050-maintain-database.py --apply
 
 echo ""
 echo "9) Run repository health checks"
@@ -420,15 +420,15 @@ echo "10) Refresh already-downloaded records (optional, manual)"
 echo "   A normal run only processes NEW records; it never re-pulls previously"
 echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
 echo "   and the per-section split-table layout, run one of these manually:"
-echo "     ./src/pipeline/040-build-detail-views.py --apply         # rebuild views/.ics + split tables (no browser)"
-echo "     ./src/tools/080-update-day-folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
+echo "     ./src/20_pipeline/040-build-detail-views.py --apply         # rebuild views/.ics + split tables (no browser)"
+echo "     ./src/50_tools/080-update-day-folder.py --date <YY-MM-DD> --apply # re-download a day from the portal"
 echo "   Then rebuild calendar import packages if needed:"
-echo "     ./src/pipeline/060-build-calendar.py --all              # data/calendar/YY-MM-DD packages, default 10 events each"
-echo "     PC_CALENDAR_PACKAGE_SIZE=5 ./src/pipeline/060-build-calendar.py --all"
-echo "     ./src/pipeline/060-build-calendar.py --all --flat       # optional old parent-only package location"
+echo "     ./src/20_pipeline/060-build-calendar.py --all              # data/calendar/YY-MM-DD packages, default 10 events each"
+echo "     PC_CALENDAR_PACKAGE_SIZE=5 ./src/20_pipeline/060-build-calendar.py --all"
+echo "     ./src/20_pipeline/060-build-calendar.py --all --flat       # optional old parent-only package location"
 echo "   To verify the current code when there are no new opportunities, run the"
 echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; monitor MODE=TEST/test_run):"
-echo "     ./src/pipeline/070-test-zone.py --limit 5 --apply"
+echo "     ./src/20_pipeline/070-test-zone.py --limit 5 --apply"
 
 echo ""
 echo "11) Install manual monitor desktop shortcut"
@@ -441,7 +441,7 @@ if [ "$DETAIL_LIMIT" != "0" ]; then
   # The updater loader is responsible for opening the monitor after this script
   # exits successfully. Suppress 110a-request-run.sh's normal monitor opener so
   # an optional smoke request cannot show the monitor before steps 12/final done.
-  PC_REQUEST_OPEN_MONITOR=0 ./src/pipeline/110a-request-run.sh "$DETAIL_LIMIT"
+  PC_REQUEST_OPEN_MONITOR=0 ./src/20_pipeline/110a-request-run.sh "$DETAIL_LIMIT"
 else
   echo "Skipped smoke run. Set PC_UPDATE_TEST_DETAIL_LIMIT=5 to queue one during the update without opening the monitor early."
 fi

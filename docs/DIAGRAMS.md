@@ -15,7 +15,7 @@ flowchart LR
   end
 
   PC[panamacompra.gob.pa] -->|Browser Steps JS<br/>config/changedetection-browser-steps.js| CD
-  CD -->|"json://host:8765/panamacompra/&lt;token&gt;"| WHL[host listener<br/>src/webhook/010-webhook-listener.py]
+  CD -->|"json://host:8765/panamacompra/&lt;token&gt;"| WHL[host listener<br/>src/10_webhook/010-webhook-listener.py]
   CD -->|same URL, compose network| WHC
   WHC -->|touch run_all_requested.flag| Q[(data/queue)]
   Q --> WQ[050-watch-queue-flag.sh<br/>host poller]

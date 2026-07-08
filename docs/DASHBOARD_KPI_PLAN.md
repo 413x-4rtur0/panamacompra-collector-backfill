@@ -9,10 +9,10 @@ approved-scope reference for that work.
 
 ### Tabs
 
-- **Web monitor** (`src/monitor/001b-monitor-web.py:964`), 6 tabs:
+- **Web monitor** (`src/40_monitor/001b-monitor-web.py:964`), 6 tabs:
   Operations · Collector Settings · Integrations · WhatsApp · KPIs ·
   Records & Database.
-- **Tk monitor** (`src/monitor/001a-monitor-tk.py:1241-1248`), 5 tabs:
+- **Tk monitor** (`src/40_monitor/001a-monitor-tk.py:1241-1248`), 5 tabs:
   Operations · Settings · WhatsApp · KPIs · Records & Database
   (Integrations content folded into other panels).
 - **Terminal** (`001c-monitor-terminal.sh`, `pcc watch`) and the countdown
@@ -130,7 +130,7 @@ tab, and a delivery panel in the Alerts tab.
 
 ### Single KPI engine (Phase 4)
 
-Extract the duplicated monitor helpers into `src/monitor/monitor_common.py`
+Extract the duplicated monitor helpers into `src/40_monitor/monitor_common.py`
 (name TBD) consumed by 001a, 001b, and a `--json` CLI mode that replaces the
 `bin/pcc` heredoc. Acceptance: the three surfaces produce identical numbers for
 the same filters.
@@ -140,10 +140,10 @@ the same filters.
 | Phase | Scope | Files | Risk | Test | Rollback |
 |---|---|---|---|---|---|
 | 1 ✅ done | Docs & cleanup (this doc set; pruned `docs/reports/`; legacy migration tools marked; pipeline map in `scripts/README.md` corrected) | `docs/*`, `scripts/README.md` | None | `bash -n` touched scripts; `pcc help` | `git revert` |
-| 2 ✅ done | Web: new **Overview** tab (health cards, last-run stage bars, services line) is now the first/default tab; tabs reordered Overview → Operations → Opportunities → KPIs → WhatsApp → Integrations → Settings. Both monitors: `new_today`, `closing_soon` (window = `PC_MONITOR_DEADLINE_SOON_DAYS`), `abiertas`, `programadas` counters + Alerts-sent card; tk KPIs tab gained the last-run/stage-durations line (`read_last_summary` in both monitors) | `src/monitor/001b-monitor-web.py`, `src/monitor/001a-monitor-tk.py` | Low | `python -m py_compile src/monitor/001*.py`; `/api/db-stats` + `/api/status` smoke-tested; web↔tk number parity verified | revert 2 files |
-| 3 ✅ done | Delivery tracking: additive `notify_attempts`/`notify_error` columns (`src/common.py` migration map); `020-notify-whatsapp.py` records send outcomes per record (incl. digest chunks); Failed-alerts card on Overview + KPIs (web) and the delivery card (tk); `/api/kpi-export` CSV endpoint + Export CSV button | `src/common.py`, `src/pipeline/020-notify-whatsapp.py`, monitors | Medium (additive schema) | migration verified on a DB copy; export + db-stats smoke-tested | revert code; new columns stay inert |
-| 4 ✅ done | Shared KPI engine `src/monitor/monitor_common.py` (db_review_stats, item summarizers, record index, finish-stamp helpers, read_last_summary, CSV flattener, `--json`/`--csv` CLI); both monitors import it; `pcc kpi` executes it (166-line heredoc removed). Remaining monitor-local duplicates (progress/queue/status/tail/webhook_running) deferred — see MONITOR_RELATIONSHIPS.md | `src/monitor/monitor_common.py` (new), `001a`, `001b`, `bin/pcc` | Medium | `py_compile`; number parity verified: pcc == web == tk on the same DB | revert; no data touched |
-| 5 ✅ done | `panamacompra.service` → `Type=oneshot` (was misdeclared simple); `000-update-before-run.sh` keeps local commits in development mode (`PC_UPDATE_FORCE_RESET=1` restores old behavior); setup/docker-stack generate a RANDOM WAHA dashboard password (fixed default removed from defaults.env/.env.example/UI strings); `review-system.sh` gained a data-freshness check (`PC_FRESHNESS_MAX_HOURS`, default 24h) included in the WAHA health message | `systemd/user/panamacompra.service`, `src/pipeline/000-update-before-run.sh`, `src/tools/010-docker-stack.sh`, `review-system.sh`, `config/defaults.env`, `.env.example`, `docker-compose.yml` | Medium | `bash -n` + `systemd-analyze verify`; freshness section smoke-tested | revert commit |
+| 2 ✅ done | Web: new **Overview** tab (health cards, last-run stage bars, services line) is now the first/default tab; tabs reordered Overview → Operations → Opportunities → KPIs → WhatsApp → Integrations → Settings. Both monitors: `new_today`, `closing_soon` (window = `PC_MONITOR_DEADLINE_SOON_DAYS`), `abiertas`, `programadas` counters + Alerts-sent card; tk KPIs tab gained the last-run/stage-durations line (`read_last_summary` in both monitors) | `src/40_monitor/001b-monitor-web.py`, `src/40_monitor/001a-monitor-tk.py` | Low | `python -m py_compile src/40_monitor/001*.py`; `/api/db-stats` + `/api/status` smoke-tested; web↔tk number parity verified | revert 2 files |
+| 3 ✅ done | Delivery tracking: additive `notify_attempts`/`notify_error` columns (`src/common.py` migration map); `020-notify-whatsapp.py` records send outcomes per record (incl. digest chunks); Failed-alerts card on Overview + KPIs (web) and the delivery card (tk); `/api/kpi-export` CSV endpoint + Export CSV button | `src/common.py`, `src/20_pipeline/020-notify-whatsapp.py`, monitors | Medium (additive schema) | migration verified on a DB copy; export + db-stats smoke-tested | revert code; new columns stay inert |
+| 4 ✅ done | Shared KPI engine `src/40_monitor/monitor_common.py` (db_review_stats, item summarizers, record index, finish-stamp helpers, read_last_summary, CSV flattener, `--json`/`--csv` CLI); both monitors import it; `pcc kpi` executes it (166-line heredoc removed). Remaining monitor-local duplicates (progress/queue/status/tail/webhook_running) deferred — see MONITOR_RELATIONSHIPS.md | `src/40_monitor/monitor_common.py` (new), `001a`, `001b`, `bin/pcc` | Medium | `py_compile`; number parity verified: pcc == web == tk on the same DB | revert; no data touched |
+| 5 ✅ done | `panamacompra.service` → `Type=oneshot` (was misdeclared simple); `000-update-before-run.sh` keeps local commits in development mode (`PC_UPDATE_FORCE_RESET=1` restores old behavior); setup/docker-stack generate a RANDOM WAHA dashboard password (fixed default removed from defaults.env/.env.example/UI strings); `review-system.sh` gained a data-freshness check (`PC_FRESHNESS_MAX_HOURS`, default 24h) included in the WAHA health message | `systemd/user/panamacompra.service`, `src/20_pipeline/000-update-before-run.sh`, `src/50_tools/010-docker-stack.sh`, `review-system.sh`, `config/defaults.env`, `.env.example`, `docker-compose.yml` | Medium | `bash -n` + `systemd-analyze verify`; freshness section smoke-tested | revert commit |
 
 Constraint carried from the audit: KPI numbers shown by the web monitor, tk
 monitor, and `pcc kpi` must stay in agreement at every phase.

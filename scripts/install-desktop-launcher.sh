@@ -17,7 +17,7 @@ Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
 Update + Monitor, changedetection.io, WAHA, low-resource Integration URLs, and Docker integrations. The Update +
-Monitor launcher opens src/monitor/003-update-loader.py first; after a successful
+Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
 update, the normal monitor opens with the refreshed code.
 
 Commands:
@@ -59,7 +59,7 @@ waha_icon_path="$icon_dir/panamacompra-waha.svg"
 docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
 urls_icon_path="$icon_dir/panamacompra-integration-urls.svg"
 helper_dir="${XDG_DATA_HOME:-$HOME/.local/share}/panamacompra/launchers"
-loader_path="$APP_ROOT/src/monitor/003-update-loader.py"
+loader_path="$APP_ROOT/src/40_monitor/003-update-loader.py"
 
 write_icon() {
   mkdir -p "$icon_dir"
@@ -126,8 +126,8 @@ if [[ -f "$settings" ]]; then
 fi
 # Chromeless app window when possible (no Firefox needed, no browser header);
 # the helper falls back to the default browser by itself.
-if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
-  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" changedetection
+if [[ -x "$APP_ROOT_VALUE/src/50_tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/50_tools/130-open-web-app.sh" changedetection
 fi
 url="${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi
@@ -150,8 +150,8 @@ if [[ -f "$settings" ]]; then
 fi
 # Chromeless app window when possible (no Firefox needed, no browser header);
 # the helper falls back to the default browser by itself.
-if [[ -x "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" ]]; then
-  exec "$APP_ROOT_VALUE/src/tools/130-open-web-app.sh" waha
+if [[ -x "$APP_ROOT_VALUE/src/50_tools/130-open-web-app.sh" ]]; then
+  exec "$APP_ROOT_VALUE/src/50_tools/130-open-web-app.sh" waha
 fi
 url="http://localhost:${WAHA_PORT:-3000}"
 if command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"; fi
@@ -176,7 +176,7 @@ printf 'PanamaCompra low-resource integration access\n'
 printf 'changedetection: %s\n' "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"
 printf 'WAHA dashboard:  http://localhost:%s\n' "${WAHA_PORT:-3000}"
 printf '\nDocker status (if docker is available):\n'
-./src/tools/010-docker-stack.sh status || true
+./src/50_tools/010-docker-stack.sh status || true
 printf '\nThese are normal local web dashboards; open them in an already-running browser to avoid launching a new heavy browser.\n'
 read -r -p "Press Enter to close..." _unused || true
 SH
@@ -187,9 +187,9 @@ APP_ROOT_VALUE="__APP_ROOT__"
 cd "$APP_ROOT_VALUE"
 echo "PanamaCompra Docker integrations (changedetection + WAHA + webhook)"
 echo "Starting/refreshing stack, then printing status..."
-./src/tools/010-docker-stack.sh up || true
+./src/50_tools/010-docker-stack.sh up || true
 echo ""
-./src/tools/010-docker-stack.sh status || true
+./src/50_tools/010-docker-stack.sh status || true
 echo ""
 read -r -p "Press Enter to close..." _unused || true
 SH
