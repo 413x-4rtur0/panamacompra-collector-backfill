@@ -164,9 +164,57 @@ echo "Branch: ${BRANCH:-<auto-detect latest vs main>}"
 echo "Log: $LOG_FILE"
 echo ""
 
-echo "1) Verify no collector pipeline is active before updating"
+echo "1) Verify internet connectivity before touching git or packages"
+check_internet_once() {
+  # /dev/tcp is a bash builtin, so this needs no curl/ping/nc dependency and
+  # works even when ICMP (ping) is filtered on the network. Try GitHub first
+  # (what this script actually needs), then a couple of well-known resolvers in
+  # case GitHub itself is briefly unreachable but the network is otherwise up.
+  local host_port host port
+  for host_port in "github.com:443" "1.1.1.1:443" "8.8.8.8:443"; do
+    host="${host_port%%:*}"
+    port="${host_port##*:}"
+    if timeout 3 bash -c "exec 9<>/dev/tcp/${host}/${port}" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ "${PC_UPDATE_SKIP_INTERNET_CHECK:-0}" = "1" ]; then
+  echo "Skipped internet connectivity check because PC_UPDATE_SKIP_INTERNET_CHECK=1."
+else
+  RETRIES="${PC_UPDATE_INTERNET_RETRIES:-6}"
+  RETRY_DELAY="${PC_UPDATE_INTERNET_RETRY_DELAY_SECONDS:-5}"
+  INTERNET_OK=0
+  for attempt in $(seq 1 "$RETRIES"); do
+    if check_internet_once; then
+      INTERNET_OK=1
+      break
+    fi
+    if [ "$attempt" -lt "$RETRIES" ]; then
+      echo "No internet connectivity yet (attempt $attempt/$RETRIES); this is common right after boot/login while the network comes up. Retrying in ${RETRY_DELAY}s..."
+      sleep "$RETRY_DELAY"
+    fi
+  done
+
+  if [ "$INTERNET_OK" != "1" ]; then
+    echo ""
+    echo "No internet connectivity detected after $RETRIES attempts. Skipping this"
+    echo "update run so it does not fail partway through git/pip/playwright steps."
+    echo "It will retry the next time the updater is launched (next login, or rerun"
+    echo "./update-local-copy.sh once online). Set PC_UPDATE_SKIP_INTERNET_CHECK=1"
+    echo "to bypass this check, or PC_UPDATE_INTERNET_RETRIES/PC_UPDATE_INTERNET_RETRY_DELAY_SECONDS"
+    echo "to tune it."
+    exit 0
+  fi
+  echo "Internet connectivity OK."
+fi
+
+echo ""
+echo "2) Verify no collector pipeline is active before updating"
 if collector_pipeline_running; then
-  queue_update_monitor_request "collector pipeline started before updater step 1"
+  queue_update_monitor_request "collector pipeline started before updater step 2"
   exit 0
 fi
 if webhook_listener_running; then
@@ -183,7 +231,7 @@ trap restore_webhook_on_exit EXIT
 pkill -TERM -f "[s]rc/webhook/010-webhook-listener.py" 2>/dev/null || true
 
 echo ""
-echo "2) Preserve any local changes to tracked files so the update always proceeds"
+echo "3) Preserve any local changes to tracked files so the update always proceeds"
 # Untracked files (data/, records/, .venv.broken.*, .webhook_token, ...) never
 # block an update. Local edits to TRACKED files are auto-stashed instead of
 # aborting, so this checkout can always be brought up to date. The stash is
@@ -203,7 +251,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 echo ""
-echo "3) Fetch all remotes and select the branch to update to"
+echo "4) Fetch all remotes and select the branch to update to"
 git fetch --all --prune
 
 update_main() {
@@ -278,12 +326,12 @@ if [ -n "$STASH_REF" ]; then
 fi
 
 echo ""
-echo "4) Ensure executable bits are set"
+echo "5) Ensure executable bits are set"
 find . -maxdepth 4 \( -name "*.sh" -o -name "*.py" \) -not -path "./.venv/*" -exec chmod +x {} +
 chmod +x ./bin/pcc
 
 echo ""
-echo "5) Ensure Python virtual environment and dependencies"
+echo "6) Ensure Python virtual environment and dependencies"
 venv_is_healthy() {
   [ -x .venv/bin/python ] || return 1
   .venv/bin/python -c "import ensurepip; import subprocess" >/dev/null 2>&1
@@ -331,7 +379,7 @@ python -m pip install --upgrade pip || { echo "ERROR: Unable to upgrade pip. Che
 python -m pip install -r requirements.txt || { echo "ERROR: Unable to install Python dependencies from requirements.txt. Check network/proxy access, then rerun ./update-local-copy.sh." >&2; exit 1; }
 
 echo ""
-echo "6) Verify Playwright Firefox browser"
+echo "7) Verify Playwright Firefox browser"
 if playwright_firefox_available; then
   echo "Playwright Firefox is already installed and launchable."
 elif [ "${PC_UPDATE_SKIP_BROWSER_INSTALL:-0}" = "1" ]; then
@@ -360,15 +408,15 @@ else
 fi
 
 echo ""
-echo "7) Review and update archive database metadata"
+echo "8) Review and update archive database metadata"
 python -u ./src/tools/050-maintain-database.py --apply
 
 echo ""
-echo "8) Run repository health checks"
+echo "9) Run repository health checks"
 ./review-system.sh
 
 echo ""
-echo "9) Refresh already-downloaded records (optional, manual)"
+echo "10) Refresh already-downloaded records (optional, manual)"
 echo "   A normal run only processes NEW records; it never re-pulls previously"
 echo "   downloaded ones. To bring existing records up to the current parsing/ICS"
 echo "   and the per-section split-table layout, run one of these manually:"
@@ -383,11 +431,11 @@ echo "   testing zone (records_test/latest_5 + records_test/calendar/YY-MM-DD; m
 echo "     ./src/pipeline/070-test-zone.py --limit 5 --apply"
 
 echo ""
-echo "10) Install manual monitor desktop shortcut"
+echo "11) Install manual monitor desktop shortcut"
 install_desktop_shortcut
 
 echo ""
-echo "11) Optional smoke run request"
+echo "12) Optional smoke run request"
 if [ "$DETAIL_LIMIT" != "0" ]; then
   echo "Requesting smoke run with detail limit: $DETAIL_LIMIT"
   # The updater loader is responsible for opening the monitor after this script
@@ -399,7 +447,7 @@ else
 fi
 
 echo ""
-echo "12) Restore webhook listener after update"
+echo "13) Restore webhook listener after update"
 restart_webhook_listener
 cleanup_update_flags
 trap - EXIT
