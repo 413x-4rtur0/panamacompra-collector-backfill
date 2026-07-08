@@ -162,7 +162,29 @@ echo "Directory: $BASE_DIR"
 echo "Remote: $REMOTE"
 echo "Branch: ${BRANCH:-<auto-detect latest vs main>}"
 echo "Log: $LOG_FILE"
+# Non-blocking safety mode: when set, this run refuses to auto-stash tracked
+# edits or auto-reset a diverged branch instead of doing it silently. Off by
+# default so unattended triggers (boot, cron, webhook-queued Update+Monitor)
+# never hang or abort on their own -- opt in for a manually-run update when
+# you know you may have newer local work than the remote:
+#   PC_UPDATE_REQUIRE_CLEAN=1 ./update-local-copy.sh
+REQUIRE_CLEAN="${PC_UPDATE_REQUIRE_CLEAN:-0}"
+echo "Safe mode (PC_UPDATE_REQUIRE_CLEAN): ${REQUIRE_CLEAN}"
 echo ""
+
+# Stale autostashes are the #1 way local work quietly falls behind: every
+# previous run that found tracked edits stashed them and moved on without
+# reapplying (by design, to stay unattended-safe -- see step 3 below). If
+# several have piled up unrecovered, that is worth surfacing loudly before
+# doing anything else, even though it never blocks this run.
+STALE_STASHES="$(git stash list 2>/dev/null | grep -E "update_local_copy autostash|update-before-run autostash" || true)"
+if [ -n "$STALE_STASHES" ]; then
+  STALE_COUNT="$(printf '%s\n' "$STALE_STASHES" | wc -l)"
+  echo "!! NOTICE: $STALE_COUNT unrecovered auto-stash(es) from previous updates:"
+  printf '%s\n' "$STALE_STASHES" | sed 's/^/     /'
+  echo "   Review with: git stash list   /   git stash show -p <ref>"
+  echo ""
+fi
 
 echo "1) Verify internet connectivity before touching git or packages"
 check_internet_once() {
@@ -237,7 +259,15 @@ echo "3) Preserve any local changes to tracked files so the update always procee
 # aborting, so this checkout can always be brought up to date. The stash is
 # kept (not dropped) so nothing is lost; recover it later with `git stash list`.
 STASH_REF=""
+STASH_MESSAGE=""
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  if [ "$REQUIRE_CLEAN" = "1" ]; then
+    echo "ERROR: Local changes to tracked files detected, and PC_UPDATE_REQUIRE_CLEAN=1" >&2
+    echo "(safe mode) refuses to auto-stash them. Commit or stash your work yourself," >&2
+    echo "then rerun, or rerun with PC_UPDATE_REQUIRE_CLEAN=0 to auto-stash as usual:" >&2
+    git status --short --untracked-files=no >&2
+    exit 1
+  fi
   STASH_MESSAGE="update_local_copy autostash $(date '+%Y-%m-%d %H:%M:%S')"
   echo "Local changes to tracked files detected. Auto-stashing them before updating:"
   git status --short --untracked-files=no
@@ -254,13 +284,22 @@ echo ""
 echo "4) Fetch all remotes and select the branch to update to"
 git fetch --all --prune
 
+RESET_DIVERGED_COMMITS=0
 update_main() {
   git checkout main 2>/dev/null || git checkout -B main "$REMOTE/main"
   if git pull --ff-only "$REMOTE" main; then
     echo "Fast-forwarded main to $REMOTE/main."
   else
+    if [ "$REQUIRE_CLEAN" = "1" ]; then
+      echo "ERROR: local main has diverged from $REMOTE/main (not a fast-forward), and" >&2
+      echo "PC_UPDATE_REQUIRE_CLEAN=1 (safe mode) refuses to reset over it. Resolve" >&2
+      echo "manually (rebase/merge/reset), or rerun with PC_UPDATE_REQUIRE_CLEAN=0:" >&2
+      git log --oneline "$REMOTE/main..main" >&2 || true
+      exit 1
+    fi
     echo "Fast-forward of main not possible (diverged). Resetting main to $REMOTE/main."
     echo "Any diverging local commits remain reachable via the reflog (git reflog main)."
+    RESET_DIVERGED_COMMITS=1
     git reset --hard "$REMOTE/main"
   fi
   CHECKED_OUT_BRANCH="main"
@@ -268,15 +307,42 @@ update_main() {
 
 switch_to_branch() {
   local target="$1"
+  local had_local_branch=0
+  git rev-parse --verify --quiet "refs/heads/$target" >/dev/null 2>&1 && had_local_branch=1
   git checkout "$target" 2>/dev/null || git checkout -B "$target" "$REMOTE/$target"
+
+  if [ "$had_local_branch" = "1" ] && ! git merge-base --is-ancestor "$target" "$REMOTE/$target" 2>/dev/null; then
+    if [ "$REQUIRE_CLEAN" = "1" ]; then
+      echo "ERROR: local branch '$target' has commits not on $REMOTE/$target, and" >&2
+      echo "PC_UPDATE_REQUIRE_CLEAN=1 (safe mode) refuses to reset over them. Resolve" >&2
+      echo "manually, or rerun with PC_UPDATE_REQUIRE_CLEAN=0:" >&2
+      git log --oneline "$REMOTE/$target..$target" >&2 || true
+      exit 1
+    fi
+    echo "Local branch '$target' has commits not on $REMOTE/$target; they remain"
+    echo "reachable via the reflog (git reflog $target) after this reset."
+    RESET_DIVERGED_COMMITS=1
+  fi
   git reset --hard "$REMOTE/$target"
+
   # Drop stray untracked files left by the previous branch, but NEVER the runtime
   # archive/db/venv. `git clean` already respects .gitignore (so data/, records/,
   # .venv, .webhook_token are kept); the explicit excludes below are a safety net
   # in case .gitignore is ever stale on the host. We deliberately do NOT pass -x.
-  git clean -fd \
-    -e data -e records -e records_test \
-    -e .venv -e ".venv.broken.*" -e .webhook_token || true
+  local clean_excludes=(-e data -e records -e records_test -e .venv -e ".venv.broken.*" -e .webhook_token)
+  local clean_preview
+  clean_preview="$(git clean -fdn "${clean_excludes[@]}")"
+  if [ -n "$clean_preview" ]; then
+    echo "Untracked files this branch switch will remove (git clean -fd preview):"
+    printf '%s\n' "$clean_preview" | sed 's/^/  /'
+    if [ "$REQUIRE_CLEAN" = "1" ]; then
+      echo "ERROR: PC_UPDATE_REQUIRE_CLEAN=1 (safe mode) refuses to delete the untracked" >&2
+      echo "files listed above. Move/remove them yourself, or rerun with" >&2
+      echo "PC_UPDATE_REQUIRE_CLEAN=0." >&2
+      exit 1
+    fi
+  fi
+  git clean -fd "${clean_excludes[@]}" || true
   CHECKED_OUT_BRANCH="$target"
 }
 
@@ -451,6 +517,25 @@ echo "13) Restore webhook listener after update"
 restart_webhook_listener
 cleanup_update_flags
 trap - EXIT
+
+echo ""
+echo "============================================================"
+echo " Local safety summary"
+echo "============================================================"
+if [ -n "$STASH_REF" ]; then
+  echo "Local tracked edits were auto-stashed this run and were NOT reapplied:"
+  echo "  $STASH_MESSAGE"
+  echo "  Recover with: git stash list   /   git stash pop  (or apply stash@{N} if not @{0})"
+else
+  echo "No local tracked edits were stashed this run."
+fi
+if [ "$RESET_DIVERGED_COMMITS" = "1" ]; then
+  echo "Local commits that were not on the remote branch were reset away this run."
+  echo "  Recover with: git reflog $CHECKED_OUT_BRANCH   (find the commit before this run, then git branch <name> <sha>)"
+else
+  echo "No local commits were reset away this run."
+fi
+echo "Branch now checked out: $CHECKED_OUT_BRANCH"
 
 echo ""
 echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
