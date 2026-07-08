@@ -32,6 +32,7 @@ fi
 
 DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-0}"
 INDEX_LIMIT="${PC_WEBHOOK_INDEX_LIMIT:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
+AUTORUN_SOURCE="${PC_AUTORUN_SOURCE:-changedetection}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 POLL_SECONDS="${PC_RUNNER_POLL_SECONDS:-5}"
 
@@ -60,11 +61,24 @@ launch_queued_update_monitor() {
   fi
 }
 
-log "started (poll ${POLL_SECONDS}s, index_page_cap ${INDEX_LIMIT}, detail_limit ${DETAIL_LIMIT}); watching $FLAG"
+log "started (poll ${POLL_SECONDS}s, source ${AUTORUN_SOURCE}, index_page_cap ${INDEX_LIMIT}, detail_limit ${DETAIL_LIMIT}); watching $FLAG"
 
 while true; do
+  if [ -f "$MONITOR_SETTINGS" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$MONITOR_SETTINGS"
+    set +a
+    AUTORUN_SOURCE="${PC_AUTORUN_SOURCE:-changedetection}"
+  fi
   launch_queued_update_monitor
   if [ -f "$FLAG" ] && ! worker_running; then
+    if [ "$AUTORUN_SOURCE" = "cron" ]; then
+      log "request flag ignored because PC_AUTORUN_SOURCE=cron; remove flag and leave cron as the only automatic runner"
+      rm -f "$FLAG"
+      sleep "$POLL_SECONDS"
+      continue
+    fi
     log "request flag detected; launching host collector"
     # 110a-request-run.sh keeps/refreshes the flag and starts the host worker,
     # which consumes the request. Never let one failure stop the watcher.

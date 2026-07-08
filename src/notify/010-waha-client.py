@@ -222,11 +222,11 @@ def _breaker_threshold() -> int:
         return 3
 
 
-def send_text(text: str, purpose: str = "") -> None:
+def send_text(text: str, purpose: str = "", chat_id_override: str = "") -> None:
     global _send_failures
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
-    chat_id = configured_chat_id(purpose)
+    chat_id = chat_id_override.strip() or configured_chat_id(purpose)
     api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 

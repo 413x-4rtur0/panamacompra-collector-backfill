@@ -67,6 +67,7 @@ waha = pc_common.load_script("src/notify/010-waha-client.py", "waha_client")
 CONFIG_DIR = pc_common.DATA_CONFIG_DIR
 CALENDAR_EXPORT_DIR = pc_common.CALENDAR_EXPORT_DIR
 KEYWORDS_PATH = CONFIG_DIR / "waha_keywords.txt"
+CLIENTS_PATH = CONFIG_DIR / "waha_clients.json"
 BASELINE_MARKER = CONFIG_DIR / "waha_notify_initialized"
 DETAIL_BASELINE_MARKER = CONFIG_DIR / "waha_detail_notify_initialized"
 SETTINGS_PATH = CONFIG_DIR / "monitor_settings.env"
@@ -191,8 +192,9 @@ def waha_enabled() -> bool:
 
 def waha_destination() -> bool:
     """True when any WhatsApp destination is configured (the default chat id or
-    any of the per-purpose index/details/status/system/summary destinations)."""
-    return waha.any_destination_configured()
+    any of the per-purpose index/details/status/system/summary destinations, or
+    at least one enabled client profile with its own chat/group id)."""
+    return waha.any_destination_configured() or bool(load_client_profiles())
 
 
 FILTER_PURPOSES = ("index", "details", "status")
@@ -246,6 +248,38 @@ def load_filter_rules(purpose: str = "") -> tuple[list[list[str]], list[list[str
     return [], []
 
 
+def load_client_profiles() -> list[dict]:
+    """Optional per-client WhatsApp fan-out profiles.
+
+    Saved as data/config/waha_clients.json:
+      [{"name":"Client A","chat_id":"120...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion"}]
+    """
+    try:
+        raw = json.loads(CLIENTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    profiles = []
+    for item in raw:
+        if not isinstance(item, dict) or item.get("enabled", True) is False:
+            continue
+        chat_id = str(item.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+        purposes = item.get("purposes") or ["index", "details", "status"]
+        if isinstance(purposes, str):
+            purposes = [p.strip() for p in purposes.split(",")]
+        purposes = [str(p).strip().lower() for p in purposes if str(p).strip()]
+        profiles.append({
+            "name": str(item.get("name") or chat_id).strip(),
+            "chat_id": chat_id,
+            "purposes": purposes or ["index", "details", "status"],
+            "filters": str(item.get("filters") or "").strip(),
+        })
+    return profiles
+
+
 def evaluate_filter(haystack: str, includes: list[list[str]], excludes: list[list[str]]) -> str | None:
     """The '🔎 Coincidencia' line, or None when the record must not be sent."""
     normalized = pc_common.strip_accents(haystack).lower()
@@ -259,6 +293,37 @@ def evaluate_filter(haystack: str, includes: list[list[str]], excludes: list[lis
         return "Sin filtro (todas las entradas)" if not excludes else "Pasa las exclusiones"
     matched = [" + ".join(rule) for rule in includes if rule_matches(rule)]
     return ", ".join(matched) if matched else None
+
+
+def row_filter_haystack(row, summary: dict) -> str:
+    return " ".join(
+        str(value)
+        for value in (
+            row["descripcion"],
+            row["short_description"],
+            row["entidad"],
+            row["dependencia"],
+            row["modalidad"],
+            row["grupo"],
+            summary.get("descripcion"),
+            " ".join(str(item.get("descripcion") or item.get("description") or item) for item in load_detail_items(row["detail_json_path"])[:20]) if row["detail_json_path"] else "",
+        )
+        if value
+    )
+
+
+def matching_client_profiles(purpose: str, row, summary: dict) -> list[dict]:
+    profiles = []
+    haystack = row_filter_haystack(row, summary)
+    for profile in load_client_profiles():
+        purposes = profile["purposes"]
+        if "all" not in purposes and purpose not in purposes:
+            continue
+        includes, excludes = parse_filter_rules(profile["filters"])
+        if evaluate_filter(haystack, includes, excludes) is None:
+            continue
+        profiles.append(profile)
+    return profiles
 
 
 def load_detail_data(detail_json_path: str | None) -> dict:
@@ -741,6 +806,18 @@ def match_line_for(row, summary: dict, purpose: str = "") -> str | None:
     return evaluate_filter(haystack, includes, excludes)
 
 
+def allowed_match_line_for(row, summary: dict, purpose: str = "") -> str | None:
+    """Global/per-purpose filter result, with client profiles as an alternate
+    route. A record can still be sent when it does not match the shared
+    destination filter but does match at least one client profile."""
+    match_line = match_line_for(row, summary, purpose)
+    if match_line is not None:
+        return match_line
+    if matching_client_profiles(purpose, row, summary):
+        return "Coincidencia por perfil de cliente"
+    return None
+
+
 def record_events_respect_filter() -> bool:
     """Whether rich opportunity messages should obey PC_WAHA_NOTIFY_EVENTS.
 
@@ -788,13 +865,28 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
     if record_events_respect_filter() and not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
-    if not waha.configured_chat_id(purpose):
-        # No destination for this purpose and no default to fall back to: leave
+    client_profiles = []
+    if conn is not None and numero:
+        row = fetch_row(conn, numero)
+        if row is not None:
+            client_profiles = matching_client_profiles(purpose, row, load_detail_summary(row["detail_json_path"]))
+    has_default_destination = bool(waha.configured_chat_id(purpose))
+    if not has_default_destination and not client_profiles:
+        # No destination for this purpose and no matching client profile: leave
         # the record unmarked so it sends once a destination is configured.
         print(f"WAHA notification skipped: no destination configured{f' for {purpose!r}' if purpose else ''}.")
         return False
     try:
-        waha.send_text(text, purpose=purpose)
+        sent_any = False
+        if has_default_destination:
+            waha.send_text(text, purpose=purpose)
+            sent_any = True
+        for profile in client_profiles:
+            waha.send_text(text, purpose=purpose, chat_id_override=profile["chat_id"])
+            sent_any = True
+            print(f"WAHA profile notification sent for {profile['name']}.")
+        if not sent_any:
+            return False
         record_send_outcome(conn, numero, True)
         return True
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
@@ -825,6 +917,8 @@ def index_digest_threshold() -> int:
     """New-record count above which the index alerts collapse into digest
     messages. PC_NOTIFY_INDEX_DIGEST_THRESHOLD, default 10; 0 disables the
     digest so every new record keeps its own message."""
+    if load_client_profiles():
+        return 0
     value = cfg_int("PC_NOTIFY_INDEX_DIGEST_THRESHOLD")
     return 10 if value is None else max(0, value)
 
@@ -959,7 +1053,7 @@ def notify_saved_record(conn, numero: str) -> bool:
             # run re-checks it once the deadline moves into range.
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, "index")
+        match_line = allowed_match_line_for(row, summary, "index")
         if match_line is None:
             # Filtered out by keywords: remember it so it is not rechecked.
             mark_notified(conn, numero)
@@ -1003,7 +1097,7 @@ def notify_status_change(conn, numero: str) -> bool:
         # Abiertas transitions go to the index feed (new-opportunity channel).
         purpose = "index" if change_code == "abierta" else "status"
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, purpose)
+        match_line = allowed_match_line_for(row, summary, purpose)
         if match_line is None:
             clear_status_change(conn, numero)
             return False
@@ -1033,7 +1127,7 @@ def notify_detected_status_change(conn, numero: str) -> bool:
         if row["last_notified_signature"] == current_signature or row["last_notified_status"] == current_status:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, "status") is None:
+        if allowed_match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
         sent = send_text("update", build_record_message(
@@ -1068,7 +1162,7 @@ def notify_items_change(conn, numero: str) -> bool:
             mark_snapshot(conn, numero)
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        if match_line_for(row, summary, "status") is None:
+        if allowed_match_line_for(row, summary, "status") is None:
             mark_snapshot(conn, numero)
             return False
         sent = send_text("update", build_items_changed_message(row, summary), purpose="status", conn=conn, numero=numero)
@@ -1128,7 +1222,7 @@ def notify_detail_ready(conn, numero: str) -> bool:
         if row is None or row["detail_status"] != "saved" or not row["notified_at"] or row["detail_notified_at"]:
             return False
         summary = load_detail_summary(row["detail_json_path"])
-        match_line = match_line_for(row, summary, "details")
+        match_line = allowed_match_line_for(row, summary, "details")
         if match_line is None:
             # Filtered out for the details destination: settle it silently.
             mark_detail_notified(conn, numero)
@@ -1181,7 +1275,7 @@ def announce_details_with_progress(conn) -> int:
         full_row = fetch_row(conn, row["numero"])
         label = _short_label(full_row) if full_row is not None else row["numero"]
         summary = load_detail_summary(full_row["detail_json_path"]) if full_row is not None else {}
-        match_line = match_line_for(full_row, summary, "details") if full_row is not None else None
+        match_line = allowed_match_line_for(full_row, summary, "details") if full_row is not None else None
         preview = (
             _one_line_preview(build_record_message(full_row, summary, variant="details", match_line=match_line))
             if (full_row is not None and match_line is not None)
@@ -1330,7 +1424,7 @@ def collect_digest_rows(conn, numeros) -> list:
             if decision == "too_far":
                 continue
             summary = load_detail_summary(row["detail_json_path"])
-            if match_line_for(row, summary, "index") is None:
+            if allowed_match_line_for(row, summary, "index") is None:
                 mark_notified(conn, numero)
                 mark_detail_notified(conn, numero)
                 continue
@@ -1485,7 +1579,7 @@ def announce_with_progress(conn) -> int:
         elif kind == "items":
             preview = f"🔵 {label} (items modificados)"
         else:
-            match_line = match_line_for(full_row, summary, "index") if full_row is not None else None
+            match_line = allowed_match_line_for(full_row, summary, "index") if full_row is not None else None
             preview = (
                 _one_line_preview(build_opportunity_message(full_row, summary, match_line))
                 if (full_row is not None and match_line is not None)
