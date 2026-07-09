@@ -656,6 +656,11 @@ def run_tk() -> int:
         if detail:
             ttk.Label(box, text=detail, style="SectionDetail.TLabel").pack(anchor="w")
 
+    # Collapse callbacks grouped by owning notebook tab. on_tab_changed uses
+    # this to re-collapse a tab's sections when the user switches away, so
+    # every tab always re-opens in its compact state.
+    tab_section_collapsers: dict[tk.Widget, list] = {}
+
     def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
                            start_hidden: bool = True) -> None:
         """Add a hide/show button that keeps the section header visible.
@@ -709,6 +714,15 @@ def run_tk() -> int:
             root.after_idle(update_scroll_region)
 
         button.configure(command=lambda: apply_hidden(not hidden.get()))
+        # File the collapser under the notebook tab this section lives in (the
+        # `tabs` notebook exists by the time any section is built). Sections
+        # outside the notebook simply never match and stay unregistered.
+        owner = frame
+        while owner is not None:
+            if owner.master is tabs:
+                tab_section_collapsers.setdefault(owner, []).append(apply_hidden)
+                break
+            owner = owner.master
         # Sections start collapsed by default so the monitor opens compact; the
         # operator expands only the panels they need.
         if start_hidden:
@@ -949,8 +963,20 @@ def run_tk() -> int:
     ):
         tabs.add(tab_frame, text=tab_title)
         tab_frame.columnconfigure(0, weight=1)
-    # Tab contents differ in height; recompute the page scroll range on switch.
+    # Switching tabs collapses the sections of every other tab and jumps back
+    # to the top, so each tab always presents its compact default view; tab
+    # contents also differ in height, so recompute the page scroll range.
     def on_tab_changed(_e: tk.Event) -> None:
+        try:
+            selected = tabs.nametowidget(tabs.select())
+        except (KeyError, tk.TclError):
+            selected = None
+        for tab_frame, collapsers in tab_section_collapsers.items():
+            if tab_frame is selected:
+                continue
+            for collapse in collapsers:
+                collapse(True)
+        canvas.yview_moveto(0.0)
         root.after_idle(update_scroll_region)
         root.after(100, update_scroll_region)
 
