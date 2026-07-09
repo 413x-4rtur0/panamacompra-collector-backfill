@@ -1118,12 +1118,6 @@ def run_tk() -> int:
     settings.columnconfigure(1, weight=1)
     settings.columnconfigure(3, weight=1)
 
-    whatsapp = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
-    whatsapp.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-    whatsapp.columnconfigure(0, weight=1)
-    whatsapp.columnconfigure(1, weight=1)
-    whatsapp.columnconfigure(3, weight=1)
-
     alpha_var = tk.StringVar(value=f"{runtime['alpha']:.2f}")
     autoclose_var = tk.StringVar(value=str(runtime["auto_close"]))
     refresh_var = tk.StringVar(value=str(runtime["refresh"]))
@@ -1406,8 +1400,8 @@ def run_tk() -> int:
     # ========================================================================
 
     # ---- WhatsApp: Settings (toggles, destinations, filters, delivery, server, readability) ----
-    whatsapp_settings = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
-    whatsapp_settings.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_settings = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
+    whatsapp_settings.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     whatsapp_settings.columnconfigure(1, weight=1)
     whatsapp_settings.columnconfigure(3, weight=1)
 
@@ -1494,8 +1488,8 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_settings, button_column=3)
 
     # ---- WhatsApp: Client Profiles ------------------------------------------
-    whatsapp_clients = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
-    whatsapp_clients.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_clients = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
+    whatsapp_clients.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
     whatsapp_clients.columnconfigure(1, weight=1)
 
     add_section_header(whatsapp_clients, "Client Profiles",
@@ -1564,8 +1558,8 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_clients, button_column=1)
 
     # ---- WhatsApp: Client Search (contact/group lookup on the WAHA server) ----
-    whatsapp_client_search = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
-    whatsapp_client_search.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_client_search = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
+    whatsapp_client_search.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
     whatsapp_client_search.columnconfigure(1, weight=1)
 
     add_section_header(whatsapp_client_search, "Client Search",
@@ -1740,8 +1734,8 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_client_search, button_column=4)
 
     # ---- WhatsApp: Message Formats ------------------------------------------
-    whatsapp_formats = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
-    whatsapp_formats.grid(row=3, column=0, sticky="ew", padx=0, pady=0)
+    whatsapp_formats = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
+    whatsapp_formats.grid(row=3, column=0, sticky="ew", padx=6, pady=6)
     whatsapp_formats.columnconfigure(1, weight=1)
     whatsapp_formats.columnconfigure(3, weight=1)
 
