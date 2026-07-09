@@ -29,9 +29,14 @@ MAX_PAGES_PER_GROUP = index_page_cap()
 INDEX_HARD_SAFETY_CAP = env_int("PC_INDEX_HARD_SAFETY_CAP", "500", minimum=1)
 
 ALL_GROUPS = [
-    {"name": "Programadas", "radio_id": "btnradio2"},
-    {"name": "Abiertas", "radio_id": "btnradio1"},
+    {"name": "Programadas", "radio_id": "btnradio2", "estado_prefix": "programad"},
+    {"name": "Abiertas", "radio_id": "btnradio1", "estado_prefix": "abiert"},
 ]
+# How many times to re-attempt a failed group switch (each attempt re-clicks the
+# radio; the last ones reload the whole page first). Abiertas regularly needs a
+# retry because the Angular table re-render races the radio click.
+GROUP_SWITCH_ATTEMPTS = env_int("PC_INDEX_GROUP_SWITCH_ATTEMPTS", "3", minimum=1)
+CRAWL_RESULT_ENV_PATH = QUEUE_DIR / "index_crawl_result.env"
 
 
 def selected_groups():
@@ -90,31 +95,60 @@ def prepare_base_page(page):
     page.wait_for_timeout(2000)
     page.wait_for_selector("tabla-busqueda-avanzada-v3", timeout=60000)
 
-def click_status(page, radio_id, group_name):
-    before = page_signature(page)
-
-    page.evaluate("""
-    ({radioId}) => {
-      const label = document.querySelector(`label[for="${radioId}"]`);
-      const input = document.querySelector(`#${radioId}`);
-
-      if (label) label.click();
-      else if (input) {
-        input.click();
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+def group_is_active(page, group_name, estado_prefix):
+    """True when the requested radio is checked AND the table already shows at
+    least one row whose ESTADO matches the group (e.g. 'Abierta' for Abiertas),
+    so we never scrape the previous group's rows under the wrong label."""
+    return page.evaluate("""
+    ({groupName, estadoPrefix}) => {
+      const norm = t => (t || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+      const checked =
+        document.querySelector('#btnradio2')?.checked ? 'Programadas' :
+        document.querySelector('#btnradio1')?.checked ? 'Abiertas' : '';
+      if (checked !== groupName) return false;
+      const rows = Array.from(document.querySelectorAll('tabla-busqueda-avanzada-v3 tbody tr'));
+      return rows.some(row => {
+        const cells = Array.from(row.querySelectorAll('th, td')).map(td => norm(td.innerText));
+        return cells.some(c => c.startsWith(estadoPrefix));
+      });
     }
-    """, {"radioId": radio_id})
+    """, {"groupName": group_name, "estadoPrefix": estado_prefix})
 
-    for _ in range(40):
-        page.wait_for_timeout(500)
-        after = page_signature(page)
-        if after != before or group_name in after:
-            page.wait_for_timeout(3500)
-            break
+def click_status(page, group):
+    """Switch the portal to a group's tab and confirm it really landed there.
 
-    close_popup(page)
-    wait_for_table(page)
+    Returns True on success. Retries the radio click (the Angular re-render
+    regularly races it, which is why Abiertas used to fail silently); the last
+    attempt reloads the whole page first. On False the caller must SKIP the
+    group instead of scraping whatever table is showing."""
+    radio_id, group_name, estado_prefix = group["radio_id"], group["name"], group["estado_prefix"]
+    for attempt in range(1, GROUP_SWITCH_ATTEMPTS + 1):
+        if attempt == GROUP_SWITCH_ATTEMPTS and attempt > 1:
+            print(f"{group_name}: reloading page for final switch attempt")
+            prepare_base_page(page)
+        close_popup(page)
+        page.evaluate("""
+        ({radioId}) => {
+          const label = document.querySelector(`label[for="${radioId}"]`);
+          const input = document.querySelector(`#${radioId}`);
+
+          if (label) label.click();
+          else if (input) {
+            input.click();
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+        """, {"radioId": radio_id})
+
+        for _ in range(40):
+            page.wait_for_timeout(500)
+            if group_is_active(page, group_name, estado_prefix):
+                page.wait_for_timeout(3500)
+                close_popup(page)
+                wait_for_table(page)
+                return True
+        print(f"{group_name}: switch attempt {attempt}/{GROUP_SWITCH_ATTEMPTS} failed (rows never showed '{estado_prefix}*')")
+    return False
 
 def set_rows_to_50(page):
     page.evaluate("""
@@ -271,6 +305,7 @@ def main():
     seen = set()
     page_counts = []
     stop_reasons = []
+    failed_groups = []
     run_started = now_iso()
 
     with sync_playwright() as p:
@@ -297,9 +332,17 @@ def main():
 
         for group in GROUPS:
             group_name = group["name"]
-            radio_id = group["radio_id"]
 
-            click_status(page, radio_id, group_name)
+            if not click_status(page, group):
+                stop_reasons.append(f"{group_name}: group switch FAILED after {GROUP_SWITCH_ATTEMPTS} attempts; group skipped")
+                failed_groups.append(group_name)
+                write_run_progress(
+                    "INDEX", "RUNNING", 12,
+                    f"Step 1/7: WARNING — could not open the {group_name} tab after {GROUP_SWITCH_ATTEMPTS} attempts; skipping it this run.",
+                    step_current=1, step_total=7,
+                    extra=f"group={group_name}; switch=failed",
+                )
+                continue
             set_rows_to_50(page)
             go_first_page(page)
 
@@ -314,6 +357,13 @@ def main():
 
                 wait_for_table(page)
                 rows = extract_rows(page, group_name, page_number)
+                # Safety net: keep only rows whose ESTADO belongs to this group
+                # (blank estado tolerated in case the column layout shifts), so a
+                # mid-crawl tab bounce can never store rows under the wrong group.
+                rows = [
+                    r for r in rows
+                    if not r["estado"] or strip_accents(r["estado"]).lower().startswith(group["estado_prefix"])
+                ]
 
                 extracted_total += len(rows)
                 page_counts.append((group_name, page_number, len(rows)))
@@ -442,6 +492,18 @@ def main():
     # Persist this crawl's per-page pace so the next run can show an ETA from
     # its very first page instead of waiting to measure its own speed.
     record_phase_timing(INDEX_TIMING_PATH, seconds=time.monotonic() - index_start, count=len(page_counts))
+
+    # Publish per-group health so the run-all worker can alert on a skipped
+    # group without failing the whole run (mirrors index_snapshot_result.env).
+    ensure_dirs()
+    crawl_fields = {
+        "CRAWL_FAILED_GROUPS": ",".join(failed_groups),
+        "CRAWL_GROUPS": ",".join(g["name"] for g in GROUPS),
+        "CRAWL_WRITTEN_AT": now_iso(),
+    }
+    tmp = CRAWL_RESULT_ENV_PATH.with_suffix(CRAWL_RESULT_ENV_PATH.suffix + ".tmp")
+    tmp.write_text("".join(f"{key}={shell_quote(value)}\n" for key, value in crawl_fields.items()), encoding="utf-8")
+    tmp.replace(CRAWL_RESULT_ENV_PATH)
 
     db_total = conn.execute("SELECT COUNT(*) AS c FROM opportunities").fetchone()["c"]
     pending_details = conn.execute("SELECT COUNT(*) AS c FROM opportunities WHERE detail_status != 'saved'").fetchone()["c"]

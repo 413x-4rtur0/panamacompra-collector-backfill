@@ -7,6 +7,8 @@
 
     rowsPerPage: "50",
     maxPagesSafety: 80,
+    switchAttempts: 3,
+    retryBackoffMs: 4000,
 
     initialWaitMs: 8000,
     afterClickWaitMs: 1300,
@@ -404,27 +406,38 @@
     const recordsByNumero = new Map();
     const recordsInCrawlOrder = [];
 
-    const switched = await clickExactRadioStatus(statusConfig);
+    // The radio switch and the Angular table re-render race each other, and
+    // Abiertas (the second status crawled) loses regularly. Retry the whole
+    // switch + rows-per-page sequence instead of giving up on first failure.
+    let ready = false;
+    let failReason = "";
 
-    if (!switched) {
-      pageCounts.push(`${statusConfig.group}: radio switch failed`);
-      return {
-        config: statusConfig,
-        records: [],
-        recordsInCrawlOrder: [],
-        pageCounts
-      };
+    for (let attempt = 1; attempt <= CONFIG.switchAttempts; attempt++) {
+      const switched = await clickExactRadioStatus(statusConfig);
+
+      if (!switched) {
+        failReason = `radio switch failed (attempt ${attempt}/${CONFIG.switchAttempts})`;
+        await closePopup();
+        await sleep(CONFIG.retryBackoffMs);
+        continue;
+      }
+
+      await setRowsPerPage50();
+
+      ready = await waitFor(
+        () => hasRowsWithEstado(statusConfig.expectedEstado),
+        CONFIG.waitMs
+      );
+
+      if (ready) break;
+
+      failReason = `rows not ready after 50 change (attempt ${attempt}/${CONFIG.switchAttempts})`;
+      await closePopup();
+      await sleep(CONFIG.retryBackoffMs);
     }
 
-    await setRowsPerPage50();
-
-    const readyAfterRowsChange = await waitFor(
-      () => hasRowsWithEstado(statusConfig.expectedEstado),
-      CONFIG.waitMs
-    );
-
-    if (!readyAfterRowsChange) {
-      pageCounts.push(`${statusConfig.group}: rows not ready after 50 change`);
+    if (!ready) {
+      pageCounts.push(`${statusConfig.group}: ${failReason || "never became ready"}`);
       return {
         config: statusConfig,
         records: [],

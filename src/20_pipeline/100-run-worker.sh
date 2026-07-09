@@ -324,8 +324,19 @@ while true; do
       echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT${INDEX_CRAWL_GROUPS:+ PC_INDEX_GROUPS=$INDEX_CRAWL_GROUPS} timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
     } >> "$CURRENT_LOG"
 
+    rm -f "$PC_QUEUE_DIR/index_crawl_result.env"
     PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" PC_INDEX_GROUPS="$INDEX_CRAWL_GROUPS" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
     INDEX_EXIT=$?
+
+    # A group the crawler could not open (e.g. the Abiertas radio never switched)
+    # is reported loudly but does NOT abort the run: the other group's records
+    # and the downstream steps still matter, and the next run retries it anyway.
+    CRAWL_FAILED_GROUPS="$(sed -n "s/^CRAWL_FAILED_GROUPS='\(.*\)'\$/\1/p" "$PC_QUEUE_DIR/index_crawl_result.env" 2>/dev/null | head -n1)"
+    if [ "$INDEX_EXIT" -eq 0 ] && [ -n "$CRAWL_FAILED_GROUPS" ]; then
+      log "ITERATION $ITERATION index crawl skipped groups: $CRAWL_FAILED_GROUPS"
+      echo "WARNING: index crawler skipped groups: $CRAWL_FAILED_GROUPS" >> "$CURRENT_LOG"
+      notify_waha "warning" "RUNNING" "⚠️ Índice parcial: no se pudo abrir el grupo $CRAWL_FAILED_GROUPS en PanamaCompra tras varios intentos. Los demás grupos se procesaron; se reintentará en la próxima ejecución." "status"
+    fi
   fi
   INDEX_SECONDS=$(( $(date '+%s') - INDEX_START_EPOCH ))
 
