@@ -1579,8 +1579,10 @@ def run_tk() -> int:
     cs_query_entry = ttk.Entry(whatsapp_client_search, textvariable=cs_query_var, width=30)
     cs_query_entry.grid(row=2, column=1, sticky="ew", pady=3)
 
-    def _waha_fetch(base_url: str, api_key: str) -> str:
-        """Fetch all contacts/groups/chats from WAHA, return formatted text."""
+    cs_matches_cache: list[dict] = []
+
+    def _waha_fetch(base_url: str, api_key: str) -> list[dict]:
+        """Fetch all contacts/groups/chats from WAHA, return structured matches."""
         import urllib.request  # noqa: PLC0415 - local WAHA endpoint
         import urllib.error  # noqa: PLC0415
 
@@ -1596,7 +1598,8 @@ def run_tk() -> int:
         sessions = _get("/api/sessions?all=true")
         if not isinstance(sessions, list):
             sessions = []
-        results: list[str] = []
+        matches: list[dict] = []
+        seen_ids: set[str] = set()
 
         for s in sessions:
             if not isinstance(s, dict):
@@ -1605,7 +1608,6 @@ def run_tk() -> int:
             status = str(s.get("status") or "").upper()
             if status and status not in {"WORKING", "RUNNING", "STARTING"}:
                 continue
-            seen_ids: set[str] = set()
 
             # Groups
             try:
@@ -1618,10 +1620,9 @@ def run_tk() -> int:
                     if not chat_id or chat_id in seen_ids:
                         continue
                     seen_ids.add(chat_id)
-                    results.append(f"{name or chat_id}  [{chat_id}]  ({sname} · group)")
+                    matches.append({"name": name or chat_id, "chat_id": chat_id, "session": sname, "kind": "group"})
             except Exception:
-                results.append(f"# Groups endpoint failed for session {sname}.")
-                continue
+                pass
 
             # Contacts
             try:
@@ -1636,7 +1637,7 @@ def run_tk() -> int:
                     seen_ids.add(chat_id)
                     if not name:
                         continue
-                    results.append(f"{name}  [{chat_id}]  ({sname} · contact)")
+                    matches.append({"name": name, "chat_id": chat_id, "session": sname, "kind": "contact"})
             except Exception:
                 pass
 
@@ -1654,54 +1655,69 @@ def run_tk() -> int:
                     kind_label = "group" if "@g.us" in chat_id else "contact" if "@c.us" in chat_id \
                         else "channel" if "@s.whatsapp.net" in chat_id else "community" if "@lid" in chat_id \
                         else "broadcast" if "@newsletter" in chat_id else "chat"
-                    results.append(f"{name or chat_id}  [{chat_id}]  ({sname} · {kind_label})")
+                    matches.append({"name": name or chat_id, "chat_id": chat_id, "session": sname, "kind": kind_label})
             except Exception:
                 pass
 
-        results.sort(key=lambda r: pc_common.strip_accents(r).lower())
-        return "\n".join(results) if results else "No matches found."
+        matches.sort(key=lambda m: (m["kind"] != "group", pc_common.strip_accents(m["name"]).lower()))
+        return matches
+
+    def _format_match(m: dict) -> str:
+        return f"{m['name']}  [{m['chat_id']}]  ({m['session']} · {m['kind']})"
+
+    def _on_cs_select(_event: object = None) -> None:
+        sel = cs_results_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx < len(cs_matches_cache):
+            chat_id = cs_matches_cache[idx]["chat_id"]
+            cs_results_list.clipboard_clear()
+            cs_results_list.clipboard_append(chat_id)
+            button_status_var.set(f"Copied: {chat_id}")
 
     def run_client_search() -> None:
         q = cs_query_var.get().strip()
         base_url = (waha_base_var.get().strip().rstrip("/") or "http://127.0.0.1:3000")
         api_key = waha_server_key_var.get().strip()
         try:
-            all_entries = _waha_fetch(base_url, api_key)
+            all_matches = _waha_fetch(base_url, api_key)
         except Exception as exc:
-            cs_results_text.delete("1.0", "end")
-            cs_results_text.insert("1.0", f"WAHA unreachable: {exc}")
+            cs_results_list.delete(0, "end")
+            cs_results_list.insert("end", f"WAHA unreachable: {exc}")
+            cs_matches_cache.clear()
             return
 
         if not q:
-            # Empty query = show everything
-            text = all_entries
+            filtered = all_matches
         else:
             wanted = pc_common.strip_accents(q).lower()
-            lines = []
-            for line in all_entries.splitlines():
-                if line.startswith("#"):
-                    continue
-                name_part = line.split("  [")[0] if "  [" in line else line
-                if wanted in pc_common.strip_accents(name_part).lower():
-                    lines.append(line)
-            text = "\n".join(lines) if lines else "No matches found."
+            filtered = [m for m in all_matches if wanted in pc_common.strip_accents(m["name"]).lower()]
 
-        cs_results_text.delete("1.0", "end")
-        cs_results_text.insert("1.0", text)
+        cs_matches_cache.clear()
+        cs_results_list.delete(0, "end")
+        if not filtered:
+            cs_results_list.insert("end", "No matches found.")
+        else:
+            for m in filtered:
+                cs_results_list.insert("end", _format_match(m))
+                cs_matches_cache.append(m)
 
     def run_client_export() -> None:
         base_url = (waha_base_var.get().strip().rstrip("/") or "http://127.0.0.1:3000")
         api_key = waha_server_key_var.get().strip()
         try:
-            formatted = _waha_fetch(base_url, api_key)
+            all_matches = _waha_fetch(base_url, api_key)
         except Exception as exc:
-            cs_results_text.delete("1.0", "end")
-            cs_results_text.insert("1.0", f"WAHA unreachable for export: {exc}")
+            cs_results_list.delete(0, "end")
+            cs_results_list.insert("end", f"WAHA unreachable for export: {exc}")
+            cs_matches_cache.clear()
             return
+        formatted = "\n".join(_format_match(m) for m in all_matches)
         path = CONFIG_DIR / "waha_contacts_export.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(formatted + "\n", encoding="utf-8")
-        count = len([l for l in formatted.splitlines() if l.strip() and not l.startswith("#")])
+        count = len(all_matches)
         run_client_search()
         button_status_var.set(f"Exported {count} entries to {path.relative_to(BASE_DIR)}")
 
@@ -1713,9 +1729,13 @@ def run_tk() -> int:
     cs_export_button.grid(row=2, column=3, sticky="w", padx=(6, 0), pady=3)
     add_tooltip(cs_export_button, "Fetches all contacts/groups/channels/communities from WAHA and writes them to data/config/waha_contacts_export.txt.")
 
-    cs_results_text = tk.Text(whatsapp_client_search, height=12, wrap="word")
-    cs_results_text.grid(row=3, column=0, columnspan=5, sticky="ew", pady=3)
-    add_tooltip(cs_results_text, "WAHA contacts and groups matching the search. Format: Name [chat_id] (session). Empty search = every known entry.")
+    cs_results_list = tk.Listbox(whatsapp_client_search, height=12, exportselection=False)
+    cs_results_list.grid(row=3, column=0, columnspan=5, sticky="ew", pady=3)
+    cs_results_list.bind("<<ListboxSelect>>", _on_cs_select)
+    cs_scrollbar = ttk.Scrollbar(whatsapp_client_search, orient="vertical", command=cs_results_list.yview)
+    cs_scrollbar.grid(row=3, column=5, sticky="ns", pady=3)
+    cs_results_list.configure(yscrollcommand=cs_scrollbar.set)
+    add_tooltip(cs_results_list, "Click an entry to copy its chat ID to the clipboard. Format: Name [chat_id] (session · kind). Empty search = every known entry.")
 
     add_section_toggle(whatsapp_client_search, button_column=4)
 
