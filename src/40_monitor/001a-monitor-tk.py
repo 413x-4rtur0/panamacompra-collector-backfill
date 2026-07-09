@@ -474,7 +474,7 @@ def process_snapshot() -> dict[str, bool]:
 
 def file_timestamp(path: Path) -> str:
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%y-%m-%d_%H-%M")
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d_%H-%M")
     except OSError:
         return "-"
 
@@ -2211,9 +2211,9 @@ def run_tk() -> int:
     def index_row_text(rec: dict[str, str]) -> str:
         """List row prefixed with local download timestamp, DTEND and status."""
         downloaded = parse_downloaded(rec)
-        downloaded_part = downloaded.strftime("%y-%m-%d_%H-%M") if downloaded else "not local"
+        downloaded_part = downloaded.strftime("%Y-%m-%d_%H-%M") if downloaded else "not local"
         dt = parse_deadline(rec)
-        dtend = dt.strftime("%y-%m-%d") if dt else "no date"
+        dtend = dt.strftime("%Y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]
         return f"(DL {downloaded_part} | DTSTART {start_text(rec)} | DTEND {dtend} {tag:>7})  {index_label(rec)}"
 

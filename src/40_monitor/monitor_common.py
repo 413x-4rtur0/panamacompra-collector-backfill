@@ -86,20 +86,35 @@ def read_last_summary() -> dict[str, str]:
     return _read_env_style_file(LAST_SUMMARY_FILE)
 
 
+def _to_24h(text: str) -> str:
+    """Rewrite any 12h 'HH:MM AM/PM' (including 'a.m.'/'p. m.' variants) inside
+    ``text`` as 24h 'HH:MM' so strptime's 24h formats can parse it."""
+    def repl(m):
+        hh, mm = int(m.group(1)), m.group(2)
+        ap = m.group(3).lower().replace(".", "").replace(" ", "")
+        if ap == "pm" and hh != 12:
+            hh += 12
+        elif ap == "am" and hh == 12:
+            hh = 0
+        return f"{hh % 24:02d}:{mm}"
+    return re.sub(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp]\.?\s*[Mm]\.?)", repl, text)
+
+
 def compact_dt(raw: str) -> str:
-    """Reformat a stored date/datetime string to 'YY-MM-DD_HH-MM' (or a bare
-    'YY-MM-DD') for display in the monitor UIs. Falls back to the raw text
-    when it cannot be parsed; blank input returns ''."""
-    text = (raw or "").strip().replace("T", " ").replace("_", " ")
+    """Reformat a stored date/datetime string to 'YYYY-MM-DD_HH-MM' (or a bare
+    'YYYY-MM-DD'), always 24h, for display in the monitor UIs. Falls back to
+    the raw text when it cannot be parsed; blank input returns ''."""
+    text = _to_24h((raw or "").strip().replace("T", " ").replace("_", " "))
     if not text:
         return ""
     for candidate in (text, text[:19], text[:16], text[:10]):
-        for fmt, has_time in (("%Y-%m-%d %H:%M:%S", True), ("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False)):
+        for fmt, has_time in (("%Y-%m-%d %H:%M:%S", True), ("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False),
+                              ("%d/%m/%Y %H:%M", True), ("%d/%m/%Y", False)):
             try:
                 parsed = datetime.strptime(candidate, fmt)
             except ValueError:
                 continue
-            return parsed.strftime("%y-%m-%d_%H-%M" if has_time else "%y-%m-%d")
+            return parsed.strftime("%Y-%m-%d_%H-%M" if has_time else "%Y-%m-%d")
     return text
 
 

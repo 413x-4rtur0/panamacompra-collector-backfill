@@ -283,13 +283,13 @@ def archive_snapshot(limit: int = RECORDS_SHOWN) -> tuple[int, dict[str, int], l
 
 
 def _short_date(first_seen: str) -> str:
-    """'YY-MM-DD' from an ISO ``first_seen`` value, or '------' when unknown."""
+    """'YYYY-MM-DD' from an ISO ``first_seen`` value, or '----------' when unknown."""
     text = (first_seen or "").strip()
     if not text:
-        return "------"
+        return "----------"
     datepart = text[:10]  # leading YYYY-MM-DD of an ISO timestamp or bare date
     try:
-        return datetime.strptime(datepart, "%Y-%m-%d").strftime("%y-%m-%d")
+        return datetime.strptime(datepart, "%Y-%m-%d").strftime("%Y-%m-%d")
     except ValueError:
         return datepart
 

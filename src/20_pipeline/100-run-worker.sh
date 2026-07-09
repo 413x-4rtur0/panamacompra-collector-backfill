@@ -620,8 +620,8 @@ PY
       echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
     } > "$LAST_SUMMARY_FILE"
 
-    STARTED_COMPACT="$(date -d "$STARTED" '+%y-%m-%d_%H-%M' 2>/dev/null || echo "$STARTED")"
-    FINISHED_COMPACT="$(date -d "$FINISHED" '+%y-%m-%d_%H-%M' 2>/dev/null || echo "$FINISHED")"
+    STARTED_COMPACT="$(date -d "$STARTED" '+%Y-%m-%d_%H-%M' 2>/dev/null || echo "$STARTED")"
+    FINISHED_COMPACT="$(date -d "$FINISHED" '+%Y-%m-%d_%H-%M' 2>/dev/null || echo "$FINISHED")"
     notify_waha "done" "DONE" "📊 Resumen de Ejecución - Panama Compra
 Inicio: $STARTED_COMPACT
 Fin: $FINISHED_COMPACT

@@ -53,6 +53,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -124,21 +125,37 @@ def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _to_24h(text: str) -> str:
+    """Rewrite any 12h 'HH:MM AM/PM' (including 'a.m.'/'p. m.' variants) inside
+    ``text`` as 24h 'HH:MM' so strptime's 24h formats can parse it."""
+    def repl(m):
+        hh, mm = int(m.group(1)), int(m.group(2))
+        ap = m.group(3).lower().replace(".", "").replace(" ", "")
+        if ap == "pm" and hh != 12:
+            hh += 12
+        elif ap == "am" and hh == 12:
+            hh = 0
+        return f"{hh % 24:02d}:{mm}"
+    return re.sub(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp]\.?\s*[Mm]\.?)", repl, text)
+
+
 def fmt_dt(value, *, with_time: bool = True) -> str:
-    """Normalize a stored date/datetime string to compact 'YY-MM-DD_HH-MM' (or a
-    bare 'YY-MM-DD' when no time is present), so WhatsApp messages show
-    consistent dates and times. Falls back to the cleaned original when it
-    cannot be parsed."""
+    """Normalize a stored date/datetime string to 'YYYY-MM-DD_HH-MM' (or a
+    bare 'YYYY-MM-DD' when no time is present), always 24h, so WhatsApp
+    messages show consistent dates and times. Falls back to the cleaned
+    original when it cannot be parsed."""
     raw = clean_field(value)
     if raw == DASH:
         return DASH
-    text = raw.replace("T", " ").replace("_", " ").strip()
+    text = _to_24h(raw.replace("T", " ").replace("_", " ").strip())
     formats = (
         ("%Y-%m-%d %H:%M:%S", True),
         ("%Y-%m-%d %H:%M", True),
         ("%Y-%m-%d", False),
         ("%d/%m/%Y %H:%M", True),
         ("%d/%m/%Y", False),
+        ("%d-%m-%Y %H:%M", True),
+        ("%d-%m-%Y", False),
     )
     for candidate in (text, text[:19], text[:16], text[:10]):
         for fmt, has_time in formats:
@@ -146,7 +163,7 @@ def fmt_dt(value, *, with_time: bool = True) -> str:
                 parsed = datetime.strptime(candidate, fmt)
             except ValueError:
                 continue
-            return parsed.strftime("%y-%m-%d_%H-%M" if (with_time and has_time) else "%y-%m-%d")
+            return parsed.strftime("%Y-%m-%d_%H-%M" if (with_time and has_time) else "%Y-%m-%d")
     return raw
 
 
@@ -446,7 +463,7 @@ def record_location(summary: dict) -> str:
 def date_range(row, summary: dict) -> str:
     start = fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion"))
     end = fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion"))
-    return f"{start} al {end}" if start != DASH or end != DASH else DASH
+    return f"{start}---{end}" if start != DASH or end != DASH else DASH
 
 
 def contact_values(summary: dict) -> dict[str, str]:

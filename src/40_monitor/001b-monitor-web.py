@@ -473,7 +473,7 @@ def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
 
 def file_timestamp(path: Path) -> str:
     try:
-        return time.strftime("%y-%m-%d_%H-%M", time.localtime(path.stat().st_mtime))
+        return time.strftime("%Y-%m-%d_%H-%M", time.localtime(path.stat().st_mtime))
     except OSError:
         return "-"
 
@@ -541,7 +541,7 @@ def status_payload() -> dict[str, object]:
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 10),
         "current_log": tail(CURRENT_LOG, 14),
-        "server_time": time.strftime("%y-%m-%d_%H-%M"),
+        "server_time": time.strftime("%Y-%m-%d_%H-%M"),
         "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
         "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
@@ -1000,12 +1000,18 @@ function expiryStatus(rec) {{
   return 'upcoming';
 }}
 function fmtCompactDate(raw) {{
-  const text = (raw || '').trim().replace('T', ' ').replace('_', ' ');
+  let text = (raw || '').trim().replace('T', ' ').replace('_', ' ');
   if (!text) return '—';
+  // Convert any 12h 'HH:MM AM/PM' fragment to 24h so display is uniform.
+  text = text.replace(/(\\d{{1,2}}):(\\d{{2}})(?::\\d{{2}})?\\s*([AaPp])\\.?\\s*[Mm]\\.?/, (s, h, mn, ap) => {{
+    let hh = parseInt(h, 10);
+    if (ap.toLowerCase() === 'p' && hh !== 12) hh += 12;
+    if (ap.toLowerCase() === 'a' && hh === 12) hh = 0;
+    return `${{String(hh % 24).padStart(2, '0')}}:${{mn}}`;
+  }});
   const m = text.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
   if (!m) return text;
-  const yy = m[1].slice(2);
-  return (m[4] && m[5]) ? `${{yy}}-${{m[2]}}-${{m[3]}}_${{m[4]}}-${{m[5]}}` : `${{yy}}-${{m[2]}}-${{m[3]}}`;
+  return (m[4] && m[5]) ? `${{m[1]}}-${{m[2]}}-${{m[3]}}_${{m[4]}}-${{m[5]}}` : `${{m[1]}}-${{m[2]}}-${{m[3]}}`;
 }}
 function deadlineText(rec) {{ return parseDeadline(rec) ? fmtCompactDate(rec.finish_date_guess) : '—'; }}
 function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? fmtCompactDate(raw) : '—'; }}

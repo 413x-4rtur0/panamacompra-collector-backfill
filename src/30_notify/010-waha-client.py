@@ -173,7 +173,7 @@ def load_operational_format(kind: str) -> str:
 
 def build_message(event: str, status: str, message: str, purpose: str = "") -> str:
     prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
-    timestamp = datetime.now().strftime("%y-%m-%d_%H-%M")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     mode_label = run_mode_label()
     body = message.strip() or saved_message()
     kind = "summary" if purpose == "summary" else "system"
