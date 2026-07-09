@@ -35,6 +35,9 @@ Monitors & services:
   changedetection-script [--copy|--path]    Print/copy the Browser Steps Execute JS
                                             script for all Programadas + Abiertas pages
   docker up|down|restart|status|logs        Manage the changedetection + WAHA container stack
+  docker-manager [list|audit|start|stop|    Review/manage ALL Docker containers on this host,
+    restart|disable|enable|rm|logs|prune|     not just this repo's — flags orphaned/duplicate/
+    menu] [name]                              stale ones left by other projects; no args = list
 
 Settings (same files the GUI monitors use):
   get [KEY]                                 Show one or all monitor settings
@@ -144,6 +147,7 @@ case "$cmd" in
     esac ;;
   watch) exec "$APP_ROOT/src/40_monitor/001c-monitor-terminal.sh" "$@" ;;
   docker|stack) exec "$APP_ROOT/src/50_tools/010-docker-stack.sh" "$@" ;;
+  docker-manager|containers) exec "$APP_ROOT/src/50_tools/011-docker-manager.sh" "$@" ;;
 
   changedetection-script|cd-script|browser-js)
     script="$APP_ROOT/config/changedetection-browser-steps.js"

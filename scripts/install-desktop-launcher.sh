@@ -17,7 +17,8 @@ Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
 Update + Monitor, changedetection.io, WAHA, low-resource Integration URLs, Docker
-integrations, and Stop All / Start All. The Update +
+integrations, Docker Manager (all containers on this host), Stop All / Start All,
+and Dev Pause / Dev Resume. The Update +
 Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
 update, the normal monitor opens with the refreshed code.
 
@@ -58,6 +59,7 @@ icon_path="$icon_dir/panamacompra-update-monitor.svg"
 changedetection_icon_path="$icon_dir/panamacompra-changedetection.svg"
 waha_icon_path="$icon_dir/panamacompra-waha.svg"
 docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
+docker_manager_icon_path="$icon_dir/panamacompra-docker-manager.svg"
 urls_icon_path="$icon_dir/panamacompra-integration-urls.svg"
 stop_icon_path="$icon_dir/panamacompra-stop-all.svg"
 start_icon_path="$icon_dir/panamacompra-start-all.svg"
@@ -137,6 +139,15 @@ SVG
   <rect width="128" height="128" rx="24" fill="#1e1b4b"/>
   <circle cx="64" cy="64" r="42" fill="#312e81" stroke="#818cf8" stroke-width="7"/>
   <path d="M52 42l38 22-38 22z" fill="#e0e7ff"/>
+</svg>
+SVG
+  cat > "$docker_manager_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#0c1420"/>
+  <path d="M20 74h84c-4 20-20 32-46 32-18 0-30-7-38-20H6c5-4 9-8 11-12z" fill="#38bdf8"/>
+  <g fill="#e0f2fe"><rect x="27" y="44" width="13" height="13" rx="2"/><rect x="44" y="44" width="13" height="13" rx="2"/><rect x="61" y="44" width="13" height="13" rx="2"/><rect x="44" y="29" width="13" height="13" rx="2"/><rect x="27" y="59" width="13" height="13" rx="2"/><rect x="44" y="59" width="13" height="13" rx="2"/><rect x="61" y="59" width="13" height="13" rx="2"/></g>
+  <circle cx="96" cy="34" r="18" fill="#1e293b" stroke="#facc15" stroke-width="5"/>
+  <path d="M89 26l14 14M103 26L89 40" stroke="#fef08a" stroke-width="5" stroke-linecap="round"/>
 </svg>
 SVG
 }
@@ -279,6 +290,13 @@ echo ""
 echo ""
 read -r -p "Press Enter to close..." _unused || true
 SH
+  cat > "$helper_dir/docker-manager.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+./src/50_tools/011-docker-manager.sh menu
+SH
   for script in "$helper_dir"/*.sh; do
     sed -i "s|__APP_ROOT__|$APP_ROOT|g" "$script"
     chmod +x "$script"
@@ -292,6 +310,7 @@ write_desktop_entry() {
     *changedetection*) selected_icon="$changedetection_icon_path" ;;
     *waha*) selected_icon="$waha_icon_path" ;;
     *docker-integrations*) selected_icon="$docker_icon_path" ;;
+    *docker-manager*) selected_icon="$docker_manager_icon_path" ;;
     *integration-urls*) selected_icon="$urls_icon_path" ;;
     *stop-all*) selected_icon="$stop_icon_path" ;;
     *start-all*) selected_icon="$start_icon_path" ;;
@@ -385,6 +404,13 @@ install_integration_launchers() {
     "Restore automatic collection settings paused by Dev Pause" \
     "$(quote_desktop_value "$helper_dir/dev-resume.sh")" \
     "true" "Utility;Monitor;System;Development;"
+  write_desktop_entry \
+    "$app_dir/panamacompra-docker-manager.desktop" \
+    "$desktop_dir/panamacompra-docker-manager.desktop" \
+    "PanamaCompra Docker Manager" \
+    "Review/manage ALL Docker containers on this host (not just this repo's) — list, audit for orphaned/duplicate/stale ones, start/stop/disable/enable/remove" \
+    "$(quote_desktop_value "$helper_dir/docker-manager.sh")" \
+    "true" "Utility;Monitor;System;"
 }
 
 install_launcher() {
@@ -424,7 +450,8 @@ remove_launcher() {
       "$app_dir/panamacompra-stop-all.desktop" "$desktop_dir/panamacompra-stop-all.desktop" \
       "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop" \
       "$app_dir/panamacompra-dev-pause.desktop" "$desktop_dir/panamacompra-dev-pause.desktop" \
-      "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop"
+      "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop" \
+      "$app_dir/panamacompra-docker-manager.desktop" "$desktop_dir/panamacompra-docker-manager.desktop"
     rm -rf "$helper_dir"
   fi
   log "Removed PanamaCompra launcher files if present."
@@ -447,6 +474,7 @@ print_paths() {
     printf 'Start All:        %s and %s\n' "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop"
     printf 'Dev Pause:        %s and %s\n' "$app_dir/panamacompra-dev-pause.desktop" "$desktop_dir/panamacompra-dev-pause.desktop"
     printf 'Dev Resume:       %s and %s\n' "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop"
+    printf 'Docker Manager:   %s and %s\n' "$app_dir/panamacompra-docker-manager.desktop" "$desktop_dir/panamacompra-docker-manager.desktop"
     printf 'Helper scripts:   %s\n' "$helper_dir"
   fi
 }
