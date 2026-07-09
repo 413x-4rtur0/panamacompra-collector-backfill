@@ -16,7 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -2418,25 +2418,82 @@ def run_tk() -> int:
     calendar_field_var = tk.StringVar(value="end")
     calendar_anchor_var = tk.StringVar(value="")
 
-    # Graphical month calendar: a drawn 7-column grid with per-day counts for
-    # the selected date field; today gets an amber outline and every day cell is
-    # clickable (click = jump the text calendar below to that day).
-    calendar_day_cells: list[tuple[float, float, float, float, str]] = []
+    # Graphical calendar: a drawn grid whose LAYOUT follows the selected view —
+    # single wide cell (day), one 7-column row (week), the classic month grid,
+    # or 12 month boxes (year). Today gets an amber outline and every cell is
+    # clickable (click = drill into that day/month).
+    calendar_day_cells: list[tuple[float, float, float, float, str, str]] = []
 
-    def draw_month_grid(anchor, counts: dict[str, int]) -> None:
+    def _grid_cell(x0, y0, x1, y1, iso, count, max_count, label, *, today=False, drill="day"):
+        hot = count and count >= max_count * 0.7
+        fill = "#713f12" if hot else ("#14532d" if count else "#0b1220")
+        outline = "#facc15" if today else "#334155"
+        calendar_canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline, width=2 if today else 1)
+        calendar_canvas.create_text(x0 + 6, y0 + 10, anchor="w", fill="#94a3b8", font=("Sans", 8), text=label)
+        if count:
+            calendar_canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2 + 6, fill="#fde68a" if hot else "#bbf7d0",
+                                        font=("Sans", 10, "bold"), text=str(count))
+        calendar_day_cells.append((x0, y0, x1, y1, iso, drill))
+
+    def draw_calendar_grid(view: str, anchor, counts: dict[str, int]) -> None:
         calendar_day_cells.clear()
         calendar_canvas.delete("all")
-        month_start, month_end = opportunity_calendar.view_range("month", anchor)
         width = calendar_canvas.winfo_width()
         if width <= 1:
             width = 920
-        cell_w = max(60, (width - 12) / 7)
         header_h = 20
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+        max_count = max(list(counts.values()) + [1])
+
+        if view == "year":
+            month_totals: dict[str, int] = {}
+            for iso, qty in counts.items():
+                month_totals[iso[:7]] = month_totals.get(iso[:7], 0) + int(qty)
+            peak = max(list(month_totals.values()) + [1])
+            cols = 4
+            cell_w = max(120, (width - 12) / cols)
+            cell_h = 54
+            calendar_canvas.configure(height=3 * cell_h + 10)
+            for month in range(1, 13):
+                key = f"{anchor.year}-{month:02d}"
+                row, col = divmod(month - 1, cols)
+                x0 = 6 + col * cell_w
+                y0 = 6 + row * cell_h
+                _grid_cell(x0, y0, x0 + cell_w - 4, y0 + cell_h - 4, f"{key}-01",
+                           month_totals.get(key, 0), peak,
+                           date(anchor.year, month, 1).strftime("%b %Y"),
+                           today=key == today_iso[:7], drill="month")
+            return
+
+        if view == "day":
+            cell_h = 64
+            calendar_canvas.configure(height=cell_h + 10)
+            iso = anchor.isoformat()
+            _grid_cell(6, 6, width - 6, cell_h, iso, int(counts.get(iso, 0)), max_count,
+                       f"{iso} ({anchor.strftime('%A')})", today=iso == today_iso)
+            return
+
+        if view == "week":
+            start, _ = opportunity_calendar.view_range("week", anchor)
+            cell_w = max(60, (width - 12) / 7)
+            cell_h = 64
+            calendar_canvas.configure(height=header_h + cell_h + 10)
+            for col, day_name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+                calendar_canvas.create_text(6 + col * cell_w + cell_w / 2, header_h / 2, fill="#93c5fd",
+                                            font=("Sans", 8, "bold"), text=day_name)
+            for offset in range(7):
+                day = start + timedelta(days=offset)
+                iso = day.isoformat()
+                x0 = 6 + offset * cell_w
+                _grid_cell(x0, header_h, x0 + cell_w - 4, header_h + cell_h - 4, iso,
+                           int(counts.get(iso, 0)), max_count, iso[5:], today=iso == today_iso)
+            return
+
+        month_start, month_end = opportunity_calendar.view_range("month", anchor)
+        cell_w = max(60, (width - 12) / 7)
         cell_h = 44
         weeks = (month_start.weekday() + month_end.day + 6) // 7
         calendar_canvas.configure(height=header_h + weeks * cell_h + 8)
-        today_iso = datetime.now().strftime("%Y-%m-%d")
-        max_count = max(list(counts.values()) + [1])
         for col, day_name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
             calendar_canvas.create_text(6 + col * cell_w + cell_w / 2, header_h / 2, fill="#93c5fd",
                                         font=("Sans", 8, "bold"), text=day_name)
@@ -2446,26 +2503,14 @@ def run_tk() -> int:
             row, col = divmod(slot, 7)
             x0 = 6 + col * cell_w
             y0 = header_h + row * cell_h
-            x1, y1 = x0 + cell_w - 4, y0 + cell_h - 4
-            count = int(counts.get(iso, 0))
-            hot = count and count >= max_count * 0.7
-            fill = "#14532d" if count else "#0b1220"
-            if hot:
-                fill = "#713f12"
-            outline = "#facc15" if iso == today_iso else "#334155"
-            calendar_canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline,
-                                             width=2 if iso == today_iso else 1)
-            calendar_canvas.create_text(x0 + 6, y0 + 10, anchor="w", fill="#94a3b8", font=("Sans", 8), text=str(day_number))
-            if count:
-                calendar_canvas.create_text(x0 + cell_w / 2, y0 + cell_h / 2 + 4, fill="#bbf7d0" if not hot else "#fde68a",
-                                            font=("Sans", 10, "bold"), text=str(count))
-            calendar_day_cells.append((x0, y0, x1, y1, iso))
+            _grid_cell(x0, y0, x0 + cell_w - 4, y0 + cell_h - 4, iso,
+                       int(counts.get(iso, 0)), max_count, str(day_number), today=iso == today_iso)
 
     def on_calendar_grid_click(event: object) -> None:
-        for x0, y0, x1, y1, iso in calendar_day_cells:
+        for x0, y0, x1, y1, iso, drill in calendar_day_cells:
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
                 calendar_anchor_var.set(iso)
-                calendar_view_var.set("day")
+                calendar_view_var.set(drill)
                 render_calendar(None)
                 return
 
@@ -2480,20 +2525,22 @@ def run_tk() -> int:
         elif shift:
             anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
         calendar_anchor_var.set(anchor.isoformat())
-        month_counts: dict[str, int] = {}
+        grid_counts: dict[str, int] = {}
         try:
             conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
             conn.row_factory = sqlite3.Row
             try:
                 text = opportunity_calendar.render_view(conn, view, anchor, calendar_field_var.get())
-                month_start, month_end = opportunity_calendar.view_range("month", anchor)
-                events = opportunity_calendar.fetch_events(conn, calendar_field_var.get(), month_start, month_end)
-                month_counts = {day: len(rows) for day, rows in events.items()}
+                # Fetch counts for the SAME range the grid will draw, so week
+                # and day views (which can cross month edges) are always right.
+                grid_start, grid_end = opportunity_calendar.view_range(view, anchor)
+                events = opportunity_calendar.fetch_events(conn, calendar_field_var.get(), grid_start, grid_end)
+                grid_counts = {day: len(rows) for day, rows in events.items()}
             finally:
                 conn.close()
         except sqlite3.Error:
             text = "(archive database not available yet — run a collection first)"
-        draw_month_grid(anchor, month_counts)
+        draw_calendar_grid(view, anchor, grid_counts)
         calendar_text.configure(state="normal")
         calendar_text.delete("1.0", "end")
         calendar_text.insert("1.0", text)

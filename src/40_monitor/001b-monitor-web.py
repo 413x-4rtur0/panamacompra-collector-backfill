@@ -661,8 +661,14 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calevent.soon {{ border-left-color: #facc15; background: #422006; color: #fde68a; }}
 .calevent.expired {{ border-left-color: #f87171; background: #450a0a; color: #fecaca; }}
 .calevent.more {{ border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }}
-.day-agenda .calcell {{ min-height: 260px; }}
-.week-agenda .calcell {{ min-height: 220px; }}
+.week-agenda .calcell {{ min-height: 320px; }}
+/* Day view: full-width agenda list instead of a grid. */
+.agenda {{ display: flex; flex-direction: column; }}
+.agenda-row {{ display: flex; gap: 12px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid #1e293b; }}
+.agenda-row:hover {{ background: #0b1220; }}
+.agenda-clock {{ color: #93c5fd; font-weight: 700; min-width: 54px; font-size: .85rem; }}
+.agenda-body .calevent {{ display: inline-block; max-width: none; white-space: normal; }}
+.agenda-empty {{ padding: 16px; }}
 .year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
 .month-box {{ border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }}
 .month-box:hover {{ border-color: #38bdf8; }}
@@ -1131,10 +1137,11 @@ function renderCalendarEvent(ev) {{
   const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
   return `<span class="calevent ${{calendarEventClass(ev)}}" title="${{esc(title)}}">${{esc(clock + title)}}</span>`;
 }}
-function renderCalendarDayCell(day, events, blank) {{
+function renderCalendarDayCell(day, events, blank, maxShown) {{
   if (blank) return '<div class="calcell blank"></div>';
-  const shown = (events || []).slice(0, 4).map(renderCalendarEvent).join('');
-  const more = (events || []).length > 4 ? `<span class="calevent more">+${{events.length - 4}} more</span>` : '';
+  const limit = maxShown || 4;
+  const shown = (events || []).slice(0, limit).map(renderCalendarEvent).join('');
+  const more = (events || []).length > limit ? `<span class="calevent more">+${{events.length - limit}} more</span>` : '';
   const classes = ['calcell'];
   if (day.iso === day.today) classes.push('today');
   return `<div class="${{classes.join(' ')}}" onclick="document.getElementById('cal-date').value='${{day.iso}}'; document.getElementById('cal-view').value='day'; loadCalendar()"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
@@ -1162,13 +1169,29 @@ async function renderCalendarVisual() {{
       return;
     }}
     const days = g.days || [];
-    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
-    if (view === 'month') {{
-      for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
+    if (view === 'day') {{
+      // Single-day agenda: no weekday grid, one full-width list of the day's
+      // events with their times, so the layout is visibly different from month.
+      const day = days[0] || {{}};
+      const evs = grouped[day.iso] || [];
+      const rows = evs.length
+        ? evs.map(ev => `<div class="agenda-row ${{calendarEventClass(ev)}}"><span class="agenda-clock">${{esc(ev.clock || '--:--')}}</span><span class="agenda-body">${{renderCalendarEvent(ev)}}</span></div>`).join('')
+        : '<div class="agenda-empty small">No opportunities on this day.</div>';
+      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Single-day agenda.</span></div><div class="agenda">${{rows}}</div></div>`;
+      return;
     }}
+    if (view === 'week') {{
+      // One row of 7 tall columns headed by weekday + date, showing more
+      // events per day than the month grid.
+      let cells = days.map((day, i) => `<div class="dow">${{WEEKDAY_LABELS[i] || ''}} ${{esc((day.iso || '').slice(5))}}</div>`).join('');
+      cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false, 8)).join('');
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
+      return;
+    }}
+    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
+    for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
     cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
-    const modeClass = view === 'day' ? 'day-agenda' : view === 'week' ? 'week-agenda' : '';
-    node.innerHTML = `<div class="calendar-board ${{modeClass}}"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
