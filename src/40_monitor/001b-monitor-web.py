@@ -36,6 +36,7 @@ from monitor_common import (  # noqa: E402
     load_detail_payload_for_kpi,
     load_record_index,
     read_last_summary,
+    setting,
     stats_to_csv,
     summarize_items_for_kpi,
 )
@@ -155,6 +156,34 @@ def _waha_entry_id(item: dict) -> str:
     if isinstance(raw, dict):
         return str(raw.get("_serialized") or raw.get("id") or "")
     return str(raw or "")
+
+
+WAHA_CONNECTED_STATUSES = {"WORKING", "RUNNING"}
+
+
+def waha_session_status() -> dict:
+    """Health of the configured WAHA session (PC_WAHA_SESSION, default
+    'default'), for the monitor's session-needs-attention banner. Never
+    raises: WAHA being down or unreachable is a normal, reportable state."""
+    session_name = setting("PC_WAHA_SESSION", "default")
+    try:
+        sessions = _waha_api_get("/api/sessions?all=true")
+    except Exception as exc:  # noqa: BLE001 - WAHA down is a normal state
+        return {"session": session_name, "status": "UNREACHABLE", "connected": False,
+                "needs_qr": False, "message": f"WAHA unreachable: {exc}"}
+    match = next((s for s in sessions if isinstance(s, dict) and s.get("name") == session_name), None)
+    if match is None:
+        return {"session": session_name, "status": "NOT_FOUND", "connected": False,
+                "needs_qr": False, "message": f"No WAHA session named '{session_name}'."}
+    status = str(match.get("status") or "UNKNOWN").upper()
+    connected = status in WAHA_CONNECTED_STATUSES
+    return {
+        "session": session_name,
+        "status": status,
+        "connected": connected,
+        "needs_qr": status in {"SCAN_QR_CODE", "STARTING"},
+        "message": "" if connected else f"WAHA session '{session_name}' is {status}.",
+    }
 
 
 def waha_search(query: str) -> dict:
@@ -757,6 +786,9 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 .record-card {{ border-radius: 10px; padding: 14px; font-weight: 700; white-space: pre-line; }}
 .record-pending {{ background: #3f1d1d; color: #fecaca; }}
 .record-completed {{ background: #14532d; color: #bbf7d0; }}
+.waha-alert {{ background: #451a03; border: 2px solid #f59e0b; border-radius: 12px; padding: 12px 16px; margin: 0 0 16px; color: #fef3c7; }}
+.waha-alert button {{ margin-left: 10px; }}
+.waha-alert img {{ display: block; margin-top: 10px; background: #fff; padding: 8px; border-radius: 8px; }}
 </style>
 </head>
 <body>
@@ -767,6 +799,14 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   <p class="message" id="message">Loading...</p>
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
+</div>
+<div id="waha-alert-banner" class="waha-alert" hidden>
+  <strong>⚠️ WAHA WhatsApp session needs attention</strong> — <span id="waha-alert-text"></span>
+  <button onclick="toggleWahaQr()" id="waha-qr-toggle">Show QR to scan</button>
+  <div id="waha-alert-qr" hidden>
+    <img id="waha-qr-img" alt="WAHA pairing QR code" width="220" height="220">
+    <p class="small">Open WhatsApp on your phone &rarr; Linked Devices &rarr; Link a Device, and scan. The code refreshes automatically while shown.</p>
+  </div>
 </div>
 <div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
 <div class="card" data-tab="overview"><h2>System health <span class="kpi-live" id="overview-live-stamp">LIVE</span></h2><p class="small">Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.</p><div id="overview-kpis" class="kpi-grid">Loading overview…</div></div>
@@ -1621,7 +1661,45 @@ async function poll() {{
     timer = setTimeout(poll, {IDLE_REFRESH_SECONDS} * 1000);
   }}
 }}
-window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); }});
+let wahaQrTimer = null;
+let wahaQrShown = false;
+function refreshWahaQr() {{
+  const img = document.getElementById('waha-qr-img');
+  if (img) img.src = '/api/waha-qr?t=' + Date.now();
+}}
+function toggleWahaQr() {{
+  wahaQrShown = !wahaQrShown;
+  document.getElementById('waha-alert-qr').hidden = !wahaQrShown;
+  document.getElementById('waha-qr-toggle').textContent = wahaQrShown ? 'Hide QR' : 'Show QR to scan';
+  if (wahaQrShown) {{
+    refreshWahaQr();
+    if (wahaQrTimer) clearInterval(wahaQrTimer);
+    wahaQrTimer = setInterval(refreshWahaQr, 20000);
+  }} else if (wahaQrTimer) {{
+    clearInterval(wahaQrTimer);
+    wahaQrTimer = null;
+  }}
+}}
+async function checkWahaSession() {{
+  try {{
+    const data = await (await fetch('/api/waha-session-status', {{cache: 'no-store'}})).json();
+    const banner = document.getElementById('waha-alert-banner');
+    if (data.connected) {{
+      banner.hidden = true;
+      if (wahaQrShown) toggleWahaQr();
+    }} else {{
+      banner.hidden = false;
+      document.getElementById('waha-alert-text').textContent = data.message || ('status: ' + data.status);
+      // A QR only exists while the session is actually waiting to be scanned;
+      // otherwise (e.g. WAHA unreachable) hide the button so it doesn't 503.
+      document.getElementById('waha-qr-toggle').hidden = !data.needs_qr;
+      if (!data.needs_qr && wahaQrShown) toggleWahaQr();
+    }}
+  }} catch (err) {{ /* monitor's own connection problem; the main poll() already reports it */ }}
+}}
+checkWahaSession();
+setInterval(checkWahaSession, 20000);
+window.addEventListener('beforeunload', () => {{ if (timer) clearTimeout(timer); if (wahaQrTimer) clearInterval(wahaQrTimer); }});
 renderActionZones();
 document.getElementById('record-index').addEventListener('change', renderRecordDetail);
 document.getElementById('record-status').addEventListener('change', applyRecordFilter);
@@ -1986,6 +2064,30 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(404, f"changedetection script not found: {exc}\n", "text/plain; charset=utf-8")
                 return
             self.send_text(200, script_text, "text/javascript; charset=utf-8")
+            return
+        if path == "/api/waha-session-status":
+            self.send_text(200, json.dumps(waha_session_status(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/waha-qr":
+            session_name = setting("PC_WAHA_SESSION", "default")
+            try:
+                import urllib.request
+                base_url = os.environ.get("PC_WAHA_BASE_URL", "http://127.0.0.1:3000").rstrip("/")
+                api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+                headers = {"Accept": "image/png"}
+                if api_key:
+                    headers["X-Api-Key"] = api_key
+                request = urllib.request.Request(f"{base_url}/api/{session_name}/auth/qr?format=image", headers=headers)
+                with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - local WAHA endpoint
+                    png_bytes = response.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(png_bytes)))
+                self.end_headers()
+                self.wfile.write(png_bytes)
+            except Exception as exc:  # noqa: BLE001 - QR not available is a normal state
+                self.send_text(503, f"QR unavailable: {exc}\n", "text/plain; charset=utf-8")
             return
         if path == "/api/waha-search":
             params = parse_qs(urlparse(self.path).query)
