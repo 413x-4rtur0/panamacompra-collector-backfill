@@ -672,7 +672,8 @@ button.primary {{ background: #2563eb; color: #fff; }}
 button.primary:hover {{ background: #1d4ed8; }}
 button.primary:disabled {{ background: #1e293b; color: #6b7280; }}
 .zone {{ margin-top: 14px; padding-top: 8px; border-top: 1px solid #334155; }}
-.zone h3 {{ margin: 0 0 8px; color: #fef3c7; }}
+.zone h3 {{ margin: 0 0 2px; color: #fef3c7; }}
+.zone-desc {{ margin: 0 0 8px; color: #94a3b8; }}
 .danger {{ background: #dc2626; color: #fff; }} .danger:hover {{ background: #b91c1c; }}
 textarea {{ width: 100%; min-height: 80px; border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 10px; }}
 select, input {{ border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: 1rem; }}
@@ -944,10 +945,16 @@ async function refreshCronScheduleStatus() {{
   }} catch (e) {{ status.textContent = 'Request failed: ' + e; }}
 }}
 function runAction(label) {{ postForm('/api/manual-action', 'label=' + encodeURIComponent(label)); }}
+const ZONE_DESCRIPTIONS = {{
+  'Runners': 'Start, queue or stop collection runs.',
+  'Integrations': 'Docker stack, changedetection and WAHA dashboards.',
+  'Tests': 'Diagnostics, reports and sandbox runs.',
+  'Settings': 'Maintenance, repair and configuration helpers.',
+}};
 function renderActionZones() {{
   const root = document.getElementById('action-zones');
   const zones = [...new Set(actionZones.map(a => a.zone))];
-  root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
+  root.innerHTML = zones.map(zone => `<div class="zone"><h3>${{esc(zone)}}</h3><div class="zone-desc small">${{esc(ZONE_DESCRIPTIONS[zone] || '')}}</div>` + actionZones.filter(a => a.zone === zone).map(a => `<button onclick="runAction('${{esc(a.label)}}')">${{esc(a.label)}}</button><span class="small">${{esc(a.comment)}}</span><br>`).join('') + `</div>`).join('');
 }}
 function saveWaha() {{ const val = (id, fallback) => ((document.getElementById(id) || document.getElementById(fallback) || {{value:''}}).value); const v = (id, fallback) => encodeURIComponent(val(id, fallback)); postForm('/api/waha-destination', 'chat_id=' + v('waha-message', 'waha-message-wa') + '&chat_id_index=' + v('waha-index', 'waha-index-wa') + '&chat_id_details=' + v('waha-details', 'waha-details-wa') + '&chat_id_status=' + v('waha-status', 'waha-status-wa') + '&chat_id_system=' + v('waha-system', 'waha-system-wa') + '&chat_id_summary=' + v('waha-summary', 'waha-summary-wa')); }}
 function syncWhatsappMirror(source) {{

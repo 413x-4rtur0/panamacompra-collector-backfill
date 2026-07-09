@@ -668,6 +668,7 @@ def run_tk() -> int:
     style.configure("TLabel", background="#0f172a", foreground="#e5e7eb")
     style.configure("Card.TLabel", background="#111827", foreground="#e5e7eb")
     style.configure("Title.TLabel", background="#111827", foreground="#e5e7eb", font=("Sans", 16, "bold"))
+    style.configure("SectionDesc.TLabel", background="#111827", foreground="#94a3b8", font=("Sans", 9))
     style.configure("Message.TLabel", background="#111827", foreground="#fef3c7", font=("Sans", 11, "bold"))
     style.configure("Done.TLabel", background="#111827", foreground="#bbf7d0", font=("Sans", 10, "bold"))
     style.configure("Horizontal.TProgressbar", thickness=26)
@@ -809,7 +810,7 @@ def run_tk() -> int:
     queue_frame = ttk.Frame(header, style="Card.TFrame", padding=(0, 8, 0, 0))
     queue_frame.grid(row=7, column=0, sticky="ew")
     queue_frame.columnconfigure(1, weight=1)
-    ttk.Label(queue_frame, text="Queue process", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+    add_section_header(queue_frame, "Queue process", "Pending collector / update requests and their recent queue logs.", columnspan=2)
     queue_summary_var = tk.StringVar(value="Collector queue: none · Update + Monitor queue: none")
     ttk.Label(queue_frame, textvariable=queue_summary_var, style="Card.TLabel", wraplength=680).grid(row=1, column=0, columnspan=2, sticky="ew")
     queue_log_text = tk.Text(queue_frame, height=5, wrap="word", bd=0, highlightthickness=0,
@@ -831,6 +832,17 @@ def run_tk() -> int:
             "\nRecent Update + Monitor queue log:\n" + (queue.get("update_log") or "(missing)")
         )
         set_text(queue_log_text, log_text)
+
+    def add_section_header(frame: ttk.Frame, name: str, desc: str, *, columnspan: int, row: int = 0) -> None:
+        """Two-line section header: the section NAME in the title font and,
+        below it, the description / step list in a smaller muted font. Both
+        live in one grid row so add_section_toggle keeps them visible when the
+        section body is collapsed."""
+        box = ttk.Frame(frame, style="Card.TFrame")
+        box.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 8))
+        ttk.Label(box, text=name, style="Title.TLabel").pack(anchor="w")
+        if desc:
+            ttk.Label(box, text=desc, style="SectionDesc.TLabel").pack(anchor="w")
 
     def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
                            start_hidden: bool = True) -> None:
@@ -975,7 +987,7 @@ def run_tk() -> int:
         subprocess.Popen([str(BASE_DIR / "src/20_pipeline/120c-start-everything.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Start All requested: bringing Docker integrations and the webhook listener back up.")
 
-    ttk.Label(controls, text="Run controls", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+    add_section_header(controls, "Run controls", "Choose a mode, index page cap and detail limit (0 = unlimited), then request or stop a run.", columnspan=6)
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
     # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
     # The Limit entry is wide enough for large counts. The whole row is disabled
@@ -1146,7 +1158,7 @@ def run_tk() -> int:
         ttk.Label(frame, text=text, style="Title.TLabel").grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 6))
 
     # ---- Settings tab: Monitor window -------------------------------------
-    ttk.Label(settings, text="Settings (Monitor window → Storage paths → Collector & webhook → Timer window → Integrations → Work templates)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    add_section_header(settings, "Settings", "Steps: Monitor window → Storage paths → Collector & webhook → Timer window → Integrations → Work templates.", columnspan=4)
     field(settings, 1, 0, "Transparency 0.30–1.00:", alpha_var, 8, "Whole-window opacity (text shares it). Default 0.85 = lightly translucent and readable. Lower it toward 0.30 for a more see-through window; 1.00 = fully opaque. Applied live when you click Apply.")
     field(settings, 1, 2, "Auto-close seconds (0=off):", autoclose_var, 8, "Seconds to count down after a LIVE run finishes before this window closes. 0 keeps it open. Default 20.")
     field(settings, 2, 0, "Active refresh seconds:", refresh_var, 8, "How often (seconds) the monitor refreshes while a run is active. Minimum 2. Default 3.")
@@ -1345,7 +1357,7 @@ def run_tk() -> int:
     # Toggles → Destinations → Filters → Delivery → WAHA server (container) →
     # Message formats. Saved by the same Apply logic as the Settings tab.
     # ========================================================================
-    ttk.Label(whatsapp, text="WhatsApp & WAHA (Toggles → Destinations → Filters → Delivery → Server → Formats)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    add_section_header(whatsapp, "WhatsApp & WAHA", "Steps: Toggles → Destinations → Filters → Delivery → Server → Formats.", columnspan=4)
     waha_enabled_check = ttk.Checkbutton(whatsapp, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
     waha_enabled_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
     add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
@@ -1560,7 +1572,7 @@ def run_tk() -> int:
     scheduler.columnconfigure(1, weight=1)
     scheduler.columnconfigure(3, weight=1)
 
-    ttk.Label(scheduler, text="Automatic scheduler (cron)", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    add_section_header(scheduler, "Automatic scheduler (cron)", "Install or remove the crontab entry: pick days, time window and repeat interval, then apply.", columnspan=4)
     ttk.Label(
         scheduler,
         text="Runs the collector on a repeating schedule instead of the changedetection webhook trigger. "
@@ -1667,7 +1679,7 @@ def run_tk() -> int:
     diag.columnconfigure(2, weight=0, minsize=130)
     diag.columnconfigure(3, weight=1, minsize=200)
 
-    ttk.Label(diag, text="Live diagnostics", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    add_section_header(diag, "Live diagnostics", "Process health and the most recent worker / webhook log lines.", columnspan=4)
 
     # Fields are grouped left-to-right, top-to-bottom: lifecycle, progress,
     # timing, then record counters. "Extra" is rendered separately on its own
@@ -1709,7 +1721,7 @@ def run_tk() -> int:
     records_overview.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     for col in range(2):
         records_overview.columnconfigure(col, weight=1, uniform="record_overview")
-    ttk.Label(records_overview, text="Records summary counters", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    add_section_header(records_overview, "Records summary counters", "Archive totals by detail status and deadline window.", columnspan=2)
 
     pending_var = tk.StringVar(value="Pending records: —")
     completed_var = tk.StringVar(value="Completed records: —")
@@ -1778,7 +1790,7 @@ def run_tk() -> int:
     kpi_frame.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     for col in range(3):
         kpi_frame.columnconfigure(col, weight=1, uniform="kpi")
-    ttk.Label(kpi_frame, text="KPI dashboard", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    add_section_header(kpi_frame, "KPI dashboard", "Key indicators from the archive database; use the filters to narrow the period and group.", columnspan=3)
 
     # Dashboard filters: every card, line and diagram below answers for the
     # same slice (time window, index group, contracting entity).
@@ -1858,7 +1870,7 @@ def run_tk() -> int:
     kpi_charts.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
     for col in range(2):
         kpi_charts.columnconfigure(col, weight=1, uniform="kpi_chart")
-    ttk.Label(kpi_charts, text="KPI diagrams (groups · entities · locations · monthly trend)", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    add_section_header(kpi_charts, "KPI diagrams", "Groups · entities · locations · monthly trend.", columnspan=2)
 
     CHART_HEIGHT = 176
 
@@ -2095,7 +2107,7 @@ def run_tk() -> int:
     record_index.grid(row=3, column=0, sticky="ew", padx=6, pady=6)
     record_index.columnconfigure(1, weight=1)
 
-    ttk.Label(record_index, text="Record selector and filters", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    add_section_header(record_index, "Record selector and filters", "Filter first, then Ctrl/Shift-select records to notify, import calendars or copy templates.", columnspan=3)
 
     # The folder selector is a type-to-filter box plus a dedicated, self-scrolling
     # list (with its own scrollbar) instead of a dropdown. A dropdown's popup
@@ -2412,7 +2424,7 @@ def run_tk() -> int:
     calendar_card = ttk.Frame(calendar_tab, style="Card.TFrame", padding=14)
     calendar_card.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
     calendar_card.columnconfigure(6, weight=1)
-    ttk.Label(calendar_card, text="Opportunity calendar", style="Title.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+    add_section_header(calendar_card, "Opportunity calendar", "Opportunities by day, week, month or year — click a grid cell to drill in.", columnspan=6)
 
     calendar_view_var = tk.StringVar(value="month")
     calendar_field_var = tk.StringVar(value="end")
@@ -2587,7 +2599,7 @@ def run_tk() -> int:
     button_columns = 3
     for col in range(button_columns):
         actions.columnconfigure(col, weight=1, uniform="actions")
-    ttk.Label(actions, text="Manual script buttons  (hover a button for what it does)", style="Title.TLabel").grid(row=0, column=0, columnspan=button_columns, sticky="w", pady=(0, 8))
+    add_section_header(actions, "Manual script buttons", "Grouped by zone; hover a button for what it does.", columnspan=button_columns)
 
     def open_folder(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -2633,7 +2645,7 @@ def run_tk() -> int:
     db_review = ttk.Frame(kpi_tab, style="Card.TFrame", padding=14)
     db_review.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
     db_review.columnconfigure(0, weight=1)
-    ttk.Label(db_review, text="Database review", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    add_section_header(db_review, "Database review", "Inspect archive rows and run maintenance fixes.", columnspan=2)
     db_review_var = tk.StringVar(value="Loading database snapshot…")
     ttk.Label(db_review, textvariable=db_review_var, style="Card.TLabel", justify="left").grid(row=1, column=0, sticky="w")
 
