@@ -448,16 +448,31 @@ def format_items(items: list[dict], *, limit: int = 10) -> str:
     return "\n".join(lines)
 
 
-def record_location(summary: dict) -> str:
-    # "lugar_de_entrega" was never produced by common.build_summary(), so this
-    # always resolved to just the province. "direccion" is the actual scraped
-    # delivery-address field, so use that as the second, more specific part.
-    parts = [
-        clean_field(summary.get("provincia_de_entrega")),
-        clean_field(summary.get("direccion")),
-    ]
-    parts = [part for part in parts if part != DASH]
-    return ", ".join(parts) if parts else DASH
+def record_location(summary: dict, row=None) -> str:
+    """Every location fact available for the record, most specific first.
+
+    Location is a priority field: collect ALL provincia/lugar/dirección values
+    present in the detail summary (not just the two fixed keys), and when the
+    summary has none fall back to unidad de compra → dependencia → entidad so
+    the line is never empty."""
+    parts: list[str] = []
+
+    def add(value) -> None:
+        value = clean_field(value)
+        if value != DASH and value not in parts:
+            parts.append(value)
+
+    for needle in ("provincia", "lugar", "direccion"):
+        for key, value in (summary or {}).items():
+            if isinstance(value, str) and needle in pc_common.strip_accents(str(key)).lower():
+                add(value)
+    if not parts:
+        add(summary.get("unidad_de_compra"))
+    if not parts and row is not None:
+        add(row["dependencia"])
+        if not parts:
+            add(row["entidad"])
+    return ", ".join(parts) if parts else "Panamá (sin dirección específica)"
 
 
 def date_range(row, summary: dict) -> str:
@@ -495,7 +510,7 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
     items = load_detail_items(row["detail_json_path"])
     status = status_value(row)
     title = clean_field(row["descripcion"] or row["short_description"] or summary.get("descripcion"))
-    location = record_location(summary)
+    location = record_location(summary, row)
     url = clean_field(row["link"] or summary.get("enlace_publico") or summary.get("enlace_interno"))
     created = fmt_dt(row["first_seen"] or row["fecha"])
     downloaded = fmt_dt(row["detail_saved_at"]) if row["detail_saved_at"] else ("⏳ En descarga" if detail_pending else fmt_dt(now_str()))
@@ -1466,6 +1481,8 @@ def build_index_digest_messages(rows) -> list[tuple[list, str]]:
             heading += f" — parte {part}/{len(chunks)}"
         lines = [heading, ""]
         for offset, row in enumerate(chunk, start=1):
+            if offset > 1:
+                lines.append("")  # blank line so every opportunity starts on its own block
             position = (part - 1) * DIGEST_RECORDS_PER_MESSAGE + offset
             fecha = fmt_dt(row["finish_date_guess"] or row["fecha"])
             lines.append(f"{position}. *{clean_field(row['numero'])}* — "
