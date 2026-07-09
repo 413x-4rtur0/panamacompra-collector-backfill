@@ -178,8 +178,8 @@ RECORDS_TEST_PARENT = pc_common.RECORDS_TEST_DIR
 # common/safe action first in each zone and destructive ones clearly labelled.
 MANUAL_ACTIONS = [
     # --- 1. Collector Runners: start/stop the live collection ----------------
-    ManualAction("Collector Runners", "Request full collection", ("./src/20_pipeline/110a-request-run.sh", "99", "RESTART", "0"), "Queues a manual restart run (all available index pages and up to 99 detail pages) for the background worker. Safe default action."),
-    ManualAction("Collector Runners", "Run collection now", ("./src/20_pipeline/110b-run-now.sh", "99", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and up to 99 detail pages (does not wait for the queue)."),
+    ManualAction("Collector Runners", "Request full collection", ("./src/20_pipeline/110a-request-run.sh", "0", "RESTART", "0"), "Queues a manual restart run (all available index pages and unlimited detail pages) for the background worker. Safe default action."),
+    ManualAction("Collector Runners", "Run collection now", ("./src/20_pipeline/110b-run-now.sh", "0", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and unlimited detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./src/20_pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
     ManualAction("Collector Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
 
@@ -925,15 +925,16 @@ def run_tk() -> int:
     button_status_var = tk.StringVar(value="")
     run_mode_var = tk.StringVar(value="restart")
     index_limit_var = tk.StringVar(value="0")
-    detail_limit_var = tk.StringVar(value="99")
+    detail_limit_var = tk.StringVar(value="0")
 
     def selected_limit(var: tk.StringVar, default: str) -> str:
         value = var.get().strip() or default
-        return value if value.isdigit() and int(value) > 0 else default
+        # "0" is a valid value everywhere: all index pages / unlimited details.
+        return value if value.isdigit() else default
 
     def request_run_now() -> None:
         index_limit = selected_limit(index_limit_var, "0")
-        detail_limit = selected_limit(detail_limit_var, "99")
+        detail_limit = selected_limit(detail_limit_var, "0")
         mode = run_mode_var.get()
         if mode == "test":
             subprocess.Popen([str(BASE_DIR / "src/20_pipeline/070-test-zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

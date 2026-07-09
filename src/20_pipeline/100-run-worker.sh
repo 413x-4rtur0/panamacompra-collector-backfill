@@ -34,7 +34,7 @@ UPDATE_QUEUE_FLAG="$PC_QUEUE_DIR/update_monitor_requested.flag"
 UPDATE_QUEUE_LOG="$PC_LOG_DIR/update_monitor_queue.log"
 PIPELINE_DIR="$APP_ROOT/src/20_pipeline"
 
-DETAIL_LIMIT="${1:-99}"
+DETAIL_LIMIT="${1:-0}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 RUN_COMPLETED=0
 

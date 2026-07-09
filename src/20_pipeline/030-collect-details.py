@@ -39,7 +39,7 @@ def inline_details_enabled():
         and pc_notify.cfg_bool("PC_NOTIFY_DETAILS_INLINE", True)
     )
 
-DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "10", minimum=0)
+DETAIL_LIMIT = env_int("PC_DETAIL_LIMIT", "0", minimum=0)
 MAX_DETAIL_ATTEMPTS = env_int("PC_MAX_DETAIL_ATTEMPTS", "5", minimum=1)
 # Content-sanity floor for a rendered detail page. A real PanamaCompra detail
 # page produces long body text AND structured data (tables / detected fields).

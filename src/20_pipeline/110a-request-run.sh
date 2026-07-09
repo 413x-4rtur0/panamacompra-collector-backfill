@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/../../lib/env.sh"
 cd "$APP_ROOT"
 
-DETAIL_LIMIT="${1:-99}"
+DETAIL_LIMIT="${1:-0}"
 RUN_MODE="${2:-${PC_RUN_MODE:-RESTART}}"
 INDEX_LIMIT="${3:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 REQUEST_FLAG="$PC_QUEUE_DIR/run_all_requested.flag"
