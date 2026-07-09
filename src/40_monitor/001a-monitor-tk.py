@@ -733,6 +733,7 @@ def run_tk() -> int:
         pass
     style.configure("TFrame", background="#0f172a")
     style.configure("Card.TFrame", background="#111827", relief="solid", borderwidth=1)
+    style.configure("InnerCard.TFrame", background="#111827")
     style.configure("TLabel", background="#0f172a", foreground="#e5e7eb")
     style.configure("Card.TLabel", background="#111827", foreground="#e5e7eb")
     style.configure("Title.TLabel", background="#111827", foreground="#e5e7eb", font=("Sans", 16, "bold"))
@@ -835,6 +836,25 @@ def run_tk() -> int:
     canvas.bind_all("<Button-4>", on_mousewheel)
     canvas.bind_all("<Button-5>", on_mousewheel)
 
+    _wraplabels: list[ttk.Label] = []
+
+    def _track_wraplabel(label: ttk.Label) -> ttk.Label:
+        _wraplabels.append(label)
+        return label
+
+    def _reflow_wraplabels() -> None:
+        width = canvas.winfo_width()
+        if width < 200:
+            width = 820
+        for label in _wraplabels:
+            try:
+                label.configure(wraplength=width - 80)
+            except tk.TclError:
+                pass
+
+    root.bind("<Configure>", lambda _e: root.after_idle(update_scroll_region), add="+")
+    canvas.bind("<Configure>", lambda _e: root.after_idle(_reflow_wraplabels), add="+")
+
     header = ttk.Frame(content, style="Card.TFrame", padding=14)
     header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
     header.columnconfigure(0, weight=1)
@@ -935,25 +955,6 @@ def run_tk() -> int:
         root.after(100, update_scroll_region)
 
     tabs.bind("<<NotebookTabChanged>>", on_tab_changed)
-
-    def _reflow_wraplabels() -> None:
-        width = canvas.winfo_width()
-        if width < 200:
-            width = 820
-        for label in _wraplabels:
-            try:
-                label.configure(wraplength=width - 80)
-            except tk.TclError:
-                pass
-
-    _wraplabels: list[ttk.Label] = []
-
-    root.bind("<Configure>", lambda _e: root.after_idle(update_scroll_region), add="+")
-    canvas.bind("<Configure>", lambda _e: root.after_idle(_reflow_wraplabels), add="+")
-
-    def _track_wraplabel(label: ttk.Label) -> ttk.Label:
-        _wraplabels.append(label)
-        return label
 
     # ========================================================================
     # OPERATIONS TAB / RUN CONTROLS - request a restart or test-zone run
@@ -1405,7 +1406,7 @@ def run_tk() -> int:
     # ========================================================================
 
     # ---- WhatsApp: Settings (toggles, destinations, filters, delivery, server, readability) ----
-    whatsapp_settings = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_settings = ttk.Frame(whatsapp, style="InnerCard.TFrame", padding=14)
     whatsapp_settings.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
     whatsapp_settings.columnconfigure(1, weight=1)
     whatsapp_settings.columnconfigure(3, weight=1)
@@ -1493,7 +1494,7 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_settings, button_column=3)
 
     # ---- WhatsApp: Client Profiles ------------------------------------------
-    whatsapp_clients = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_clients = ttk.Frame(whatsapp, style="InnerCard.TFrame", padding=14)
     whatsapp_clients.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
     whatsapp_clients.columnconfigure(1, weight=1)
 
@@ -1563,7 +1564,7 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_clients, button_column=1)
 
     # ---- WhatsApp: Client Search (contact/group lookup on the WAHA server) ----
-    whatsapp_client_search = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_client_search = ttk.Frame(whatsapp, style="InnerCard.TFrame", padding=14)
     whatsapp_client_search.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
     whatsapp_client_search.columnconfigure(1, weight=1)
 
@@ -1719,7 +1720,7 @@ def run_tk() -> int:
     add_section_toggle(whatsapp_client_search, button_column=4)
 
     # ---- WhatsApp: Message Formats ------------------------------------------
-    whatsapp_formats = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_formats = ttk.Frame(whatsapp, style="InnerCard.TFrame", padding=14)
     whatsapp_formats.grid(row=3, column=0, sticky="ew", padx=0, pady=0)
     whatsapp_formats.columnconfigure(1, weight=1)
     whatsapp_formats.columnconfigure(3, weight=1)
