@@ -277,6 +277,12 @@ FORCE_REDRAW_SECONDS="$(normalize_positive_int "$FORCE_REDRAW_SECONDS" "30")"
 done_cycles=0
 last_signature=""
 last_redraw_epoch=0
+# Only auto-close after this window has actually watched a run go from active
+# to finished. Opening the monitor straight into a pre-existing idle/done
+# state (e.g. right after an update with no run queued) must NOT start the
+# countdown, otherwise the window closes before any work runs (matches the
+# saw_active guard already used by 001a-monitor-tk.py).
+saw_active=0
 
 while true; do
   current_signature="$(render_signature)"
@@ -291,14 +297,18 @@ while true; do
   if system_is_done; then
     done_cycles=$((done_cycles + 1))
   else
+    saw_active=1
     done_cycles=0
   fi
 
-  if [ "$done_cycles" -ge "$STABLE_DONE_CYCLES" ]; then
+  if [ "$saw_active" -eq 1 ] && [ "$done_cycles" -ge "$STABLE_DONE_CYCLES" ]; then
     echo ""
     echo "Process finished. Closing in ${IDLE_CLOSE_SECONDS} seconds..."
     sleep "$IDLE_CLOSE_SECONDS"
     exit 0
+  elif [ "$saw_active" -eq 0 ] && [ "$done_cycles" -eq "$STABLE_DONE_CYCLES" ]; then
+    echo ""
+    echo "Idle. Auto-close starts only after a run finishes while this window is open. Manual close: Ctrl+C"
   fi
 
   sleep "$REFRESH_SECONDS"

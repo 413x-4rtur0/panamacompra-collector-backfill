@@ -220,7 +220,7 @@ def finish_stamp_from_folder(record_folder: str) -> str:
     name = os.path.basename((record_folder or "").rstrip("/"))
     if name.startswith("(") and ")" in name:
         name = name[1:name.index(")")]
-    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
+    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:-](\d{2}))?", name)
     if not match:
         return ""
     return f"{match.group(1)} {match.group(2)}:{match.group(3)}" if match.group(2) and match.group(3) else match.group(1)

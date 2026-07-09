@@ -835,6 +835,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <script>
 let doneSince = null;
+let sawActive = false;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
@@ -907,6 +908,15 @@ function render(data) {{
   }});
   const note = document.getElementById('done-note');
   if (data.done) {{
+    if (!sawActive) {{
+      // Opened straight into a pre-existing idle/done state (e.g. right after
+      // an update with no run queued): show status, but never start the
+      // countdown, or the tab would close before any work runs. Mirrors the
+      // saw_active guard in 001a-monitor-tk.py / 001c-monitor-terminal.sh.
+      note.hidden = false;
+      note.textContent = 'Idle. Auto-close starts only after a run finishes while this monitor is open.';
+      return;
+    }}
     if (!doneSince) doneSince = Date.now();
     const wait = data.auto_close_enabled ? Number(data.auto_close_seconds || 0) : 0;
     const remaining = Math.max(0, wait - Math.floor((Date.now() - doneSince) / 1000));
@@ -918,6 +928,7 @@ function render(data) {{
       return;
     }}
   }} else {{
+    sawActive = true;
     doneSince = null;
     note.hidden = true;
   }}

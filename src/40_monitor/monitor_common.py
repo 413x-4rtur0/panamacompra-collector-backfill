@@ -120,14 +120,16 @@ def compact_dt(raw: str) -> str:
 
 def finish_stamp_from_folder(record_folder: str) -> str:
     """Fallback DTEND for records whose finish_date_guess column is empty: read the
-    close stamp from the folder leaf '(YYYY-MM-DD_HH_MM)-(numero)-(desc)'. Returns
+    close stamp from the folder leaf '(YYYY-MM-DD_HH-MM)-(numero)-(desc)'. Returns
     'YYYY-MM-DD HH:MM' (or 'YYYY-MM-DD'), or '' when the folder carries no stamp."""
     name = os.path.basename((record_folder or "").rstrip("/"))
     # Only inspect the first parenthesized token so the NUMERO (which also holds
     # digits and dashes) cannot be mistaken for the close date.
     if name.startswith("(") and ")" in name:
         name = name[1:name.index(")")]
-    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:](\d{2}))?", name)
+    # Accepts both '_' and '-'/':'  between HH and MM: folders written before
+    # build_record_folder_leaf() switched to '-' still use 'HH_MM'.
+    match = re.search(r"(\d{4}-\d{2}-\d{2})(?:[ _T]?(\d{2})[_:-](\d{2}))?", name)
     if not match:
         return ""
     if match.group(2) and match.group(3):

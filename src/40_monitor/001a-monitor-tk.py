@@ -646,6 +646,73 @@ def run_tk() -> int:
     def add_tooltip(widget: tk.Widget, text: str) -> None:
         Tooltip(widget, text)
 
+    def add_section_header(frame: ttk.Frame, name: str, desc: str, *, columnspan: int, row: int = 0) -> None:
+        """Two-line section header: the section NAME in the title font and,
+        below it, the description / step list in a smaller muted font. Both
+        live in one grid row so add_section_toggle keeps them visible when the
+        section body is collapsed."""
+        box = ttk.Frame(frame, style="Card.TFrame")
+        box.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 8))
+        ttk.Label(box, text=name, style="Title.TLabel").pack(anchor="w")
+        if desc:
+            ttk.Label(box, text=desc, style="SectionDesc.TLabel").pack(anchor="w")
+
+    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
+                           start_hidden: bool = True) -> None:
+        """Add a hide/show button that keeps the section header visible.
+
+        The set of content widgets to collapse is captured ONCE, now, while every
+        widget is still gridded. The previous version re-read ``grid_info`` inside
+        the toggle, but ``grid_remove`` makes ``grid_info`` return ``{}`` for a
+        hidden widget, so after the first Hide the Show pass skipped every
+        (now-empty-info) child and nothing ever came back — the button looked
+        dead. Capturing up front fixes that and lets sections start collapsed.
+        """
+        hidden = tk.BooleanVar(value=False)
+
+        button = ttk.Button(frame, text="Hide", width=7)
+        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
+        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
+
+        content_children = []
+        for child in frame.winfo_children():
+            if child is button:
+                continue
+            info = child.grid_info()
+            if not info:
+                continue
+            try:
+                row = int(info.get("row", 0))
+            except (TypeError, ValueError):
+                row = 0
+            if row <= title_row:
+                continue
+            content_children.append(child)
+
+        def apply_hidden(is_hidden: bool) -> None:
+            hidden.set(is_hidden)
+            for child in content_children:
+                if is_hidden:
+                    child.grid_remove()
+                else:
+                    child.grid()
+            button.configure(text="Show" if is_hidden else "Hide")
+            # grid_remove()/grid() change content's required size, but the canvas
+            # scrollregion is only recomputed on content's <Configure> event, which
+            # does not reliably fire here (row 1 has weight=1, so content keeps
+            # stretching to the canvas height regardless of how much is actually
+            # visible). Without this, hiding a section leaves the old, larger
+            # scrollregion in place: you can keep scrolling into blank space where
+            # the collapsed content used to be. Recompute explicitly, after idle so
+            # geometry management has settled.
+            root.after_idle(update_scroll_region)
+
+        button.configure(command=lambda: apply_hidden(not hidden.get()))
+        # Sections start collapsed by default so the monitor opens compact; the
+        # operator expands only the panels they need.
+        if start_hidden:
+            apply_hidden(True)
+
     def center_window() -> None:
         root.update_idletasks()
         width = root.winfo_width()
@@ -832,73 +899,6 @@ def run_tk() -> int:
             "\nRecent Update + Monitor queue log:\n" + (queue.get("update_log") or "(missing)")
         )
         set_text(queue_log_text, log_text)
-
-    def add_section_header(frame: ttk.Frame, name: str, desc: str, *, columnspan: int, row: int = 0) -> None:
-        """Two-line section header: the section NAME in the title font and,
-        below it, the description / step list in a smaller muted font. Both
-        live in one grid row so add_section_toggle keeps them visible when the
-        section body is collapsed."""
-        box = ttk.Frame(frame, style="Card.TFrame")
-        box.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 8))
-        ttk.Label(box, text=name, style="Title.TLabel").pack(anchor="w")
-        if desc:
-            ttk.Label(box, text=desc, style="SectionDesc.TLabel").pack(anchor="w")
-
-    def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
-                           start_hidden: bool = True) -> None:
-        """Add a hide/show button that keeps the section header visible.
-
-        The set of content widgets to collapse is captured ONCE, now, while every
-        widget is still gridded. The previous version re-read ``grid_info`` inside
-        the toggle, but ``grid_remove`` makes ``grid_info`` return ``{}`` for a
-        hidden widget, so after the first Hide the Show pass skipped every
-        (now-empty-info) child and nothing ever came back — the button looked
-        dead. Capturing up front fixes that and lets sections start collapsed.
-        """
-        hidden = tk.BooleanVar(value=False)
-
-        button = ttk.Button(frame, text="Hide", width=7)
-        button.grid(row=title_row, column=button_column, sticky="e", padx=(8, 0), pady=(0, 8))
-        add_tooltip(button, "Hide/show this monitor section without stopping the run.")
-
-        content_children = []
-        for child in frame.winfo_children():
-            if child is button:
-                continue
-            info = child.grid_info()
-            if not info:
-                continue
-            try:
-                row = int(info.get("row", 0))
-            except (TypeError, ValueError):
-                row = 0
-            if row <= title_row:
-                continue
-            content_children.append(child)
-
-        def apply_hidden(is_hidden: bool) -> None:
-            hidden.set(is_hidden)
-            for child in content_children:
-                if is_hidden:
-                    child.grid_remove()
-                else:
-                    child.grid()
-            button.configure(text="Show" if is_hidden else "Hide")
-            # grid_remove()/grid() change content's required size, but the canvas
-            # scrollregion is only recomputed on content's <Configure> event, which
-            # does not reliably fire here (row 1 has weight=1, so content keeps
-            # stretching to the canvas height regardless of how much is actually
-            # visible). Without this, hiding a section leaves the old, larger
-            # scrollregion in place: you can keep scrolling into blank space where
-            # the collapsed content used to be. Recompute explicitly, after idle so
-            # geometry management has settled.
-            root.after_idle(update_scroll_region)
-
-        button.configure(command=lambda: apply_hidden(not hidden.get()))
-        # Sections start collapsed by default so the monitor opens compact; the
-        # operator expands only the panels they need.
-        if start_hidden:
-            apply_hidden(True)
 
     # ========================================================================
     # UNIFIED TABS - Operations · Settings · WhatsApp · Scheduler · KPIs ·

@@ -289,7 +289,7 @@ def short_description(text, max_len=80):
 # Folder-naming helpers: (finish_stamp)-(numero)-(desc_slug)
 #
 # Example leaf:
-#   (2022-10-11_12_00)-(2022-0-12-214-12-CL-008498)-(FRS-126-CMPRS-D-CJ-PLSTC)
+#   (2022-10-11_12-00)-(2022-0-12-214-12-CL-008498)-(FRS-126-CMPRS-D-CJ-PLSTC)
 # --------------------------------------------------------------------------
 
 DESC_SLUG_MAX = env_int("PC_DESC_SLUG_MAX", "24", minimum=1)
@@ -467,7 +467,7 @@ def build_record_folder_leaf(finish_stamp, numero, desc):
     The three human-scannable parts stay explicit: close date, NUMERO and short
     description.
     """
-    stamp = safe_name(str(finish_stamp or "NO-DATE").replace(":", "_"))
+    stamp = safe_name(str(finish_stamp or "NO-DATE").replace(":", "-"))
     number = safe_name(numero or "NO-NUMERO")
     label = safe_name(desc or "NO-DESC")
     return f"({stamp})-({number})-({label})"
