@@ -61,6 +61,8 @@ docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
 urls_icon_path="$icon_dir/panamacompra-integration-urls.svg"
 stop_icon_path="$icon_dir/panamacompra-stop-all.svg"
 start_icon_path="$icon_dir/panamacompra-start-all.svg"
+dev_pause_icon_path="$icon_dir/panamacompra-dev-pause.svg"
+dev_resume_icon_path="$icon_dir/panamacompra-dev-resume.svg"
 helper_dir="${XDG_DATA_HOME:-$HOME/.local/share}/panamacompra/launchers"
 loader_path="$APP_ROOT/src/40_monitor/003-update-loader.py"
 
@@ -120,6 +122,21 @@ SVG
   <rect width="128" height="128" rx="24" fill="#052e16"/>
   <circle cx="64" cy="64" r="42" fill="#14532d" stroke="#4ade80" stroke-width="7"/>
   <path d="M52 42l38 22-38 22z" fill="#bbf7d0"/>
+</svg>
+SVG
+  cat > "$dev_pause_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#451a03"/>
+  <circle cx="64" cy="64" r="42" fill="#78350f" stroke="#fbbf24" stroke-width="7"/>
+  <rect x="48" y="44" width="12" height="40" rx="3" fill="#fef3c7"/>
+  <rect x="68" y="44" width="12" height="40" rx="3" fill="#fef3c7"/>
+</svg>
+SVG
+  cat > "$dev_resume_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#1e1b4b"/>
+  <circle cx="64" cy="64" r="42" fill="#312e81" stroke="#818cf8" stroke-width="7"/>
+  <path d="M52 42l38 22-38 22z" fill="#e0e7ff"/>
 </svg>
 SVG
 }
@@ -235,6 +252,33 @@ echo ""
 echo ""
 read -r -p "Press Enter to close..." _unused || true
 SH
+  cat > "$helper_dir/dev-pause.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+echo "PanamaCompra: PAUSE for development"
+echo "Stops any active collection run and pauses webhook/cron auto-triggers and"
+echo "the updater's autostash, so editing this repo is safe. Docker integrations"
+echo "and the monitors stay running."
+echo ""
+./src/20_pipeline/121-dev-mode.sh pause || true
+echo ""
+read -r -p "Press Enter to close..." _unused || true
+SH
+  cat > "$helper_dir/dev-resume.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+echo "PanamaCompra: RESUME automatic collection"
+echo "Restores webhook/cron auto-triggers and the updater's normal mode to what"
+echo "they were before Dev Pause. Does not queue a run by itself."
+echo ""
+./src/20_pipeline/121-dev-mode.sh resume || true
+echo ""
+read -r -p "Press Enter to close..." _unused || true
+SH
   for script in "$helper_dir"/*.sh; do
     sed -i "s|__APP_ROOT__|$APP_ROOT|g" "$script"
     chmod +x "$script"
@@ -251,6 +295,8 @@ write_desktop_entry() {
     *integration-urls*) selected_icon="$urls_icon_path" ;;
     *stop-all*) selected_icon="$stop_icon_path" ;;
     *start-all*) selected_icon="$start_icon_path" ;;
+    *dev-pause*) selected_icon="$dev_pause_icon_path" ;;
+    *dev-resume*) selected_icon="$dev_resume_icon_path" ;;
   esac
   # The icon file is (re)generated on every install so no launcher is ever left
   # without one. Icon= is a plain string field in the Desktop Entry spec: it
@@ -325,6 +371,20 @@ install_integration_launchers() {
     "Bring Docker integrations and the webhook listener back up, and open the monitor" \
     "$(quote_desktop_value "$helper_dir/start-all.sh")" \
     "true" "Utility;Monitor;System;"
+  write_desktop_entry \
+    "$app_dir/panamacompra-dev-pause.desktop" \
+    "$desktop_dir/panamacompra-dev-pause.desktop" \
+    "PanamaCompra Dev Pause" \
+    "Pause automatic collection (webhook/cron triggers + updater autostash) so editing the repo is safe" \
+    "$(quote_desktop_value "$helper_dir/dev-pause.sh")" \
+    "true" "Utility;Monitor;System;Development;"
+  write_desktop_entry \
+    "$app_dir/panamacompra-dev-resume.desktop" \
+    "$desktop_dir/panamacompra-dev-resume.desktop" \
+    "PanamaCompra Dev Resume" \
+    "Restore automatic collection settings paused by Dev Pause" \
+    "$(quote_desktop_value "$helper_dir/dev-resume.sh")" \
+    "true" "Utility;Monitor;System;Development;"
 }
 
 install_launcher() {
@@ -362,7 +422,9 @@ remove_launcher() {
       "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop" \
       "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop" \
       "$app_dir/panamacompra-stop-all.desktop" "$desktop_dir/panamacompra-stop-all.desktop" \
-      "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop"
+      "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop" \
+      "$app_dir/panamacompra-dev-pause.desktop" "$desktop_dir/panamacompra-dev-pause.desktop" \
+      "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop"
     rm -rf "$helper_dir"
   fi
   log "Removed PanamaCompra launcher files if present."
@@ -383,6 +445,8 @@ print_paths() {
     printf 'Docker stack:     %s and %s\n' "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop"
     printf 'Stop All:         %s and %s\n' "$app_dir/panamacompra-stop-all.desktop" "$desktop_dir/panamacompra-stop-all.desktop"
     printf 'Start All:        %s and %s\n' "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop"
+    printf 'Dev Pause:        %s and %s\n' "$app_dir/panamacompra-dev-pause.desktop" "$desktop_dir/panamacompra-dev-pause.desktop"
+    printf 'Dev Resume:       %s and %s\n' "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop"
     printf 'Helper scripts:   %s\n' "$helper_dir"
   fi
 }

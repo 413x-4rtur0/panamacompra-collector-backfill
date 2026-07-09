@@ -168,7 +168,14 @@ echo "Log: $LOG_FILE"
 # never hang or abort on their own -- opt in for a manually-run update when
 # you know you may have newer local work than the remote:
 #   PC_UPDATE_REQUIRE_CLEAN=1 ./update-local-copy.sh
-REQUIRE_CLEAN="${PC_UPDATE_REQUIRE_CLEAN:-0}"
+# Same precedence as PC_NOTIFY_WHATSAPP/PC_WEBHOOK_AUTO_RUN: environment
+# variable first, then the monitor settings file, so 121-dev-mode.sh's "on"
+# can flip this on for every trigger source without exporting anything.
+REQUIRE_CLEAN="${PC_UPDATE_REQUIRE_CLEAN:-}"
+if [ -z "$REQUIRE_CLEAN" ] && [ -f "$PC_DATA_DIR/config/monitor_settings.env" ]; then
+  REQUIRE_CLEAN="$(sed -n "s/^PC_UPDATE_REQUIRE_CLEAN=[\"']*\([^\"']*\)[\"']*\$/\1/p" "$PC_DATA_DIR/config/monitor_settings.env" | tail -n1)"
+fi
+REQUIRE_CLEAN="${REQUIRE_CLEAN:-0}"
 echo "Safe mode (PC_UPDATE_REQUIRE_CLEAN): ${REQUIRE_CLEAN}"
 echo ""
 
