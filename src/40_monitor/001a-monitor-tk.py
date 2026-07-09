@@ -646,16 +646,15 @@ def run_tk() -> int:
     def add_tooltip(widget: tk.Widget, text: str) -> None:
         Tooltip(widget, text)
 
-    def add_section_header(frame: ttk.Frame, name: str, desc: str, *, columnspan: int, row: int = 0) -> None:
-        """Two-line section header: the section NAME in the title font and,
-        below it, the description / step list in a smaller muted font. Both
-        live in one grid row so add_section_toggle keeps them visible when the
-        section body is collapsed."""
+    def add_section_header(frame: ttk.Frame, name: str, desc: str, *, columnspan: int, row: int = 0,
+                           detail: str = "") -> None:
         box = ttk.Frame(frame, style="Card.TFrame")
         box.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 8))
         ttk.Label(box, text=name, style="Title.TLabel").pack(anchor="w")
         if desc:
             ttk.Label(box, text=desc, style="SectionDesc.TLabel").pack(anchor="w")
+        if detail:
+            ttk.Label(box, text=detail, style="SectionDetail.TLabel").pack(anchor="w")
 
     def add_section_toggle(frame: ttk.Frame, *, button_column: int, title_row: int = 0,
                            start_hidden: bool = True) -> None:
@@ -738,6 +737,7 @@ def run_tk() -> int:
     style.configure("Card.TLabel", background="#111827", foreground="#e5e7eb")
     style.configure("Title.TLabel", background="#111827", foreground="#e5e7eb", font=("Sans", 16, "bold"))
     style.configure("SectionDesc.TLabel", background="#111827", foreground="#94a3b8", font=("Sans", 9))
+    style.configure("SectionDetail.TLabel", background="#111827", foreground="#64748b", font=("Sans", 8))
     style.configure("Message.TLabel", background="#111827", foreground="#fef3c7", font=("Sans", 11, "bold"))
     style.configure("Done.TLabel", background="#111827", foreground="#bbf7d0", font=("Sans", 10, "bold"))
     style.configure("Horizontal.TProgressbar", thickness=26)
@@ -796,10 +796,12 @@ def run_tk() -> int:
     content.rowconfigure(1, weight=1)
 
     def update_scroll_region(_event: tk.Event | None = None) -> None:
+        canvas.update_idletasks()
         canvas.configure(scrollregion=canvas.bbox("all"))
 
     def resize_content(event: tk.Event) -> None:
         canvas.itemconfigure(content_window, width=event.width)
+        root.after_idle(update_scroll_region)
 
     def on_mousewheel(event: tk.Event) -> None:
         # X11 (Linux) delivers wheel events as Button-4 (up) / Button-5 (down)
@@ -928,7 +930,13 @@ def run_tk() -> int:
         tabs.add(tab_frame, text=tab_title)
         tab_frame.columnconfigure(0, weight=1)
     # Tab contents differ in height; recompute the page scroll range on switch.
-    tabs.bind("<<NotebookTabChanged>>", lambda _e: root.after_idle(update_scroll_region))
+    def on_tab_changed(_e: tk.Event) -> None:
+        root.after_idle(update_scroll_region)
+        root.after(100, update_scroll_region)
+
+    tabs.bind("<<NotebookTabChanged>>", on_tab_changed)
+
+    root.bind("<Configure>", lambda _e: root.after_idle(update_scroll_region), add="+")
 
     # ========================================================================
     # OPERATIONS TAB / RUN CONTROLS - request a restart or test-zone run
@@ -1385,7 +1393,8 @@ def run_tk() -> int:
     whatsapp_settings.columnconfigure(1, weight=1)
     whatsapp_settings.columnconfigure(3, weight=1)
 
-    add_section_header(whatsapp_settings, "WhatsApp Settings", "Toggle WAHA, configure destinations, filters, delivery, and server settings.", columnspan=4)
+    add_section_header(whatsapp_settings, "WhatsApp Settings", "Toggle WAHA, configure destinations, filters, delivery, and server settings.", columnspan=4,
+                       detail="Apply saves everything to data/config/monitor_settings.env. Container settings need a docker stack restart.")
 
     waha_enabled_check = ttk.Checkbutton(whatsapp_settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
     waha_enabled_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
@@ -1471,14 +1480,11 @@ def run_tk() -> int:
     whatsapp_clients.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
     whatsapp_clients.columnconfigure(1, weight=1)
 
-    group_title(whatsapp_clients, 0, "Client profiles (add/remove as many destinations as needed)")
-    ttk.Label(
-        whatsapp_clients,
-        text="Each client fans a message out to its own WhatsApp destination when the message's phase matches. "
-             "Fields: name, chat_id (destination), purposes (which phases it receives: index/details/status/system/summary, "
-             "or \"all\"), filters (keyword rules like the shared ones above), enabled.",
-        style="Card.TLabel", wraplength=820,
-    ).grid(row=1, column=0, columnspan=4, sticky="w")
+    add_section_header(whatsapp_clients, "Client Profiles",
+                       "Each client fans a message out to its own WhatsApp destination when the message's phase matches.",
+                       columnspan=4, row=0,
+                       detail="Fields: name, chat_id (destination), purposes (index/details/status/system/summary or \"all\"), "
+                              "filters (keyword rules like the shared ones above, comma-separated), enabled.")
     clients_text = tk.Text(whatsapp_clients, height=8, wrap="word")
     clients_text.grid(row=2, column=0, columnspan=4, sticky="ew", pady=3)
     add_tooltip(
@@ -1544,9 +1550,9 @@ def run_tk() -> int:
     whatsapp_client_search.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
     whatsapp_client_search.columnconfigure(1, weight=1)
 
-    add_section_header(whatsapp_client_search, "Client Search", "Search contacts, groups, communities and channels on the WAHA server by name.", columnspan=5)
-
-    ttk.Label(whatsapp_client_search, text="Use @g.us for groups, @c.us for contacts, @s.whatsapp.net for channels, @lid for communities.", style="Card.TLabel", wraplength=820).grid(row=1, column=0, columnspan=5, sticky="w", pady=(0, 6))
+    add_section_header(whatsapp_client_search, "Client Search", "Look up contacts, groups, channels and communities on the WAHA server.", columnspan=5,
+                       detail="Operator hints: @g.us (groups), @c.us (contacts), @s.whatsapp.net (channels), @lid (communities), @newsletter (broadcast). "
+                              "Empty search lists every known group.")
 
     cs_query_var = tk.StringVar(value="")
     cs_operator_var = tk.StringVar(value="@g.us")
@@ -1556,9 +1562,9 @@ def run_tk() -> int:
     cs_query_entry.grid(row=2, column=1, sticky="ew", pady=3)
 
     ttk.Label(whatsapp_client_search, text="Operator:", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=(6, 6), pady=3)
-    cs_operator_combo = ttk.Combobox(whatsapp_client_search, textvariable=cs_operator_var, values=["@g.us", "@c.us", "@s.whatsapp.net", "@lid", ""], width=18, state="readonly")
+    cs_operator_combo = ttk.Combobox(whatsapp_client_search, textvariable=cs_operator_var, values=["@g.us", "@c.us", "@s.whatsapp.net", "@lid", "@newsletter", ""], width=18, state="readonly")
     cs_operator_combo.grid(row=2, column=3, sticky="w", pady=3)
-    add_tooltip(cs_operator_combo, "Operator hint appended when the search term lacks one: @g.us = groups, @c.us = contacts, @s.whatsapp.net = channels, @lid = communities.")
+    add_tooltip(cs_operator_combo, "Operator hints: @g.us = groups, @c.us = contacts, @s.whatsapp.net = channels, @lid = communities, @newsletter = broadcast lists.")
 
     def run_client_search() -> None:
         import urllib.request  # noqa: PLC0415 - local WAHA endpoint
@@ -1576,10 +1582,14 @@ def run_tk() -> int:
         headers = {"Accept": "application/json"}
         if api_key:
             headers["X-Api-Key"] = api_key
+
+        def _get(path: str, timeout: float = 8.0):
+            req = urllib.request.Request(f"{base_url}{path}", headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - local WAHA
+                return json.loads(resp.read().decode("utf-8", "replace"))
+
         try:
-            req = urllib.request.Request(f"{base_url}/api/sessions?all=true", headers=headers)
-            with urllib.request.urlopen(req, timeout=8.0) as resp:  # noqa: S310 - local WAHA
-                sessions = json.loads(resp.read().decode("utf-8", "replace"))
+            sessions = _get("/api/sessions?all=true")
         except Exception as exc:
             cs_results_text.delete("1.0", "end")
             cs_results_text.insert("1.0", f"WAHA unreachable: {exc}")
@@ -1588,6 +1598,7 @@ def run_tk() -> int:
             sessions = []
         wanted = pc_common.strip_accents(q).lower().strip() if q else ""
         results = []
+
         for s in sessions:
             if not isinstance(s, dict):
                 continue
@@ -1595,29 +1606,74 @@ def run_tk() -> int:
             status = str(s.get("status") or "").upper()
             if status and status not in {"WORKING", "RUNNING", "STARTING"}:
                 continue
-            for kind, path in (("group", f"/api/{sname}/groups"), ("contact", f"/api/contacts/all?session={sname}")):
-                try:
-                    req = urllib.request.Request(f"{base_url}{path}", headers=headers)
-                    with urllib.request.urlopen(req, timeout=8.0) as resp:  # noqa: S310 - local WAHA
-                        entries = json.loads(resp.read().decode("utf-8", "replace"))
-                except Exception:
-                    continue
-                if not isinstance(entries, list):
-                    continue
-                for item in entries:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or item.get("subject") or item.get("pushname") or "").strip()
-                    raw_id = item.get("id")
-                    chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
-                    if not chat_id:
-                        continue
-                    if wanted and wanted not in pc_common.strip_accents(name).lower():
-                        continue
-                    if kind == "contact" and not name:
-                        continue
-                    results.append(f"{name or chat_id}  [{chat_id}]  ({sname})")
-        results.sort()
+
+            seen_ids: set[str] = set()
+
+            # 1) Groups endpoint
+            try:
+                groups = _get(f"/api/{sname}/groups")
+                if isinstance(groups, list):
+                    for item in groups:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or item.get("subject") or "").strip()
+                        raw_id = item.get("id")
+                        chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
+                        if not chat_id or chat_id in seen_ids:
+                            continue
+                        seen_ids.add(chat_id)
+                        if wanted and wanted not in pc_common.strip_accents(name).lower():
+                            continue
+                        results.append(f"{name or chat_id}  [{chat_id}]  ({sname} · group)")
+            except Exception:
+                cs_results_text.delete("1.0", "end")
+                cs_results_text.insert("1.0", f"Groups endpoint failed for session {sname}.\n")
+                continue
+
+            # 2) Contacts endpoint
+            try:
+                contacts = _get(f"/api/contacts/all?session={sname}")
+                if isinstance(contacts, list):
+                    for item in contacts:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or item.get("pushname") or "").strip()
+                        raw_id = item.get("id")
+                        chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
+                        if not chat_id or chat_id in seen_ids:
+                            continue
+                        seen_ids.add(chat_id)
+                        if not name:
+                            continue
+                        if wanted and wanted not in pc_common.strip_accents(name).lower():
+                            continue
+                        results.append(f"{name}  [{chat_id}]  ({sname} · contact)")
+            except Exception:
+                pass
+
+            # 3) Chats endpoint — catches anything groups/contacts miss
+            try:
+                chats = _get(f"/api/{sname}/chats")
+                if isinstance(chats, list):
+                    for item in chats:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or "").strip()
+                        raw_id = item.get("id")
+                        chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
+                        if not chat_id or chat_id in seen_ids:
+                            continue
+                        seen_ids.add(chat_id)
+                        if wanted and wanted not in pc_common.strip_accents(name).lower():
+                            continue
+                        kind_label = "group" if "@g.us" in chat_id else "contact" if "@c.us" in chat_id \
+                            else "channel" if "@s.whatsapp.net" in chat_id else "community" if "@lid" in chat_id \
+                            else "broadcast" if "@newsletter" in chat_id else "chat"
+                        results.append(f"{name or chat_id}  [{chat_id}]  ({sname} · {kind_label})")
+            except Exception:
+                pass
+
+        results.sort(key=lambda r: pc_common.strip_accents(r).lower())
         results = results[:100]
         cs_results_text.delete("1.0", "end")
         cs_results_text.insert("1.0", "\n".join(results) if results else "No matches found.")
