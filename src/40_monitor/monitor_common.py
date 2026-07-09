@@ -32,6 +32,164 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 import common as pc_common
 
+# ── WAHA helpers (shared between both monitors) ──────────────────────────────
+
+WAHA_DEFAULT_BASE_URL = "http://127.0.0.1:3000"
+
+
+def _waha_api_get(path: str, timeout: float = 8.0):
+    """GET a WAHA REST endpoint. Returns parsed JSON or raises."""
+    import urllib.request
+    base_url = os.environ.get("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL).rstrip("/")
+    api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    request = urllib.request.Request(f"{base_url}{path}", headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - local WAHA
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def _waha_entry_id(item: dict) -> str:
+    """Chat id from a WAHA group/contact payload, tolerating format variants."""
+    raw = item.get("id")
+    if isinstance(raw, dict):
+        return str(raw.get("_serialized") or raw.get("id") or "")
+    return str(raw or "")
+
+
+_WAHA_KINDS = {"@g.us": "group", "@c.us": "contact", "@s.whatsapp.net": "channel",
+               "@lid": "community", "@newsletter": "broadcast"}
+
+
+def _waha_kind_for_chat_id(chat_id: str) -> str:
+    """Classify a chat ID by its suffix."""
+    for suffix, kind in _WAHA_KINDS.items():
+        if suffix in chat_id:
+            return kind
+    return "chat"
+
+
+def waha_fetch_all(query: str = "", *,
+                   base_url: str = "", api_key: str = "",
+                   include_chats: bool = True) -> list[dict]:
+    """Fetch all groups/contacts/chats from every WAHA session and return
+    structured matches.
+
+    Each match dict: ``{"session", "id", "name", "kind"}``.
+
+    When ``query`` is non-empty, results are filtered by accent-insensitive
+    substring match on name. Empty query returns everything (groups first).
+    Never raises: returns [] on error.
+    """
+    import urllib.request  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+
+    if not base_url:
+        base_url = os.environ.get("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL)
+    base_url = base_url.rstrip("/")
+    if not api_key:
+        api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["X-Api-Key"] = api_key
+
+    def _get(path: str, timeout: float = 8.0):
+        req = urllib.request.Request(f"{base_url}{path}", headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    wanted = pc_common.strip_accents(query or "").lower().strip()
+
+    try:
+        sessions = _get("/api/sessions?all=true")
+    except Exception:
+        return []
+    if not isinstance(sessions, list):
+        return []
+
+    matches: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for s in sessions:
+        if not isinstance(s, dict):
+            continue
+        sname = str(s.get("name") or "default")
+        status = str(s.get("status") or "").upper()
+        if status and status not in {"WORKING", "RUNNING", "STARTING"}:
+            continue
+
+        for kind, path in (("group", f"/api/{sname}/groups"),
+                           ("contact", f"/api/contacts/all?session={sname}")):
+            try:
+                entries = _get(path)
+            except Exception:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("subject") or item.get("pushname") or "").strip()
+                chat_id = _waha_entry_id(item)
+                if not chat_id or chat_id in seen_ids:
+                    continue
+                seen_ids.add(chat_id)
+                if kind == "contact" and not name:
+                    continue
+                if wanted and wanted not in pc_common.strip_accents(name).lower():
+                    continue
+                matches.append({"session": sname, "id": chat_id, "name": name or chat_id, "kind": kind})
+
+        if not include_chats:
+            continue
+
+        try:
+            for item in _get(f"/api/{sname}/chats"):
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                chat_id = _waha_entry_id(item)
+                if not chat_id or chat_id in seen_ids:
+                    continue
+                seen_ids.add(chat_id)
+                if wanted and wanted not in pc_common.strip_accents(name).lower():
+                    continue
+                matches.append({"session": sname, "id": chat_id, "name": name or chat_id,
+                                "kind": _waha_kind_for_chat_id(chat_id)})
+        except Exception:
+            pass
+
+    matches.sort(key=lambda m: (m["kind"] != "group", pc_common.strip_accents(m["name"]).lower()))
+    return matches[:250]
+
+
+def waha_session_status() -> dict:
+    """Health of the configured WAHA session (PC_WAHA_SESSION, default
+    'default'), for the monitor's session-needs-attention banner. Never
+    raises: WAHA being down or unreachable is a normal, reportable state."""
+    session_name = setting("PC_WAHA_SESSION", "default")
+    try:
+        sessions = _waha_api_get("/api/sessions?all=true")
+    except Exception as exc:  # noqa: BLE001 - WAHA down is a normal state
+        return {"session": session_name, "status": "UNREACHABLE", "connected": False,
+                "needs_qr": False, "message": f"WAHA unreachable: {exc}"}
+    match = next((s for s in sessions if isinstance(s, dict) and s.get("name") == session_name), None)
+    if match is None:
+        return {"session": session_name, "status": "NOT_FOUND", "connected": False,
+                "needs_qr": False, "message": f"No WAHA session named '{session_name}'."}
+    status = str(match.get("status") or "UNKNOWN").upper()
+    connected = status in {"WORKING", "RUNNING"}
+    return {
+        "session": session_name,
+        "status": status,
+        "connected": connected,
+        "needs_qr": status in {"SCAN_QR_CODE", "STARTING"},
+        "message": "" if connected else f"WAHA session '{session_name}' is {status}.",
+    }
+
+
 ARCHIVE_DB = pc_common.DB_PATH
 MONITOR_SETTINGS_FILE = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
 # Written by 100-run-worker.sh on every clean completion: started/finished

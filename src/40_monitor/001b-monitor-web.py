@@ -39,6 +39,8 @@ from monitor_common import (  # noqa: E402
     setting,
     stats_to_csv,
     summarize_items_for_kpi,
+    waha_fetch_all,
+    waha_session_status,
 )
 
 BASE_DIR = pc_common.APP_ROOT
@@ -136,56 +138,6 @@ def save_waha_clients_text(text: str) -> None:
     WAHA_CLIENTS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _waha_api_get(path: str, timeout: float = 8.0):
-    """GET a WAHA REST endpoint using the same base URL / API key the notifier
-    uses. Returns parsed JSON or raises OSError/URLError."""
-    import urllib.request
-    base_url = os.environ.get("PC_WAHA_BASE_URL", "http://127.0.0.1:3000").rstrip("/")
-    api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["X-Api-Key"] = api_key
-    request = urllib.request.Request(f"{base_url}{path}", headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - local WAHA endpoint
-        return json.loads(response.read().decode("utf-8", "replace"))
-
-
-def _waha_entry_id(item: dict) -> str:
-    """Chat id from a WAHA group/contact payload, tolerating format variants."""
-    raw = item.get("id")
-    if isinstance(raw, dict):
-        return str(raw.get("_serialized") or raw.get("id") or "")
-    return str(raw or "")
-
-
-WAHA_CONNECTED_STATUSES = {"WORKING", "RUNNING"}
-
-
-def waha_session_status() -> dict:
-    """Health of the configured WAHA session (PC_WAHA_SESSION, default
-    'default'), for the monitor's session-needs-attention banner. Never
-    raises: WAHA being down or unreachable is a normal, reportable state."""
-    session_name = setting("PC_WAHA_SESSION", "default")
-    try:
-        sessions = _waha_api_get("/api/sessions?all=true")
-    except Exception as exc:  # noqa: BLE001 - WAHA down is a normal state
-        return {"session": session_name, "status": "UNREACHABLE", "connected": False,
-                "needs_qr": False, "message": f"WAHA unreachable: {exc}"}
-    match = next((s for s in sessions if isinstance(s, dict) and s.get("name") == session_name), None)
-    if match is None:
-        return {"session": session_name, "status": "NOT_FOUND", "connected": False,
-                "needs_qr": False, "message": f"No WAHA session named '{session_name}'."}
-    status = str(match.get("status") or "UNKNOWN").upper()
-    connected = status in WAHA_CONNECTED_STATUSES
-    return {
-        "session": session_name,
-        "status": status,
-        "connected": connected,
-        "needs_qr": status in {"SCAN_QR_CODE", "STARTING"},
-        "message": "" if connected else f"WAHA session '{session_name}' is {status}.",
-    }
-
-
 def waha_search(query: str) -> dict:
     """Search WAHA sessions' groups and contacts by (partial) name.
 
@@ -193,43 +145,14 @@ def waha_search(query: str) -> dict:
     session it was found in, the chat id to paste into a client profile, the
     display name and whether it is a group or contact. Empty query lists every
     group (the useful default for building client profiles)."""
-    wanted = pc_common.strip_accents(query or "").lower().strip()
+    matches = waha_fetch_all(query, include_chats=False)
     sessions: list[dict] = []
-    matches: list[dict] = []
-    try:
-        raw_sessions = _waha_api_get("/api/sessions?all=true")
-    except Exception as exc:  # noqa: BLE001 - WAHA down is a normal state
-        return {"sessions": [], "matches": [], "error": f"WAHA unreachable: {exc}"}
-    if not isinstance(raw_sessions, list):
-        raw_sessions = []
-    for s in raw_sessions:
-        if not isinstance(s, dict):
-            continue
-        sessions.append({"name": str(s.get("name") or ""), "status": str(s.get("status") or "")})
-    for session in sessions:
-        sname = session["name"] or "default"
-        if session["status"] and session["status"].upper() not in {"WORKING", "RUNNING", "STARTING"}:
-            continue
-        for kind, path in (("group", f"/api/{sname}/groups"), ("contact", f"/api/contacts/all?session={sname}")):
-            try:
-                entries = _waha_api_get(path)
-            except Exception:  # noqa: BLE001 - endpoint variants differ per engine
-                continue
-            if not isinstance(entries, list):
-                continue
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or item.get("subject") or item.get("pushname") or "").strip()
-                chat_id = _waha_entry_id(item)
-                if not chat_id:
-                    continue
-                if wanted and wanted not in pc_common.strip_accents(name).lower():
-                    continue
-                if kind == "contact" and not name:
-                    continue  # nameless contacts are noise when searching by name
-                matches.append({"session": sname, "id": chat_id, "name": name or chat_id, "kind": kind})
-    matches.sort(key=lambda m: (m["kind"] != "group", pc_common.strip_accents(m["name"]).lower()))
+    seen = set()
+    for m in matches:
+        sname = m.get("session", "")
+        if sname not in seen:
+            seen.add(sname)
+            sessions.append({"name": sname, "status": "WORKING"})
     return {"sessions": sessions, "matches": matches[:100]}
 MONITOR_SETTINGS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
 MANUAL_ACTION_LOG = pc_common.LOG_DIR / "manual_actions.log"

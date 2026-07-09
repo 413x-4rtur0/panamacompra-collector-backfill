@@ -86,20 +86,36 @@ def _single_purpose_fallback_chat_id() -> str:
     return values[0] if len(values) == 1 else ""
 
 
-def configured_chat_id(purpose: str = "") -> str:
+def configured_chat_id(purpose: str = "", *, _debug_info: list[str] | None = None) -> str:
     """Destination chat id for a purpose.
 
     Order: purpose-specific env/file, default env/file, then an exactly-one
     purpose-specific fallback. The last case makes "one group" work even if the
     chat id was accidentally placed in Summary/System/Index instead of Default.
+
+    When ``_debug_info`` is passed (a list), diagnostic messages about the
+    resolution chain are appended to it — useful for callers that want to log
+    why sending was skipped.
     """
+    def _dbg(msg: str) -> None:
+        if _debug_info is not None:
+            _debug_info.append(msg)
+
     purpose_value = _purpose_chat_id_without_fallback(purpose)
     if purpose_value:
         return purpose_value
+    _dbg(f"  no purpose-specific for {purpose!r}")
+
     default_value = _default_chat_id()
     if default_value:
         return default_value
-    return _single_purpose_fallback_chat_id()
+    _dbg(f"  no default chat id (env PC_WAHA_CHAT_ID or file {CHAT_ID_PATH})")
+
+    single = _single_purpose_fallback_chat_id()
+    if single:
+        return single
+    _dbg("  no single-purpose fallback (0 or 2+ purpose-specific files have values)")
+    return ""
 
 
 def any_destination_configured() -> bool:
@@ -226,12 +242,17 @@ def send_text(text: str, purpose: str = "", chat_id_override: str = "") -> None:
     global _send_failures
     base_url = os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     session = os.environ.get("PC_WAHA_SESSION", DEFAULT_SESSION)
-    chat_id = chat_id_override.strip() or configured_chat_id(purpose)
+    _debug: list[str] = []
+    chat_id = chat_id_override.strip() or configured_chat_id(purpose, _debug_info=_debug)
     api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
     timeout = float(os.environ.get("PC_WAHA_TIMEOUT_SECONDS", "30"))
 
     if not chat_id:
-        print(f"WAHA notification skipped: no destination configured{f' for {purpose!r}' if purpose else ''} (PC_WAHA_CHAT_ID).")
+        _debug.insert(0, f"WAHA notification skipped: no destination for {purpose!r}.")
+        _debug.insert(1, f"  Files scanned in {CONFIG_DIR}/waha_chat_id*.txt")
+        _debug.insert(2, f"  Env PC_WAHA_CHAT_ID={os.environ.get('PC_WAHA_CHAT_ID', '')!r}")
+        _debug.insert(3, f"  Env PC_WAHA_CHAT_ID_{purpose.upper() if purpose else ''}={os.environ.get(f'PC_WAHA_CHAT_ID_{purpose.upper()}' if purpose else 'UNSET', '')!r}")
+        print("\n".join(_debug), file=sys.stderr)
         return
 
     payload = json.dumps({"session": session, "chatId": chat_id, "text": text}).encode("utf-8")

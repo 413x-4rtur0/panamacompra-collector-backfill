@@ -36,7 +36,9 @@ from monitor_common import (  # noqa: E402
     load_detail_payload_for_kpi,
     load_record_index,
     read_last_summary,
+    setting,
     summarize_items_for_kpi,
+    waha_fetch_all,
 )
 
 BASE_DIR = pc_common.APP_ROOT
@@ -1607,88 +1609,10 @@ def run_tk() -> int:
     cs_debounce_after: str | None = None
 
     def _waha_fetch(base_url: str, api_key: str) -> list[dict]:
-        """Fetch all contacts/groups/chats from WAHA, return structured matches."""
-        import urllib.request  # noqa: PLC0415 - local WAHA endpoint
-        import urllib.error  # noqa: PLC0415
-
-        headers = {"Accept": "application/json"}
-        if api_key:
-            headers["X-Api-Key"] = api_key
-
-        def _get(path: str, timeout: float = 8.0):
-            req = urllib.request.Request(f"{base_url}{path}", headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - local WAHA
-                return json.loads(resp.read().decode("utf-8", "replace"))
-
-        sessions = _get("/api/sessions?all=true")
-        if not isinstance(sessions, list):
-            sessions = []
-        matches: list[dict] = []
-        seen_ids: set[str] = set()
-
-        for s in sessions:
-            if not isinstance(s, dict):
-                continue
-            sname = str(s.get("name") or "default")
-            status = str(s.get("status") or "").upper()
-            if status and status not in {"WORKING", "RUNNING", "STARTING"}:
-                continue
-
-            # Groups
-            try:
-                for item in _get(f"/api/{sname}/groups"):
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or item.get("subject") or "").strip()
-                    raw_id = item.get("id")
-                    chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
-                    if not chat_id or chat_id in seen_ids:
-                        continue
-                    seen_ids.add(chat_id)
-                    matches.append({"name": name or chat_id, "chat_id": chat_id, "session": sname, "kind": "group"})
-            except Exception:
-                pass
-
-            # Contacts
-            try:
-                for item in _get(f"/api/contacts/all?session={sname}"):
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or item.get("pushname") or "").strip()
-                    raw_id = item.get("id")
-                    chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
-                    if not chat_id or chat_id in seen_ids:
-                        continue
-                    seen_ids.add(chat_id)
-                    if not name:
-                        continue
-                    matches.append({"name": name, "chat_id": chat_id, "session": sname, "kind": "contact"})
-            except Exception:
-                pass
-
-            # Chats endpoint — catches anything groups/contacts miss
-            try:
-                for item in _get(f"/api/{sname}/chats"):
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or "").strip()
-                    raw_id = item.get("id")
-                    chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
-                    if not chat_id or chat_id in seen_ids:
-                        continue
-                    seen_ids.add(chat_id)
-                    kind_label = "group" if "@g.us" in chat_id else "contact" if "@c.us" in chat_id \
-                        else "channel" if "@s.whatsapp.net" in chat_id else "community" if "@lid" in chat_id \
-                        else "broadcast" if "@newsletter" in chat_id else "chat"
-                    matches.append({"name": name or chat_id, "chat_id": chat_id, "session": sname, "kind": kind_label})
-            except Exception:
-                pass
-
-        matches.sort(key=lambda m: (m["kind"] != "group", pc_common.strip_accents(m["name"]).lower()))
-        return matches
+        return waha_fetch_all(base_url=base_url, api_key=api_key, include_chats=True)
 
     def _format_match(m: dict) -> str:
-        return f"{m['name']}  [{m['chat_id']}]  ({m['session']} · {m['kind']})"
+        return f"{m['name']}  [{m['id']}]  ({m['session']} · {m['kind']})"
 
     def _cs_show(matches: list[dict], *, empty_text: str = "No matches found.") -> None:
         cs_matches_cache.clear()
@@ -1707,7 +1631,7 @@ def run_tk() -> int:
         wanted = pc_common.strip_accents(q).lower()
         return [m for m in cs_all_matches
                 if wanted in pc_common.strip_accents(m["name"]).lower()
-                or wanted in m["chat_id"].lower()]
+                or wanted in m["id"].lower()]
 
     def _apply_cs_filter() -> None:
         if cs_fetch_running or not cs_all_matches:
@@ -1788,8 +1712,8 @@ def run_tk() -> int:
         if m is None:
             return
         cs_results_list.clipboard_clear()
-        cs_results_list.clipboard_append(m["chat_id"])
-        button_status_var.set(f"Copied: {m['chat_id']}")
+        cs_results_list.clipboard_append(m["id"])
+        button_status_var.set(f"Copied: {m['id']}")
 
     def add_selected_to_clients(_event: object = None) -> None:
         m = _selected_cs_match()
@@ -1804,12 +1728,12 @@ def run_tk() -> int:
         if not isinstance(parsed, list):
             button_status_var.set("Client profiles box must hold a JSON list; fix it before adding.")
             return
-        if any(isinstance(item, dict) and str(item.get("chat_id") or "").strip() == m["chat_id"] for item in parsed):
-            button_status_var.set(f"Already in client profiles: {m['chat_id']}")
+        if any(isinstance(item, dict) and str(item.get("chat_id") or "").strip() == m["id"] for item in parsed):
+            button_status_var.set(f"Already in client profiles: {m['id']}")
             return
         parsed.append({
             "name": m["name"],
-            "chat_id": m["chat_id"],
+            "chat_id": m["id"],
             "purposes": ["index", "details", "status"],
             "filters": "",
             "enabled": True,
