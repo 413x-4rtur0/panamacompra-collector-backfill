@@ -1589,9 +1589,11 @@ def run_tk() -> int:
     whatsapp_client_search.columnconfigure(1, weight=1)
 
     add_section_header(whatsapp_client_search, "Client Search",
-                       "Search contacts, groups, channels and communities on WAHA by name or ID (partial names match).",
+                       "Search contacts, groups, channels and communities on WAHA by name or ID (partial matches).",
                        columnspan=5,
-                       detail="Leave search empty and click Search to list every known contact/group, or use the Export button to save all as JSON.")
+                       detail="Search fetches from WAHA once; typing then filters the cached list live by name or chat ID. "
+                              "Click an entry to copy its chat ID; double-click (or the Add button) inserts a ready profile "
+                              "into Client Profiles above. Export saves every entry to a TXT file.")
 
     cs_query_var = tk.StringVar(value="")
 
@@ -1599,7 +1601,10 @@ def run_tk() -> int:
     cs_query_entry = ttk.Entry(whatsapp_client_search, textvariable=cs_query_var, width=30)
     cs_query_entry.grid(row=2, column=1, sticky="ew", pady=3)
 
-    cs_matches_cache: list[dict] = []
+    cs_matches_cache: list[dict] = []  # rows currently shown in the listbox
+    cs_all_matches: list[dict] = []    # full WAHA fetch, filtered locally while typing
+    cs_fetch_running = False
+    cs_debounce_after: str | None = None
 
     def _waha_fetch(base_url: str, api_key: str) -> list[dict]:
         """Fetch all contacts/groups/chats from WAHA, return structured matches."""
@@ -1685,77 +1690,156 @@ def run_tk() -> int:
     def _format_match(m: dict) -> str:
         return f"{m['name']}  [{m['chat_id']}]  ({m['session']} · {m['kind']})"
 
-    def _on_cs_select(_event: object = None) -> None:
-        sel = cs_results_list.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if idx < len(cs_matches_cache):
-            chat_id = cs_matches_cache[idx]["chat_id"]
-            cs_results_list.clipboard_clear()
-            cs_results_list.clipboard_append(chat_id)
-            button_status_var.set(f"Copied: {chat_id}")
-
-    def run_client_search() -> None:
-        q = cs_query_var.get().strip()
-        base_url = (waha_base_var.get().strip().rstrip("/") or "http://127.0.0.1:3000")
-        api_key = waha_server_key_var.get().strip()
-        try:
-            all_matches = _waha_fetch(base_url, api_key)
-        except Exception as exc:
-            cs_results_list.delete(0, "end")
-            cs_results_list.insert("end", f"WAHA unreachable: {exc}")
-            cs_matches_cache.clear()
-            return
-
-        if not q:
-            filtered = all_matches
-        else:
-            wanted = pc_common.strip_accents(q).lower()
-            filtered = [m for m in all_matches if wanted in pc_common.strip_accents(m["name"]).lower()]
-
+    def _cs_show(matches: list[dict], *, empty_text: str = "No matches found.") -> None:
         cs_matches_cache.clear()
         cs_results_list.delete(0, "end")
-        if not filtered:
-            cs_results_list.insert("end", "No matches found.")
-        else:
-            for m in filtered:
-                cs_results_list.insert("end", _format_match(m))
-                cs_matches_cache.append(m)
+        if not matches:
+            cs_results_list.insert("end", empty_text)
+            return
+        for m in matches:
+            cs_results_list.insert("end", _format_match(m))
+            cs_matches_cache.append(m)
 
-    def run_client_export() -> None:
+    def _cs_filtered() -> list[dict]:
+        q = cs_query_var.get().strip()
+        if not q:
+            return list(cs_all_matches)
+        wanted = pc_common.strip_accents(q).lower()
+        return [m for m in cs_all_matches
+                if wanted in pc_common.strip_accents(m["name"]).lower()
+                or wanted in m["chat_id"].lower()]
+
+    def _apply_cs_filter() -> None:
+        if cs_fetch_running or not cs_all_matches:
+            return
+        _cs_show(_cs_filtered())
+
+    def _on_cs_typed(_event: object = None) -> None:
+        # Debounced live filter over the cached fetch; no network per keystroke.
+        nonlocal cs_debounce_after
+        if cs_debounce_after is not None:
+            root.after_cancel(cs_debounce_after)
+        cs_debounce_after = root.after(250, _apply_cs_filter)
+
+    def _start_waha_fetch(on_done) -> None:
+        """Fetch WAHA entries on a worker thread so the UI stays responsive."""
+        nonlocal cs_fetch_running
+        if cs_fetch_running:
+            return
+        cs_fetch_running = True
         base_url = (waha_base_var.get().strip().rstrip("/") or "http://127.0.0.1:3000")
         api_key = waha_server_key_var.get().strip()
-        try:
-            all_matches = _waha_fetch(base_url, api_key)
-        except Exception as exc:
-            cs_results_list.delete(0, "end")
-            cs_results_list.insert("end", f"WAHA unreachable for export: {exc}")
-            cs_matches_cache.clear()
+        cs_search_button.configure(state="disabled")
+        cs_export_button.configure(state="disabled")
+        _cs_show([], empty_text="Fetching contacts/groups from WAHA...")
+
+        def worker() -> None:
+            try:
+                matches, error = _waha_fetch(base_url, api_key), None
+            except Exception as exc:
+                matches, error = [], exc
+
+            def deliver() -> None:
+                nonlocal cs_fetch_running
+                cs_fetch_running = False
+                cs_search_button.configure(state="normal")
+                cs_export_button.configure(state="normal")
+                on_done(matches, error)
+
+            root.after(0, deliver)
+
+        import threading  # noqa: PLC0415 - worker thread for the blocking WAHA fetch
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_client_search() -> None:
+        def done(matches: list[dict], error: Exception | None) -> None:
+            if error is not None:
+                cs_all_matches.clear()
+                _cs_show([], empty_text=f"WAHA unreachable: {error}")
+                return
+            cs_all_matches[:] = matches
+            _cs_show(_cs_filtered())
+
+        _start_waha_fetch(done)
+
+    def run_client_export() -> None:
+        def done(matches: list[dict], error: Exception | None) -> None:
+            if error is not None:
+                cs_all_matches.clear()
+                _cs_show([], empty_text=f"WAHA unreachable for export: {error}")
+                return
+            cs_all_matches[:] = matches
+            path = CONFIG_DIR / "waha_contacts_export.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(_format_match(m) for m in matches) + "\n", encoding="utf-8")
+            _cs_show(_cs_filtered())
+            button_status_var.set(f"Exported {len(matches)} entries to {path.relative_to(BASE_DIR)}")
+
+        _start_waha_fetch(done)
+
+    def _selected_cs_match() -> dict | None:
+        sel = cs_results_list.curselection()
+        if not sel or sel[0] >= len(cs_matches_cache):
+            return None
+        return cs_matches_cache[sel[0]]
+
+    def _on_cs_select(_event: object = None) -> None:
+        m = _selected_cs_match()
+        if m is None:
             return
-        formatted = "\n".join(_format_match(m) for m in all_matches)
-        path = CONFIG_DIR / "waha_contacts_export.txt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(formatted + "\n", encoding="utf-8")
-        count = len(all_matches)
-        run_client_search()
-        button_status_var.set(f"Exported {count} entries to {path.relative_to(BASE_DIR)}")
+        cs_results_list.clipboard_clear()
+        cs_results_list.clipboard_append(m["chat_id"])
+        button_status_var.set(f"Copied: {m['chat_id']}")
+
+    def add_selected_to_clients(_event: object = None) -> None:
+        m = _selected_cs_match()
+        if m is None:
+            return
+        raw = clients_text.get("1.0", "end").strip("\n") or "[]"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            button_status_var.set(f"Client profiles box holds invalid JSON ({exc}); fix it before adding.")
+            return
+        if not isinstance(parsed, list):
+            button_status_var.set("Client profiles box must hold a JSON list; fix it before adding.")
+            return
+        if any(isinstance(item, dict) and str(item.get("chat_id") or "").strip() == m["chat_id"] for item in parsed):
+            button_status_var.set(f"Already in client profiles: {m['chat_id']}")
+            return
+        parsed.append({
+            "name": m["name"],
+            "chat_id": m["chat_id"],
+            "purposes": ["index", "details", "status"],
+            "filters": "",
+            "enabled": True,
+        })
+        clients_text.delete("1.0", "end")
+        clients_text.insert("1.0", json.dumps(parsed, ensure_ascii=False, indent=2))
+        button_status_var.set(f'Added {m["name"]} to the profiles box -- review, then press "Save client profiles".')
 
     cs_search_button = ttk.Button(whatsapp_client_search, text="Search", command=run_client_search)
     cs_search_button.grid(row=2, column=2, sticky="w", padx=(6, 0), pady=3)
+    add_tooltip(cs_search_button, "Fetches the contact/group list from WAHA in the background; afterwards typing filters the cached list live by name or chat ID.")
     cs_query_entry.bind("<Return>", lambda _e: run_client_search())
+    cs_query_entry.bind("<KeyRelease>", _on_cs_typed)
 
     cs_export_button = ttk.Button(whatsapp_client_search, text="Export all as TXT", command=run_client_export)
     cs_export_button.grid(row=2, column=3, sticky="w", padx=(6, 0), pady=3)
     add_tooltip(cs_export_button, "Fetches all contacts/groups/channels/communities from WAHA and writes them to data/config/waha_contacts_export.txt.")
 
+    cs_add_button = ttk.Button(whatsapp_client_search, text="Add to Client Profiles", command=add_selected_to_clients)
+    cs_add_button.grid(row=2, column=4, sticky="w", padx=(6, 0), pady=3)
+    add_tooltip(cs_add_button, 'Inserts the selected entry as a ready-made profile into the Client Profiles box above (nothing is saved until you press "Save client profiles").')
+
     cs_results_list = tk.Listbox(whatsapp_client_search, height=12, exportselection=False)
     cs_results_list.grid(row=3, column=0, columnspan=5, sticky="ew", pady=3)
     cs_results_list.bind("<<ListboxSelect>>", _on_cs_select)
+    cs_results_list.bind("<Double-Button-1>", add_selected_to_clients)
     cs_scrollbar = ttk.Scrollbar(whatsapp_client_search, orient="vertical", command=cs_results_list.yview)
     cs_scrollbar.grid(row=3, column=5, sticky="ns", pady=3)
     cs_results_list.configure(yscrollcommand=cs_scrollbar.set)
-    add_tooltip(cs_results_list, "Click an entry to copy its chat ID to the clipboard. Format: Name [chat_id] (session · kind). Empty search = every known entry.")
+    add_tooltip(cs_results_list, "Click an entry to copy its chat ID to the clipboard; double-click to add it to Client Profiles. Format: Name [chat_id] (session · kind). Empty search = every known entry.")
 
     add_section_toggle(whatsapp_client_search, button_column=4)
 
