@@ -51,3 +51,6 @@ nohup.out
 *.save
 *.bak
 *.tmp
+
+# Aider AI coding tool artifacts
+.aider*
