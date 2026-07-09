@@ -987,6 +987,18 @@ def run_tk() -> int:
         subprocess.Popen([str(BASE_DIR / "src/20_pipeline/120c-start-everything.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         button_status_var.set("Start All requested: bringing Docker integrations and the webhook listener back up.")
 
+    def dev_pause_now() -> None:
+        # Pauses automatic triggers (webhook auto-run, cron) and the updater's
+        # autostash for a safe editing session, without closing the monitor,
+        # webhook listener or Docker integrations. See 121-dev-mode.sh.
+        subprocess.Popen([str(BASE_DIR / "src/20_pipeline/121-dev-mode.sh"), "pause"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Dev Pause requested: stopping any active run and pausing automatic triggers.")
+
+    def dev_resume_now() -> None:
+        # Restores every setting Dev Pause changed, to its exact previous value.
+        subprocess.Popen([str(BASE_DIR / "src/20_pipeline/121-dev-mode.sh"), "resume"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        button_status_var.set("Dev Resume requested: restoring automatic triggers to their previous settings.")
+
     add_section_header(controls, "Run controls", "Choose a mode, index page cap and detail limit (0 = unlimited), then request or stop a run.", columnspan=6)
     # Mode is explicit: AUTO is reserved for changedetection/webhook-triggered
     # runs; manual launches are either RESTART (real pipeline) or TEST (sandbox).
@@ -1012,6 +1024,10 @@ def run_tk() -> int:
     run_button.grid(row=2, column=4, sticky="w")
     stop_button = ttk.Button(controls, text="■ Stop run", command=stop_run_now, style="Danger.TButton")
     stop_button.grid(row=2, column=5, sticky="e")
+    dev_pause_button = ttk.Button(controls, text="⏸ Dev Pause", command=dev_pause_now)
+    dev_pause_button.grid(row=3, column=2, sticky="e", padx=(0, 8), pady=(6, 0))
+    dev_resume_button = ttk.Button(controls, text="▶ Dev Resume", command=dev_resume_now)
+    dev_resume_button.grid(row=3, column=3, sticky="e", padx=(0, 16), pady=(6, 0))
     start_all_button = ttk.Button(controls, text="▶ Start All", command=start_all_now, style="Accent.TButton")
     start_all_button.grid(row=3, column=4, sticky="e", padx=(0, 8), pady=(6, 0))
     stop_all_button = ttk.Button(controls, text="⛔ Stop All", command=stop_all_now, style="Danger.TButton")
@@ -1027,6 +1043,8 @@ def run_tk() -> int:
     add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
     add_tooltip(start_all_button, "Brings background infrastructure back up after Stop All: Docker integrations (changedetection/WAHA/sockpuppetbrowser), the webhook listener, and opens the monitor. Does not queue a collector run by itself.")
     add_tooltip(stop_all_button, "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters. This monitor closes too. Asks for confirmation first.")
+    add_tooltip(dev_pause_button, "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe. Docker integrations, monitors and the webhook listener stay running.")
+    add_tooltip(dev_resume_button, "Restores every setting Dev Pause changed, to its exact previous value. Does not queue a run by itself.")
     add_section_toggle(controls, button_column=5)
 
     # Keys that mean "real collection work is happening". A webhook-triggered run
