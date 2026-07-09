@@ -675,6 +675,7 @@ def run_tk() -> int:
         add_tooltip(button, "Hide/show this monitor section without stopping the run.")
 
         content_children = []
+        content_grid_infos = []
         for child in frame.winfo_children():
             if child is button:
                 continue
@@ -688,14 +689,15 @@ def run_tk() -> int:
             if row <= title_row:
                 continue
             content_children.append(child)
+            content_grid_infos.append(info)
 
         def apply_hidden(is_hidden: bool) -> None:
             hidden.set(is_hidden)
-            for child in content_children:
+            for child, info in zip(content_children, content_grid_infos):
                 if is_hidden:
                     child.grid_remove()
                 else:
-                    child.grid()
+                    child.grid(**info)
             button.configure(text="Show" if is_hidden else "Hide")
             # grid_remove()/grid() change content's required size, but the canvas
             # scrollregion is only recomputed on content's <Configure> event, which
@@ -915,13 +917,13 @@ def run_tk() -> int:
     records_tab = ttk.Frame(tabs, style="TFrame")
     calendar_tab = ttk.Frame(tabs, style="TFrame")
     for tab_frame, tab_title in (
-        (ops_tab, "Operations"),
-        (settings_tab, "Settings"),
-        (whatsapp_tab, "WhatsApp"),
-        (scheduler_tab, "Scheduler"),
-        (kpi_tab, "KPIs"),
         (records_tab, "Records & Database"),
         (calendar_tab, "Calendar"),
+        (ops_tab, "Operations"),
+        (kpi_tab, "KPIs"),
+        (scheduler_tab, "Scheduler"),
+        (whatsapp_tab, "WhatsApp"),
+        (settings_tab, "Settings"),
     ):
         tabs.add(tab_frame, text=tab_title)
         tab_frame.columnconfigure(0, weight=1)
@@ -1092,6 +1094,7 @@ def run_tk() -> int:
 
     whatsapp = ttk.Frame(whatsapp_tab, style="Card.TFrame", padding=14)
     whatsapp.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+    whatsapp.columnconfigure(0, weight=1)
     whatsapp.columnconfigure(1, weight=1)
     whatsapp.columnconfigure(3, weight=1)
 
@@ -1339,7 +1342,7 @@ def run_tk() -> int:
         button_status_var.set("Settings applied (transparency live) and saved to data/config/monitor_settings.env.")
 
     apply_button = ttk.Button(settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    apply_button.grid(row=20, column=0, sticky="w", pady=(10, 0))
+    apply_button.grid(row=21, column=0, sticky="w", pady=(10, 0))
     add_tooltip(apply_button, "Apply transparency immediately and persist EVERY setting from the Settings and WhatsApp tabs to data/config/monitor_settings.env (shell-quoted so the worker can source them).")
     ttk.Label(settings, text="Collector/timer settings apply on the next run or monitor launch; container settings (changedetection URL — and the WAHA server values in the WhatsApp tab) apply when the docker stack is restarted from the Integrations buttons in Operations.", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
@@ -1371,31 +1374,39 @@ def run_tk() -> int:
     add_section_toggle(settings, button_column=3)
 
     # ========================================================================
-    # WHATSAPP TAB - every WhatsApp/WAHA option in one place, ordered:
-    # Toggles → Destinations → Filters → Delivery → WAHA server (container) →
-    # Message formats. Saved by the same Apply logic as the Settings tab.
+    # WHATSAPP TAB - four card sections: WhatsApp Settings, Client Profiles,
+    # Client Search, and Message Formats. Saved by the same Apply logic as the
+    # Settings tab.
     # ========================================================================
-    add_section_header(whatsapp, "WhatsApp & WAHA", "Steps: Toggles → Destinations → Filters → Delivery → Server → Formats.", columnspan=4)
-    waha_enabled_check = ttk.Checkbutton(whatsapp, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
+
+    # ---- WhatsApp: Settings (toggles, destinations, filters, delivery, server, readability) ----
+    whatsapp_settings = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_settings.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_settings.columnconfigure(1, weight=1)
+    whatsapp_settings.columnconfigure(3, weight=1)
+
+    add_section_header(whatsapp_settings, "WhatsApp Settings", "Toggle WAHA, configure destinations, filters, delivery, and server settings.", columnspan=4)
+
+    waha_enabled_check = ttk.Checkbutton(whatsapp_settings, text="Enable WAHA WhatsApp sending", variable=waha_enabled_var, style="Card.TCheckbutton")
     waha_enabled_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
     add_tooltip(waha_enabled_check, "Master switch for WAHA WhatsApp sending. Env: PC_WAHA_ENABLED. Still needs a reachable WAHA server and a destination chat id.")
-    notify_check = ttk.Checkbutton(whatsapp, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
+    notify_check = ttk.Checkbutton(whatsapp_settings, text="Notify by WhatsApp (index alerts right after scan)", variable=notify_whatsapp_var, style="Card.TCheckbutton")
     notify_check.grid(row=1, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_check, "Master switch for automatic WhatsApp MESSAGING. The index alert is sent right after the index scan, before downloads. Manual selected-record notification buttons remain available.")
-    notify_details_check = ttk.Checkbutton(whatsapp, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
+    notify_details_check = ttk.Checkbutton(whatsapp_settings, text="Follow-up WhatsApp with item details after download", variable=notify_details_var, style="Card.TCheckbutton")
     notify_details_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=3)
     add_tooltip(notify_details_check, "Second notifier phase: after each announced record's detail page downloads, send the '📥 Detalles Completos' message with the real items, location and full date range. Env: PC_NOTIFY_DETAILS. Off = items are absorbed silently (no duplicate messages).")
-    skip_expired_check = ttk.Checkbutton(whatsapp, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
+    skip_expired_check = ttk.Checkbutton(whatsapp_settings, text="Skip already-expired opportunities", variable=skip_expired_var, style="Card.TCheckbutton")
     skip_expired_check.grid(row=2, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(skip_expired_check, "Do not announce opportunities whose deadline already passed. Env: PC_NOTIFY_SKIP_EXPIRED.")
 
-    group_title(whatsapp, 3, "Destinations")
-    field(whatsapp, 4, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
-    ttk.Label(whatsapp, text="Default destination chat id (…@g.us):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
-    chat_entry = ttk.Entry(whatsapp, textvariable=waha_var)
+    group_title(whatsapp_settings, 3, "Destinations")
+    field(whatsapp_settings, 4, 0, "WhatsApp source label:", source_var, 8, "Text shown as '📌 Fuente:' in the WhatsApp messages (default 'Panamá Compra'). Automatic index alerts are sent right after the index scan; the item-details follow-up goes out after the downloads, when enabled.")
+    ttk.Label(whatsapp_settings, text="Default destination chat id (…@g.us):", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+    chat_entry = ttk.Entry(whatsapp_settings, textvariable=waha_var)
     chat_entry.grid(row=5, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(chat_entry, "Destination WhatsApp group/channel id for the automated 'what is new' messages. Saved to data/config/waha_chat_id.txt.")
-    ttk.Label(whatsapp, text="Optional per-purpose chat ids (blank = default; if default is blank and exactly one purpose is filled, it becomes the one group):", style="Card.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
+    ttk.Label(whatsapp_settings, text="Optional per-purpose chat ids (blank = default; if default is blank and exactly one purpose is filled, it becomes the one group):", style="Card.TLabel").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
     for _row, (_label, _var, _tip) in enumerate((
         ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
         ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
@@ -1403,123 +1414,73 @@ def run_tk() -> int:
         ("System health:", waha_system_var, "Group/channel that receives review-system, worker start/failure and test messages. Env: PC_WAHA_CHAT_ID_SYSTEM. Blank = default destination."),
         ("Final summary per round:", waha_summary_var, "Group/channel that receives the one final run summary after each collector round. Env: PC_WAHA_CHAT_ID_SUMMARY. Blank = default destination."),
     ), start=7):
-        ttk.Label(whatsapp, text=_label, style="Card.TLabel").grid(row=_row, column=0, sticky="w", pady=3)
-        _entry = ttk.Entry(whatsapp, textvariable=_var)
+        ttk.Label(whatsapp_settings, text=_label, style="Card.TLabel").grid(row=_row, column=0, sticky="w", pady=3)
+        _entry = ttk.Entry(whatsapp_settings, textvariable=_var)
         _entry.grid(row=_row, column=1, columnspan=3, sticky="ew", pady=3)
         add_tooltip(_entry, _tip)
 
-    group_title(whatsapp, 12, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
-    ttk.Label(whatsapp, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
-    kw_entry = ttk.Entry(whatsapp, textvariable=keywords_var)
+    group_title(whatsapp_settings, 12, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
+    ttk.Label(whatsapp_settings, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
+    kw_entry = ttk.Entry(whatsapp_settings, textvariable=keywords_var)
     kw_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
-    field(whatsapp, 14, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
-    field(whatsapp, 14, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
-    field(whatsapp, 15, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+    field(whatsapp_settings, 14, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(whatsapp_settings, 14, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(whatsapp_settings, 15, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
 
-    group_title(whatsapp, 16, "Delivery")
-    field(whatsapp, 17, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
-    field(whatsapp, 17, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
-    ttk.Label(whatsapp, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=18, column=0, sticky="w", pady=3)
-    events_entry = ttk.Entry(whatsapp, textvariable=waha_events_var)
+    group_title(whatsapp_settings, 16, "Delivery")
+    field(whatsapp_settings, 17, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
+    field(whatsapp_settings, 17, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
+    ttk.Label(whatsapp_settings, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=18, column=0, sticky="w", pady=3)
+    events_entry = ttk.Entry(whatsapp_settings, textvariable=waha_events_var)
     events_entry.grid(row=18, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
-    test_whatsapp_button = ttk.Button(whatsapp, text="Send test WhatsApp", command=send_test_whatsapp)
+    test_whatsapp_button = ttk.Button(whatsapp_settings, text="Send test WhatsApp", command=send_test_whatsapp)
     test_whatsapp_button.grid(row=19, column=0, sticky="w", pady=3)
     add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
 
-    group_title(whatsapp, 20, "WAHA server (container; applied on the next docker stack restart)")
-    field(whatsapp, 21, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
-    field(whatsapp, 21, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
-    field(whatsapp, 22, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
-    field(whatsapp, 22, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
-    field(whatsapp, 23, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
-    field(whatsapp, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. Setup generates a random one (saved in .env and data/config/integration-access.txt); blank here keeps that value. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
-    ttk.Label(whatsapp, text="Dashboard login: user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. To change it, set the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
+    group_title(whatsapp_settings, 20, "WAHA server (container; applied on the next docker stack restart)")
+    field(whatsapp_settings, 21, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
+    field(whatsapp_settings, 21, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
+    field(whatsapp_settings, 22, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(whatsapp_settings, 22, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
+    field(whatsapp_settings, 23, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
+    field(whatsapp_settings, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. Setup generates a random one (saved in .env and data/config/integration-access.txt); blank here keeps that value. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
+    ttk.Label(whatsapp_settings, text="Dashboard login: user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. To change it, set the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-    whatsapp_apply_button = ttk.Button(whatsapp, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
+    whatsapp_apply_button = ttk.Button(whatsapp_settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
     whatsapp_apply_button.grid(row=25, column=0, sticky="w", pady=(10, 0))
     add_tooltip(whatsapp_apply_button, "Same as the Settings tab Apply: persists every setting from both tabs and saves the WhatsApp destination/keywords files.")
-    ttk.Label(whatsapp, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Label(whatsapp_settings, text="WhatsApp sending requires 'Enable WAHA WhatsApp sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts are sent right after the index scan and the item-details follow-up after the downloads, when enabled.", style="Card.TLabel", wraplength=820).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    group_title(whatsapp, 40, "Readability & index source")
-    field(whatsapp, 41, 0, "Delay between sends (s):", send_delay_var, 8, "Seconds to pause between consecutive WhatsApp sends so a batch arrives as separate readable messages instead of one burst. 0 disables pacing. Env: PC_WAHA_SEND_DELAY_SECONDS.")
-    field(whatsapp, 41, 2, "Digest above N new:", digest_threshold_var, 8, "When one run finds more new records than this, the index alerts collapse into compact digest message(s) (20 records per message); each record still gets its own detail follow-up. 0 = always one message per record. Env: PC_NOTIFY_INDEX_DIGEST_THRESHOLD.")
-    field(whatsapp, 42, 0, "Idle status every N hours:", idle_hours_var, 8, "Minimum hours between '⚪ Sin nuevas entradas' idle messages so frequent webhook runs do not repeat it. 0 = send on every idle run. Env: PC_NOTIFY_IDLE_EVERY_HOURS.")
-    inline_details_check = ttk.Checkbutton(whatsapp, text="Send each detail message right after its download", variable=notify_details_inline_var, style="Card.TCheckbutton")
+    group_title(whatsapp_settings, 40, "Readability & index source")
+    field(whatsapp_settings, 41, 0, "Delay between sends (s):", send_delay_var, 8, "Seconds to pause between consecutive WhatsApp sends so a batch arrives as separate readable messages instead of one burst. 0 disables pacing. Env: PC_WAHA_SEND_DELAY_SECONDS.")
+    field(whatsapp_settings, 41, 2, "Digest above N new:", digest_threshold_var, 8, "When one run finds more new records than this, the index alerts collapse into compact digest message(s) (20 records per message); each record still gets its own detail follow-up. 0 = always one message per record. Env: PC_NOTIFY_INDEX_DIGEST_THRESHOLD.")
+    field(whatsapp_settings, 42, 0, "Idle status every N hours:", idle_hours_var, 8, "Minimum hours between '⚪ Sin nuevas entradas' idle messages so frequent webhook runs do not repeat it. 0 = send on every idle run. Env: PC_NOTIFY_IDLE_EVERY_HOURS.")
+    inline_details_check = ttk.Checkbutton(whatsapp_settings, text="Send each detail message right after its download", variable=notify_details_inline_var, style="Card.TCheckbutton")
     inline_details_check.grid(row=42, column=2, columnspan=2, sticky="w", pady=3)
     add_tooltip(inline_details_check, "Send each record's '📥 Detalles Completos' follow-up inline, right after ITS detail page downloads, so follow-ups arrive naturally spaced across the download phase instead of as one batch at the end. Env: PC_NOTIFY_DETAILS_INLINE. The later MESSAGING step stays as the idempotent catch-up.")
-    snapshot_index_check = ttk.Checkbutton(whatsapp, text="AUTO runs import index from changedetection snapshot", variable=index_from_snapshot_var, style="Card.TCheckbutton")
+    snapshot_index_check = ttk.Checkbutton(whatsapp_settings, text="AUTO runs import index from changedetection snapshot", variable=index_from_snapshot_var, style="Card.TCheckbutton")
     snapshot_index_check.grid(row=43, column=0, columnspan=4, sticky="w", pady=3)
     add_tooltip(snapshot_index_check, "Webhook (AUTO) runs import the index from the latest changedetection datastore snapshot instead of re-crawling it with Firefox; partial snapshots crawl only the missing group, and any snapshot problem falls back to the full crawler. Manual/restart runs always crawl. Env: PC_INDEX_FROM_SNAPSHOT.")
 
-    group_title(whatsapp, 45, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
-    format_kind_var = tk.StringVar(value="index")
-    format_controls = ttk.Frame(whatsapp, style="Card.TFrame")
-    format_controls.grid(row=46, column=0, columnspan=4, sticky="w", pady=3)
-    ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
-    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=notify_formats.FORMAT_KINDS, width=12, state="readonly")
-    format_kind_combo.grid(row=0, column=1, padx=(0, 10))
-    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with items; status = cambios/cancelaciones/items; system = health/worker/test messages; summary = final run summary per round.")
+    add_section_toggle(whatsapp_settings, button_column=3)
 
-    format_text = tk.Text(whatsapp, height=8, wrap="word")
-    format_text.grid(row=47, column=0, columnspan=4, sticky="ew", pady=3)
-    add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
-    format_preview = tk.Text(whatsapp, height=8, wrap="word", state="disabled")
-    format_preview.grid(row=48, column=0, columnspan=4, sticky="ew", pady=3)
+    # ---- WhatsApp: Client Profiles ------------------------------------------
+    whatsapp_clients = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_clients.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_clients.columnconfigure(1, weight=1)
 
-    def _set_preview(text: str) -> None:
-        format_preview.configure(state="normal")
-        format_preview.delete("1.0", "end")
-        format_preview.insert("1.0", text)
-        format_preview.configure(state="disabled")
-
-    def load_format(*_a) -> None:
-        kind = format_kind_var.get()
-        custom = notify_formats.load_custom_format(kind)
-        format_text.delete("1.0", "end")
-        format_text.insert("1.0", custom or notify_formats.DEFAULT_FORMATS[kind])
-        _set_preview(notify_formats.render_format(kind))
-        button_status_var.set(f"Loaded {kind} format ({'custom' if custom else 'built-in default'}).")
-
-    def preview_format() -> None:
-        _set_preview(notify_formats.render_format(format_kind_var.get(), format_text.get("1.0", "end").strip("\n")))
-
-    def save_format() -> None:
-        kind = format_kind_var.get()
-        template = format_text.get("1.0", "end").strip("\n")
-        if not template.strip():
-            button_status_var.set("Template is empty — use Reset to restore the default.")
-            return
-        path = notify_formats.format_path(kind)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(template + "\n", encoding="utf-8")
-        preview_format()
-        button_status_var.set(f"Custom {kind} WhatsApp format saved to {path.name}.")
-
-    def reset_format() -> None:
-        kind = format_kind_var.get()
-        notify_formats.format_path(kind).unlink(missing_ok=True)
-        load_format()
-        button_status_var.set(f"{kind} WhatsApp format reset to the built-in layout.")
-
-    ttk.Button(format_controls, text="Load", command=load_format).grid(row=0, column=2, padx=(0, 6))
-    ttk.Button(format_controls, text="Preview", command=preview_format).grid(row=0, column=3, padx=(0, 6))
-    ttk.Button(format_controls, text="Save format", command=save_format).grid(row=0, column=4, padx=(0, 6))
-    ttk.Button(format_controls, text="Reset to default", command=reset_format).grid(row=0, column=5)
-    format_kind_combo.bind("<<ComboboxSelected>>", load_format)
-    load_format()
-
-    group_title(whatsapp, 50, "Client profiles (add/remove as many destinations as needed)")
+    group_title(whatsapp_clients, 0, "Client profiles (add/remove as many destinations as needed)")
     ttk.Label(
-        whatsapp,
+        whatsapp_clients,
         text="Each client fans a message out to its own WhatsApp destination when the message's phase matches. "
              "Fields: name, chat_id (destination), purposes (which phases it receives: index/details/status/system/summary, "
              "or \"all\"), filters (keyword rules like the shared ones above), enabled.",
         style="Card.TLabel", wraplength=820,
-    ).grid(row=51, column=0, columnspan=4, sticky="w")
-    clients_text = tk.Text(whatsapp, height=8, wrap="word")
-    clients_text.grid(row=52, column=0, columnspan=4, sticky="ew", pady=3)
+    ).grid(row=1, column=0, columnspan=4, sticky="w")
+    clients_text = tk.Text(whatsapp_clients, height=8, wrap="word")
+    clients_text.grid(row=2, column=0, columnspan=4, sticky="ew", pady=3)
     add_tooltip(
         clients_text,
         'JSON list, e.g. [{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],'
@@ -1570,13 +1531,171 @@ def run_tk() -> int:
         load_clients()
         button_status_var.set(f"Saved {len(normalized)} WhatsApp client profile(s) to {path.name}.")
 
-    clients_controls = ttk.Frame(whatsapp, style="Card.TFrame")
-    clients_controls.grid(row=53, column=0, columnspan=4, sticky="w", pady=3)
+    clients_controls = ttk.Frame(whatsapp_clients, style="Card.TFrame")
+    clients_controls.grid(row=3, column=0, columnspan=4, sticky="w", pady=3)
     ttk.Button(clients_controls, text="Load", command=load_clients).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(clients_controls, text="Save client profiles", command=save_clients).grid(row=0, column=1)
     load_clients()
 
-    add_section_toggle(whatsapp, button_column=3)
+    add_section_toggle(whatsapp_clients, button_column=1)
+
+    # ---- WhatsApp: Client Search (contact/group lookup on the WAHA server) ----
+    whatsapp_client_search = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_client_search.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
+    whatsapp_client_search.columnconfigure(1, weight=1)
+
+    add_section_header(whatsapp_client_search, "Client Search", "Search contacts, groups, communities and channels on the WAHA server by name.", columnspan=5)
+
+    ttk.Label(whatsapp_client_search, text="Use @g.us for groups, @c.us for contacts, @s.whatsapp.net for channels, @lid for communities.", style="Card.TLabel", wraplength=820).grid(row=1, column=0, columnspan=5, sticky="w", pady=(0, 6))
+
+    cs_query_var = tk.StringVar(value="")
+    cs_operator_var = tk.StringVar(value="@g.us")
+
+    ttk.Label(whatsapp_client_search, text="Name or ID:", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=3)
+    cs_query_entry = ttk.Entry(whatsapp_client_search, textvariable=cs_query_var, width=30)
+    cs_query_entry.grid(row=2, column=1, sticky="ew", pady=3)
+
+    ttk.Label(whatsapp_client_search, text="Operator:", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=(6, 6), pady=3)
+    cs_operator_combo = ttk.Combobox(whatsapp_client_search, textvariable=cs_operator_var, values=["@g.us", "@c.us", "@s.whatsapp.net", "@lid", ""], width=18, state="readonly")
+    cs_operator_combo.grid(row=2, column=3, sticky="w", pady=3)
+    add_tooltip(cs_operator_combo, "Operator hint appended when the search term lacks one: @g.us = groups, @c.us = contacts, @s.whatsapp.net = channels, @lid = communities.")
+
+    def run_client_search() -> None:
+        import urllib.request  # noqa: PLC0415 - local WAHA endpoint
+        import urllib.error  # noqa: PLC0415
+        q = cs_query_var.get().strip()
+        operator = cs_operator_var.get().strip()
+        if q and "@" not in q and operator:
+            q = q + operator
+        if not q:
+            cs_results_text.delete("1.0", "end")
+            cs_results_text.insert("1.0", "Enter a search term.")
+            return
+        base_url = (waha_base_var.get().strip().rstrip("/") or "http://127.0.0.1:3000")
+        api_key = waha_server_key_var.get().strip()
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["X-Api-Key"] = api_key
+        try:
+            req = urllib.request.Request(f"{base_url}/api/sessions?all=true", headers=headers)
+            with urllib.request.urlopen(req, timeout=8.0) as resp:  # noqa: S310 - local WAHA
+                sessions = json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as exc:
+            cs_results_text.delete("1.0", "end")
+            cs_results_text.insert("1.0", f"WAHA unreachable: {exc}")
+            return
+        if not isinstance(sessions, list):
+            sessions = []
+        wanted = pc_common.strip_accents(q).lower().strip() if q else ""
+        results = []
+        for s in sessions:
+            if not isinstance(s, dict):
+                continue
+            sname = str(s.get("name") or "default")
+            status = str(s.get("status") or "").upper()
+            if status and status not in {"WORKING", "RUNNING", "STARTING"}:
+                continue
+            for kind, path in (("group", f"/api/{sname}/groups"), ("contact", f"/api/contacts/all?session={sname}")):
+                try:
+                    req = urllib.request.Request(f"{base_url}{path}", headers=headers)
+                    with urllib.request.urlopen(req, timeout=8.0) as resp:  # noqa: S310 - local WAHA
+                        entries = json.loads(resp.read().decode("utf-8", "replace"))
+                except Exception:
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                for item in entries:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or item.get("subject") or item.get("pushname") or "").strip()
+                    raw_id = item.get("id")
+                    chat_id = str(raw_id.get("_serialized") if isinstance(raw_id, dict) else raw_id or "")
+                    if not chat_id:
+                        continue
+                    if wanted and wanted not in pc_common.strip_accents(name).lower():
+                        continue
+                    if kind == "contact" and not name:
+                        continue
+                    results.append(f"{name or chat_id}  [{chat_id}]  ({sname})")
+        results.sort()
+        results = results[:100]
+        cs_results_text.delete("1.0", "end")
+        cs_results_text.insert("1.0", "\n".join(results) if results else "No matches found.")
+
+    cs_search_button = ttk.Button(whatsapp_client_search, text="Search", command=run_client_search)
+    cs_search_button.grid(row=2, column=4, sticky="w", padx=(6, 0), pady=3)
+    cs_query_entry.bind("<Return>", lambda _e: run_client_search())
+
+    cs_results_text = tk.Text(whatsapp_client_search, height=8, wrap="word")
+    cs_results_text.grid(row=3, column=0, columnspan=5, sticky="ew", pady=3)
+    add_tooltip(cs_results_text, "WAHA contacts and groups matching the search. Format: Name [chat_id] (session).")
+
+    add_section_toggle(whatsapp_client_search, button_column=4)
+
+    # ---- WhatsApp: Message Formats ------------------------------------------
+    whatsapp_formats = ttk.Frame(whatsapp, style="Card.TFrame", padding=14)
+    whatsapp_formats.grid(row=3, column=0, sticky="ew", padx=0, pady=0)
+    whatsapp_formats.columnconfigure(1, weight=1)
+    whatsapp_formats.columnconfigure(3, weight=1)
+
+    group_title(whatsapp_formats, 0, "Message formats ({placeholder} fields; unknown placeholders stay literal)")
+    format_kind_var = tk.StringVar(value="index")
+    format_controls = ttk.Frame(whatsapp_formats, style="Card.TFrame")
+    format_controls.grid(row=1, column=0, columnspan=4, sticky="w", pady=3)
+    ttk.Label(format_controls, text="Format:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
+    format_kind_combo = ttk.Combobox(format_controls, textvariable=format_kind_var, values=notify_formats.FORMAT_KINDS, width=12, state="readonly")
+    format_kind_combo.grid(row=0, column=1, padx=(0, 10))
+    add_tooltip(format_kind_combo, "index = 🔔 alert right after the scan; details = 📥 follow-up with items; status = cambios/cancelaciones/items; system = health/worker/test messages; summary = final run summary per round.")
+
+    format_text = tk.Text(whatsapp_formats, height=8, wrap="word")
+    format_text.grid(row=2, column=0, columnspan=4, sticky="ew", pady=3)
+    add_tooltip(format_text, "Template with {placeholder} fields: " + " ".join("{" + name + "}" for name in notify_formats.PLACEHOLDERS))
+    format_preview = tk.Text(whatsapp_formats, height=8, wrap="word", state="disabled")
+    format_preview.grid(row=3, column=0, columnspan=4, sticky="ew", pady=3)
+
+    def _set_preview(text: str) -> None:
+        format_preview.configure(state="normal")
+        format_preview.delete("1.0", "end")
+        format_preview.insert("1.0", text)
+        format_preview.configure(state="disabled")
+
+    def load_format(*_a) -> None:
+        kind = format_kind_var.get()
+        custom = notify_formats.load_custom_format(kind)
+        format_text.delete("1.0", "end")
+        format_text.insert("1.0", custom or notify_formats.DEFAULT_FORMATS[kind])
+        _set_preview(notify_formats.render_format(kind))
+        button_status_var.set(f"Loaded {kind} format ({'custom' if custom else 'built-in default'}).")
+
+    def preview_format() -> None:
+        _set_preview(notify_formats.render_format(format_kind_var.get(), format_text.get("1.0", "end").strip("\n")))
+
+    def save_format() -> None:
+        kind = format_kind_var.get()
+        template = format_text.get("1.0", "end").strip("\n")
+        if not template.strip():
+            button_status_var.set("Template is empty — use Reset to restore the default.")
+            return
+        path = notify_formats.format_path(kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(template + "\n", encoding="utf-8")
+        preview_format()
+        button_status_var.set(f"Custom {kind} WhatsApp format saved to {path.name}.")
+
+    def reset_format() -> None:
+        kind = format_kind_var.get()
+        notify_formats.format_path(kind).unlink(missing_ok=True)
+        load_format()
+        button_status_var.set(f"{kind} WhatsApp format reset to the built-in layout.")
+
+    ttk.Button(format_controls, text="Load", command=load_format).grid(row=0, column=2, padx=(0, 6))
+    ttk.Button(format_controls, text="Preview", command=preview_format).grid(row=0, column=3, padx=(0, 6))
+    ttk.Button(format_controls, text="Save format", command=save_format).grid(row=0, column=4, padx=(0, 6))
+    ttk.Button(format_controls, text="Reset to default", command=reset_format).grid(row=0, column=5)
+    format_kind_combo.bind("<<ComboboxSelected>>", load_format)
+    load_format()
+
+    add_section_toggle(whatsapp_formats, button_column=3)
 
     # ========================================================================
     # SCHEDULER TAB - cron-based automatic run scheduling (day pattern + time
