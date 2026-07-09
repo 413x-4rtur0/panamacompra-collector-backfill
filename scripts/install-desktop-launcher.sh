@@ -16,7 +16,8 @@ usage() {
 Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
-Update + Monitor, changedetection.io, WAHA, low-resource Integration URLs, and Docker integrations. The Update +
+Update + Monitor, changedetection.io, WAHA, low-resource Integration URLs, Docker
+integrations, and Stop All / Start All. The Update +
 Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
 update, the normal monitor opens with the refreshed code.
 
@@ -58,6 +59,8 @@ changedetection_icon_path="$icon_dir/panamacompra-changedetection.svg"
 waha_icon_path="$icon_dir/panamacompra-waha.svg"
 docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
 urls_icon_path="$icon_dir/panamacompra-integration-urls.svg"
+stop_icon_path="$icon_dir/panamacompra-stop-all.svg"
+start_icon_path="$icon_dir/panamacompra-start-all.svg"
 helper_dir="${XDG_DATA_HOME:-$HOME/.local/share}/panamacompra/launchers"
 loader_path="$APP_ROOT/src/40_monitor/003-update-loader.py"
 
@@ -103,6 +106,20 @@ SVG
   <path d="M49 47l-8 8a18 18 0 1025 25l8-8" fill="none" stroke="#a5b4fc" stroke-width="9" stroke-linecap="round"/>
   <path d="M79 81l8-8a18 18 0 10-25-25l-8 8" fill="none" stroke="#67e8f9" stroke-width="9" stroke-linecap="round"/>
   <path d="M52 76l24-24" stroke="#fef3c7" stroke-width="8" stroke-linecap="round"/>
+</svg>
+SVG
+  cat > "$stop_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#450a0a"/>
+  <circle cx="64" cy="64" r="42" fill="#7f1d1d" stroke="#f87171" stroke-width="7"/>
+  <rect x="46" y="46" width="36" height="36" rx="4" fill="#fecaca"/>
+</svg>
+SVG
+  cat > "$start_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#052e16"/>
+  <circle cx="64" cy="64" r="42" fill="#14532d" stroke="#4ade80" stroke-width="7"/>
+  <path d="M52 42l38 22-38 22z" fill="#bbf7d0"/>
 </svg>
 SVG
 }
@@ -193,6 +210,31 @@ echo ""
 echo ""
 read -r -p "Press Enter to close..." _unused || true
 SH
+  cat > "$helper_dir/stop-all.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+echo "PanamaCompra: STOP ALL (workers, test zone, calendar builder, monitors, webhook listener, updaters)"
+echo "Docker integration containers (changedetection/WAHA) are left running by design."
+echo ""
+./src/20_pipeline/120a-stop-everything.sh || true
+echo ""
+read -r -p "Press Enter to close..." _unused || true
+SH
+  cat > "$helper_dir/start-all.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+echo "PanamaCompra: START ALL (Docker integrations, webhook listener, monitor)"
+echo "This brings background infrastructure back up; it does NOT queue a collector"
+echo "run by itself -- request one from the monitor afterward."
+echo ""
+./src/20_pipeline/120c-start-everything.sh || true
+echo ""
+read -r -p "Press Enter to close..." _unused || true
+SH
   for script in "$helper_dir"/*.sh; do
     sed -i "s|__APP_ROOT__|$APP_ROOT|g" "$script"
     chmod +x "$script"
@@ -207,6 +249,8 @@ write_desktop_entry() {
     *waha*) selected_icon="$waha_icon_path" ;;
     *docker-integrations*) selected_icon="$docker_icon_path" ;;
     *integration-urls*) selected_icon="$urls_icon_path" ;;
+    *stop-all*) selected_icon="$stop_icon_path" ;;
+    *start-all*) selected_icon="$start_icon_path" ;;
   esac
   # The icon file is (re)generated on every install so no launcher is ever left
   # without one. Icon= is a plain string field in the Desktop Entry spec: it
@@ -267,6 +311,20 @@ install_integration_launchers() {
     "Start/status changedetection, WAHA and webhook containers" \
     "$(quote_desktop_value "$helper_dir/docker-integrations.sh")" \
     "true" "Utility;Monitor;System;"
+  write_desktop_entry \
+    "$app_dir/panamacompra-stop-all.desktop" \
+    "$desktop_dir/panamacompra-stop-all.desktop" \
+    "PanamaCompra Stop All" \
+    "Stop every PanamaCompra runner, monitor and webhook listener on this host" \
+    "$(quote_desktop_value "$helper_dir/stop-all.sh")" \
+    "true" "Utility;Monitor;System;"
+  write_desktop_entry \
+    "$app_dir/panamacompra-start-all.desktop" \
+    "$desktop_dir/panamacompra-start-all.desktop" \
+    "PanamaCompra Start All" \
+    "Bring Docker integrations and the webhook listener back up, and open the monitor" \
+    "$(quote_desktop_value "$helper_dir/start-all.sh")" \
+    "true" "Utility;Monitor;System;"
 }
 
 install_launcher() {
@@ -302,7 +360,9 @@ remove_launcher() {
       "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop" \
       "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop" \
       "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop" \
-      "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop"
+      "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop" \
+      "$app_dir/panamacompra-stop-all.desktop" "$desktop_dir/panamacompra-stop-all.desktop" \
+      "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop"
     rm -rf "$helper_dir"
   fi
   log "Removed PanamaCompra launcher files if present."
@@ -321,6 +381,8 @@ print_paths() {
     printf 'WAHA:             %s and %s\n' "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop"
     printf 'Integration URLs: %s and %s\n' "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop"
     printf 'Docker stack:     %s and %s\n' "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop"
+    printf 'Stop All:         %s and %s\n' "$app_dir/panamacompra-stop-all.desktop" "$desktop_dir/panamacompra-stop-all.desktop"
+    printf 'Start All:        %s and %s\n' "$app_dir/panamacompra-start-all.desktop" "$desktop_dir/panamacompra-start-all.desktop"
     printf 'Helper scripts:   %s\n' "$helper_dir"
   fi
 }
