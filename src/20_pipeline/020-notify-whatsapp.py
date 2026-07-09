@@ -125,9 +125,10 @@ def now_str() -> str:
 
 
 def fmt_dt(value, *, with_time: bool = True) -> str:
-    """Normalize a stored date/datetime string to 'YYYY-MM-DD HH:MM' (or a bare
-    date when no time is present), so WhatsApp messages show consistent dates and
-    times. Falls back to the cleaned original when it cannot be parsed."""
+    """Normalize a stored date/datetime string to compact 'YY-MM-DD_HH-MM' (or a
+    bare 'YY-MM-DD' when no time is present), so WhatsApp messages show
+    consistent dates and times. Falls back to the cleaned original when it
+    cannot be parsed."""
     raw = clean_field(value)
     if raw == DASH:
         return DASH
@@ -145,7 +146,7 @@ def fmt_dt(value, *, with_time: bool = True) -> str:
                 parsed = datetime.strptime(candidate, fmt)
             except ValueError:
                 continue
-            return parsed.strftime("%Y-%m-%d %H:%M" if (with_time and has_time) else "%Y-%m-%d")
+            return parsed.strftime("%y-%m-%d_%H-%M" if (with_time and has_time) else "%y-%m-%d")
     return raw
 
 
@@ -448,25 +449,6 @@ def date_range(row, summary: dict) -> str:
     return f"{start} al {end}" if start != DASH or end != DASH else DASH
 
 
-def date_range_compact(row, summary: dict) -> str:
-    """Same range as date_range(), formatted YY-MM-DD_HH-MM for detail messages."""
-    def compact(value) -> str:
-        text = fmt_dt(value)
-        if text == DASH:
-            return DASH
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
-            try:
-                parsed = datetime.strptime(text, fmt)
-            except ValueError:
-                continue
-            return parsed.strftime("%y-%m-%d_%H-%M" if fmt == "%Y-%m-%d %H:%M" else "%y-%m-%d")
-        return text
-
-    start = compact(row["fecha"] or summary.get("fecha_de_publicacion"))
-    end = compact(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion"))
-    return f"{start} al {end}" if start != DASH or end != DASH else DASH
-
-
 def contact_values(summary: dict) -> dict[str, str]:
     contact = summary.get("contacto") if isinstance(summary.get("contacto"), dict) else {}
     return {
@@ -532,9 +514,7 @@ def build_record_message(row, summary: dict, *, variant: str, previous_status: s
         "📦 *Items:* ⏳ pendiente — los detalles se descargan después de este aviso"
         if detail_pending else format_items(items)
     )
-    # Detail messages use the compact YY-MM-DD_HH-MM range; other message
-    # kinds (index/status) keep the full YYYY-MM-DD HH:MM range unchanged.
-    fechas = date_range_compact(row, summary) if variant == "details" else date_range(row, summary)
+    fechas = date_range(row, summary)
 
     deadline_dt = parse_finish_date(row)
     dias_restantes = str((deadline_dt.date() - datetime.now().date()).days) if deadline_dt else DASH
@@ -612,7 +592,7 @@ def build_empty_message(records_checked: int) -> str:
         "⚪ Sin nuevas entradas\n"
         "\n"
         f"📌 Fuente: {SOURCE_NAME}\n"
-        f"🕒 Revisión: {now_str()}\n"
+        f"🕒 Revisión: {fmt_dt(now_str())}\n"
         f"📊 Registros revisados: {records_checked}\n"
         "✅ Monitor activo"
     )
@@ -747,12 +727,12 @@ def sample_context(kind: str) -> dict[str, str]:
         "descripcion": "Adquisición de insumos médicos para el centro de salud",
         "entidad": "Ministerio de Salud",
         "ubicacion": "Panamá, Ciudad de Panamá",
-        "rango_fechas": "2026-07-01 09:00 al 2026-07-15 16:00",
+        "rango_fechas": "26-07-01_09-00 al 26-07-15_16-00",
         "items": items,
         "coincidencia": "salud",
         "enlace": "https://www.panamacompra.gob.pa/…/OC-2026-000123",
-        "creado": "2026-07-01 09:12",
-        "descargado": "2026-07-01 09:45",
+        "creado": "26-07-01_09-12",
+        "descargado": "26-07-01_09-45",
         "modalidad": "Cotización en línea",
         "dependencia": "Dirección de Compras",
         "grupo": "Abiertas",
@@ -761,14 +741,14 @@ def sample_context(kind: str) -> dict[str, str]:
         "contacto_cargo": "Oficial de compras",
         "telefono": "507-555-0101",
         "correo": "compras@example.pa",
-        "fecha_inicio": "2026-07-01 09:00",
-        "fecha_limite": "2026-07-15 16:00",
+        "fecha_inicio": "26-07-01_09-00",
+        "fecha_limite": "26-07-15_16-00",
         "items_total": "⏳" if kind == "index" else "2",
         "dias_restantes": "13",
         "event": "done",
         "status": "DONE" if kind == "summary" else "SYSTEM HEALTH OK",
-        "message": "Inicio: 2026-07-07 08:00:00\nFin: 2026-07-07 08:18:42\nDuración total: 18m 42s\nNuevos: 4\nDetalles guardados: 4" if kind == "summary" else "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
-        "time": "2026-07-07 10:30:00",
+        "message": "Inicio: 26-07-07_08-00\nFin: 26-07-07_08-18\nDuración total: 18m 42s\nNuevos: 4\nDetalles guardados: 4" if kind == "summary" else "System health review finished with status: OK. Check data/logs/manual_actions.log or the terminal output for details.",
+        "time": "26-07-07_10-30",
         "run": "Manual",
     }
 
@@ -1477,7 +1457,7 @@ def build_index_digest_messages(rows) -> list[tuple[list, str]]:
             link = clean_field(row["link"])
             if link != DASH:
                 lines.append(f"    🔗 {link}")
-        lines += ["", f"🕒 {now_str()} · 📥 Cada registro envía sus detalles completos al terminar su descarga"]
+        lines += ["", f"🕒 {fmt_dt(now_str())} · 📥 Cada registro envía sus detalles completos al terminar su descarga"]
         out.append((chunk, "\n".join(lines)))
     return out
 

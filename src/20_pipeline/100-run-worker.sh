@@ -620,9 +620,11 @@ PY
       echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
     } > "$LAST_SUMMARY_FILE"
 
+    STARTED_COMPACT="$(date -d "$STARTED" '+%y-%m-%d_%H-%M' 2>/dev/null || echo "$STARTED")"
+    FINISHED_COMPACT="$(date -d "$FINISHED" '+%y-%m-%d_%H-%M' 2>/dev/null || echo "$FINISHED")"
     notify_waha "done" "DONE" "📊 Resumen de Ejecución - Panama Compra
-Inicio: $STARTED
-Fin: $FINISHED
+Inicio: $STARTED_COMPACT
+Fin: $FINISHED_COMPACT
 Duración total: $(format_eta "$TOTAL_SECONDS")
 Fuente del índice: $INDEX_SOURCE
 Etapas: index $(format_eta "$INDEX_SECONDS"), messaging $(format_eta "$MESSAGING_SECONDS"), detail/download $(format_eta "$DETAIL_SECONDS"), store/views $(format_eta "$VIEW_SECONDS"), verification $(format_eta "$VERIFY_SECONDS"), calendar $(format_eta "$CALENDAR_SECONDS")

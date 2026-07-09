@@ -24,6 +24,7 @@ import shlex
 import sqlite3
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 _SRC_DIR = Path(__file__).resolve().parent.parent
@@ -83,6 +84,23 @@ def read_last_summary() -> dict[str, str]:
     if not LAST_SUMMARY_FILE.exists():
         return {}
     return _read_env_style_file(LAST_SUMMARY_FILE)
+
+
+def compact_dt(raw: str) -> str:
+    """Reformat a stored date/datetime string to 'YY-MM-DD_HH-MM' (or a bare
+    'YY-MM-DD') for display in the monitor UIs. Falls back to the raw text
+    when it cannot be parsed; blank input returns ''."""
+    text = (raw or "").strip().replace("T", " ").replace("_", " ")
+    if not text:
+        return ""
+    for candidate in (text, text[:19], text[:16], text[:10]):
+        for fmt, has_time in (("%Y-%m-%d %H:%M:%S", True), ("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False)):
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            return parsed.strftime("%y-%m-%d_%H-%M" if has_time else "%y-%m-%d")
+    return text
 
 
 def finish_stamp_from_folder(record_folder: str) -> str:
@@ -558,7 +576,7 @@ def _print_text_report(stats: dict[str, object]) -> None:
     last = read_last_summary()
     if last.get("FINISHED_AT"):
         print()
-        print(f"Last run: finished {last['FINISHED_AT']} · duration {last.get('TOTAL_TEXT') or last.get('TOTAL_SECONDS', '?')}"
+        print(f"Last run: finished {compact_dt(last['FINISHED_AT'])} · duration {last.get('TOTAL_TEXT') or last.get('TOTAL_SECONDS', '?')}"
               f" · index source: {last.get('INDEX_SOURCE') or 'crawler'}")
     _bar_rows("Index groups:", [(r["grupo"], r["count"]) for r in stats.get("groups") or []])
     _bar_rows("Top contracting entities:", [(r["label"], r["count"]) for r in stats.get("entities") or []])

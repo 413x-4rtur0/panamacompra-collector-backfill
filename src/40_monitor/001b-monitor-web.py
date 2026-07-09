@@ -473,7 +473,7 @@ def is_done(processes: dict[str, bool], progress: dict[str, str]) -> bool:
 
 def file_timestamp(path: Path) -> str:
     try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        return time.strftime("%y-%m-%d_%H-%M", time.localtime(path.stat().st_mtime))
     except OSError:
         return "-"
 
@@ -541,7 +541,7 @@ def status_payload() -> dict[str, object]:
         "auto_close_seconds": AUTO_CLOSE_SECONDS,
         "worker_log": tail(WORKER_LOG, 10),
         "current_log": tail(CURRENT_LOG, 14),
-        "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "server_time": time.strftime("%y-%m-%d_%H-%M"),
         "waha_chat_id": read_chat_file(WAHA_CHAT_ID_PATH),
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
         "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
@@ -999,9 +999,17 @@ function expiryStatus(rec) {{
   if (dt <= new Date(now.getTime() + RECORD_SOON_DAYS * 86400000)) return 'soon';
   return 'upcoming';
 }}
-function deadlineText(rec) {{ return parseDeadline(rec) ? (rec.finish_date_guess || '').replace('T', ' ').replace('_', ' ') : '—'; }}
-function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ').replace('_', ' ') : '—'; }}
-function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? raw.slice(0, 16).replace('T', ' ') : '—'; }}
+function fmtCompactDate(raw) {{
+  const text = (raw || '').trim().replace('T', ' ').replace('_', ' ');
+  if (!text) return '—';
+  const m = text.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
+  if (!m) return text;
+  const yy = m[1].slice(2);
+  return (m[4] && m[5]) ? `${{yy}}-${{m[2]}}-${{m[3]}}_${{m[4]}}-${{m[5]}}` : `${{yy}}-${{m[2]}}-${{m[3]}}`;
+}}
+function deadlineText(rec) {{ return parseDeadline(rec) ? fmtCompactDate(rec.finish_date_guess) : '—'; }}
+function startText(rec) {{ const raw = (rec.start_date_guess || '').trim(); return raw ? fmtCompactDate(raw) : '—'; }}
+function downloadedText(rec) {{ const raw = (rec.detail_saved_at || '').trim(); return raw ? fmtCompactDate(raw) : '—'; }}
 function parseDownloaded(rec) {{
   const raw = (rec.detail_saved_at || '').trim().replace('T', ' ');
   const m = raw.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})(?:[ _T](\\d{{2}}):(\\d{{2}}))?/);
@@ -1216,7 +1224,7 @@ async function refreshOverview() {{
     const k = document.getElementById('overview-kpis');
     if (k) k.innerHTML = [
       ['Run state', running ? (progress.PHASE || 'RUNNING') : (progress.STATUS || 'IDLE')],
-      ['Last completed', last.FINISHED_AT || '—'],
+      ['Last completed', last.FINISHED_AT ? fmtCompactDate(last.FINISHED_AT) : '—'],
       ['Duration', last.TOTAL_TEXT || '—'],
       ['Index source', last.INDEX_SOURCE || '—'],
       ['New today', db.new_today || 0],
@@ -1227,7 +1235,7 @@ async function refreshOverview() {{
     ].map(x => `<div class="kpi"><span>${{esc(String(x[0]))}}</span><b>${{esc(String(x[1]))}}</b></div>`).join('');
     const lastLine = document.getElementById('overview-last-run');
     if (lastLine) lastLine.textContent = last.FINISHED_AT
-      ? `Started ${{last.STARTED_AT || '?'}} · finished ${{last.FINISHED_AT}} · total ${{last.TOTAL_TEXT || last.TOTAL_SECONDS + 's'}} · index source: ${{last.INDEX_SOURCE || 'crawler'}}`
+      ? `Started ${{last.STARTED_AT ? fmtCompactDate(last.STARTED_AT) : '?'}} · finished ${{fmtCompactDate(last.FINISHED_AT)}} · total ${{last.TOTAL_TEXT || last.TOTAL_SECONDS + 's'}} · index source: ${{last.INDEX_SOURCE || 'crawler'}}`
       : 'No completed run recorded yet — stage durations appear after the first clean run.';
     const stageRows = [
       ['Update', last.UPDATE_SECONDS], ['Index', last.INDEX_SECONDS], ['Messaging', last.MESSAGING_SECONDS],
@@ -1407,7 +1415,7 @@ function renderRecordSummary(data) {{
   fetch('/api/db-stats', {{cache: 'no-store'}})
     .then(r => r.json())
     .then(s => {{
-      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{(r.finish_date_guess || 'no date').replace('T', ' ').replace('_', ' ')}}`).join('; ') || 'No completed end dates yet';
+      const endDates = (s.completed_recent || []).slice(0, 3).map(r => `${{r.numero}} ends ${{r.finish_date_guess ? fmtCompactDate(r.finish_date_guess) : 'no date'}}`).join('; ') || 'No completed end dates yet';
       if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}\nOpportunity ends: ${{endDates}}`;
     }})
     .catch(() => {{ if (completed) completed.textContent = `Records Completed\nSaved/skipped: ${{p.RECORDS_SAVED ?? '-'}}\nFailures needing review: ${{p.RECORDS_FAILED ?? '-'}}`; }});

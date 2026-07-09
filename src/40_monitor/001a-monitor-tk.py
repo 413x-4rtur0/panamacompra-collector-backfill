@@ -28,6 +28,7 @@ import common as pc_common
 # `pcc kpi` always report the same numbers.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from monitor_common import (  # noqa: E402
+    compact_dt,
     db_review_stats,
     finish_stamp_from_detail_json,
     finish_stamp_from_folder,
@@ -302,18 +303,15 @@ def parse_deadline(rec: dict[str, str]) -> datetime | None:
 
 
 def deadline_text(rec: dict[str, str]) -> str:
-    dt = parse_deadline(rec)
-    return dt.strftime("%Y-%m-%d %H:%M") if dt else "—"
+    return compact_dt(rec.get("finish_date_guess") or "") or "—"
 
 
 def start_text(rec: dict[str, str]) -> str:
-    raw = (rec.get("start_date_guess") or "").strip().replace("T", " ").replace("_", " ")
-    return raw[:16] if raw else "—"
+    return compact_dt(rec.get("start_date_guess") or "") or "—"
 
 
 def downloaded_text(rec: dict[str, str]) -> str:
-    raw = (rec.get("detail_saved_at") or "").strip()
-    return raw[:16].replace("T", " ") if raw else "—"
+    return compact_dt(rec.get("detail_saved_at") or "") or "—"
 
 def parse_downloaded(rec: dict[str, str]) -> datetime | None:
     raw = (rec.get("detail_saved_at") or "").strip().replace("T", " ")
@@ -476,7 +474,7 @@ def process_snapshot() -> dict[str, bool]:
 
 def file_timestamp(path: Path) -> str:
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%y-%m-%d_%H-%M")
     except OSError:
         return "-"
 
@@ -1742,7 +1740,7 @@ def run_tk() -> int:
         pending_var.set(f"Records Pendings\n{pending} waiting for detail/download\nFound: {found} · New: {new} · Existing: {existing}")
         s = db_review_stats()
         end_dates = "; ".join(
-            f"{rec['numero']} ends {(rec['finish_date_guess'] or 'no date').replace('T', ' ').replace('_', ' ')}"
+            f"{rec['numero']} ends {compact_dt(rec['finish_date_guess']) or 'no date'}"
             for rec in s.get("completed_recent", [])[:3]
         ) or "No completed end dates yet"
         completed_var.set(f"Records Completed\nSaved/skipped: {saved}\nFailures needing review: {failed}\nOpportunity ends: {end_dates}")
@@ -1991,7 +1989,7 @@ def run_tk() -> int:
                 ) if str(last.get(key) or "").strip() not in {"", "0"}
             )
             kpi_vars["lastrun"].set(
-                f"Last run: finished {last.get('FINISHED_AT')} · duration {last.get('TOTAL_TEXT') or last.get('TOTAL_SECONDS', '?') + 's'}"
+                f"Last run: finished {compact_dt(last.get('FINISHED_AT') or '')} · duration {last.get('TOTAL_TEXT') or last.get('TOTAL_SECONDS', '?') + 's'}"
                 f" · index source: {last.get('INDEX_SOURCE') or 'crawler'}"
                 + (f"\nStages: {stage_parts}" if stage_parts else "")
             )
@@ -2213,7 +2211,7 @@ def run_tk() -> int:
     def index_row_text(rec: dict[str, str]) -> str:
         """List row prefixed with local download timestamp, DTEND and status."""
         downloaded = parse_downloaded(rec)
-        downloaded_part = downloaded.strftime("%y-%m-%d %H:%M") if downloaded else "not local"
+        downloaded_part = downloaded.strftime("%y-%m-%d_%H-%M") if downloaded else "not local"
         dt = parse_deadline(rec)
         dtend = dt.strftime("%y-%m-%d") if dt else "no date"
         tag = STATUS_TAGS[expiry_status(rec)]

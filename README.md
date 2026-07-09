@@ -733,12 +733,14 @@ Use `./bin/pcc format placeholders` to see all fields, `./bin/pcc format preview
 template.txt` to personalize exactly which fields each message sends.
 
 Detail messages (`details` purpose) also include `{unidad_compra}` (buying/purchasing
-unit) and `{precio_referencia}` (reference/estimated price), and their
-`{rango_fechas}` uses a compact `YY-MM-DD_HH-MM al YY-MM-DD_HH-MM` format (other
-categories keep the full `YYYY-MM-DD HH:MM` range). The `{ubicacion}` field now
-combines the delivery province with the scraped delivery address. Compact index
-digest messages (sent when a run finds more new records than
-`PC_NOTIFY_INDEX_DIGEST_THRESHOLD`) include each opportunity's portal link.
+unit) and `{precio_referencia}` (reference/estimated price). All date/time fields
+shown in WhatsApp messages — `{rango_fechas}`, `{creado}`, `{descargado}`,
+`{fecha_inicio}`, `{fecha_limite}`, `{time}` — use the compact `YY-MM-DD_HH-MM`
+format (bare `YY-MM-DD` when there's no time component), consistently across all
+five message categories. The `{ubicacion}` field now combines the delivery
+province with the scraped delivery address. Compact index digest messages (sent
+when a run finds more new records than `PC_NOTIFY_INDEX_DIGEST_THRESHOLD`)
+include each opportunity's portal link.
 
 **Client profiles** — beyond the five fixed per-purpose destinations above, you can
 fan any message out to an arbitrary, freely-sized list of extra WhatsApp
