@@ -757,6 +757,18 @@ syntax as the shared WhatsApp filters. Add or remove entries freely — there is
 fixed client count. Each matching, enabled client gets its own copy of the message
 in addition to whatever the per-purpose destination above sends.
 
+Both monitors include a **WAHA Directory Search** that reads every active WAHA
+session and returns contacts, groups, communities, and subscribed/owned channels.
+Search accepts a full or partial display name **or chat ID**; exact matches sort
+first. Contact IDs commonly end in `@c.us`, `@s.whatsapp.net`, or `@lid`, groups
+and communities use `@g.us` (community metadata distinguishes them), and channels
+use `@newsletter`. The monitors check outbound internet, DNS, and the WAHA session
+separately. Offline/DNS failures recommend waiting and retrying; when internet is
+healthy but local WAHA is unreachable, the monitor offers the existing
+**Start/refresh docker stack** recovery action. Override the TCP probes with the
+comma-separated `PC_INTERNET_CHECK_TARGETS` setting (default
+`1.1.1.1:443,8.8.8.8:53`).
+
 The detail limit can also be passed positionally for manual runs: `./src/20_pipeline/110a-request-run.sh 5`. The host flag watcher sources `data/config/monitor_settings.env`, so monitor-saved `PC_WEBHOOK_INDEX_LIMIT` and `PC_WEBHOOK_DETAIL_LIMIT` are honored by changedetection-triggered runs. Manual/test controls can cap index pages or details for troubleshooting; changedetection/AUTO starts default to `0` (all) for both index and detail, unless you explicitly save `PC_WEBHOOK_INDEX_LIMIT` or `PC_WEBHOOK_DETAIL_LIMIT` for a temporary bounded automatic run. If PanamaCompra shows only one index page, nothing is being limited and the collector stops naturally when there is no Next page. The native and web monitors include buttons to request a run immediately and to save WhatsApp group/channel destinations. Fill only the default destination to send every message to one group, or fill per-purpose destinations for index alerts, item-detail follow-ups, and status changes, system-health messages, and final per-round summaries; blank per-purpose fields fall back to the default group. For changedetection/webhook runs, the monitors show `automatic` mode and block the run-mode/limit controls until the active collector work is done.
 
 #### Monitor layout — unified tabs

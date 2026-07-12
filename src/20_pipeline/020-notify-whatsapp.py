@@ -693,10 +693,10 @@ DEFAULT_FORMATS = {
         "🔗 *Enlace:* {enlace}\n🕒 *Creado:* {creado}\n⬇️ *Descargado:* {descargado}"
     ),
     "system": (
-        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
+        "{heading}\n\nStatus: {status}\nRun: {run}\nTime: {time}\n\n{message}"
     ),
     "summary": (
-        "{heading}\n\nStatus: {status}\nTime: {time}\nRun: {run}\n\n{message}"
+        "{heading}\n\nStatus: {status}\nRun: {run}\nTime: {time}\n\n{message}"
     ),
 }
 
@@ -954,11 +954,18 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
     client_profiles = []
+    default_matches = True
     if conn is not None and numero:
         row = fetch_row(conn, numero)
         if row is not None:
-            client_profiles = matching_client_profiles(purpose, row, load_detail_summary(row["detail_json_path"]))
-    has_default_destination = bool(waha.configured_chat_id(purpose))
+            summary = load_detail_summary(row["detail_json_path"])
+            # The shared destination and each client profile have independent
+            # filters. A profile match must never make a non-matching record
+            # leak into the shared/default group.
+            default_matches = match_line_for(row, summary, purpose) is not None
+            client_profiles = matching_client_profiles(purpose, row, summary)
+    default_chat_id = waha.configured_chat_id(purpose).strip()
+    has_default_destination = bool(default_chat_id and default_matches)
     if not has_default_destination and not client_profiles:
         # No destination for this purpose and no matching client profile: leave
         # the record unmarked so it sends once a destination is configured.
@@ -966,12 +973,21 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
         return False
     try:
         sent_any = False
+        sent_chat_ids: set[str] = set()
         if has_default_destination:
             waha.send_text(text, purpose=purpose)
             sent_any = True
+            sent_chat_ids.add(default_chat_id)
         for profile in client_profiles:
-            waha.send_text(text, purpose=purpose, chat_id_override=profile["chat_id"])
+            profile_chat_id = profile["chat_id"].strip()
+            # A group may be configured both as the shared destination and as
+            # one or more client profiles. Deliver one copy per unique chat.
+            if profile_chat_id in sent_chat_ids:
+                print(f"WAHA profile notification skipped for {profile['name']}: destination already notified.")
+                continue
+            waha.send_text(text, purpose=purpose, chat_id_override=profile_chat_id)
             sent_any = True
+            sent_chat_ids.add(profile_chat_id)
             print(f"WAHA profile notification sent for {profile['name']}.")
         if not sent_any:
             return False

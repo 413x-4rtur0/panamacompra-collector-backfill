@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sqlite3
 import sys
 from collections import Counter
@@ -40,8 +41,8 @@ WAHA_DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 def _waha_api_get(path: str, timeout: float = 8.0):
     """GET a WAHA REST endpoint. Returns parsed JSON or raises."""
     import urllib.request
-    base_url = os.environ.get("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL).rstrip("/")
-    api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+    base_url = setting("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL).rstrip("/")
+    api_key = (setting("PC_WAHA_API_KEY") or setting("WAHA_API_KEY")).strip()
     headers = {"Accept": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -52,14 +53,14 @@ def _waha_api_get(path: str, timeout: float = 8.0):
 
 def _waha_entry_id(item: dict) -> str:
     """Chat id from a WAHA group/contact payload, tolerating format variants."""
-    raw = item.get("id")
+    raw = item.get("id") or item.get("chatId") or item.get("jid")
     if isinstance(raw, dict):
         return str(raw.get("_serialized") or raw.get("id") or "")
     return str(raw or "")
 
 
-_WAHA_KINDS = {"@g.us": "group", "@c.us": "contact", "@s.whatsapp.net": "channel",
-               "@lid": "community", "@newsletter": "broadcast"}
+_WAHA_KINDS = {"@g.us": "group", "@c.us": "contact", "@s.whatsapp.net": "contact",
+               "@lid": "contact", "@newsletter": "channel", "@broadcast": "broadcast"}
 
 
 def _waha_kind_for_chat_id(chat_id: str) -> str:
@@ -70,26 +71,36 @@ def _waha_kind_for_chat_id(chat_id: str) -> str:
     return "chat"
 
 
+def _waha_kind_for_entry(item: dict, chat_id: str, default: str = "") -> str:
+    """Classify a WAHA directory entry, including community metadata."""
+    if any(item.get(key) for key in ("isCommunity", "isCommunityAnnounce", "isCommunityGroup")):
+        return "community"
+    return default or _waha_kind_for_chat_id(chat_id)
+
+
 def waha_fetch_all(query: str = "", *,
                    base_url: str = "", api_key: str = "",
-                   include_chats: bool = True) -> list[dict]:
+                   include_chats: bool = True,
+                   raise_on_connection_error: bool = False) -> list[dict]:
     """Fetch all groups/contacts/chats from every WAHA session and return
     structured matches.
 
     Each match dict: ``{"session", "id", "name", "kind"}``.
 
     When ``query`` is non-empty, results are filtered by accent-insensitive
-    substring match on name. Empty query returns everything (groups first).
-    Never raises: returns [] on error.
+    full or partial match on either display name or chat ID. Exact matches are
+    ranked first. Empty query returns everything (groups first).
+    By default it never raises and returns [] on connection error. Monitors can
+    request the original connection error for a precise UI diagnosis.
     """
     import urllib.request  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
 
     if not base_url:
-        base_url = os.environ.get("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL)
+        base_url = setting("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL)
     base_url = base_url.rstrip("/")
     if not api_key:
-        api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+        api_key = (setting("PC_WAHA_API_KEY") or setting("WAHA_API_KEY")).strip()
 
     headers = {"Accept": "application/json"}
     if api_key:
@@ -105,12 +116,30 @@ def waha_fetch_all(query: str = "", *,
     try:
         sessions = _get("/api/sessions?all=true")
     except Exception:
+        if raise_on_connection_error:
+            raise
         return []
     if not isinstance(sessions, list):
         return []
 
-    matches: list[dict] = []
-    seen_ids: set[str] = set()
+    matches_by_key: dict[tuple[str, str], dict] = {}
+
+    def _add(item: dict, session: str, default_kind: str) -> None:
+        chat_id = _waha_entry_id(item).strip()
+        if not chat_id:
+            return
+        name = str(
+            item.get("name") or item.get("subject") or item.get("pushname")
+            or item.get("shortName") or item.get("verifiedName")
+            or item.get("formattedName") or ""
+        ).strip()
+        kind = _waha_kind_for_entry(item, chat_id, default_kind)
+        key = (session, chat_id)
+        previous = matches_by_key.get(key)
+        candidate = {"session": session, "id": chat_id, "name": name or chat_id, "kind": kind}
+        # Prefer a named/specialized entry over a generic chat duplicate.
+        if previous is None or (previous["name"] == chat_id and name) or previous["kind"] == "chat":
+            matches_by_key[key] = candidate
 
     for s in sessions:
         if not isinstance(s, dict):
@@ -121,7 +150,8 @@ def waha_fetch_all(query: str = "", *,
             continue
 
         for kind, path in (("group", f"/api/{sname}/groups"),
-                           ("contact", f"/api/contacts/all?session={sname}")):
+                           ("contact", f"/api/contacts/all?session={sname}"),
+                           ("channel", f"/api/{sname}/channels")):
             try:
                 entries = _get(path)
             except Exception:
@@ -131,16 +161,7 @@ def waha_fetch_all(query: str = "", *,
             for item in entries:
                 if not isinstance(item, dict):
                     continue
-                name = str(item.get("name") or item.get("subject") or item.get("pushname") or "").strip()
-                chat_id = _waha_entry_id(item)
-                if not chat_id or chat_id in seen_ids:
-                    continue
-                seen_ids.add(chat_id)
-                if kind == "contact" and not name:
-                    continue
-                if wanted and wanted not in pc_common.strip_accents(name).lower():
-                    continue
-                matches.append({"session": sname, "id": chat_id, "name": name or chat_id, "kind": kind})
+                _add(item, sname, kind)
 
         if not include_chats:
             continue
@@ -149,20 +170,82 @@ def waha_fetch_all(query: str = "", *,
             for item in _get(f"/api/{sname}/chats"):
                 if not isinstance(item, dict):
                     continue
-                name = str(item.get("name") or "").strip()
-                chat_id = _waha_entry_id(item)
-                if not chat_id or chat_id in seen_ids:
-                    continue
-                seen_ids.add(chat_id)
-                if wanted and wanted not in pc_common.strip_accents(name).lower():
-                    continue
-                matches.append({"session": sname, "id": chat_id, "name": name or chat_id,
-                                "kind": _waha_kind_for_chat_id(chat_id)})
+                _add(item, sname, "")
         except Exception:
             pass
 
-    matches.sort(key=lambda m: (m["kind"] != "group", pc_common.strip_accents(m["name"]).lower()))
+    matches = list(matches_by_key.values())
+    if wanted:
+        matches = [m for m in matches if wanted in pc_common.strip_accents(m["name"]).lower()
+                   or wanted in m["id"].lower()]
+
+    kind_order = {"group": 0, "community": 1, "channel": 2, "contact": 3, "chat": 4, "broadcast": 5}
+
+    def _rank(m: dict) -> tuple:
+        name = pc_common.strip_accents(m["name"]).lower()
+        chat_id = m["id"].lower()
+        if wanted and wanted in {name, chat_id}:
+            match_rank = 0
+        elif wanted and (name.startswith(wanted) or chat_id.startswith(wanted)):
+            match_rank = 1
+        else:
+            match_rank = 2
+        return match_rank, kind_order.get(m["kind"], 9), name, chat_id
+
+    matches.sort(key=_rank)
     return matches[:250]
+
+
+def internet_status(timeout: float = 1.5) -> dict:
+    """Check outbound internet and DNS without depending on WAHA itself."""
+    raw_targets = setting("PC_INTERNET_CHECK_TARGETS", "1.1.1.1:443,8.8.8.8:53")
+    errors = []
+    online = False
+    for raw in raw_targets.split(","):
+        host, _, port_text = raw.strip().partition(":")
+        if not host:
+            continue
+        try:
+            with socket.create_connection((host, int(port_text or "443")), timeout=timeout):
+                online = True
+                break
+        except (OSError, ValueError) as exc:
+            errors.append(f"{host}:{port_text or '443'}: {exc}")
+    try:
+        socket.getaddrinfo("www.panamacompra.gob.pa", 443, type=socket.SOCK_STREAM)
+        dns_ok = True
+    except OSError as exc:
+        dns_ok = False
+        errors.append(f"DNS: {exc}")
+    return {
+        "online": online,
+        "dns_ok": dns_ok,
+        "status": "ONLINE" if online and dns_ok else "LIMITED" if online else "OFFLINE",
+        "message": "" if online and dns_ok else "; ".join(errors[-3:]),
+    }
+
+
+def monitor_connectivity_status() -> dict:
+    """Combined internet/WAHA state plus a safe monitor recovery action."""
+    internet = internet_status()
+    waha = waha_session_status()
+    action = ""
+    if not internet["online"]:
+        message = "Internet appears offline. Collection and WAHA directory refresh should wait; retry after connectivity returns."
+    elif not internet["dns_ok"]:
+        message = "Internet is reachable but DNS resolution failed. Fix DNS, then retry the WAHA directory search."
+    elif waha["status"] == "UNREACHABLE":
+        message = f"Internet is online, but {waha['message']}"
+        action = "Start/refresh docker stack"
+    elif waha["status"] == "NOT_FOUND":
+        message = waha["message"]
+        action = "Start/refresh docker stack"
+    elif not waha["connected"]:
+        message = waha["message"]
+    else:
+        message = "Internet and WAHA are ready."
+    return {**waha, "message": message, "internet": internet,
+            "recommended_action": action}
 
 
 def waha_session_status() -> dict:

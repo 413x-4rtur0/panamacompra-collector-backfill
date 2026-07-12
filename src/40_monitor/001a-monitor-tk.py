@@ -35,6 +35,7 @@ from monitor_common import (  # noqa: E402
     load_detail_items_for_kpi,
     load_detail_payload_for_kpi,
     load_record_index,
+    monitor_connectivity_status,
     read_last_summary,
     setting,
     summarize_items_for_kpi,
@@ -1607,9 +1608,11 @@ def run_tk() -> int:
     cs_all_matches: list[dict] = []    # full WAHA fetch, filtered locally while typing
     cs_fetch_running = False
     cs_debounce_after: str | None = None
+    cs_recovery_action = ""
 
     def _waha_fetch(base_url: str, api_key: str) -> list[dict]:
-        return waha_fetch_all(base_url=base_url, api_key=api_key, include_chats=True)
+        return waha_fetch_all(base_url=base_url, api_key=api_key, include_chats=True,
+                              raise_on_connection_error=True)
 
     def _format_match(m: dict) -> str:
         return f"{m['name']}  [{m['id']}]  ({m['session']} · {m['kind']})"
@@ -1701,6 +1704,37 @@ def run_tk() -> int:
 
         _start_waha_fetch(done)
 
+    def check_client_connectivity() -> None:
+        """Check internet + WAHA off the Tk thread, or run the suggested fix."""
+        nonlocal cs_recovery_action
+        if cs_recovery_action:
+            action = next((item for item in MANUAL_ACTIONS if item.label == cs_recovery_action), None)
+            if action is not None:
+                run_manual_action(action)
+            cs_recovery_action = ""
+            cs_health_button.configure(text="Check connection")
+            return
+        cs_health_button.configure(state="disabled")
+        button_status_var.set("Checking internet, DNS and WAHA session status...")
+
+        def worker() -> None:
+            health = monitor_connectivity_status()
+
+            def deliver() -> None:
+                nonlocal cs_recovery_action
+                cs_health_button.configure(state="normal")
+                internet = health["internet"]
+                button_status_var.set(
+                    f"Internet={internet['status']}; WAHA={health['status']}. {health['message']}"
+                )
+                cs_recovery_action = health.get("recommended_action", "")
+                cs_health_button.configure(text=cs_recovery_action or "Check connection")
+
+            root.after(0, deliver)
+
+        import threading  # noqa: PLC0415 - connectivity probes must not block Tk
+        threading.Thread(target=worker, daemon=True).start()
+
     def _selected_cs_match() -> dict | None:
         sel = cs_results_list.curselection()
         if not sel or sel[0] >= len(cs_matches_cache):
@@ -1755,6 +1789,10 @@ def run_tk() -> int:
     cs_add_button = ttk.Button(whatsapp_client_search, text="Add to Client Profiles", command=add_selected_to_clients)
     cs_add_button.grid(row=2, column=4, sticky="w", padx=(6, 0), pady=3)
     add_tooltip(cs_add_button, 'Inserts the selected entry as a ready-made profile into the Client Profiles box above (nothing is saved until you press "Save client profiles").')
+
+    cs_health_button = ttk.Button(whatsapp_client_search, text="Check connection", command=check_client_connectivity)
+    cs_health_button.grid(row=2, column=5, sticky="w", padx=(6, 0), pady=3)
+    add_tooltip(cs_health_button, "Checks internet, DNS and the WAHA session. If WAHA is down while internet is online, this button offers the safe Start/refresh docker stack action.")
 
     cs_results_list = tk.Listbox(whatsapp_client_search, height=12, exportselection=False)
     cs_results_list.grid(row=3, column=0, columnspan=5, sticky="ew", pady=3)

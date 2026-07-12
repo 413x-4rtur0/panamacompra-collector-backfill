@@ -188,15 +188,23 @@ def load_operational_format(kind: str) -> str:
 
 
 def build_message(event: str, status: str, message: str, purpose: str = "") -> str:
-    prefix = os.environ.get("PC_WAHA_PREFIX", "PanamaCompra")
+    prefix = os.environ.get(
+        "PC_WAHA_PREFIX",
+        os.environ.get("PC_WAHA_SOURCE", "Panamá Compra"),
+    )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     mode_label = run_mode_label()
     body = message.strip() or saved_message()
     kind = "summary" if purpose == "summary" else "system"
+    heading = (
+        f"📊 *Resumen final de ronda - {prefix}*"
+        if kind == "summary"
+        else f"🛠️ *Sistema - {prefix}*"
+    )
     custom = load_operational_format(kind)
     if custom:
         return custom.format_map(_SafeDict({
-            "heading": f"{prefix} [{event.upper()}]",
+            "heading": heading,
             "event": event,
             "status": status,
             "message": body,
@@ -205,13 +213,15 @@ def build_message(event: str, status: str, message: str, purpose: str = "") -> s
             "fuente": prefix,
         }))
 
-    parts = [f"{prefix} [{event.upper()}]", f"Status: {status}"]
-    if mode_label:
-        parts.append(f"Run: {mode_label}")
-    parts.append(f"Time: {timestamp}")
-    if body:
-        parts.append(body)
-    return "\n".join(parts)
+    # Keep the actual built-in message identical to `pcc format show/preview`
+    # (DEFAULT_FORMATS in 020-notify-whatsapp.py).
+    return (
+        f"{heading}\n\n"
+        f"Status: {status}\n"
+        f"Run: {mode_label or '—'}\n"
+        f"Time: {timestamp}\n\n"
+        f"{body}"
+    )
 
 
 # Simple in-process circuit breaker: after several outright failures (e.g. WAHA
