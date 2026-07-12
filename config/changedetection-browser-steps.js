@@ -220,16 +220,17 @@
         const cellEls = [...row.querySelectorAll("th, td")];
         const cells = cellEls.map(cell => clean(cell.innerText || cell.textContent));
 
-        const fallbackNumeroIndex = cells.findIndex(cell => /^20\d{2}-/.test(cell));
+        const numeroPattern = /20\d{2}-\d+-\d+-\d+-\d+-[A-Z]+-\d+/;
+        const fallbackNumeroIndex = cells.findIndex(cell => numeroPattern.test(cell));
         const numeroIndex = map.numero !== undefined ? map.numero : fallbackNumeroIndex;
 
         if (numeroIndex < 0) return null;
 
-        const numeroCell = cellEls[numeroIndex];
-        const numeroLink = numeroCell?.querySelector("a[href]");
-        const numero = cells[numeroIndex] || "";
+        const numero = (cells[numeroIndex] || row.innerText || "").match(numeroPattern)?.[0] || "";
+        const detailLink = [...row.querySelectorAll("a[href]")]
+          .find(a => /solicitud-de-cotizacion|pliego-de-cargos/.test(a.getAttribute("href") || ""));
 
-        if (!/^20\d{2}-/.test(numero)) return null;
+        if (!numero) return null;
 
         return {
           numero,
@@ -239,7 +240,7 @@
           dependencia: map.dependencia !== undefined ? cells[map.dependencia] || "" : "",
           fecha: map.fecha !== undefined ? cells[map.fecha] || "" : "",
           modalidad: map.modalidad !== undefined ? cells[map.modalidad] || "" : "",
-          link: numeroLink?.href || ""
+          link: detailLink?.href || ""
         };
       })
       .filter(Boolean);
@@ -374,7 +375,7 @@
       "ngb-pagination a[aria-label='Next'], a[aria-label='Next']"
     );
 
-    if (!next || !isVisible(next)) return false;
+    if (!next || !isVisible(next)) return { moved: false, complete: true, reason: "Next not found" };
 
     const parent = next.closest("li");
 
@@ -383,7 +384,7 @@
       next.hasAttribute("disabled") ||
       parent?.classList.contains("disabled");
 
-    if (disabled) return false;
+    if (disabled) return { moved: false, complete: true, reason: "Next disabled" };
 
     const before = getPageSignature();
 
@@ -391,7 +392,9 @@
 
     const after = getPageSignature();
 
-    return before !== after;
+    return before !== after
+      ? { moved: true, complete: false, reason: "" }
+      : { moved: false, complete: false, reason: "Next clicked but page did not change" };
   }
 
   function extractOnlyExpectedRows(statusConfig) {
@@ -405,6 +408,8 @@
     const pageCounts = [];
     const recordsByNumero = new Map();
     const recordsInCrawlOrder = [];
+    let duplicateCount = 0;
+    let complete = false;
 
     // The radio switch and the Angular table re-render race each other, and
     // Abiertas (the second status crawled) loses regularly. Retry the whole
@@ -459,11 +464,19 @@
         CONFIG.waitMs
       );
 
-      if (!ready) break;
+      if (!ready) {
+        pageCounts.push(`${statusConfig.group}: page ${page} never became ready`);
+        break;
+      }
 
-      const rows = extractOnlyExpectedRows(statusConfig);
+      const expectedRows = extractOnlyExpectedRows(statusConfig);
+      const rows = expectedRows.filter(row => row.numero && row.link);
 
       pageCounts.push(`${statusConfig.group} page ${page}: ${rows.length}`);
+
+      if (rows.length !== expectedRows.length) {
+        pageCounts.push(`${statusConfig.group}: page ${page} has ${expectedRows.length - rows.length} row(s) without a usable NUMERO/detail link`);
+      }
 
       for (const row of rows) {
         if (!row.numero) continue;
@@ -471,19 +484,33 @@
         if (!recordsByNumero.has(row.numero)) {
           recordsByNumero.set(row.numero, row);
           recordsInCrawlOrder.push(row);
+        } else {
+          duplicateCount++;
         }
       }
 
-      const moved = await goNextPage();
+      const next = await goNextPage();
 
-      if (!moved) break;
+      if (!next.moved) {
+        complete = next.complete && rows.length === expectedRows.length;
+        pageCounts.push(complete
+          ? `${statusConfig.group} COMPLETE: ${next.reason}`
+          : `${statusConfig.group}: ${next.reason || "pagination incomplete"}`);
+        break;
+      }
+    }
+
+    if (!complete && pageCounts.length && !pageCounts.some(line => line.startsWith(`${statusConfig.group}:`))) {
+      pageCounts.push(`${statusConfig.group}: safety page limit ${CONFIG.maxPagesSafety} reached`);
     }
 
     return {
       config: statusConfig,
       records: [...recordsByNumero.values()],
       recordsInCrawlOrder,
-      pageCounts
+      pageCounts,
+      duplicateCount,
+      complete
     };
   }
 
@@ -496,7 +523,7 @@
   function mergeResultsInCrawlOrder(resultSets) {
     const allRecordsByNumero = new Map();
     const uniqueRecordsInCrawlOrder = [];
-    let duplicateCount = 0;
+    let duplicateCount = resultSets.reduce((total, resultSet) => total + (resultSet.duplicateCount || 0), 0);
 
     for (const resultSet of resultSets) {
       for (const row of resultSet.recordsInCrawlOrder) {

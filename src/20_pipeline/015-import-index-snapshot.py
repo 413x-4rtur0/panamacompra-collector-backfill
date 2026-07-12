@@ -54,6 +54,32 @@ def datastore_dir():
     return env_path("PC_CHANGEDETECTION_DATASTORE", integrations / "changedetection")
 
 
+def _read_datastore_bytes(path):
+    """Read a datastore file, falling back to changedetection's container."""
+    path = Path(path)
+    try:
+        return path.read_bytes(), ""
+    except PermissionError as host_error:
+        try:
+            relative = path.resolve().relative_to(Path(datastore_dir()).resolve())
+        except ValueError:
+            return b"", f"cannot read {path}: {host_error}"
+        try:
+            done = subprocess.run(
+                ["docker", "compose", "exec", "-T", "changedetection", "cat",
+                 f"/datastore/{relative.as_posix()}"],
+                cwd=APP_ROOT, capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return b"", f"cannot read {path} on host or through changedetection: {exc}"
+        if done.returncode == 0:
+            return done.stdout, ""
+        detail = done.stderr.decode("utf-8", "replace").strip()
+        return b"", f"cannot read {path}; container fallback exit {done.returncode}: {detail}"
+    except OSError as exc:
+        return b"", f"cannot read {path}: {exc}"
+
+
 def _decompress_bytes(raw, path):
     """Return snapshot text from raw file bytes, decompressing when needed.
 
@@ -80,9 +106,18 @@ def _decompress_bytes(raw, path):
                 return done.stdout.decode("utf-8", "replace"), ""
             return "", f"brotli CLI exit {done.returncode}"
         except FileNotFoundError:
-            return "", ("cannot decompress .br snapshot: install the 'brotli' pip "
-                        "module or the 'brotli' CLI, or point PC_INDEX_SNAPSHOT_FILE "
-                        "at an uncompressed export")
+            try:
+                done = subprocess.run(
+                    ["docker", "compose", "exec", "-T", "changedetection", "python", "-c",
+                     "import sys,brotli;sys.stdout.buffer.write(brotli.decompress(sys.stdin.buffer.read()))"],
+                    cwd=APP_ROOT, input=raw, capture_output=True, timeout=30,
+                )
+                if done.returncode == 0:
+                    return done.stdout.decode("utf-8", "replace"), ""
+                detail = done.stderr.decode("utf-8", "replace").strip()
+                return "", f"changedetection brotli fallback exit {done.returncode}: {detail}"
+            except (OSError, subprocess.SubprocessError) as exc:
+                return "", f"cannot decompress .br snapshot with host or container: {exc}"
         except Exception as exc:  # noqa: BLE001
             return "", f"brotli CLI failed: {exc}"
     if name.endswith(".gz"):
@@ -94,10 +129,9 @@ def _decompress_bytes(raw, path):
 
 
 def read_snapshot_text(path):
-    try:
-        raw = Path(path).read_bytes()
-    except OSError as exc:
-        return "", f"cannot read {path}: {exc}"
+    raw, reason = _read_datastore_bytes(path)
+    if reason:
+        return "", reason
     return _decompress_bytes(raw, path)
 
 
@@ -109,7 +143,8 @@ def _latest_history_entry(watch_dir):
     index is absent."""
     history = watch_dir / "history.txt"
     if history.exists():
-        lines = [ln for ln in history.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+        raw, reason = _read_datastore_bytes(history)
+        lines = [ln for ln in raw.decode("utf-8", "replace").splitlines() if ln.strip()] if not reason else []
         if lines:
             field = lines[-1].split(",")[-1].strip()
             candidate = Path(field)
@@ -174,6 +209,7 @@ def parse_snapshot(text):
     marker_ok = bool(lines) and lines[0].strip() == SNAPSHOT_MARKER
 
     groups = {g: {"collected": 0, "healthy": False, "reason": "not present in snapshot"} for g in EXPECTED_GROUPS}
+    page_seen = {g: False for g in EXPECTED_GROUPS}
     section = "header"
     records = []
     current = {}
@@ -203,15 +239,14 @@ def parse_snapshot(text):
         elif section == "pages":
             for group in EXPECTED_GROUPS:
                 if stripped.startswith(f"{group} page "):
-                    try:
-                        count = int(stripped.rsplit(":", 1)[1].strip())
-                    except ValueError:
-                        count = 0
-                    if count > 0:
-                        groups[group]["healthy"] = True
-                        groups[group]["reason"] = ""
+                    page_seen[group] = True
+                    continue
+                elif stripped.startswith(f"{group} COMPLETE:"):
+                    groups[group]["healthy"] = True
+                    groups[group]["reason"] = ""
                 elif stripped.startswith(f"{group}:"):
                     # A failure line, e.g. "Abiertas: rows not ready after 50 change".
+                    groups[group]["healthy"] = False
                     groups[group]["reason"] = stripped.split(":", 1)[1].strip()
         elif section == "records":
             if stripped == "---":
@@ -230,11 +265,18 @@ def parse_snapshot(text):
                 current[key] = value.strip()
     flush()  # last block may not be followed by '---'
 
-    # A group with collected>0 but no per-page line still counts as healthy.
+    parsed_counts = {group: 0 for group in EXPECTED_GROUPS}
+    for record in records:
+        group = record.get("grupo", "")
+        if group in parsed_counts:
+            parsed_counts[group] += 1
+
     for group, info in groups.items():
-        if info["collected"] > 0 and not info["healthy"]:
-            info["healthy"] = True
-            info["reason"] = ""
+        if not info["healthy"] and page_seen[group] and info["reason"] == "not present in snapshot":
+            info["reason"] = "missing explicit pagination completion marker"
+        if info["healthy"] and parsed_counts[group] < info["collected"]:
+            info["healthy"] = False
+            info["reason"] = f"parsed {parsed_counts[group]} of {info['collected']} records"
     return {"marker_ok": marker_ok, "groups": groups, "records": records}
 
 
