@@ -279,6 +279,7 @@ def send_text(text: str, purpose: str = "", chat_id_override: str = "") -> None:
                 response.read()
             _send_failures = 0
             print(f"WAHA notification sent to {chat_id} via session {session}.")
+            pc_common.log_app_notification(purpose, text, chat_id)
             return
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
             if attempt >= attempts:

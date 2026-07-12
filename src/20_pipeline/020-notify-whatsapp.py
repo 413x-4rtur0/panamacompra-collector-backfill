@@ -985,6 +985,17 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
             if profile_chat_id in sent_chat_ids:
                 print(f"WAHA profile notification skipped for {profile['name']}: destination already notified.")
                 continue
+            if profile_chat_id.startswith("app:"):
+                # App-only client (signed up in the Android app, never linked
+                # a WhatsApp group — see upsert_client_profile in the web
+                # monitor). "app:<uid>" isn't a real WAHA chat id, so log it
+                # locally for /api/client-notifications instead of attempting
+                # a WhatsApp send that would just fail.
+                pc_common.log_app_notification(purpose, text, profile_chat_id)
+                sent_any = True
+                sent_chat_ids.add(profile_chat_id)
+                print(f"App-only notification logged for {profile['name']}.")
+                continue
             waha.send_text(text, purpose=purpose, chat_id_override=profile_chat_id)
             sent_any = True
             sent_chat_ids.add(profile_chat_id)

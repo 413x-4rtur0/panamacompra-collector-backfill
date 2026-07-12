@@ -1203,6 +1203,20 @@ def ensure_db_schema(conn):
         if column not in existing_columns:
             conn.execute(statement)
 
+    # Local mirror of every outbound WAHA/WhatsApp send (see
+    # log_app_notification below), so a client with no phone number — e.g.
+    # the Android monitor app — can poll GET /api/notifications for the same
+    # events WhatsApp would have received.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS app_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+        purpose TEXT,
+        chat_id TEXT,
+        text TEXT NOT NULL
+    )
+    """)
+
     conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_opportunities_detail_queue
     ON opportunities(detail_status, detail_attempts, first_seen)
@@ -1270,6 +1284,29 @@ def init_db(db_path=None):
             csv.writer(f).writerow(INDEX_HEADER)
 
     return conn
+
+
+def log_app_notification(purpose: str, text: str, chat_id: str = "") -> None:
+    """Best-effort local record of an outbound WAHA message.
+
+    Called from waha.send_text() right after a successful send, which is the
+    one choke point every WhatsApp message passes through regardless of
+    caller (the per-record notifier import or the CLI invocation from
+    100-run-worker.sh for system/summary messages) — so this table mirrors
+    WhatsApp delivery 1:1 for other clients (e.g. the Android monitor app's
+    GET /api/notifications) without duplicating each call site. Never raises:
+    a logging failure must not break the actual WhatsApp send.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn.execute(
+            "INSERT INTO app_notifications (created_at, purpose, chat_id, text) VALUES (?, ?, ?, ?)",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), purpose, chat_id, text),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:  # noqa: BLE001 - logging must never break a notify send
+        pass
 
 def get_record_folder(date_folder, numero):
     return RECORDS_DIR / date_folder / safe_name(numero)

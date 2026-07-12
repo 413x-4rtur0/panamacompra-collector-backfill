@@ -1571,6 +1571,21 @@ def run_tk() -> int:
                 "purposes": [str(p).strip().lower() for p in purposes if str(p).strip()] or ["index", "details", "status"],
                 "filters": str(item.get("filters") or "").strip(),
                 "enabled": bool(item.get("enabled", True)),
+                # Code a client types into the Android app at setup (unrelated
+                # to chat_id) so /api/client-notifications can look up which
+                # chat_id's app_notifications rows belong to them. Superseded
+                # by firebase_uid for clients who sign up through the app.
+                "app_code": str(item.get("app_code") or "").strip(),
+                # Self-service profile fields (Android app login/settings
+                # screens) — preserved here too so editing profiles from
+                # either monitor never drops what a client set from the app.
+                "firebase_uid": str(item.get("firebase_uid") or "").strip(),
+                "email": str(item.get("email") or "").strip(),
+                "phone": str(item.get("phone") or "").strip(),
+                "profession": str(item.get("profession") or "").strip(),
+                "location": str(item.get("location") or "").strip(),
+                "institution": str(item.get("institution") or "").strip(),
+                "calendar_visible": bool(item.get("calendar_visible", True)),
             })
         path = notify_formats.CLIENTS_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2757,7 +2772,20 @@ def run_tk() -> int:
                                         font=("Sans", 10, "bold"), text=str(count))
         calendar_day_cells.append((x0, y0, x1, y1, iso, drill))
 
-    def draw_calendar_grid(view: str, anchor, counts: dict[str, int]) -> None:
+    def _hour_counts(rows: list) -> dict[int, int]:
+        """Bucket a day's event rows by hour-of-day for the hourly grids below."""
+        buckets: dict[int, int] = {}
+        for row in rows:
+            value = opportunity_calendar.normalize_value(row["event_date"])
+            if len(value) >= 13:
+                try:
+                    hour = int(value[11:13])
+                except ValueError:
+                    continue
+                buckets[hour] = buckets.get(hour, 0) + 1
+        return buckets
+
+    def draw_calendar_grid(view: str, anchor, counts: dict[str, int], events: dict[str, list] | None = None) -> None:
         calendar_day_cells.clear()
         calendar_canvas.delete("all")
         width = calendar_canvas.winfo_width()
@@ -2766,6 +2794,52 @@ def run_tk() -> int:
         header_h = 20
         today_iso = datetime.now().strftime("%Y-%m-%d")
         max_count = max(list(counts.values()) + [1])
+        events = events or {}
+
+        if view == "day":
+            # Hourly timeline: one thin row per hour (00:00-23:00) instead of a
+            # single blocky day cell, so event density by time of day is visible.
+            label_w = 46
+            hour_h = 16
+            calendar_canvas.configure(height=24 * hour_h + 10)
+            iso = anchor.isoformat()
+            hour_counts = _hour_counts(events.get(iso, []))
+            max_hour = max(list(hour_counts.values()) + [1])
+            calendar_canvas.create_text(6, 6, anchor="nw", fill="#94a3b8", font=("Sans", 8),
+                                        text=f"{iso} ({anchor.strftime('%A')})")
+            for hour in range(24):
+                y0 = 20 + hour * hour_h
+                calendar_canvas.create_text(6, y0 + hour_h / 2, anchor="w", fill="#93c5fd",
+                                            font=("Sans", 7, "bold"), text=f"{hour:02d}:00")
+                _grid_cell(label_w, y0, width - 6, y0 + hour_h - 2, iso, hour_counts.get(hour, 0),
+                           max_hour, "", today=iso == today_iso, drill="day")
+            calendar_canvas.configure(height=20 + 24 * hour_h + 4)
+            return
+
+        if view == "week":
+            # Hourly timeline with 7 day columns (like the day view, but one
+            # column per weekday) instead of one wide cell per day.
+            start, _ = opportunity_calendar.view_range("week", anchor)
+            label_w = 46
+            hour_h = 16
+            cell_w = max(40, (width - 6 - label_w) / 7)
+            calendar_canvas.configure(height=header_h + 24 * hour_h + 10)
+            day_isos = [(start + timedelta(days=offset)).isoformat() for offset in range(7)]
+            for col, day_name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+                calendar_canvas.create_text(label_w + col * cell_w + cell_w / 2, header_h / 2, fill="#93c5fd",
+                                            font=("Sans", 8, "bold"), text=f"{day_name} {day_isos[col][5:]}")
+            day_hour_counts = {iso: _hour_counts(events.get(iso, [])) for iso in day_isos}
+            max_hour = max([v for counts_by_hour in day_hour_counts.values() for v in counts_by_hour.values()] + [1])
+            for hour in range(24):
+                y0 = header_h + hour * hour_h
+                calendar_canvas.create_text(6, y0 + hour_h / 2, anchor="w", fill="#93c5fd",
+                                            font=("Sans", 7, "bold"), text=f"{hour:02d}:00")
+                for col, iso in enumerate(day_isos):
+                    x0 = label_w + col * cell_w
+                    _grid_cell(x0, y0, x0 + cell_w - 2, y0 + hour_h - 1, iso,
+                               day_hour_counts[iso].get(hour, 0), max_hour, "",
+                               today=iso == today_iso, drill="day")
+            return
 
         if view == "year":
             month_totals: dict[str, int] = {}
@@ -2785,30 +2859,6 @@ def run_tk() -> int:
                            month_totals.get(key, 0), peak,
                            date(anchor.year, month, 1).strftime("%b %Y"),
                            today=key == today_iso[:7], drill="month")
-            return
-
-        if view == "day":
-            cell_h = 64
-            calendar_canvas.configure(height=cell_h + 10)
-            iso = anchor.isoformat()
-            _grid_cell(6, 6, width - 6, cell_h, iso, int(counts.get(iso, 0)), max_count,
-                       f"{iso} ({anchor.strftime('%A')})", today=iso == today_iso)
-            return
-
-        if view == "week":
-            start, _ = opportunity_calendar.view_range("week", anchor)
-            cell_w = max(60, (width - 12) / 7)
-            cell_h = 64
-            calendar_canvas.configure(height=header_h + cell_h + 10)
-            for col, day_name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
-                calendar_canvas.create_text(6 + col * cell_w + cell_w / 2, header_h / 2, fill="#93c5fd",
-                                            font=("Sans", 8, "bold"), text=day_name)
-            for offset in range(7):
-                day = start + timedelta(days=offset)
-                iso = day.isoformat()
-                x0 = 6 + offset * cell_w
-                _grid_cell(x0, header_h, x0 + cell_w - 4, header_h + cell_h - 4, iso,
-                           int(counts.get(iso, 0)), max_count, iso[5:], today=iso == today_iso)
             return
 
         month_start, month_end = opportunity_calendar.view_range("month", anchor)
@@ -2848,6 +2898,7 @@ def run_tk() -> int:
             anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
         calendar_anchor_var.set(anchor.isoformat())
         grid_counts: dict[str, int] = {}
+        grid_events: dict[str, list] = {}
         try:
             conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
             conn.row_factory = sqlite3.Row
@@ -2856,13 +2907,13 @@ def run_tk() -> int:
                 # Fetch counts for the SAME range the grid will draw, so week
                 # and day views (which can cross month edges) are always right.
                 grid_start, grid_end = opportunity_calendar.view_range(view, anchor)
-                events = opportunity_calendar.fetch_events(conn, calendar_field_var.get(), grid_start, grid_end)
-                grid_counts = {day: len(rows) for day, rows in events.items()}
+                grid_events = opportunity_calendar.fetch_events(conn, calendar_field_var.get(), grid_start, grid_end)
+                grid_counts = {day: len(rows) for day, rows in grid_events.items()}
             finally:
                 conn.close()
         except sqlite3.Error:
             text = "(archive database not available yet — run a collection first)"
-        draw_calendar_grid(view, anchor, grid_counts)
+        draw_calendar_grid(view, anchor, grid_counts, grid_events)
         calendar_text.configure(state="normal")
         calendar_text.delete("1.0", "end")
         calendar_text.insert("1.0", text)

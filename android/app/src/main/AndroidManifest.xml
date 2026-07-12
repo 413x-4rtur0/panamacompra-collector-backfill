@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Shared across all 3 flavors (free/paid/admin). Each flavor's own
+         AndroidManifest.xml (src/admin, src/free, src/paid) declares the
+         <application>/<activity> block plus any flavor-only permissions
+         (e.g. POST_NOTIFICATIONS + FOREGROUND_SERVICE for the client
+         flavors); AGP merges them together per variant. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>

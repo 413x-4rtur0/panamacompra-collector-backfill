@@ -108,6 +108,51 @@ def read_waha_clients_text() -> str:
     return WAHA_CLIENTS_PATH.read_text(encoding="utf-8", errors="replace").strip() or "[]"
 
 
+WAHA_CLIENTS_LOCK = threading.Lock()
+
+
+def _normalize_client_profile(item: dict) -> dict | None:
+    """Shared normalization for one client profile entry.
+
+    Used by both save_waha_clients_text() (operator-edited textarea, a full
+    list replace) and upsert_client_profile() (self-service, one profile at a
+    time from the Android app), so the two paths can never drift out of sync
+    on which fields exist or how they're cleaned up. Returns None for an
+    entry with no chat_id (dropped, same as before).
+    """
+    if not isinstance(item, dict):
+        raise ValueError("each client profile must be an object")
+    chat_id = str(item.get("chat_id") or "").strip()
+    if not chat_id:
+        return None
+    purposes = item.get("purposes") or ["index", "details", "status"]
+    if isinstance(purposes, str):
+        purposes = [p.strip() for p in purposes.split(",") if p.strip()]
+    if not isinstance(purposes, list):
+        raise ValueError("client purposes must be a list or comma-separated string")
+    return {
+        "name": str(item.get("name") or chat_id).strip(),
+        "chat_id": chat_id,
+        "purposes": [str(p).strip().lower() for p in purposes if str(p).strip()] or ["index", "details", "status"],
+        "filters": str(item.get("filters") or "").strip(),
+        "enabled": bool(item.get("enabled", True)),
+        # Code a client types into the Android app at setup (unrelated to
+        # chat_id) so /api/client-notifications can look up which chat_id's
+        # app_notifications rows belong to them. Superseded by firebase_uid
+        # for anyone who signs up through the app, but still supported for
+        # profiles the operator created manually.
+        "app_code": str(item.get("app_code") or "").strip(),
+        # Self-service profile fields (Android app login/settings screens).
+        "firebase_uid": str(item.get("firebase_uid") or "").strip(),
+        "email": str(item.get("email") or "").strip(),
+        "phone": str(item.get("phone") or "").strip(),
+        "profession": str(item.get("profession") or "").strip(),
+        "location": str(item.get("location") or "").strip(),
+        "institution": str(item.get("institution") or "").strip(),
+        "calendar_visible": bool(item.get("calendar_visible", True)),
+    }
+
+
 def save_waha_clients_text(text: str) -> None:
     try:
         parsed = json.loads(text or "[]")
@@ -115,27 +160,159 @@ def save_waha_clients_text(text: str) -> None:
         raise ValueError(f"invalid client JSON: {exc}") from exc
     if not isinstance(parsed, list):
         raise ValueError("client profiles must be a JSON list")
-    normalized = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise ValueError("each client profile must be an object")
-        chat_id = str(item.get("chat_id") or "").strip()
-        if not chat_id:
+    normalized = [p for p in (_normalize_client_profile(item) for item in parsed) if p is not None]
+    with WAHA_CLIENTS_LOCK:
+        WAHA_CLIENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WAHA_CLIENTS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def find_client_profile(*, firebase_uid: str = "", app_code: str = "") -> dict | None:
+    """Look up one client profile by firebase_uid (preferred) or legacy app_code."""
+    try:
+        profiles = json.loads(read_waha_clients_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(profiles, list):
+        return None
+    for item in profiles:
+        if not isinstance(item, dict) or not item.get("enabled", True):
             continue
-        purposes = item.get("purposes") or ["index", "details", "status"]
-        if isinstance(purposes, str):
-            purposes = [p.strip() for p in purposes.split(",") if p.strip()]
-        if not isinstance(purposes, list):
-            raise ValueError("client purposes must be a list or comma-separated string")
-        normalized.append({
-            "name": str(item.get("name") or chat_id).strip(),
-            "chat_id": chat_id,
-            "purposes": [str(p).strip().lower() for p in purposes if str(p).strip()] or ["index", "details", "status"],
-            "filters": str(item.get("filters") or "").strip(),
-            "enabled": bool(item.get("enabled", True)),
-        })
-    WAHA_CLIENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    WAHA_CLIENTS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if firebase_uid and str(item.get("firebase_uid") or "").strip() == firebase_uid:
+            return item
+        if app_code and str(item.get("app_code") or "").strip().lower() == app_code.lower():
+            return item
+    return None
+
+
+def upsert_client_profile(update: dict) -> dict:
+    """Self-service create/update for one client profile, keyed by firebase_uid.
+
+    Concurrency-safe (WAHA_CLIENTS_LOCK guards the read-modify-write) since
+    this can be called by any signed-in client's app at any time.
+    """
+    uid = str(update.get("firebase_uid") or "").strip()
+    if not uid:
+        raise ValueError("firebase_uid is required")
+    with WAHA_CLIENTS_LOCK:
+        try:
+            existing = json.loads(read_waha_clients_text())
+        except json.JSONDecodeError:
+            existing = []
+        if not isinstance(existing, list):
+            existing = []
+        match_index = next(
+            (i for i, item in enumerate(existing)
+             if isinstance(item, dict) and str(item.get("firebase_uid") or "").strip() == uid),
+            None,
+        )
+        merged = dict(existing[match_index]) if match_index is not None else {}
+        merged.update(update)
+        merged["firebase_uid"] = uid
+        if not str(merged.get("chat_id") or "").strip():
+            # App-only signup, no WhatsApp group linked yet. A stable
+            # non-WhatsApp chat_id still lets /api/client-notifications and
+            # app_notifications scope rows to this client — see the
+            # "app:" handling added to notify_whatsapp.send_text().
+            merged["chat_id"] = f"app:{uid}"
+        normalized = _normalize_client_profile(merged)
+        if normalized is None:
+            raise ValueError("could not normalize client profile")
+        if match_index is not None:
+            existing[match_index] = normalized
+        else:
+            existing.append(normalized)
+        WAHA_CLIENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WAHA_CLIENTS_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return normalized
+
+
+def client_filter_fn(profile: dict):
+    """Row predicate for a client's own filters, for opportunity_calendar.fetch_events().
+
+    Reuses notify_whatsapp's own parse_filter_rules()/evaluate_filter() so the
+    client-scoped calendar always agrees with what that client's WhatsApp
+    group / app notifications actually receive — one filter implementation,
+    not two that could drift apart.
+    """
+    includes, excludes = notify_formats.parse_filter_rules(profile.get("filters", ""))
+
+    def _matches(row) -> bool:
+        haystack = notify_formats.row_filter_haystack(row, {})
+        return notify_formats.evaluate_filter(haystack, includes, excludes) is not None
+
+    return _matches
+
+
+def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=None, shift: int = 0) -> dict:
+    """Shared JSON payload builder behind /api/calendar-grid and
+    /api/client-calendar-grid (the client version passes filter_fn so it only
+    sees opportunities matching its own profile's filters). ``shift`` moves
+    the anchor by that many view-units (prev/next), server-side, so callers
+    with no separate text endpoint to lean on (the client calendar page) can
+    still page through months/weeks/etc. in one round trip."""
+    if view not in opportunity_calendar.VIEWS:
+        view = "month"
+    if field not in opportunity_calendar.FIELDS:
+        field = "end"
+    try:
+        anchor = opportunity_calendar.parse_anchor(date_param)
+    except SystemExit:
+        anchor = opportunity_calendar.parse_anchor("")
+    if shift:
+        anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
+    start, end = opportunity_calendar.view_range(view, anchor)
+    grouped_events: dict[str, list[dict[str, str]]] = {}
+    month_counts: dict[str, int] = {}
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+        conn.row_factory = sqlite3.Row
+        try:
+            events = opportunity_calendar.fetch_events(conn, field, start, end, filter_fn=filter_fn)
+            for day_key, rows in events.items():
+                grouped_events[day_key] = []
+                month_counts[day_key[:7]] = month_counts.get(day_key[:7], 0) + len(rows)
+                for row in rows:
+                    value = opportunity_calendar.normalize_value(row["event_date"])
+                    desc = (row["descripcion"] or row["short_description"] or "").strip()
+                    grouped_events[day_key].append({
+                        "numero": str(row["numero"] or ""),
+                        "description": desc[:96],
+                        "status": str(row["estado"] or row["grupo"] or ""),
+                        "date": value,
+                        "clock": value[11:16] if len(value) >= 16 else "--:--",
+                    })
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        grouped_events = {}
+        month_counts = {}
+    days = [
+        {
+            "iso": (start + timedelta(days=offset)).isoformat(),
+            "label": str((start + timedelta(days=offset)).day),
+            "today": time.strftime("%Y-%m-%d"),
+        }
+        for offset in range((end - start).days + 1)
+    ]
+    months = [
+        {"value": f"{anchor.year}-{month:02d}", "label": date(anchor.year, month, 1).strftime("%b %Y")}
+        for month in range(1, 13)
+    ] if view == "year" else []
+    return {
+        "view": view,
+        "field": field,
+        "anchor": anchor.isoformat(),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "label": opportunity_calendar.FIELDS[field][1],
+        "first_weekday": start.weekday(),
+        "today": time.strftime("%Y-%m-%d"),
+        "days": days,
+        "events": grouped_events,
+        "total": sum(len(rows) for rows in grouped_events.values()),
+        "months": months,
+        "month_counts": month_counts,
+    }
 
 
 def waha_search(query: str) -> dict:
@@ -597,6 +774,176 @@ _startup_settings = parse_settings_file()
 CHANGEDETECTION_URL = (os.environ.get("CHANGEDETECTION_BASE_URL") or _startup_settings.get("CHANGEDETECTION_BASE_URL") or "http://localhost:5000").rstrip("/")
 WAHA_DASHBOARD_URL = "http://localhost:" + (os.environ.get("WAHA_PORT") or _startup_settings.get("WAHA_PORT") or "3000")
 
+# Standalone page for the Android client apps' Calendar tab (loaded in a
+# WebView pointed at /client-calendar?uid=<firebase_uid>). Deliberately a
+# self-contained copy of just the calendar CSS/JS from the admin page's
+# calendar card below, not a shared include — the admin page's HTML is one
+# big f-string and factoring a shared fragment out of it isn't worth the risk
+# of a blind edit to an already-verified 600+ line string. If you change the
+# calendar's appearance (CSS in the "Ubuntu-style opportunity calendar" block
+# below, or the renderCalendar* functions), mirror it here too.
+CLIENT_CALENDAR_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PanamaCompra Calendar</title>
+<style>
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 10px; background: #0f172a; color: #e5e7eb; }
+.small { color: #94a3b8; font-size: .85rem; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+select, input, button { border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: .9rem; }
+button { cursor: pointer; }
+.calendar-board { background: #020617; border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
+.calendar-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }
+.calendar-title h3 { margin: 0; color: #bfdbfe; font-size: 1rem; }
+.calgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calgrid .dow { text-align: center; color: #93c5fd; font-weight: 700; font-size: .8rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }
+.calcell { min-height: 100px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 5px; cursor: pointer; background: #020617; overflow: hidden; }
+.calcell.blank { background: #02061799; cursor: default; }
+.calcell.today { box-shadow: inset 0 0 0 2px #facc15; }
+.calcell .num { color: #cbd5e1; font-size: .85rem; font-weight: 700; display: flex; justify-content: space-between; margin-bottom: 4px; }
+.calcell .count { color: #94a3b8; font-size: .72rem; font-weight: 400; }
+.calevent { display: block; margin: 3px 0; padding: 3px 5px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .74rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.calevent.soon { border-left-color: #facc15; background: #422006; color: #fde68a; }
+.calevent.expired { border-left-color: #f87171; background: #450a0a; color: #fecaca; }
+.calevent.more { border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }
+.timeline-scroll { max-height: 70vh; overflow-y: auto; border-top: 1px solid #1e293b; }
+.timeline { display: grid; grid-template-columns: 56px 1fr; }
+.week-timeline { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); }
+.hour-label { color: #93c5fd; font-weight: 700; font-size: .74rem; padding: 5px 6px; text-align: right; border-bottom: 1px solid #1e293b; border-right: 1px solid #1e293b; background: #0f172a; }
+.hour-lane { min-height: 30px; padding: 3px 6px; display: flex; flex-direction: column; gap: 3px; border-bottom: 1px solid #1e293b; }
+.week-timeline .hour-lane { padding: 2px; gap: 2px; border-right: 1px solid #1e293b; }
+.timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime { background: #0b1220; border-bottom: 2px solid #334155; }
+.wk-head { padding: 6px 4px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .76rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }
+.wk-corner { background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }
+.year-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 10px; }
+.month-box { border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }
+.month-box b { color: #bfdbfe; }
+.bar-track { height: 10px; background: #1e293b; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <select id="cal-view" onchange="loadCalendar()">
+    <option value="day">Day</option><option value="week">Week</option>
+    <option value="month" selected>Month</option><option value="year">Year</option>
+  </select>
+  <select id="cal-field" onchange="loadCalendar()">
+    <option value="end" selected>Deadline</option><option value="start">Start</option><option value="downloaded">Downloaded</option>
+  </select>
+  <input id="cal-date" size="10" placeholder="YYYY-MM-DD">
+  <button onclick="loadCalendar(-1)">&#9664;</button>
+  <button onclick="loadCalendar(0)">Today</button>
+  <button onclick="loadCalendar(1)">&#9654;</button>
+</div>
+<div id="calendar-visual" class="small">Loading calendar&hellip;</div>
+<script>
+const params = new URLSearchParams(location.search);
+const uid = params.get('uid') || '';
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let calendarAnchor = '';
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function calendarEventClass(ev) {
+  const status = (ev.status || '').toLowerCase();
+  if (status.includes('venc') || status.includes('cerrad') || status.includes('expir')) return 'expired';
+  if (status.includes('pront') || status.includes('soon')) return 'soon';
+  return '';
+}
+function renderCalendarEvent(ev) {
+  const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
+  const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
+  return `<span class="calevent ${calendarEventClass(ev)}" title="${esc(title)}">${esc(clock + title)}</span>`;
+}
+function renderCalendarDayCell(day, events, blank, maxShown) {
+  if (blank) return '<div class="calcell blank"></div>';
+  const limit = maxShown || 4;
+  const shown = (events || []).slice(0, limit).map(renderCalendarEvent).join('');
+  const more = (events || []).length > limit ? `<span class="calevent more">+${events.length - limit} more</span>` : '';
+  const classes = ['calcell'];
+  if (day.iso === day.today) classes.push('today');
+  return `<div class="${classes.join(' ')}" onclick="document.getElementById('cal-date').value='${day.iso}'; document.getElementById('cal-view').value='day'; loadCalendar()"><div class="num"><span>${day.label}</span><span class="count">${events.length || ''}</span></div>${shown}${more}</div>`;
+}
+async function loadCalendar(shift) {
+  const node = document.getElementById('calendar-visual');
+  const view = document.getElementById('cal-view').value || 'month';
+  const field = document.getElementById('cal-field').value || 'end';
+  const dateBox = document.getElementById('cal-date');
+  if (shift === 0) { calendarAnchor = ''; dateBox.value = ''; }
+  const anchor = (dateBox.value || calendarAnchor).trim();
+  let qs = 'uid=' + encodeURIComponent(uid) + '&view=' + encodeURIComponent(view) + '&field=' + encodeURIComponent(field);
+  if (anchor) qs += '&date=' + encodeURIComponent(anchor);
+  if (shift) qs += '&shift=' + shift;
+  try {
+    const g = await (await fetch('/api/client-calendar-grid?' + qs, {cache: 'no-store'})).json();
+    if (g.hidden) { node.textContent = 'Calendar hidden for this profile.'; return; }
+    calendarAnchor = g.anchor;
+    dateBox.value = g.anchor;
+    const grouped = g.events || {};
+    const title = `${g.label || view} · ${g.start} to ${g.end} · ${g.total || 0} opportunities`;
+    if (view === 'year') {
+      const peak = Math.max(1, ...Object.values(g.month_counts || {}).map(Number));
+      const boxes = (g.months || []).map(m => {
+        const count = Number((g.month_counts || {})[m.value] || 0);
+        const width = Math.round(100 * count / peak);
+        return `<div class="month-box" onclick="document.getElementById('cal-date').value='${m.value}-01'; document.getElementById('cal-view').value='month'; loadCalendar()"><b>${esc(m.label)}</b><div class="small">${count} opportunities</div><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div></div>`;
+      }).join('');
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="year-grid">${boxes}</div></div>`;
+      return;
+    }
+    const days = g.days || [];
+    const hasTime = ev => ev.clock && ev.clock !== '--:--';
+    const hourOf = ev => parseInt(ev.clock.slice(0, 2), 10) || 0;
+    if (view === 'day') {
+      const day = days[0] || {};
+      const evs = grouped[day.iso] || [];
+      const notime = evs.filter(ev => !hasTime(ev));
+      const byHour = Array.from({length: 24}, () => []);
+      evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
+      const notimeRow = notime.length
+        ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${notime.map(renderCalendarEvent).join('')}</div>` : '';
+      const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${String(h).padStart(2, '0')}:00</div><div class="hour-lane">${evsAtHour.map(renderCalendarEvent).join('')}</div>`).join('');
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="timeline-scroll"><div class="timeline">${notimeRow}${hourRows}</div></div></div>`;
+      return;
+    }
+    if (view === 'week') {
+      const cols = days.map((day, i) => {
+        const evs = grouped[day.iso] || [];
+        const byHour = Array.from({length: 24}, () => []);
+        evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
+        return {i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour};
+      });
+      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head">${WEEKDAY_LABELS[c.i] || ''} ${esc((c.iso || '').slice(5))}</div>`).join('');
+      const anyNotime = cols.some(c => c.notime.length);
+      const notimeRow = anyNotime
+        ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${c.notime.map(renderCalendarEvent).join('')}</div>`).join('') : '';
+      let hourRows = '';
+      for (let h = 0; h < 24; h++) {
+        hourRows += `<div class="hour-label">${String(h).padStart(2, '0')}:00</div>`;
+        hourRows += cols.map(c => `<div class="hour-lane">${c.byHour[h].map(renderCalendarEvent).join('')}</div>`).join('');
+      }
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="timeline-scroll"><div class="week-timeline">${head}${notimeRow}${hourRows}</div></div></div>`;
+      return;
+    }
+    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${d}</div>`).join('');
+    for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
+    cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="calgrid">${cells}</div></div>`;
+  } catch (err) {
+    node.textContent = 'Calendar unavailable: ' + err;
+  }
+}
+if (!uid) {
+  document.getElementById('calendar-visual').textContent = 'Missing uid.';
+} else {
+  loadCalendar(0);
+}
+</script>
+</body>
+</html>
+"""
+
 HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -679,24 +1026,28 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calendar-title {{ display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }}
 .calendar-title h3 {{ margin: 0; color: #bfdbfe; }}
 .calgrid {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
-.calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .78rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }}
-.calcell {{ min-height: 126px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 6px; cursor: pointer; background: #020617; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; overflow: hidden; }}
+.calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .88rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }}
+.calcell {{ min-height: 142px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 6px; cursor: pointer; background: #020617; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; overflow: hidden; }}
 .calcell:hover {{ background: #0b1220; box-shadow: inset 0 0 0 1px #38bdf8; }}
 .calcell.blank {{ background: #02061799; cursor: default; }}
 .calcell.today {{ box-shadow: inset 0 0 0 2px #facc15; }}
-.calcell .num {{ color: #cbd5e1; font-size: .82rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }}
-.calcell .count {{ color: #94a3b8; font-size: .72rem; font-weight: 400; }}
-.calevent {{ display: block; margin: 3px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .76rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.calcell .num {{ color: #cbd5e1; font-size: .95rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }}
+.calcell .count {{ color: #94a3b8; font-size: .82rem; font-weight: 400; }}
+.calevent {{ display: block; margin: 4px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .85rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .calevent.soon {{ border-left-color: #facc15; background: #422006; color: #fde68a; }}
 .calevent.expired {{ border-left-color: #f87171; background: #450a0a; color: #fecaca; }}
 .calevent.more {{ border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }}
-.week-agenda .calcell {{ min-height: 320px; }}
-/* Day view: full-width agenda list instead of a grid. */
-.agenda {{ display: flex; flex-direction: column; }}
-.agenda-row {{ display: flex; gap: 12px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid #1e293b; }}
-.agenda-row:hover {{ background: #0b1220; }}
-.agenda-clock {{ color: #93c5fd; font-weight: 700; min-width: 54px; font-size: .85rem; }}
-.agenda-body .calevent {{ display: inline-block; max-width: none; white-space: normal; }}
+/* Day/week views: hourly timeline (hour rows, events placed at their hour)
+   instead of a flat list or a day-chip grid. */
+.timeline-scroll {{ max-height: 640px; overflow-y: auto; border-top: 1px solid #1e293b; }}
+.timeline {{ display: grid; grid-template-columns: 64px 1fr; }}
+.week-timeline {{ display: grid; grid-template-columns: 64px repeat(7, minmax(0, 1fr)); }}
+.hour-label {{ color: #93c5fd; font-weight: 700; font-size: .78rem; padding: 6px 8px; text-align: right; border-bottom: 1px solid #1e293b; border-right: 1px solid #1e293b; background: #0f172a; }}
+.hour-lane {{ min-height: 34px; padding: 4px 8px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid #1e293b; }}
+.week-timeline .hour-lane {{ padding: 3px; gap: 3px; border-right: 1px solid #1e293b; }}
+.timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime {{ background: #0b1220; border-bottom: 2px solid #334155; }}
+.wk-head {{ padding: 7px 6px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .82rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }}
+.wk-corner {{ background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }}
 .agenda-empty {{ padding: 16px; }}
 .year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
 .month-box {{ border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }}
@@ -1189,23 +1540,42 @@ async function renderCalendarVisual() {{
       return;
     }}
     const days = g.days || [];
+    const hasTime = ev => ev.clock && ev.clock !== '--:--';
+    const hourOf = ev => parseInt(ev.clock.slice(0, 2), 10) || 0;
     if (view === 'day') {{
-      // Single-day agenda: no weekday grid, one full-width list of the day's
-      // events with their times, so the layout is visibly different from month.
+      // Hourly timeline: one row per hour (00:00-23:00) with events placed in
+      // their hour's lane; events without a known time get a "No time" row.
       const day = days[0] || {{}};
       const evs = grouped[day.iso] || [];
-      const rows = evs.length
-        ? evs.map(ev => `<div class="agenda-row ${{calendarEventClass(ev)}}"><span class="agenda-clock">${{esc(ev.clock || '--:--')}}</span><span class="agenda-body">${{renderCalendarEvent(ev)}}</span></div>`).join('')
-        : '<div class="agenda-empty small">No opportunities on this day.</div>';
-      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Single-day agenda.</span></div><div class="agenda">${{rows}}</div></div>`;
+      const notime = evs.filter(ev => !hasTime(ev));
+      const byHour = Array.from({{length: 24}}, () => []);
+      evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
+      const notimeRow = notime.length
+        ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${{notime.map(renderCalendarEvent).join('')}}</div>` : '';
+      const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`).join('');
+      const note = evs.length ? 'Hourly agenda.' : 'No opportunities on this day.';
+      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div><div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     if (view === 'week') {{
-      // One row of 7 tall columns headed by weekday + date, showing more
-      // events per day than the month grid.
-      let cells = days.map((day, i) => `<div class="dow">${{WEEKDAY_LABELS[i] || ''}} ${{esc((day.iso || '').slice(5))}}</div>`).join('');
-      cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false, 8)).join('');
-      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
+      // Hourly timeline with one column per day: a time-label column plus 7
+      // day columns, each split into 24 hour lanes so events line up by time.
+      const cols = days.map((day, i) => {{
+        const evs = grouped[day.iso] || [];
+        const byHour = Array.from({{length: 24}}, () => []);
+        evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
+        return {{ i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour }};
+      }});
+      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
+      const anyNotime = cols.some(c => c.notime.length);
+      const notimeRow = anyNotime
+        ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
+      let hourRows = '';
+      for (let h = 0; h < 24; h++) {{
+        hourRows += `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div>`;
+        hourRows += cols.map(c => `<div class="hour-lane">${{c.byHour[h].map(renderCalendarEvent).join('')}}</div>`).join('');
+      }}
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
@@ -1769,6 +2139,29 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 return
             self.send_text(200, "WhatsApp client profiles saved.\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/client-profile":
+            # Self-service profile upsert from the Android app: form field
+            # "profile" is a JSON object string (same "JSON inside a form
+            # field" convention as /api/waha-clients), e.g.
+            # {"firebase_uid":"abc","email":"a@b.com","phone":"+507...",
+            #  "purposes":["index","details"],"filters":"salud + insumos",
+            #  "profession":"...","location":"...","institution":"...",
+            #  "calendar_visible":true}
+            try:
+                update = json.loads(form.get("profile", ["{}"])[0])
+            except json.JSONDecodeError as exc:
+                self.send_text(400, f"invalid profile JSON: {exc}\n", "text/plain; charset=utf-8")
+                return
+            if not isinstance(update, dict):
+                self.send_text(400, "profile must be a JSON object\n", "text/plain; charset=utf-8")
+                return
+            try:
+                saved = upsert_client_profile(update)
+            except ValueError as exc:
+                self.send_text(400, f"{exc}\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, json.dumps(saved, ensure_ascii=False), "application/json; charset=utf-8")
+            return
         if path == "/api/waha-format":
             kind = form.get("kind", ["index"])[0].strip().lower()
             if kind not in notify_formats.FORMAT_KINDS:
@@ -1822,6 +2215,79 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/actions":
+            # Same MANUAL_ACTIONS list the page's own buttons render from, as
+            # plain JSON — lets other clients (e.g. the Android app) drive
+            # /api/manual-action without duplicating this list.
+            self.send_text(200, ACTIONS_JSON, "application/json; charset=utf-8")
+            return
+        if path == "/api/notifications":
+            # Incremental feed over app_notifications (see
+            # common.log_app_notification), the local mirror of every
+            # outbound WAHA/WhatsApp send. ?since=<last seen id> returns only
+            # newer rows so a polling client (the Android app) can dedupe.
+            params = parse_qs(urlparse(self.path).query)
+            try:
+                since_id = int(params.get("since", ["0"])[0])
+            except ValueError:
+                since_id = 0
+            rows_out: list[dict[str, object]] = []
+            try:
+                conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT id, created_at, purpose, chat_id, text FROM app_notifications "
+                        "WHERE id > ? ORDER BY id LIMIT 200",
+                        (since_id,),
+                    ).fetchall()
+                    rows_out = [dict(row) for row in rows]
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                rows_out = []
+            self.send_text(200, json.dumps(rows_out, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/client-notifications":
+            # Scoped feed for the client-facing Android app: ?uid=<firebase_uid>
+            # (signed-in clients) or the legacy ?code=<app_code> resolves to a
+            # data/config/waha_clients.json profile's chat_id, then returns
+            # only app_notifications rows sent to that exact chat_id — i.e.
+            # exactly what that client's WhatsApp group already receives, no
+            # more. No chat_id in the response (clients don't need to see
+            # WhatsApp internals).
+            params = parse_qs(urlparse(self.path).query)
+            uid = (params.get("uid", [""])[0] or "").strip()
+            code = (params.get("code", [""])[0] or "").strip()
+            try:
+                since_id = int(params.get("since", ["0"])[0])
+            except ValueError:
+                since_id = 0
+            if not uid and not code:
+                self.send_text(400, "missing ?uid= or ?code=\n", "text/plain; charset=utf-8")
+                return
+            profile = find_client_profile(firebase_uid=uid, app_code=code)
+            if profile is None:
+                self.send_text(404, "unknown or disabled client\n", "text/plain; charset=utf-8")
+                return
+            chat_id = str(profile.get("chat_id") or "").strip()
+            rows_out = []
+            try:
+                conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT id, created_at, purpose, text FROM app_notifications "
+                        "WHERE chat_id = ? AND id > ? ORDER BY id LIMIT 200",
+                        (chat_id, since_id),
+                    ).fetchall()
+                    rows_out = [dict(row) for row in rows]
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                rows_out = []
+            self.send_text(200, json.dumps(rows_out, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/cron-schedule":
             result = subprocess.run(
@@ -1966,70 +2432,86 @@ class MonitorHandler(BaseHTTPRequestHandler):
             # calendar. The text renderer remains the source for CLI parity;
             # this endpoint is only for browser layout.
             params = parse_qs(urlparse(self.path).query)
-            view = (params.get("view", ["month"])[0] or "month").lower()
-            if view not in opportunity_calendar.VIEWS:
-                view = "month"
-            field = (params.get("field", ["end"])[0] or "end").lower()
-            if field not in opportunity_calendar.FIELDS:
-                field = "end"
             try:
-                anchor = opportunity_calendar.parse_anchor(params.get("date", [""])[0])
-            except SystemExit:
-                anchor = opportunity_calendar.parse_anchor("")
-            start, end = opportunity_calendar.view_range(view, anchor)
-            grouped_events: dict[str, list[dict[str, str]]] = {}
-            month_counts: dict[str, int] = {}
+                shift = int(params.get("shift", ["0"])[0])
+            except ValueError:
+                shift = 0
+            payload = calendar_grid_payload(
+                (params.get("view", ["month"])[0] or "month").lower(),
+                (params.get("field", ["end"])[0] or "end").lower(),
+                params.get("date", [""])[0],
+                shift=shift,
+            )
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/client-calendar-grid":
+            # Same shape as /api/calendar-grid, scoped to one client's own
+            # filters — the Android app's Calendar tab (WebView, see
+            # /client-calendar) points here instead.
+            params = parse_qs(urlparse(self.path).query)
+            uid = (params.get("uid", [""])[0] or "").strip()
+            code = (params.get("code", [""])[0] or "").strip()
+            if not uid and not code:
+                self.send_text(400, "missing ?uid= or ?code=\n", "text/plain; charset=utf-8")
+                return
+            profile = find_client_profile(firebase_uid=uid, app_code=code)
+            if profile is None:
+                self.send_text(404, "unknown or disabled client\n", "text/plain; charset=utf-8")
+                return
+            if not profile.get("calendar_visible", True):
+                self.send_text(200, json.dumps({"hidden": True}, ensure_ascii=False), "application/json; charset=utf-8")
+                return
+            try:
+                shift = int(params.get("shift", ["0"])[0])
+            except ValueError:
+                shift = 0
+            payload = calendar_grid_payload(
+                (params.get("view", ["month"])[0] or "month").lower(),
+                (params.get("field", ["end"])[0] or "end").lower(),
+                params.get("date", [""])[0],
+                filter_fn=client_filter_fn(profile),
+                shift=shift,
+            )
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/client-calendar":
+            self.send_text(200, CLIENT_CALENDAR_HTML, "text/html; charset=utf-8")
+            return
+        if path == "/api/client-profile":
+            params = parse_qs(urlparse(self.path).query)
+            uid = (params.get("uid", [""])[0] or "").strip()
+            if not uid:
+                self.send_text(400, "missing ?uid=\n", "text/plain; charset=utf-8")
+                return
+            profile = find_client_profile(firebase_uid=uid)
+            if profile is None:
+                self.send_text(404, "no profile for this uid yet\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, json.dumps(profile, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/filter-suggestions":
+            # Suggested institution/location/profession values, derived from
+            # what's actually in the archive (not a hand-maintained list) so
+            # it stays current as new opportunities come in. "profession" has
+            # no dedicated column — grupo (the index-scrape category) is the
+            # closest existing proxy.
+            suggestions = {"institutions": [], "locations": [], "professions": []}
             try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
-                    events = opportunity_calendar.fetch_events(conn, field, start, end)
-                    for day_key, rows in events.items():
-                        grouped_events[day_key] = []
-                        month_counts[day_key[:7]] = month_counts.get(day_key[:7], 0) + len(rows)
-                        for row in rows:
-                            value = opportunity_calendar.normalize_value(row["event_date"])
-                            desc = (row["descripcion"] or row["short_description"] or "").strip()
-                            grouped_events[day_key].append({
-                                "numero": str(row["numero"] or ""),
-                                "description": desc[:96],
-                                "status": str(row["estado"] or row["grupo"] or ""),
-                                "date": value,
-                                "clock": value[11:16] if len(value) >= 16 else "--:--",
-                            })
+                    for key, column in (("institutions", "entidad"), ("locations", "dependencia"), ("professions", "grupo")):
+                        rows = conn.execute(
+                            f"SELECT {column} AS value, COUNT(*) AS n FROM opportunities "
+                            f"WHERE {column} IS NOT NULL AND TRIM({column}) != '' "
+                            f"GROUP BY {column} ORDER BY n DESC LIMIT 40"
+                        ).fetchall()
+                        suggestions[key] = [row["value"] for row in rows]
                 finally:
                     conn.close()
             except sqlite3.Error:
-                grouped_events = {}
-                month_counts = {}
-            days = [
-                {
-                    "iso": (start + timedelta(days=offset)).isoformat(),
-                    "label": str((start + timedelta(days=offset)).day),
-                    "today": time.strftime("%Y-%m-%d"),
-                }
-                for offset in range((end - start).days + 1)
-            ]
-            months = [
-                {"value": f"{anchor.year}-{month:02d}", "label": date(anchor.year, month, 1).strftime("%b %Y")}
-                for month in range(1, 13)
-            ] if view == "year" else []
-            payload = {
-                "view": view,
-                "field": field,
-                "anchor": anchor.isoformat(),
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "label": opportunity_calendar.FIELDS[field][1],
-                "first_weekday": start.weekday(),
-                "today": time.strftime("%Y-%m-%d"),
-                "days": days,
-                "events": grouped_events,
-                "total": sum(len(rows) for rows in grouped_events.values()),
-                "months": months,
-                "month_counts": month_counts,
-            }
-            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+                pass
+            self.send_text(200, json.dumps(suggestions, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path in ("/", "/index.html"):
             self.send_text(200, HTML, "text/html; charset=utf-8")

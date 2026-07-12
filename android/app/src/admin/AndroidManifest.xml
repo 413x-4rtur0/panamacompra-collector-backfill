@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- INTERNET / ACCESS_NETWORK_STATE come from src/main/AndroidManifest.xml -->
+
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.Monitor">
+        <!-- usesCleartextTraffic: the web monitor is a plain-HTTP LAN dev
+             server with no TLS and no auth. Only point this app at a monitor
+             on a trusted local network, never over the public internet. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Monitor">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

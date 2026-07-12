@@ -95,15 +95,26 @@ def normalize_value(value: str) -> str:
     return (value or "").strip().replace("_", " ").replace("T", " ")
 
 
-def fetch_events(conn, field: str, start: date, end: date) -> dict[str, list]:
-    """Events keyed by 'YYYY-MM-DD' within the inclusive range."""
+def fetch_events(conn, field: str, start: date, end: date, *, filter_fn=None) -> dict[str, list]:
+    """Events keyed by 'YYYY-MM-DD' within the inclusive range.
+
+    ``filter_fn(row) -> bool``, when given, keeps only matching rows — used
+    by the web monitor's client-scoped calendar (GET /api/client-calendar-grid)
+    to show each client only opportunities matching their own filters. The
+    extra columns beyond day_block()/event_line()'s needs (entidad,
+    dependencia, modalidad, detail_json_path) exist so filter_fn can build the
+    same keyword-match haystack notify_whatsapp.row_filter_haystack() uses.
+    """
     expr = FIELDS[field][0]
     rows = conn.execute(
-        f"SELECT numero, descripcion, short_description, estado, grupo, {expr} AS event_date "
+        f"SELECT numero, descripcion, short_description, estado, grupo, entidad, dependencia, "
+        f"modalidad, detail_json_path, {expr} AS event_date "
         f"FROM opportunities WHERE REPLACE(REPLACE(SUBSTR({expr}, 1, 10), '_', '-'), 'T', '') "
         f"BETWEEN ? AND ? ORDER BY {expr}, numero",
         (start.isoformat(), end.isoformat()),
     ).fetchall()
+    if filter_fn is not None:
+        rows = [row for row in rows if filter_fn(row)]
     grouped: dict[str, list] = {}
     for row in rows:
         value = normalize_value(row["event_date"])
@@ -121,16 +132,29 @@ def event_line(row) -> str:
     return f"  {clock}  {row['numero']}  {desc}" + (f"  [{status}]" if status else "")
 
 
-def day_block(day_key: str, events: list) -> list[str]:
+def day_block(day_key: str, events: list, *, hourly: bool = False) -> list[str]:
     weekday = WEEKDAYS[date.fromisoformat(day_key).weekday()]
     lines = [f"{weekday} {day_key} — {len(events)} opportunity(ies):"]
-    lines.extend(event_line(row) for row in events)
+    if not hourly:
+        lines.extend(event_line(row) for row in events)
+        return lines
+    buckets: dict[str, list] = {}
+    for row in events:
+        value = normalize_value(row["event_date"])
+        hour = value[11:13] if len(value) >= 16 else ""
+        buckets.setdefault(hour, []).append(row)
+    for hour in sorted(h for h in buckets if h):
+        lines.append(f"  -- {hour}:00 --")
+        lines.extend(event_line(row) for row in buckets[hour])
+    if "" in buckets:
+        lines.append("  -- no time --")
+        lines.extend(event_line(row) for row in buckets[""])
     return lines
 
 
-def render_view(conn, view: str, anchor: date, field: str) -> str:
+def render_view(conn, view: str, anchor: date, field: str, *, hourly: bool = False, filter_fn=None) -> str:
     start, end = view_range(view, anchor)
-    grouped = fetch_events(conn, field, start, end)
+    grouped = fetch_events(conn, field, start, end, filter_fn=filter_fn)
     total = sum(len(v) for v in grouped.values())
     label = FIELDS[field][1]
     lines: list[str] = []
@@ -139,7 +163,7 @@ def render_view(conn, view: str, anchor: date, field: str) -> str:
         lines.append(f"Opportunities by {label} — {anchor.isoformat()}")
         lines.append("")
         events = grouped.get(anchor.isoformat(), [])
-        lines.extend(day_block(anchor.isoformat(), events) if events else ["(no opportunities on this day)"])
+        lines.extend(day_block(anchor.isoformat(), events, hourly=hourly) if events else ["(no opportunities on this day)"])
 
     elif view == "week":
         lines.append(f"Opportunities by {label} — week of {start.isoformat()} to {end.isoformat()} ({total} total)")
@@ -148,7 +172,7 @@ def render_view(conn, view: str, anchor: date, field: str) -> str:
             lines.append("")
             events = grouped.get(day_key, [])
             if events:
-                lines.extend(day_block(day_key, events))
+                lines.extend(day_block(day_key, events, hourly=hourly))
             else:
                 lines.append(f"{WEEKDAYS[offset]} {day_key} — —")
 
@@ -196,7 +220,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     conn = pc_common.init_db()
-    print(render_view(conn, args.view, parse_anchor(args.date), args.field))
+    print(render_view(conn, args.view, parse_anchor(args.date), args.field, hourly=True))
     return 0
 
 
