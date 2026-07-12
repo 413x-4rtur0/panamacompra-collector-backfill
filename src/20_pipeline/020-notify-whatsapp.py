@@ -24,7 +24,7 @@ Readability controls (all also readable from monitor_settings.env):
 
 * ``PC_WAHA_SEND_DELAY_SECONDS`` (default 3) paces consecutive sends so a batch
   arrives as separate readable messages instead of one burst; 0 disables.
-* ``PC_NOTIFY_INDEX_DIGEST_THRESHOLD`` (default 10) collapses the index alerts
+* ``PC_NOTIFY_INDEX_DIGEST_THRESHOLD`` (default 1) collapses the index alerts
   into compact digest message(s) when a run finds more new records than the
   threshold; each record still gets its own detail follow-up. 0 disables.
 * ``PC_NOTIFY_IDLE_EVERY_HOURS`` (default 6) throttles the idle status message
@@ -1019,17 +1019,19 @@ def pace_after_send(index: int, total: int) -> None:
 
 def index_digest_threshold() -> int:
     """New-record count above which the index alerts collapse into digest
-    messages. PC_NOTIFY_INDEX_DIGEST_THRESHOLD, default 10; 0 disables the
+    messages. PC_NOTIFY_INDEX_DIGEST_THRESHOLD, default 1; 0 disables the
     digest so every new record keeps its own message."""
     if load_client_profiles():
         return 0
     value = cfg_int("PC_NOTIFY_INDEX_DIGEST_THRESHOLD")
-    return 10 if value is None else max(0, value)
+    return 1 if value is None else max(0, value)
 
 
 # Records listed per digest message; more new records roll into "parte 2/2"
 # messages so no single WhatsApp message becomes unreadably long.
-DIGEST_RECORDS_PER_MESSAGE = 20
+def index_digest_records_per_message() -> int:
+    value = cfg_int("PC_NOTIFY_INDEX_DIGEST_MAX_RECORDS")
+    return 100 if value is None else max(1, value)
 
 
 def idle_every_hours() -> float:
@@ -1485,10 +1487,11 @@ def build_index_digest_messages(rows) -> list[tuple[list, str]]:
 
     Returns [(chunk_rows, text), ...] so the caller can mark exactly the records
     whose message was accepted. Each record takes two compact lines; chunks of
-    DIGEST_RECORDS_PER_MESSAGE keep any single WhatsApp message readable."""
+    PC_NOTIFY_INDEX_DIGEST_MAX_RECORDS bounds exceptional messages."""
+    records_per_message = index_digest_records_per_message()
     chunks = [
-        rows[i:i + DIGEST_RECORDS_PER_MESSAGE]
-        for i in range(0, len(rows), DIGEST_RECORDS_PER_MESSAGE)
+        rows[i:i + records_per_message]
+        for i in range(0, len(rows), records_per_message)
     ]
     out = []
     for part, chunk in enumerate(chunks, start=1):
@@ -1499,7 +1502,7 @@ def build_index_digest_messages(rows) -> list[tuple[list, str]]:
         for offset, row in enumerate(chunk, start=1):
             if offset > 1:
                 lines.append("")  # blank line so every opportunity starts on its own block
-            position = (part - 1) * DIGEST_RECORDS_PER_MESSAGE + offset
+            position = (part - 1) * records_per_message + offset
             fecha = fmt_dt(row["finish_date_guess"] or row["fecha"])
             lines.append(f"{position}. *{clean_field(row['numero'])}* — "
                          f"{_digest_trim(row['descripcion'] or row['short_description'], 90)}")
