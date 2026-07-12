@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class MonitorUiState(
@@ -45,10 +46,14 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     /** Point the app at a new monitor address and (re)start status polling. */
     fun connect(url: String) {
         if (url.isBlank()) return
+        val normalized = runCatching { ApiClient.normalizeBaseUrl(url) }.getOrElse { failure ->
+            _uiState.update { it.copy(error = failure.message ?: "Invalid server address") }
+            return
+        }
         pollingJob?.cancel()
-        api = ApiClient.create(url)
-        _uiState.value = _uiState.value.copy(baseUrl = url, error = null)
-        viewModelScope.launch { settingsStore.setBaseUrl(url) }
+        api = ApiClient.create(normalized)
+        _uiState.update { it.copy(baseUrl = normalized, error = null, loading = true) }
+        viewModelScope.launch { settingsStore.setBaseUrl(normalized) }
         loadActions()
         startPolling()
     }
@@ -57,8 +62,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         val client = api ?: return
         viewModelScope.launch {
             runCatching { client.getActions() }
-                .onSuccess { _uiState.value = _uiState.value.copy(actions = it) }
-                .onFailure { _uiState.value = _uiState.value.copy(error = "Actions load failed: ${it.message}") }
+                .onSuccess { actions -> _uiState.update { it.copy(actions = actions) } }
+                .onFailure { failure -> _uiState.update { it.copy(error = "Actions load failed: ${failure.message}") } }
         }
     }
 
@@ -74,8 +79,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun refreshStatus() {
         val client = api ?: return
         runCatching { client.getStatus() }
-            .onSuccess { _uiState.value = _uiState.value.copy(status = it, loading = false, error = null) }
-            .onFailure { _uiState.value = _uiState.value.copy(loading = false, error = "Connection failed: ${it.message}") }
+            .onSuccess { status -> _uiState.update { it.copy(status = status, loading = false, error = null) } }
+            .onFailure { failure -> _uiState.update { it.copy(loading = false, error = "Connection failed: ${failure.message}") } }
     }
 
     fun runAction(label: String) {
@@ -84,9 +89,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             runCatching { client.runManualAction(label) }
                 .onSuccess { response ->
                     val result = if (response.isSuccessful) "Started: $label" else "Failed ($label): HTTP ${response.code()}"
-                    _uiState.value = _uiState.value.copy(lastActionResult = result)
+                    _uiState.update { it.copy(lastActionResult = result) }
                 }
-                .onFailure { _uiState.value = _uiState.value.copy(lastActionResult = "Failed ($label): ${it.message}") }
+                .onFailure { failure -> _uiState.update { it.copy(lastActionResult = "Failed ($label): ${failure.message}") } }
         }
     }
 

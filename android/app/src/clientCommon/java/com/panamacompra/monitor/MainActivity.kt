@@ -1,7 +1,6 @@
 package com.panamacompra.monitor
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -37,7 +36,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,13 +47,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.panamacompra.monitor.ads.BannerAd
 import com.panamacompra.monitor.ads.initAds
 import com.panamacompra.monitor.network.NotificationDto
-import com.panamacompra.monitor.service.NotificationPollingService
 import com.panamacompra.monitor.ui.ClientUiState
 import com.panamacompra.monitor.ui.ClientViewModel
 import com.panamacompra.monitor.ui.theme.MonitorTheme
@@ -74,13 +72,16 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ClientApp(viewModel: ClientViewModel = viewModel()) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("PanamaCompra Alerts") },
                 actions = {
+                    if (uiState.baseUrl.isNotBlank()) {
+                        TextButton(onClick = { viewModel.resetServer() }) { Text("Server") }
+                    }
                     if (uiState.user != null) {
                         TextButton(onClick = { viewModel.signOut() }) { Text("Sign out") }
                     }
@@ -90,7 +91,7 @@ fun ClientApp(viewModel: ClientViewModel = viewModel()) {
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             when {
-                uiState.baseUrl.isBlank() -> ServerSetupScreen(onSave = viewModel::saveBaseUrl)
+                uiState.baseUrl.isBlank() -> ServerSetupScreen(error = uiState.error, onSave = viewModel::saveBaseUrl)
                 uiState.user == null -> AuthScreen(uiState = uiState, viewModel = viewModel)
                 else -> ClientTabs(uiState = uiState, viewModel = viewModel)
             }
@@ -100,7 +101,7 @@ fun ClientApp(viewModel: ClientViewModel = viewModel()) {
 }
 
 @Composable
-private fun ServerSetupScreen(onSave: (String) -> Unit) {
+private fun ServerSetupScreen(error: String?, onSave: (String) -> Unit) {
     var baseUrl by remember { mutableStateOf("") }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(
@@ -116,6 +117,10 @@ private fun ServerSetupScreen(onSave: (String) -> Unit) {
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(Modifier.height(16.dp))
         Button(onClick = { onSave(baseUrl.trim()) }, enabled = baseUrl.isNotBlank()) { Text("Continue") }
     }
@@ -134,9 +139,10 @@ private fun AuthScreen(uiState: ClientUiState, viewModel: ClientViewModel) {
         val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
         try {
             val account = task.getResult(ApiException::class.java)
-            account.idToken?.let { viewModel.signInGoogle(it) }
+            account.idToken?.let(viewModel::signInGoogle)
+                ?: viewModel.reportAuthError("Google sign-in returned no ID token")
         } catch (e: ApiException) {
-            // Cancelled or failed sign-in — nothing to recover, user can retry.
+            viewModel.reportAuthError("Google sign-in failed (${e.statusCode})")
         }
     }
 
@@ -190,14 +196,26 @@ private fun AuthScreen(uiState: ClientUiState, viewModel: ClientViewModel) {
 @Composable
 private fun ClientTabs(uiState: ClientUiState, viewModel: ClientViewModel) {
     var tab by remember { mutableStateOf(0) }
+    val calendarVisible = uiState.profile?.calendarVisible ?: true
+    val profileTab = if (calendarVisible) 2 else 1
+
+    LaunchedEffect(calendarVisible) {
+        if (!calendarVisible && tab == 1) tab = 0
+    }
     TabRow(selectedTabIndex = tab) {
         Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Alerts") })
-        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Calendar") })
-        Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Profile") })
+        if (calendarVisible) {
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Calendar") })
+        }
+        Tab(selected = tab == profileTab, onClick = { tab = profileTab }, text = { Text("Profile") })
     }
     when (tab) {
         0 -> AlertsScreen(uiState, viewModel)
-        1 -> CalendarScreen(baseUrl = uiState.baseUrl, uid = uiState.user?.uid ?: "")
+        1 -> if (calendarVisible) {
+            CalendarScreen(baseUrl = uiState.baseUrl, uid = uiState.user?.uid ?: "")
+        } else {
+            ProfileScreen(uiState, viewModel)
+        }
         else -> ProfileScreen(uiState, viewModel)
     }
 }
@@ -207,13 +225,18 @@ private fun AlertsScreen(uiState: ClientUiState, viewModel: ClientViewModel) {
     val context = LocalContext.current
 
     fun startMonitoring() {
-        ContextCompat.startForegroundService(context, Intent(context, NotificationPollingService::class.java))
-        viewModel.setMonitoringEnabled(true)
+        viewModel.startMonitoring()
     }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> if (granted) startMonitoring() }
+    ) { granted ->
+        if (granted) {
+            startMonitoring()
+        } else {
+            viewModel.reportMonitoringError("Notification permission is required for background monitoring")
+        }
+    }
 
     fun requestMonitoring() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -227,7 +250,13 @@ private fun AlertsScreen(uiState: ClientUiState, viewModel: ClientViewModel) {
 
     LaunchedEffect(uiState.monitoringEnabled, uiState.baseUrl, uiState.user) {
         if (uiState.monitoringEnabled && uiState.baseUrl.isNotBlank() && uiState.user != null) {
-            ContextCompat.startForegroundService(context, Intent(context, NotificationPollingService::class.java))
+            val permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (permissionGranted) {
+                startMonitoring()
+            } else {
+                viewModel.reportMonitoringError("Notification permission was removed; monitoring is off")
+            }
         }
     }
 
@@ -246,8 +275,7 @@ private fun AlertsScreen(uiState: ClientUiState, viewModel: ClientViewModel) {
                     if (checked) {
                         requestMonitoring()
                     } else {
-                        context.stopService(Intent(context, NotificationPollingService::class.java))
-                        viewModel.setMonitoringEnabled(false)
+                        viewModel.stopMonitoring()
                     }
                 },
             )
@@ -297,11 +325,19 @@ private fun CalendarScreen(baseUrl: String, uid: String) {
         factory = { context ->
             WebView(context).apply {
                 settings.javaScriptEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
                 webViewClient = WebViewClient()
                 loadUrl(url)
             }
         },
-        update = { it.loadUrl(url) },
+        update = { webView ->
+            if (webView.url != url) webView.loadUrl(url)
+        },
+        onRelease = { webView ->
+            webView.stopLoading()
+            webView.destroy()
+        },
     )
 }
 

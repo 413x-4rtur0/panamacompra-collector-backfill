@@ -3,12 +3,13 @@ package com.panamacompra.monitor.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.firebase.auth.FirebaseAuth
+import com.panamacompra.monitor.MainActivity
 import com.panamacompra.monitor.data.ClientSettingsStore
 import com.panamacompra.monitor.network.ApiClient
 import com.panamacompra.monitor.network.NotificationDto
@@ -54,16 +55,20 @@ class NotificationPollingService : Service() {
     private suspend fun pollLoop() {
         val settings = ClientSettingsStore(applicationContext)
         while (true) {
+            if (!settings.monitoringEnabled.first()) {
+                stopSelf()
+                return
+            }
             val baseUrl = settings.baseUrl.first()
             val uid = FirebaseAuth.getInstance().currentUser?.uid
             if (baseUrl.isNotBlank() && !uid.isNullOrBlank()) {
-                val lastId = settings.lastNotificationId.first()
+                val lastId = settings.lastNotificationId(uid).first()
                 runCatching {
                     ApiClient.create(baseUrl).getClientNotifications(uid, lastId)
                 }.onSuccess { notifications ->
                     if (notifications.isNotEmpty()) {
                         notifications.forEach { postAlert(it) }
-                        settings.setLastNotificationId(notifications.maxOf { it.id })
+                        settings.setLastNotificationId(uid, notifications.maxOf { it.id })
                     }
                 }
                 // Failures (monitor offline, wrong network, etc.) are silently
@@ -76,6 +81,15 @@ class NotificationPollingService : Service() {
 
     private fun postAlert(notification: NotificationDto) {
         val manager = getSystemService(NotificationManager::class.java)
+        val notificationId = ((notification.id % (Int.MAX_VALUE - 10_000L)) + 10_000L).toInt()
+        val openApp = PendingIntent.getActivity(
+            this,
+            notificationId,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val title = when (notification.purpose) {
             "index" -> "New opportunity"
             "details" -> "Opportunity details"
@@ -87,12 +101,13 @@ class NotificationPollingService : Service() {
             .setContentTitle(title)
             .setContentText(notification.text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(notification.text))
+            .setContentIntent(openApp)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         // Notification id = server row id, so a re-delivered row (e.g. after
         // a since-cursor reset) replaces rather than duplicates.
-        manager.notify(notification.id.toInt(), built)
+        manager.notify(notificationId, built)
     }
 
     private fun buildForegroundNotification(): Notification =

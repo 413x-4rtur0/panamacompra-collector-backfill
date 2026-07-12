@@ -104,7 +104,11 @@ interface MonitorApi {
 
     /** uid = the signed-in Firebase user's uid. since = last-seen notification id, for incremental polling. */
     @GET("api/client-notifications")
-    suspend fun getClientNotifications(@Query("uid") uid: String, @Query("since") since: Long): List<NotificationDto>
+    suspend fun getClientNotifications(
+        @Query("uid") uid: String,
+        @Query("since") since: Long,
+        @Query("latest") latest: Boolean = false,
+    ): List<NotificationDto>
 
     @GET("api/client-profile")
     suspend fun getClientProfile(@Query("uid") uid: String): Response<ClientProfileDto>

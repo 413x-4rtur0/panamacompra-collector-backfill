@@ -72,6 +72,11 @@ Android Studio: Build Variants panel → pick `freeDebug` / `paidDebug` /
 `adminDebug`. CLI equivalent once the wrapper exists:
 `./gradlew assembleFreeDebug` (or `assemblePaidDebug` / `assembleAdminDebug`).
 
+Run `./check.sh` for the repository validation suite. It always runs admin
+unit tests, lint, and assembly; when `app/google-services.json` exists it
+also validates both client flavors. The script uses `./gradlew` when present
+and otherwise uses the system `gradle` command.
+
 ## Before connecting (all flavors)
 
 1. **Bind the monitor beyond loopback.** `PC_MONITOR_HOST` defaults to
@@ -196,6 +201,9 @@ In `src/40_monitor/001b-monitor-web.py`:
 - `GET /api/client-notifications?uid=<firebase_uid>` (or legacy
   `?code=<app_code>`) `&since=<id>` — scoped to one client profile's
   `chat_id`.
+  `&latest=true` returns the newest 200 rows for the in-app history;
+  background polling keeps the default oldest-first order so its cursor can
+  advance without gaps.
 - `GET /api/client-profile?uid=` / `POST /api/client-profile` (form field
   `profile` = JSON object string, same convention as the existing
   `/api/waha-clients`) — self-service profile read/upsert, concurrency-safe

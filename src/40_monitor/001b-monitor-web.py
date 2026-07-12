@@ -2264,6 +2264,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 since_id = int(params.get("since", ["0"])[0])
             except ValueError:
                 since_id = 0
+            latest_first = (params.get("latest", [""])[0] or "").strip().lower() in {"1", "true", "yes"}
             if not uid and not code:
                 self.send_text(400, "missing ?uid= or ?code=\n", "text/plain; charset=utf-8")
                 return
@@ -2277,9 +2278,10 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
+                    order = "DESC" if latest_first else "ASC"
                     rows = conn.execute(
                         "SELECT id, created_at, purpose, text FROM app_notifications "
-                        "WHERE chat_id = ? AND id > ? ORDER BY id LIMIT 200",
+                        f"WHERE chat_id = ? AND id > ? ORDER BY id {order} LIMIT 200",
                         (chat_id, since_id),
                     ).fetchall()
                     rows_out = [dict(row) for row in rows]
