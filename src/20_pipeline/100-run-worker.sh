@@ -51,10 +51,6 @@ notify_waha() {
   local message="$3"
   local purpose="${4:-system}"
   local purpose_args=()
-  if [ "${WAHA_MESSAGING_SKIPPED:-0}" = "1" ]; then
-    log "WAHA $event message skipped: configured session requires a QR scan."
-    return 0
-  fi
   [ -z "$purpose" ] || purpose_args=(--purpose "$purpose")
   if [ -x "$APP_ROOT/src/30_notify/010-waha-client.py" ]; then
     "$PYTHON_BIN" "$APP_ROOT/src/30_notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" "${purpose_args[@]}" >> "$WORKER_LOG" 2>&1 || true
@@ -79,10 +75,6 @@ launch_queued_update_monitor() {
 }
 
 notify_new_records() {
-  if [ "${WAHA_MESSAGING_SKIPPED:-0}" = "1" ]; then
-    log "WhatsApp record messaging skipped: configured WAHA session requires a QR scan."
-    return 0
-  fi
   if [ -x "$PIPELINE_DIR/020-notify-whatsapp.py" ]; then
     "$PYTHON_BIN" "$PIPELINE_DIR/020-notify-whatsapp.py" "$@" >> "$WORKER_LOG" 2>&1 || true
   fi
@@ -134,11 +126,8 @@ check_waha_session_before_run() {
 
   if [ "$code" -eq 10 ]; then
     WAHA_MESSAGING_SKIPPED=1
-    # Child processes include inline detail notifications, so disable WAHA for
-    # this iteration only. The saved operator setting remains unchanged.
-    export PC_WAHA_ENABLED=0
     write_waha_qr_warning "$session" "$status" "$dashboard_url"
-    log "WARNING: WAHA session '$session' is $status and requires a QR scan. All WhatsApp messaging is skipped for this iteration; collection continues. Open $dashboard_url to pair it."
+    log "WARNING: WAHA session '$session' is $status and requires a QR scan. Every WhatsApp message will be checked and flagged unsent without POSTing; collection continues. Open $dashboard_url to pair it."
     return 0
   fi
 
@@ -462,8 +451,11 @@ PY
   fi
   NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
   if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
-    write_progress "MESSAGING" "SKIPPED" "52" "Step 2/7: WAHA requires a QR scan; WhatsApp skipped and collection continues." "$STARTED"
-    log "ITERATION $ITERATION Step 2 WhatsApp skipped because WAHA requires QR pairing."
+    write_progress "MESSAGING" "SKIPPED" "52" "Step 2/7: WAHA requires QR; checking each message and flagging it unsent without posting." "$STARTED"
+    log "ITERATION $ITERATION Step 2 is flagging each WhatsApp message unsent because WAHA requires QR pairing."
+    MESSAGING_START_EPOCH="$(date '+%s')"
+    PC_MSG_STEP_CURRENT=2 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=52 PC_MSG_PERCENT_DONE=55 notify_new_records --announce
+    MESSAGING_SECONDS=$(( $(date '+%s') - MESSAGING_START_EPOCH ))
   elif [ "$NOTIFY_WHATSAPP" != "0" ]; then
     write_progress "MESSAGING" "RUNNING" "52" "Step 2/7: sending WhatsApp index alerts (new opportunities + status changes) before downloads..." "$STARTED"
     {
@@ -557,8 +549,11 @@ PY
     if [ "$VIEW_EXIT" -eq 0 ]; then
       NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
       if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
-        write_progress "MESSAGING" "SKIPPED" "80" "Step 5/7: WAHA still requires a QR scan; detail messages skipped and processing continues." "$STARTED"
-        log "ITERATION $ITERATION Step 5 WhatsApp details skipped because WAHA requires QR pairing."
+        write_progress "MESSAGING" "SKIPPED" "80" "Step 5/7: WAHA still requires QR; checking and flagging each unsent detail message." "$STARTED"
+        log "ITERATION $ITERATION Step 5 is flagging each WhatsApp detail message unsent because WAHA requires QR pairing."
+        DETAIL_MSG_START_EPOCH="$(date '+%s')"
+        PC_MSG_STEP_CURRENT=5 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=80 PC_MSG_PERCENT_DONE=83 notify_new_records --announce-details --since "$STARTED"
+        MESSAGING_SECONDS=$(( MESSAGING_SECONDS + $(date '+%s') - DETAIL_MSG_START_EPOCH ))
       elif [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
         write_progress "MESSAGING" "RUNNING" "80" "Step 5/7: sending WhatsApp detail messages (downloaded items) for announced records..." "$STARTED"
         {

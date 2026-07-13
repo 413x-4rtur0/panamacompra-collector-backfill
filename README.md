@@ -492,7 +492,7 @@ PC_DETAIL_LIMIT=5 ./src/20_pipeline/030-collect-details.py   # download up to 5 
 | `src/20_pipeline/100-run-worker.sh` | Locked sequential worker: pre-run update, **index → WhatsApp index alerts → details/downloads → storing/per-record calendars/detail views → WhatsApp item-detail follow-ups → verification → calendar packages**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
 | `src/20_pipeline/000-update-before-run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `src/30_notify/010-waha-client.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
-| `src/30_notify/015-waha-session-status.py` | Dependency-free WAHA session preflight. The worker calls it once per iteration; a `SCAN_QR_CODE`/`STARTING` session skips every WhatsApp path (including inline detail messages) without failing the collector and writes a persistent terminal-monitor warning. |
+| `src/30_notify/015-waha-session-status.py` | Dependency-free WAHA session preflight. The worker calls it once per iteration, while `010-waha-client.py` rechecks before every actual destination send. A `SCAN_QR_CODE`/`STARTING` session prevents the POST, flags the message unsent, leaves it eligible for retry, and writes a persistent terminal-monitor warning without failing the collector. |
 | `src/20_pipeline/020-notify-whatsapp.py` | WhatsApp (WAHA) notifier helpers and entry point. Two notifier phases. The worker calls `--announce` in the first MESSAGING step **right after the index, before detail downloads**, sending one “🔔 Nueva Oportunidad” message per new record with per-message monitor progress (items shown as pending); after downloads + views it calls `--announce-details`, which sends the follow-up “📥 Detalles Completos” message per record with the real items and exports its calendar. `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends; `--sync-snapshots --since TS` is the silent fallback when `PC_NOTIFY_DETAILS=0`. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `src/20_pipeline/110b-run-now.sh` | Runs the worker in the foreground for interactive use. |
 | `src/10_webhook/060-run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
@@ -862,12 +862,19 @@ Test the notifier without running the collector:
 ./src/30_notify/015-waha-session-status.py --json
 ```
 
-Before each enabled run, the worker verifies the configured WAHA session. If
-WAHA is asking for a QR scan (`SCAN_QR_CODE` or `STARTING`), all WhatsApp sends
-for that iteration are skipped without failing or delaying collection. The
+Before each enabled run, the worker verifies the configured WAHA session, and
+the WAHA client rechecks it immediately before **every actual destination
+message**. If WAHA is asking for a QR scan (`SCAN_QR_CODE` or `STARTING`), no
+message POST is made and collection continues. Each record message remains in
+the retry backlog (`notified_at`/`detail_notified_at` stays empty), increments
+`notify_attempts`, and stores a `WAHA_QR_REQUIRED` reason in `notify_error` for
+the Failed-alerts KPI. Every attempted-but-unsent destination is also appended
+to `data/logs/waha_unsent_messages.jsonl`, covering operational messages that
+do not have a record row. The
 automatic terminal monitor remains open with a prominent warning and the WAHA
 dashboard URL; scan the QR there, or press Ctrl+C to close the warning screen.
-The next healthy worker preflight clears the warning automatically.
+The first healthy per-message check (or next healthy worker preflight) clears
+the warning automatically.
 
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
 bridge, not the official WhatsApp Business Cloud API, so the safest use is a
@@ -1698,6 +1705,9 @@ next run to confirm the session is connected and clear the warning. The warning
 state is stored at `$PC_RUN_DIR/waha_qr_required.env` (`var/run/…` in a normal
 development/portable checkout); Ctrl+C closes only the
 terminal screen and does not stop the collector.
+Unsent attempts are listed in `data/logs/waha_unsent_messages.jsonl`; record
+messages also appear in the monitor's Failed-alerts KPI and stay eligible for a
+later retry because their notification timestamp is not set.
 
 **Monitor stays open** — a real process is probably still running:
 

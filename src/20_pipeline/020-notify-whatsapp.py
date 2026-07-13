@@ -939,6 +939,9 @@ def record_send_outcome(conn, numero: str, ok: bool, error: str = "") -> None:
         pass
 
 
+_last_send_error = ""
+
+
 def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str = "") -> bool:
     """Send through WAHA, routed to the per-purpose destination.
 
@@ -950,6 +953,8 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
     When ``conn``/``numero`` are given, the delivery outcome is persisted on the
     record row (notify_attempts / notify_error) for the Failed-alerts KPI.
     """
+    global _last_send_error
+    _last_send_error = ""
     if record_events_respect_filter() and not waha.enabled_for_event(event):
         print(f"WAHA notification skipped: event {event!r} is not enabled.")
         return False
@@ -1005,6 +1010,7 @@ def send_text(event: str, text: str, purpose: str = "", conn=None, numero: str =
         record_send_outcome(conn, numero, True)
         return True
     except Exception as exc:  # noqa: BLE001 - never let a notify failure stop a run
+        _last_send_error = str(exc)
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         record_send_outcome(conn, numero, False, str(exc))
         return False
@@ -1571,7 +1577,7 @@ def announce_index_digest(conn, rows) -> tuple[int, int]:
             # Track the failed attempt on every record of this chunk so the
             # Failed-alerts KPI counts them, then let the next run retry.
             for row in chunk_rows:
-                record_send_outcome(conn, row["numero"], False, "index digest send failed")
+                record_send_outcome(conn, row["numero"], False, _last_send_error or "index digest send failed")
             break  # leave the remaining chunks unmarked; the next run retries
         sent_messages += 1
         for row in chunk_rows:
