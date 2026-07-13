@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
 source "$SCRIPT_DIR/../../lib/env.sh"
+# shellcheck source=015-listener-process.sh
+source "$SCRIPT_DIR/015-listener-process.sh"
 cd "$APP_ROOT"
 
 HOST="${PC_WEBHOOK_HOST:-0.0.0.0}"
@@ -42,7 +44,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 webhook_listener_running() {
-  pgrep -f "[s]rc/10_webhook/010-webhook-listener.py" >/dev/null 2>&1
+  pc_webhook_host_running
 }
 
 port_available() {
@@ -168,7 +170,7 @@ fi
 
 if webhook_listener_running; then
   echo "Webhook listener is already running."
-  pgrep -af "[s]rc/10_webhook/010-webhook-listener.py" || true
+  pc_webhook_print_host_processes || true
   print_notification_urls
   exit 0
 fi
@@ -201,7 +203,7 @@ nohup env PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" \
 sleep 1
 if webhook_listener_running; then
   echo "Webhook listener started on $HOST:$PORT. Log: $LOG_FILE"
-  pgrep -af "[s]rc/10_webhook/010-webhook-listener.py" || true
+  pc_webhook_print_host_processes || true
   print_notification_urls
   exit 0
 fi

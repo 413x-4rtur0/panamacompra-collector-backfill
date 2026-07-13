@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Manage the changedetection + sockpuppetbrowser + WAHA + webhook Docker stack.
+# Manage the changedetection + sockpuppetbrowser + WAHA + webhook integrations.
+# When the host systemd webhook service is installed/running, it is the single
+# webhook owner and the duplicate Compose webhook stays stopped.
 #
 #   ./src/50_tools/010-docker-stack.sh up        pull/start (or refresh) the stack
 #   ./src/50_tools/010-docker-stack.sh down      stop and remove the containers
@@ -23,6 +25,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
 source "$SCRIPT_DIR/../../lib/env.sh"
+# shellcheck source=../10_webhook/015-listener-process.sh
+source "$APP_ROOT/src/10_webhook/015-listener-process.sh"
 cd "$APP_ROOT"
 
 ACTION="${1:-status}"
@@ -247,6 +251,34 @@ print_urls() {
   note "Container data: $PC_INTEGRATIONS_DIR"
 }
 
+host_webhook_service_enabled() {
+  command -v systemctl >/dev/null 2>&1 &&
+    systemctl --user is-enabled --quiet panamacompra-webhook.service 2>/dev/null
+}
+
+host_webhook_is_owner() {
+  pc_webhook_host_running ||
+    { command -v systemctl >/dev/null 2>&1 &&
+      systemctl --user is-active --quiet panamacompra-webhook.service 2>/dev/null; } ||
+    host_webhook_service_enabled
+}
+
+compose_up_with_webhook_owner() {
+  if host_webhook_is_owner; then
+    note "Host webhook listener owns port ${PC_WEBHOOK_PORT:-8765}; keeping the duplicate Compose webhook stopped."
+    "${COMPOSE[@]}" stop webhook >/dev/null 2>&1 || true
+    "${COMPOSE[@]}" up -d --remove-orphans changedetection sockpuppetbrowser waha || return 1
+    "${COMPOSE[@]}" stop webhook >/dev/null 2>&1 || true
+    if host_webhook_service_enabled; then
+      systemctl --user start panamacompra-webhook.service ||
+        note "WARNING: could not start panamacompra-webhook.service; run ./src/10_webhook/020-start-listener.sh manually."
+    fi
+  else
+    note "No host webhook owner detected; starting the Compose webhook fallback."
+    "${COMPOSE[@]}" up -d --remove-orphans || return 1
+  fi
+}
+
 # Recognize previous/parallel installations before starting:
 #  * our own stack already running        -> just refresh it
 #  * foreign containers on our host ports -> ask to stop them (tty) or warn
@@ -299,7 +331,7 @@ case "$ACTION" in
   up)
     ensure_access_credentials
     preflight
-    "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed. Check that the Docker daemon is running and your user can access it."
+    compose_up_with_webhook_owner || fail "docker compose up failed. Check that the Docker daemon is running and your user can access it."
     sync_changedetection_timer_settings
     note "Stack is up."
     print_urls
@@ -312,7 +344,7 @@ case "$ACTION" in
     ensure_access_credentials
     "${COMPOSE[@]}" down --remove-orphans
     preflight
-    "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed after restart."
+    compose_up_with_webhook_owner || fail "docker compose up failed after restart."
     sync_changedetection_timer_settings
     note "Stack restarted."
     print_urls

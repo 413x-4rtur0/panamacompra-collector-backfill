@@ -9,6 +9,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=src/10_webhook/015-listener-process.sh
+source "$APP_ROOT/src/10_webhook/015-listener-process.sh"
 BASE_DIR="$APP_ROOT"
 cd "$APP_ROOT"
 
@@ -47,7 +49,7 @@ queue_update_monitor_request() {
 }
 
 webhook_listener_running() {
-  pgrep -f "[s]rc/10_webhook/010-webhook-listener.py" >/dev/null 2>&1
+  pc_webhook_host_running
 }
 
 restart_webhook_listener() {
@@ -257,7 +259,7 @@ trap restore_webhook_on_exit EXIT
 # converted into a queued Update + Monitor request instead. We only pause the
 # webhook listener during the actual update window so a fresh notification is
 # enqueued for after the update instead of racing code/dependency changes.
-pkill -TERM -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
+pc_webhook_kill_host_processes TERM
 
 echo ""
 echo "3) Preserve any local changes to tracked files so the update always proceeds"

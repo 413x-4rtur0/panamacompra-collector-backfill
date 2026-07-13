@@ -16,7 +16,7 @@ usage() {
 Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
-Update + Monitor, changedetection.io, WAHA, low-resource Integration URLs, Docker
+Update + Monitor, Monitor Only (native Tk, no update), changedetection.io, WAHA, low-resource Integration URLs, Docker
 integrations, Docker Manager (all containers on this host), Stop All / Start All,
 and Dev Pause / Dev Resume. The Update +
 Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
@@ -56,6 +56,7 @@ launcher_name="panamacompra-update-monitor.desktop"
 app_path="$app_dir/$launcher_name"
 desktop_path="$desktop_dir/$launcher_name"
 icon_path="$icon_dir/panamacompra-update-monitor.svg"
+monitor_only_icon_path="$icon_dir/panamacompra-monitor-only.svg"
 changedetection_icon_path="$icon_dir/panamacompra-changedetection.svg"
 waha_icon_path="$icon_dir/panamacompra-waha.svg"
 docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
@@ -78,6 +79,15 @@ write_icon() {
   <path d="M38 104h52" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
   <path d="M86 18v18h18" fill="none" stroke="#facc15" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M104 18v18H86" fill="none" stroke="#facc15" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+SVG
+  cat > "$monitor_only_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <rect x="18" y="24" width="92" height="66" rx="8" fill="#111827" stroke="#22c55e" stroke-width="6"/>
+  <path d="M33 68h15l10-24 14 36 10-18h13" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="98" cy="38" r="8" fill="#4ade80"/>
+  <path d="M42 106h44M64 90v16" stroke="#94a3b8" stroke-width="7" stroke-linecap="round"/>
 </svg>
 SVG
   cat > "$changedetection_icon_path" <<'SVG'
@@ -155,6 +165,16 @@ SVG
 
 write_helper_scripts() {
   mkdir -p "$helper_dir"
+  cat > "$helper_dir/monitor-only.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+# One-shot override: always open the native Tk monitor, never the updater
+# loader. The operator's saved manual monitor preference is not changed.
+export PC_MONITOR_MODE=tk
+exec "$APP_ROOT_VALUE/src/40_monitor/000-open-monitor.sh"
+SH
   cat > "$helper_dir/open-changedetection.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -230,7 +250,7 @@ SH
 set -euo pipefail
 APP_ROOT_VALUE="__APP_ROOT__"
 cd "$APP_ROOT_VALUE"
-echo "PanamaCompra Docker integrations (changedetection + WAHA + webhook)"
+echo "PanamaCompra Docker integrations (changedetection + WAHA; one safe webhook owner)"
 echo "Starting/refreshing stack, then printing status..."
 ./src/50_tools/010-docker-stack.sh up || true
 echo ""
@@ -307,6 +327,7 @@ write_desktop_entry() {
   local target_app="$1" target_desktop="$2" name="$3" comment="$4" exec_value="$5" terminal="$6" categories="$7"
   local selected_icon="$icon_path"
   case "$target_app" in
+    *monitor-only*) selected_icon="$monitor_only_icon_path" ;;
     *changedetection*) selected_icon="$changedetection_icon_path" ;;
     *waha*) selected_icon="$waha_icon_path" ;;
     *docker-integrations*) selected_icon="$docker_icon_path" ;;
@@ -349,6 +370,13 @@ install_integration_launchers() {
   [[ "$MONITOR_ONLY" == "1" ]] && return 0
   write_helper_scripts
   write_desktop_entry \
+    "$app_dir/panamacompra-monitor-only.desktop" \
+    "$desktop_dir/panamacompra-monitor-only.desktop" \
+    "PanamaCompra Monitor Only" \
+    "Open the native Tk monitor directly without updating the local copy" \
+    "$(quote_desktop_value "$helper_dir/monitor-only.sh")" \
+    "false" "Utility;Monitor;"
+  write_desktop_entry \
     "$app_dir/panamacompra-changedetection.desktop" \
     "$desktop_dir/panamacompra-changedetection.desktop" \
     "PanamaCompra changedetection" \
@@ -373,7 +401,7 @@ install_integration_launchers() {
     "$app_dir/panamacompra-docker-integrations.desktop" \
     "$desktop_dir/panamacompra-docker-integrations.desktop" \
     "PanamaCompra Docker Integrations" \
-    "Start/status changedetection, WAHA and webhook containers" \
+    "Start/status changedetection and WAHA, keeping one safe webhook listener" \
     "$(quote_desktop_value "$helper_dir/docker-integrations.sh")" \
     "true" "Utility;Monitor;System;"
   write_desktop_entry \
@@ -444,6 +472,7 @@ remove_launcher() {
   else
     rm -f "$app_path" "$desktop_path" \
       "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop" \
+      "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop" \
       "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop" \
       "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop" \
       "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop" \
@@ -467,6 +496,7 @@ print_paths() {
   printf 'Exec target:      %s --open-monitor-after\n' "$loader_path"
   if [[ "$MONITOR_ONLY" != "1" ]]; then
     printf 'changedetection:  %s and %s\n' "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop"
+    printf 'Monitor Only:     %s and %s\n' "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop"
     printf 'WAHA:             %s and %s\n' "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop"
     printf 'Integration URLs: %s and %s\n' "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop"
     printf 'Docker stack:     %s and %s\n' "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop"

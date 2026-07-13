@@ -4,6 +4,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
 source "$SCRIPT_DIR/../../lib/env.sh"
+# shellcheck source=../10_webhook/015-listener-process.sh
+source "$APP_ROOT/src/10_webhook/015-listener-process.sh"
 cd "$APP_ROOT"
 
 # Counterpart to 120a-stop-everything.sh: brings back the background
@@ -52,7 +54,7 @@ fi
 echo ""
 echo "2) Webhook listener..."
 webhook_listener_running() {
-  pgrep -f "[s]rc/10_webhook/010-webhook-listener.py" >/dev/null 2>&1
+  pc_webhook_host_running
 }
 if systemctl --user is-enabled --quiet panamacompra-webhook.service 2>/dev/null; then
   echo "   Starting user systemd service: panamacompra-webhook.service"

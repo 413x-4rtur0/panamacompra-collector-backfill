@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
 source "$SCRIPT_DIR/../../lib/env.sh"
+# shellcheck source=../10_webhook/015-listener-process.sh
+source "$APP_ROOT/src/10_webhook/015-listener-process.sh"
 cd "$APP_ROOT"
 
 echo "Stopping all PanamaCompra runners and background processes..."
@@ -69,8 +71,7 @@ if systemctl --user is-active --quiet panamacompra-webhook.service 2>/dev/null; 
   echo "   Stopping systemd unit: panamacompra-webhook.service"
   systemctl --user stop panamacompra-webhook.service 2>/dev/null || true
 fi
-pkill -TERM -f "[p]ython3? -u .*src/10_webhook/010-webhook-listener.py" 2>/dev/null || true
-pkill -TERM -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
+pc_webhook_kill_host_processes TERM
 
 # Give processes a short window to terminate gracefully. Keep this snappy so the
 # STOP action (and update-local-copy.sh, which relies on a fast stop) does not
@@ -87,7 +88,7 @@ pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate-local-copy.sh" 2>/dev/null || true
 pkill -9 -f "[0]01a-monitor-tk.py" 2>/dev/null || true
-pkill -9 -f "[s]rc/10_webhook/010-webhook-listener.py" 2>/dev/null || true
+pc_webhook_kill_host_processes KILL
 
 sleep 1
 

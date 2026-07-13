@@ -497,6 +497,7 @@ PC_DETAIL_LIMIT=5 ./src/20_pipeline/030-collect-details.py   # download up to 5 
 | `src/20_pipeline/110b-run-now.sh` | Runs the worker in the foreground for interactive use. |
 | `src/10_webhook/060-run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
 | `src/10_webhook/010-webhook-listener.py` | Local HTTP listener for changedetection.io notifications. Runs `src/10_webhook/060-run-collector.sh` directly, or (with `PC_WEBHOOK_ENQUEUE_ONLY=1`, as in the Docker stack) only writes the run request flag for the host runner. |
+| `src/10_webhook/015-listener-process.sh` | Shared host-listener process detection. It compares Linux network namespaces so a Docker webhook PID visible from the host cannot be mistaken for the systemd/host listener or prevent port 8765 from being rebound. |
 | `src/10_webhook/020-start-listener.sh` | Safe manual/autoupdate starter for the webhook listener; verifies `.webhook_token`, can replace an old process occupying the webhook port with `--replace-port-owner`, starts with `nohup` or `--foreground` for systemd, logs to `data/logs/webhook_listener.out.log`, and returns immediately to the monitor. |
 | `src/10_webhook/030-install-service.sh` | Installs/repairs the persistent user `panamacompra-webhook.service` with the safe foreground starter, so stale port owners are replaced before binding. |
 | `src/10_webhook/050-watch-queue-flag.sh` | Host runner for the dockerized webhook: watches `data/queue/run_all_requested.flag` and launches the host collector (`src/20_pipeline/110a-request-run.sh`) when a request is enqueued. Install as the `panamacompra-runner.service` user unit. |
@@ -505,7 +506,7 @@ PC_DETAIL_LIMIT=5 ./src/20_pipeline/030-collect-details.py   # download up to 5 
 | `src/50_tools/040-message-formats.py` | Customizable WhatsApp message formats: the operator can rewrite the text of the **index alert**, the **detail follow-up**, and the **status-change** messages with `{placeholder}` templates (`pcc format show/preview/set/reset/placeholders`; unknown placeholders stay literal so a typo never breaks a send). Also editable from both monitors; stored in `data/config/waha_format_<kind>.txt`. Blank/absent = built-in layout. |
 | `src/50_tools/030-opportunity-calendar.py` | Opportunity calendar: collected opportunities by **day / week / month / year**, driven by deadline (default), start, or local-download dates. Month view is a grid with per-day counts plus the day-by-day listing; year view shows per-month totals. Backs `pcc calendar` and the dedicated **Calendar** tab in both monitors (all three share this renderer). |
 | `src/50_tools/020-record-templates.py` | Work templates: keep reusable files (bid forms, checklists, ...) in a source folder (`PC_TEMPLATES_SRC_DIR`, default `var/templates`), select one or more (`pcc templates select`), and they are copied into `templates/` inside every record's detail folder — automatically for records downloaded in each run, and on demand with `pcc templates apply`. Existing files are never overwritten unless `--overwrite`, so in-progress work is safe. Also manageable from both monitors (source folder, file selection, apply-to-all, copy-to-selected-records). |
-| `src/50_tools/010-docker-stack.sh` | Manage the changedetection + sockpuppetbrowser + WAHA + webhook containers (`up`/`down`/`restart`/`status`/`logs`). `timer-sync` privately copies changedetection API access plus its global check interval into mode-600 `.env`; `up` and `restart` do this automatically. Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
+| `src/50_tools/010-docker-stack.sh` | Manage changedetection + sockpuppetbrowser + WAHA and select one webhook owner (`up`/`down`/`restart`/`status`/`logs`). If the host/systemd listener exists, the duplicate Compose webhook remains stopped; otherwise the Compose webhook is the fallback. `timer-sync` privately copies changedetection API access plus its global check interval into mode-600 `.env`; `up` and `restart` do this automatically. Keeps container data in `$PC_INTEGRATIONS_DIR` (default `var/integrations`), migrates a legacy `./integrations` folder, and applies monitor-saved container settings on restart. Exposed as **Integrations** buttons in both monitors. |
 | `src/50_tools/100-migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `src/40_monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window; no Firefox/browser or web server required. Organized into unified tabs — **Operations** (locked automatic/restart/manual/test run controls, live diagnostics, grouped manual actions, logs), **Settings** (window/paths/collector/timer/integrations/templates/reset, grouped in a fixed order), **WhatsApp** (all destinations, filters, delivery, WAHA server + dashboard login, message formats), **KPIs** (decision cards, item-line analysis, item keywords, trend/status mix, drawn diagrams of groups/entities/locations/monthly trend, database review), **Records & Database** (Records Pendings/Completed, record selector, database review), and **Calendar** (opportunity day/week/month/year views) — under an always-visible live progress header. |
 | `src/40_monitor/002-next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop. In changedetection mode it counts down from the API's authoritative watch `last_checked` time plus the effective changedetection interval; the older last-collector-run/clock calculation remains an automatic fallback when the API is unavailable. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
@@ -1367,7 +1368,7 @@ into one reproducible stack:
 | `changedetection` | `dgtlmoon/changedetection.io` | Watches the PanamaCompra table and fires the webhook. UI on `http://localhost:5000`. |
 | `sockpuppetbrowser` | `dgtlmoon/sockpuppetbrowser` | Headless Chromium that renders the JavaScript watch page for changedetection. |
 | `waha` | `devlikeapro/waha` | Self-hosted WhatsApp HTTP API for the alerts. API on `http://localhost:${WAHA_PORT:-3000}` (scan the QR once to log in). |
-| `webhook` | built from `docker/Dockerfile.webhook` | `src/10_webhook/010-webhook-listener.py` in **enqueue-only** mode on port `8765`. |
+| `webhook` | built from `docker/Dockerfile.webhook` | Fallback `src/10_webhook/010-webhook-listener.py` in **enqueue-only** mode on port `8765`; kept stopped when the host/systemd listener owns the webhook. |
 
 `./setup.sh` installs the Docker engine when missing (via apt on
 Debian/Ubuntu/Linux Mint) and starts this stack automatically (set
@@ -1387,7 +1388,7 @@ the helper — also available as buttons in both monitors' **Integrations** zone
 ```bash
 cp .env.example .env            # set CHANGEDETECTION_BASE_URL, ports, WAHA_API_KEY
 printf 'YOUR_SECRET_TOKEN' > .webhook_token   # shared webhook path token (gitignored)
-./src/50_tools/010-docker-stack.sh up       # pull/start changedetection + browser + WAHA + webhook
+./src/50_tools/010-docker-stack.sh up       # start changedetection + browser + WAHA + one webhook owner
 ./src/50_tools/010-docker-stack.sh status   # container states + UI URLs
 ./src/50_tools/010-docker-stack.sh down     # stop the containers (data is kept)
 # If another WAHA already owns port 3000: save "WAHA server port" in the monitor
@@ -1405,8 +1406,14 @@ Settings/WhatsApp tabs (`CHANGEDETECTION_BASE_URL`, `WAHA_PORT`, `WAHA_API_KEY`,
 `up`/`restart`, so changedetection and WAHA can be adjusted without editing
 `.env`, and seeds the WAHA dashboard login with the documented default
 `admin` / `12345678` so the review page is always reachable after an
-install/reinstall. Raw `docker compose up -d` still works from the checkout root and uses
-the same `var/integrations` default.
+install/reinstall. When `panamacompra-webhook.service` is enabled or a host
+listener is already running, the helper keeps the duplicate Compose `webhook`
+container stopped and ensures the systemd listener is started. Otherwise it
+starts the Compose webhook as a fallback. This owner selection is shared by the
+Docker Integrations, Start All, and Update + Monitor paths, preventing one
+launcher from undoing another launcher's webhook state. Raw
+`docker compose up -d` bypasses this protection and should not be used when the
+host listener owns port 8765.
 
 **Why the webhook container only “enqueues”.** The real collector (Playwright
 Firefox writing to the host `./records` and `./data`) runs on the **host**, not in
@@ -1429,16 +1436,16 @@ update; the host flag watcher performs the same handoff if it sees the update
 queue while no collector/updater is active. Use `./src/20_pipeline/130a-queue-status.sh` to list
 both queues: collector requests and pending/running Update + Monitor requests.
 
-In the changedetection.io UI, set the watch **notification URL** to reach the
-webhook container on the compose network (no `host.docker.internal` needed):
+If the Compose webhook fallback is the active owner, set the changedetection.io
+watch **notification URL** to reach it on the compose network:
 
 ```text
 json://webhook:8765/panamacompra/YOUR_SECRET_TOKEN?method=POST&format=text&overflow=truncate&rto=15&cto=10
 ```
 
-If changedetection is running in Docker Compose, prefer `webhook:8765`. Using
-`host.docker.internal:8765` bypasses the compose webhook service and talks to a
-host listener instead; that is only for the all-host setup. The listener returns
+When the host/systemd listener is enabled (the normal launcher-managed setup),
+use the `host.docker.internal:8765` URL printed by `./bin/pcc webhook info`.
+Use `webhook:8765` only while the Compose fallback is actually running. The listener returns
 HTTP 202 before starting work and ignores the large changedetection JSON body, so
 short changedetection read timeouts should not block the notification request.
 If Apprise/changedetection still logs a huge payload (`message` length near
@@ -1641,7 +1648,7 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`src/40_monitor/001a-monitor-tk.py`). Run
-`./src/40_monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The same launcher installer also creates desktop/menu entries for **PanamaCompra changedetection**, **PanamaCompra WAHA**, **PanamaCompra Docker Integrations**, **PanamaCompra Stop All**, and **PanamaCompra Start All** so operators can open the two web dashboards, use a low-resource terminal URL/status shortcut, start/status the container stack, or stop/restart the whole PanamaCompra background stack (workers, monitors, webhook listener, Docker integrations) without typing commands; each launcher has its own icon and the installer creates the desktop folder when it is missing. Stop All and Start All run `src/20_pipeline/120a-stop-everything.sh` / `120c-start-everything.sh` in a terminal window so the step-by-step output stays visible. The shortcut opens a separate updater loader (`src/40_monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically.
+`./src/40_monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The separate **PanamaCompra Monitor Only** launcher bypasses `update-local-copy.sh` and the updater loader entirely, forcing a one-shot native Tk monitor without changing the saved manual monitor preference. The same launcher installer also creates desktop/menu entries for **PanamaCompra changedetection**, **PanamaCompra WAHA**, **PanamaCompra Docker Integrations**, **PanamaCompra Stop All**, and **PanamaCompra Start All** so operators can open the two web dashboards, use a low-resource terminal URL/status shortcut, start/status the container stack, or stop/restart the whole PanamaCompra background stack (workers, monitors, webhook listener, Docker integrations) without typing commands; each launcher has its own icon and the installer creates the desktop folder when it is missing. Stop All and Start All run `src/20_pipeline/120a-stop-everything.sh` / `120c-start-everything.sh` in a terminal window so the step-by-step output stays visible. Update + Monitor opens a separate updater loader (`src/40_monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically; Monitor Only remains available because it never invokes the updater.
 
 Launcher maintenance commands:
 
@@ -1761,6 +1768,13 @@ tail -80 data/logs/run_all_requests.log
 ./src/20_pipeline/130a-queue-status.sh
 ```
 
+On hosts with the enabled `panamacompra-webhook.service`, the host listener is
+the single owner of port 8765 and changedetection should use
+`host.docker.internal:8765`. The process checks compare network namespaces;
+seeing the Docker webhook's Python PID no longer makes systemd incorrectly exit
+with “Webhook listener is already running.” `Start All` stops the compose
+webhook before restarting the supervised host listener.
+
 **Fast recovery sequence for the current Docker setup** — when the compose run
 shows `Bind for 0.0.0.0:3000 failed`, `changedetection` is not running, or the
 host health check answers from the old `panamacompra-webhook-receiver`, use this
@@ -1769,20 +1783,18 @@ order so each failure is isolated:
 ```bash
 cd ~/Apps/panamacompra-collector
 
-# 1) Start the webhook and changedetection first; do not let WAHA port 3000 block them.
-docker compose up -d webhook changedetection
+# 1) Start changedetection first; do not let WAHA port 3000 block it.
+docker compose up -d changedetection
 
 # 2) If you need the compose WAHA service and port 3000 is busy, move only WAHA.
 WAHA_PORT=3001 docker compose up -d waha
 
-# 3) Use the compose-network notification URL inside changedetection.
-printf 'json://webhook:8765/panamacompra/%s?method=POST&format=text&overflow=truncate&rto=15&cto=10\n' "$(cat .webhook_token)"
-
-# 4) If host port 8765 is held by the old receiver, replace it with this checkout.
-#    Copy the json:// URL printed by this command into changedetection.
+# 3) Start/repair the supervised host listener. Copy the host.docker.internal
+#    json:// URL printed by the command into changedetection.
+systemctl --user restart panamacompra-webhook.service
 ./src/10_webhook/020-start-listener.sh --replace-port-owner
 
-# 5) Check whether the enqueue flag/runner/logs are moving.
+# 4) Check whether the request/runner/logs are moving.
 ./src/20_pipeline/130a-queue-status.sh
 ```
 

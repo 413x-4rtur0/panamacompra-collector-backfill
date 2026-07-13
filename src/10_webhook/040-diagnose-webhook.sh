@@ -4,6 +4,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/env.sh
 source "$SCRIPT_DIR/../../lib/env.sh"
+# shellcheck source=015-listener-process.sh
+source "$SCRIPT_DIR/015-listener-process.sh"
 ROOT="$APP_ROOT"
 cd "$ROOT" || exit 1
 
@@ -59,7 +61,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 section "3) Check if webhook listener is running"
-pgrep -af "src/10_webhook/010-webhook-listener.py" || echo "No src/10_webhook/010-webhook-listener.py process found."
+pc_webhook_print_host_processes || echo "No host-network src/10_webhook/010-webhook-listener.py process found."
 
 section "4) Check if port $PORT is listening"
 ss -ltnp | grep ":$PORT" || echo "Port $PORT is not listening."
@@ -68,7 +70,7 @@ section "5) Stop broken direct systemd webhook service and old listener if any"
 # A direct ExecStart=python src/10_webhook/010-webhook-listener.py service will restart-loop when an
 # older receiver owns the port. Stop it before replacing the port owner.
 systemctl --user stop panamacompra-webhook.service 2>/dev/null || true
-pkill -f "[p]ython.*src/10_webhook/010-webhook-listener.py" 2>/dev/null || true
+pc_webhook_kill_host_processes TERM
 sleep 1
 
 section "6) Start webhook listener bound to $HOST:$PORT"
@@ -76,7 +78,7 @@ PC_WEBHOOK_HOST="$HOST" PC_WEBHOOK_PORT="$PORT" "$ROOT/src/10_webhook/020-start-
 sleep 2
 
 section "7) Confirm listener process"
-pgrep -af "src/10_webhook/010-webhook-listener.py" || fail_tail "webhook listener did not start."
+pc_webhook_print_host_processes || fail_tail "host-network webhook listener did not start."
 
 section "8) Confirm port $PORT is listening"
 ss -ltnp | grep ":$PORT" || fail_tail "port $PORT is still not listening."

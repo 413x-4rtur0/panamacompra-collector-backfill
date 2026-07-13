@@ -64,7 +64,7 @@ Rules:
 | Ordered wrapper | Canonical command | Purpose |
 | --- | --- | --- |
 | `tasks/001a-setup-development.sh` | `./setup.sh` | Bootstrap dependencies for a checkout, install/update the monitor, changedetection, WAHA, low-resource Integration URLs, and Docker integration launchers unless `PC_SETUP_INSTALL_MONITOR_SHORTCUT=0`, and write the local integration access note with generated WAHA/webhook secrets. |
-| `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor, changedetection, WAHA, low-resource Integration URLs, and Docker integration desktop launchers, each with its own generated icon. |
+| `tasks/001b-install-update-monitor-launcher.sh` | `./bin/pcc launcher install` | Install the Update + Monitor, Monitor Only (native Tk without update), changedetection, WAHA, low-resource Integration URLs, and Docker integration desktop launchers, each with its own generated icon. |
 | `tasks/010-update-local-copy.sh` | `./update-local-copy.sh` | Update code/dependencies before monitor use. |
 | `tasks/011-upload-github.sh` | `./src/50_tools/150-upload-github.sh` | Commit local changes and push the current branch to GitHub/remote. |
 | `tasks/020-start-collector.sh` | `./bin/pcc start` | Queue/start a collector run. |
