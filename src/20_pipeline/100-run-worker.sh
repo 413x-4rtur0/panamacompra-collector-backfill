@@ -40,6 +40,8 @@ INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 RUN_COMPLETED=0
 WAHA_CONFIG_ENABLED="${PC_WAHA_ENABLED:-0}"
 WAHA_MESSAGING_SKIPPED=0
+WAHA_SKIP_STATUS=""
+WAHA_SKIP_MESSAGE=""
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
@@ -84,17 +86,20 @@ quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
-write_waha_qr_warning() {
+write_waha_warning() {
   local session="$1"
   local status="$2"
   local dashboard_url="$3"
+  local message="$4"
+  local action="$5"
   local tmp="${WAHA_QR_WARNING_FILE}.tmp"
   mkdir -p "$(dirname "$WAHA_QR_WARNING_FILE")"
   {
     echo "SESSION='$(quote_value "$session")'"
     echo "WAHA_STATUS='$(quote_value "$status")'"
     echo "DASHBOARD_URL='$(quote_value "$dashboard_url")'"
-    echo "WAHA_WARNING_MESSAGE='$(quote_value "WAHA requires a QR scan. WhatsApp messaging was skipped; the collector continued normally.")'"
+    echo "WAHA_WARNING_MESSAGE='$(quote_value "$message")'"
+    echo "WAHA_WARNING_ACTION='$(quote_value "$action")'"
     echo "WAHA_WARNING_UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
   } > "$tmp"
   mv "$tmp" "$WAHA_QR_WARNING_FILE"
@@ -104,6 +109,8 @@ check_waha_session_before_run() {
   local checker="$APP_ROOT/src/30_notify/015-waha-session-status.py"
   local result code session status dashboard_url
   WAHA_MESSAGING_SKIPPED=0
+  WAHA_SKIP_STATUS=""
+  WAHA_SKIP_MESSAGE=""
   export PC_WAHA_ENABLED="$WAHA_CONFIG_ENABLED"
 
   case "${WAHA_CONFIG_ENABLED,,}" in
@@ -126,16 +133,28 @@ check_waha_session_before_run() {
 
   if [ "$code" -eq 10 ]; then
     WAHA_MESSAGING_SKIPPED=1
-    write_waha_qr_warning "$session" "$status" "$dashboard_url"
+    WAHA_SKIP_STATUS="$status"
+    WAHA_SKIP_MESSAGE="WAHA requires a QR scan"
+    write_waha_warning "$session" "$status" "$dashboard_url" \
+      "WAHA requires a QR scan. WhatsApp messaging was skipped; the collector continued normally." \
+      "Open $dashboard_url and scan the QR code to pair the session."
     log "WARNING: WAHA session '$session' is $status and requires a QR scan. Every WhatsApp message will be checked and flagged unsent without POSTing; collection continues. Open $dashboard_url to pair it."
     return 0
   fi
 
-  # A connected or different current state makes an old QR warning stale.
-  rm -f "$WAHA_QR_WARNING_FILE"
   if [ "$code" -ne 0 ]; then
-    log "WAHA preflight status is $status (not a QR request); normal non-fatal notifier behavior remains active."
+    WAHA_MESSAGING_SKIPPED=1
+    WAHA_SKIP_STATUS="$status"
+    WAHA_SKIP_MESSAGE="WAHA session is $status"
+    write_waha_warning "$session" "$status" "$dashboard_url" \
+      "WAHA session '$session' is $status. WhatsApp messaging was skipped; the collector continued normally." \
+      "Open $dashboard_url and verify or restart the WAHA session."
+    log "WARNING: WAHA session '$session' is $status. Every WhatsApp message will be checked and flagged unsent without POSTing; collection continues."
+    return 0
   fi
+
+  # A connected session makes an old attention warning stale.
+  rm -f "$WAHA_QR_WARNING_FILE"
 }
 
 format_eta() {
@@ -451,8 +470,8 @@ PY
   fi
   NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
   if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
-    write_progress "MESSAGING" "SKIPPED" "52" "Step 2/7: WAHA requires QR; checking each message and flagging it unsent without posting." "$STARTED"
-    log "ITERATION $ITERATION Step 2 is flagging each WhatsApp message unsent because WAHA requires QR pairing."
+    write_progress "MESSAGING" "SKIPPED" "52" "Step 2/7: ${WAHA_SKIP_MESSAGE:-WAHA is unavailable}; checking each message and flagging it unsent without posting." "$STARTED"
+    log "ITERATION $ITERATION Step 2 is flagging each WhatsApp message unsent because WAHA is ${WAHA_SKIP_STATUS:-not ready}."
     MESSAGING_START_EPOCH="$(date '+%s')"
     PC_MSG_STEP_CURRENT=2 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=52 PC_MSG_PERCENT_DONE=55 notify_new_records --announce
     MESSAGING_SECONDS=$(( $(date '+%s') - MESSAGING_START_EPOCH ))
@@ -549,8 +568,8 @@ PY
     if [ "$VIEW_EXIT" -eq 0 ]; then
       NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
       if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
-        write_progress "MESSAGING" "SKIPPED" "80" "Step 5/7: WAHA still requires QR; checking and flagging each unsent detail message." "$STARTED"
-        log "ITERATION $ITERATION Step 5 is flagging each WhatsApp detail message unsent because WAHA requires QR pairing."
+        write_progress "MESSAGING" "SKIPPED" "80" "Step 5/7: WAHA is still ${WAHA_SKIP_STATUS:-not ready}; checking and flagging each unsent detail message." "$STARTED"
+        log "ITERATION $ITERATION Step 5 is flagging each WhatsApp detail message unsent because WAHA is ${WAHA_SKIP_STATUS:-not ready}."
         DETAIL_MSG_START_EPOCH="$(date '+%s')"
         PC_MSG_STEP_CURRENT=5 PC_MSG_STEP_TOTAL=7 PC_MSG_PERCENT_BASE=80 PC_MSG_PERCENT_DONE=83 notify_new_records --announce-details --since "$STARTED"
         MESSAGING_SECONDS=$(( MESSAGING_SECONDS + $(date '+%s') - DETAIL_MSG_START_EPOCH ))
@@ -697,7 +716,7 @@ PY
       echo "VERIFY_SECONDS='$VERIFY_SECONDS'"
       echo "CALENDAR_SECONDS='$CALENDAR_SECONDS'"
       echo "MESSAGING_SECONDS='$MESSAGING_SECONDS'"
-      echo "WAHA_MESSAGING_STATUS='$( [ "$WAHA_MESSAGING_SKIPPED" = "1" ] && echo SKIPPED_QR || echo NORMAL )'"
+      echo "WAHA_MESSAGING_STATUS='$( [ "$WAHA_MESSAGING_SKIPPED" = "1" ] && echo "SKIPPED_${WAHA_SKIP_STATUS:-UNREADY}" || echo NORMAL )'"
       echo "INDEX_SOURCE='$(quote_value "$INDEX_SOURCE")'"
       echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
     } > "$LAST_SUMMARY_FILE"
@@ -716,7 +735,7 @@ $SUMMARY_COUNTS" "summary"
       echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"
     if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
-      write_progress "DONE" "DONE" "100" "Collection completed. WhatsApp was skipped because WAHA requires a QR scan; open the WAHA dashboard to pair the session." "$STARTED"
+      write_progress "DONE" "DONE" "100" "Collection completed. WhatsApp was skipped because WAHA is ${WAHA_SKIP_STATUS:-not ready}; see the terminal warning for the required action." "$STARTED"
     else
       write_progress "DONE" "DONE" "100" "Index, WhatsApp index alerts, details, WhatsApp item details, verification/repair, per-record calendars and calendar packages completed." "$STARTED"
     fi

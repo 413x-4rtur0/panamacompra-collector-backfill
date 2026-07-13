@@ -206,14 +206,16 @@ show_screen() {
     SESSION="default"
     WAHA_STATUS="SCAN_QR_CODE"
     DASHBOARD_URL="http://127.0.0.1:3000"
+    WAHA_WARNING_MESSAGE="WhatsApp messaging was skipped; collection continues normally."
+    WAHA_WARNING_ACTION="Open $DASHBOARD_URL and verify the WAHA session."
     WAHA_WARNING_UPDATED_AT="-"
     # shellcheck disable=SC1090
     source "$WAHA_QR_WARNING_FILE"
     echo ""
     echo "!!!!!!!!!!!!!!!!!! WHATSAPP ATTENTION REQUIRED !!!!!!!!!!!!!!!!!!"
-    echo "  WAHA session '$SESSION' is $WAHA_STATUS and requires a QR scan."
-    echo "  WhatsApp messaging was SKIPPED; collection continues normally."
-    echo "  Open $DASHBOARD_URL and scan the QR code to pair the session."
+    echo "  WAHA session '$SESSION' is $WAHA_STATUS."
+    echo "  $WAHA_WARNING_MESSAGE"
+    echo "  $WAHA_WARNING_ACTION"
     echo "  Warning recorded: $WAHA_WARNING_UPDATED_AT"
     echo "  It stays open until a healthy run clears it, or you press Ctrl+C."
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -271,7 +273,7 @@ show_screen() {
   echo ""
   echo "============================================================"
   if [ -f "$WAHA_QR_WARNING_FILE" ]; then
-    echo "Auto-close: PAUSED while the WAHA QR warning is active."
+    echo "Auto-close: PAUSED while the WAHA attention warning is active."
   else
     echo "Auto-close: when worker/index/detail are all finished."
   fi

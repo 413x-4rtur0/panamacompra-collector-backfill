@@ -34,7 +34,7 @@ SYSTEM_FORMAT_PATH = CONFIG_DIR / "waha_format_system.txt"
 SUMMARY_FORMAT_PATH = CONFIG_DIR / "waha_format_summary.txt"
 WAHA_QR_WARNING_PATH = pc_common.RUN_DIR / "waha_qr_required.env"
 UNSENT_LOG_PATH = pc_common.LOG_DIR / "waha_unsent_messages.jsonl"
-QR_STATUSES = {"SCAN_QR_CODE", "STARTING"}
+QR_STATUSES = {"SCAN_QR_CODE"}
 CONNECTED_STATUSES = {"WORKING", "RUNNING"}
 
 # Per-purpose destinations, so the index alerts, the item-detail follow-ups and
@@ -238,6 +238,10 @@ class WahaQrRequiredError(RuntimeError):
     """Raised before POST /api/sendText when the session requires pairing."""
 
 
+class WahaSessionNotReadyError(RuntimeError):
+    """Raised before POST /api/sendText when WAHA is not connected."""
+
+
 def waha_session_status(*, base_url: str = "", session_name: str = "", api_key: str = "") -> dict[str, object]:
     """Return the configured WAHA session state without raising."""
     base_url = (base_url or os.environ.get("PC_WAHA_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
@@ -287,19 +291,29 @@ def _env_line(name: str, value: object) -> str:
     return f"{name}='{escaped}'"
 
 
-def write_qr_warning(result: dict[str, object]) -> None:
-    """Create/update the flag consumed by the automatic terminal monitor."""
+def write_waha_warning(result: dict[str, object], *, message: str, action: str) -> None:
+    """Create/update the attention flag consumed by the terminal monitor."""
     WAHA_QR_WARNING_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = WAHA_QR_WARNING_PATH.with_name(f"{WAHA_QR_WARNING_PATH.name}.tmp.{os.getpid()}")
     lines = [
         _env_line("SESSION", result.get("session", DEFAULT_SESSION)),
         _env_line("WAHA_STATUS", result.get("status", "SCAN_QR_CODE")),
         _env_line("DASHBOARD_URL", result.get("dashboard_url", DEFAULT_BASE_URL)),
-        _env_line("WAHA_WARNING_MESSAGE", "WAHA requires a QR scan. WhatsApp messaging was skipped; the collector continued normally."),
+        _env_line("WAHA_WARNING_MESSAGE", message),
+        _env_line("WAHA_WARNING_ACTION", action),
         _env_line("WAHA_WARNING_UPDATED_AT", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     tmp.replace(WAHA_QR_WARNING_PATH)
+
+
+def write_qr_warning(result: dict[str, object]) -> None:
+    """Record an actual QR pairing request for the terminal monitor."""
+    write_waha_warning(
+        result,
+        message="WAHA requires a QR scan. WhatsApp messaging was skipped; the collector continued normally.",
+        action=f"Open {result.get('dashboard_url', DEFAULT_BASE_URL)} and scan the QR code to pair the session.",
+    )
 
 
 def clear_qr_warning() -> None:
@@ -326,7 +340,7 @@ def flag_unsent_message(*, session: str, purpose: str, chat_id: str, reason: str
 
 def require_session_ready(*, base_url: str, session: str, api_key: str,
                           purpose: str, chat_id: str, text: str) -> None:
-    """Check QR state immediately before every actual WAHA message."""
+    """Require a connected session immediately before every WAHA message."""
     result = waha_session_status(base_url=base_url, session_name=session, api_key=api_key)
     if result["needs_qr"]:
         write_qr_warning(result)
@@ -336,8 +350,22 @@ def require_session_ready(*, base_url: str, session: str, api_key: str,
         )
         flag_unsent_message(session=session, purpose=purpose, chat_id=chat_id, reason=reason, text=text)
         raise WahaQrRequiredError(reason)
-    if result["connected"]:
-        clear_qr_warning()
+    if not result["connected"]:
+        reason = (
+            f"WAHA_NOT_READY: session '{result['session']}' is {result['status']}; "
+            "message was not posted"
+        )
+        write_waha_warning(
+            result,
+            message=(
+                f"WAHA session '{result['session']}' is {result['status']}. "
+                "WhatsApp messaging was skipped; the collector continued normally."
+            ),
+            action=f"Open {result['dashboard_url']} and verify or restart the WAHA session.",
+        )
+        flag_unsent_message(session=session, purpose=purpose, chat_id=chat_id, reason=reason, text=text)
+        raise WahaSessionNotReadyError(reason)
+    clear_qr_warning()
 
 
 def _max_send_attempts() -> int:
@@ -356,6 +384,33 @@ def _breaker_threshold() -> int:
         return max(1, int(os.environ.get("PC_WAHA_BREAKER_THRESHOLD", "3")))
     except (TypeError, ValueError):
         return 3
+
+
+def send_error_reason(exc: BaseException) -> str:
+    """Include WAHA's JSON error message in the local unsent audit."""
+    reason = str(exc)
+    if not isinstance(exc, urllib.error.HTTPError):
+        return reason
+    try:
+        body = exc.read().decode("utf-8", "replace").strip()
+    except (OSError, ValueError):
+        return reason
+    if not body:
+        return reason
+    detail = body
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            error = parsed.get("error")
+            detail = str(
+                parsed.get("message")
+                or (error.get("message") if isinstance(error, dict) else error)
+                or body
+            )
+    except ValueError:
+        pass
+    detail = " ".join(detail.split())[:400]
+    return f"{reason}: {detail}"
 
 
 def send_text(text: str, purpose: str = "", chat_id_override: str = "") -> None:
@@ -400,15 +455,17 @@ def send_text(text: str, purpose: str = "", chat_id_override: str = "") -> None:
             pc_common.log_app_notification(purpose, text, chat_id)
             return
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            reason = send_error_reason(exc)
             if attempt >= attempts:
                 _send_failures += 1
                 flag_unsent_message(
                     session=session, purpose=purpose, chat_id=chat_id,
-                    reason=str(exc), text=text,
+                    reason=reason, text=text,
                 )
+                print(f"WAHA notification flagged unsent: {reason}", file=sys.stderr)
                 raise
             backoff = min(8.0, 2.0 ** (attempt - 1))  # 1s, 2s, 4s, …
-            print(f"WAHA send attempt {attempt}/{attempts} failed: {exc}; retrying in {backoff:.0f}s.", file=sys.stderr)
+            print(f"WAHA send attempt {attempt}/{attempts} failed: {reason}; retrying in {backoff:.0f}s.", file=sys.stderr)
             time.sleep(backoff)
 
 
@@ -436,7 +493,7 @@ def main() -> int:
 
     try:
         send_text(build_message(args.event, args.status, args.message, purpose=args.purpose), purpose=args.purpose)
-    except (WahaQrRequiredError, OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+    except (WahaQrRequiredError, WahaSessionNotReadyError, OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"WAHA notification failed: {exc}", file=sys.stderr)
         return 1 if env_bool("PC_WAHA_STRICT", False) else 0
     return 0
