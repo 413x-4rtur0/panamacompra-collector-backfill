@@ -64,6 +64,7 @@ flowchart TD
   NR -->|"index alert (purpose=index)"| ROUTE
   NR -->|"detail follow-up (purpose=details)"| ROUTE
   NR -->|"status change (purpose=status)"| ROUTE
+  NR -->|"Programada→Abierta (purpose=open_now,<br/>Open Now Opportunities; falls back to index)"| ROUTE
   WC -->|"health (purpose=system)"| ROUTE
   WC -->|"run summary (purpose=summary)"| ROUTE
 

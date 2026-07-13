@@ -45,9 +45,9 @@ Monitors & services:
 Settings (same files the GUI monitors use):
   get [KEY]                                 Show one or all monitor settings
   set KEY VALUE                             Save a monitor setting (e.g. set PC_WAHA_ENABLED 1)
-  chat [default|index|details|status|system|summary] [ID]
+  chat [default|index|details|status|open_now|system|summary] [ID]
                                             Show or save WhatsApp destination chat id(s)
-  keywords [global|index|details|status] [list|set "..."|clear|test "text"]
+  keywords [global|index|details|status|open_now] [list|set "..."|clear|test "text"]
                                             Per-destination filters. Rules: OR between
                                             comma/line-separated rules, AND with '+'
                                             (salud + panama), NOT with '-' (-construccion)
@@ -60,7 +60,7 @@ WhatsApp:
                                             and chat IDs are supported; results are cached.
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
-                                            message uses system/default/index/details/status/summary
+                                            message uses system/default/index/details/status/open_now/summary
   full-report [--stdout] [--no-logs]        Generate a full diagnostic Markdown report
   upload-github [args]                       Commit local changes and push them to GitHub
   notify NUMERO [NUMERO...] [--force]       Send the WhatsApp notification for specific record(s)
@@ -102,7 +102,7 @@ load_monitor_settings() {
 chat_file_for() {
   case "$1" in
     default|"") echo "$PC_DATA_DIR/config/waha_chat_id.txt" ;;
-    index|details|status|system|summary) echo "$PC_DATA_DIR/config/waha_chat_id_$1.txt" ;;
+    index|details|status|open_now|system|summary) echo "$PC_DATA_DIR/config/waha_chat_id_$1.txt" ;;
     *) echo ""; return 1 ;;
   esac
 }
@@ -270,13 +270,14 @@ PY
   chat)
     purpose="${1:-}"
     if [[ -z "$purpose" ]]; then
-      for p in default index details status system summary; do
+      for p in default index details status open_now system summary; do
         file="$(chat_file_for "$p")"
-        printf '%-8s %s\n' "$p:" "$( [[ -s "$file" ]] && head -n 1 "$file" || echo '(not set)')"
+        printf '%-9s %s\n' "$p:" "$( [[ -s "$file" ]] && head -n 1 "$file" || echo '(not set)')"
       done
-      echo "Set with: pcc chat [default|index|details|status|system|summary] 12036...@g.us (empty id clears)"
+      echo "Set with: pcc chat [default|index|details|status|open_now|system|summary] 12036...@g.us (empty id clears)"
+      echo "open_now = Open Now Opportunities (Programada→Abierta alerts; blank = index destination, then default)"
     else
-      file="$(chat_file_for "$purpose")" || { echo "Unknown destination: $purpose (use default|index|details|status|system|summary)" >&2; exit 2; }
+      file="$(chat_file_for "$purpose")" || { echo "Unknown destination: $purpose (use default|index|details|status|open_now|system|summary)" >&2; exit 2; }
       if [[ $# -ge 2 ]]; then
         mkdir -p "$(dirname "$file")"
         printf '%s\n' "${2:-}" > "$file"
@@ -288,7 +289,7 @@ PY
     ;;
   keywords)
     kw_purpose="global"
-    case "${1:-}" in global|index|details|status) kw_purpose="$1"; shift ;; esac
+    case "${1:-}" in global|index|details|status|open_now) kw_purpose="$1"; shift ;; esac
     if [[ "$kw_purpose" == "global" ]]; then
       kw_file="$PC_DATA_DIR/config/waha_keywords.txt"
     else
@@ -326,7 +327,7 @@ print(f"rules: {len(includes)} include, {len(excludes)} exclude")
 print(f"WOULD NOTIFY — Coincidencia: {result}" if result else "WOULD NOT NOTIFY (excluded or no include rule matched)")
 PYEOF
         ;;
-      *) echo "Usage: pcc keywords [global|index|details|status] [list|set \"...\"|clear|test \"...\"]" >&2; exit 2 ;;
+      *) echo "Usage: pcc keywords [global|index|details|status|open_now] [list|set \"...\"|clear|test \"...\"]" >&2; exit 2 ;;
     esac
     ;;
   test-whatsapp)

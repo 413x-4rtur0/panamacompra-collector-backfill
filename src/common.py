@@ -713,6 +713,7 @@ def calendars_to_ics(calendars):
 def write_calendar_ics(path, calendar):
     """Write a calendar .ics file for later import/review."""
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(calendar_to_ics(calendar).encode("utf-8"))
     return path
 

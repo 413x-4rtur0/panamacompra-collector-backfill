@@ -37,11 +37,13 @@ UNSENT_LOG_PATH = pc_common.LOG_DIR / "waha_unsent_messages.jsonl"
 QR_STATUSES = {"SCAN_QR_CODE"}
 CONNECTED_STATUSES = {"WORKING", "RUNNING"}
 
-# Per-purpose destinations, so the index alerts, the item-detail follow-ups and
-# the status-change, system-health and final-summary messages can each go to a
-# different group/channel. Every purpose falls back to the default destination
-# when not configured.
-CHAT_PURPOSES = ("index", "details", "status", "system", "summary")
+# Per-purpose destinations, so the index alerts, the item-detail follow-ups,
+# the open-now (Programada→Abierta) alerts and the status-change, system-health
+# and final-summary messages can each go to a different group/channel. Every
+# purpose falls back to the default destination when not configured; "open_now"
+# additionally falls back to the "index" destination first, because those
+# alerts historically rode the index feed.
+CHAT_PURPOSES = ("index", "details", "status", "open_now", "system", "summary")
 
 
 def chat_id_path(purpose: str = "") -> Path:
@@ -93,9 +95,10 @@ def _single_purpose_fallback_chat_id() -> str:
 def configured_chat_id(purpose: str = "", *, _debug_info: list[str] | None = None) -> str:
     """Destination chat id for a purpose.
 
-    Order: purpose-specific env/file, default env/file, then an exactly-one
-    purpose-specific fallback. The last case makes "one group" work even if the
-    chat id was accidentally placed in Summary/System/Index instead of Default.
+    Order: purpose-specific env/file ("open_now" then tries "index"), default
+    env/file, then an exactly-one purpose-specific fallback. The last case makes
+    "one group" work even if the chat id was accidentally placed in
+    Summary/System/Index instead of Default.
 
     When ``_debug_info`` is passed (a list), diagnostic messages about the
     resolution chain are appended to it — useful for callers that want to log
@@ -109,6 +112,14 @@ def configured_chat_id(purpose: str = "", *, _debug_info: list[str] | None = Non
     if purpose_value:
         return purpose_value
     _dbg(f"  no purpose-specific for {purpose!r}")
+
+    if purpose == "open_now":
+        # Open-now (Programada→Abierta) alerts used to ride the index feed:
+        # keep that routing while the dedicated field is blank.
+        index_value = _purpose_chat_id_without_fallback("index")
+        if index_value:
+            return index_value
+        _dbg("  no 'index' fallback for 'open_now'")
 
     default_value = _default_chat_id()
     if default_value:

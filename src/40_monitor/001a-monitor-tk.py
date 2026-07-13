@@ -77,6 +77,7 @@ WAHA_CHAT_ID_PATH = CONFIG_DIR / "waha_chat_id.txt"
 WAHA_CHAT_ID_INDEX_PATH = CONFIG_DIR / "waha_chat_id_index.txt"
 WAHA_CHAT_ID_DETAILS_PATH = CONFIG_DIR / "waha_chat_id_details.txt"
 WAHA_CHAT_ID_STATUS_PATH = CONFIG_DIR / "waha_chat_id_status.txt"
+WAHA_CHAT_ID_OPEN_NOW_PATH = CONFIG_DIR / "waha_chat_id_open_now.txt"
 WAHA_CHAT_ID_SYSTEM_PATH = CONFIG_DIR / "waha_chat_id_system.txt"
 WAHA_CHAT_ID_SUMMARY_PATH = CONFIG_DIR / "waha_chat_id_summary.txt"
 
@@ -567,6 +568,7 @@ def status_snapshot() -> dict[str, object]:
         "waha_chat_id_index": read_chat_file(WAHA_CHAT_ID_INDEX_PATH),
         "waha_chat_id_details": read_chat_file(WAHA_CHAT_ID_DETAILS_PATH),
         "waha_chat_id_status": read_chat_file(WAHA_CHAT_ID_STATUS_PATH),
+        "waha_chat_id_open_now": read_chat_file(WAHA_CHAT_ID_OPEN_NOW_PATH),
         "waha_chat_id_system": read_chat_file(WAHA_CHAT_ID_SYSTEM_PATH),
         "waha_chat_id_summary": read_chat_file(WAHA_CHAT_ID_SUMMARY_PATH),
     }
@@ -1159,6 +1161,7 @@ def run_tk() -> int:
     waha_index_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_INDEX_PATH))
     waha_details_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_DETAILS_PATH))
     waha_status_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_STATUS_PATH))
+    waha_open_now_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_OPEN_NOW_PATH))
     waha_system_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_SYSTEM_PATH))
     waha_summary_var = tk.StringVar(value=read_chat_file(WAHA_CHAT_ID_SUMMARY_PATH))
 
@@ -1172,6 +1175,7 @@ def run_tk() -> int:
     keywords_index_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_index.txt"))
     keywords_details_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_details.txt"))
     keywords_status_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_status.txt"))
+    keywords_open_now_var = tk.StringVar(value=read_filter_file(CONFIG_DIR / "waha_keywords_open_now.txt"))
     notify_whatsapp_var = tk.BooleanVar(value=setting("PC_NOTIFY_WHATSAPP", "1") != "0")
     notify_details_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS", "1") != "0")
     notify_details_inline_var = tk.BooleanVar(value=setting("PC_NOTIFY_DETAILS_INLINE", "1") != "0")
@@ -1318,6 +1322,7 @@ def run_tk() -> int:
         WAHA_CHAT_ID_INDEX_PATH.write_text(waha_index_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_DETAILS_PATH.write_text(waha_details_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_STATUS_PATH.write_text(waha_status_var.get().strip() + "\n", encoding="utf-8")
+        WAHA_CHAT_ID_OPEN_NOW_PATH.write_text(waha_open_now_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_SYSTEM_PATH.write_text(waha_system_var.get().strip() + "\n", encoding="utf-8")
         WAHA_CHAT_ID_SUMMARY_PATH.write_text(waha_summary_var.get().strip() + "\n", encoding="utf-8")
 
@@ -1329,6 +1334,7 @@ def run_tk() -> int:
         write_filter_file(CONFIG_DIR / "waha_keywords_index.txt", keywords_index_var.get())
         write_filter_file(CONFIG_DIR / "waha_keywords_details.txt", keywords_details_var.get())
         write_filter_file(CONFIG_DIR / "waha_keywords_status.txt", keywords_status_var.get())
+        write_filter_file(CONFIG_DIR / "waha_keywords_open_now.txt", keywords_open_now_var.get())
         available_templates = set(record_templates.source_files(record_templates.source_dir()))
         selected_templates = [templates_listbox.get(i) for i in templates_listbox.curselection() if templates_listbox.get(i) in available_templates]
         record_templates.save_selection(selected_templates)
@@ -1464,6 +1470,7 @@ def run_tk() -> int:
         ("Index alerts:", waha_index_var, "Group/channel that receives the immediate index alerts (new opportunities + 'Sin nuevas entradas'). Env: PC_WAHA_CHAT_ID_INDEX. Blank = default destination."),
         ("Item details:", waha_details_var, "Group/channel that receives the '📥 Detalles Completos' follow-up with the downloaded items. Env: PC_WAHA_CHAT_ID_DETAILS. Blank = default destination."),
         ("Status changes:", waha_status_var, "Group/channel that receives status-change, cancellation and item-update messages. Env: PC_WAHA_CHAT_ID_STATUS. Blank = default destination."),
+        ("Open Now Opportunities:", waha_open_now_var, "Group/channel that receives the Programada→Abierta 'open now' alerts. Env: PC_WAHA_CHAT_ID_OPEN_NOW. Blank = Index alerts destination, then default."),
         ("System health:", waha_system_var, "Group/channel that receives review-system, worker start/failure and test messages. Env: PC_WAHA_CHAT_ID_SYSTEM. Blank = default destination."),
         ("Final summary per round:", waha_summary_var, "Group/channel that receives the one final run summary after each collector round. Env: PC_WAHA_CHAT_ID_SUMMARY. Blank = default destination."),
     ), start=7):
@@ -1472,39 +1479,40 @@ def run_tk() -> int:
         _entry.grid(row=_row, column=1, columnspan=3, sticky="ew", pady=3)
         add_tooltip(_entry, _tip)
 
-    group_title(whatsapp_settings, 12, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
-    ttk.Label(whatsapp_settings, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
+    group_title(whatsapp_settings, 13, "Filters (OR with commas, AND with '+', NOT with '-'; blank = announce all)")
+    ttk.Label(whatsapp_settings, text="Shared keywords (all destinations):", style="Card.TLabel").grid(row=14, column=0, sticky="w", pady=3)
     kw_entry = ttk.Entry(whatsapp_settings, textvariable=keywords_var)
-    kw_entry.grid(row=13, column=1, columnspan=3, sticky="ew", pady=3)
+    kw_entry.grid(row=14, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(kw_entry, "Shared filter for every WhatsApp destination without its own rules. OR between comma-separated rules; AND with '+' (salud + panama); NOT with '-' (-construccion excludes even when another rule matches). Blank announces every record. Saved to data/config/waha_keywords.txt.")
-    field(whatsapp_settings, 14, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
-    field(whatsapp_settings, 14, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
-    field(whatsapp_settings, 15, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+    field(whatsapp_settings, 15, 0, "Index alerts filter:", keywords_index_var, 30, "Rules for the index-alert destination only. Example: salud + panama, medicinas, -construccion. Blank = shared filter. Saved to data/config/waha_keywords_index.txt.")
+    field(whatsapp_settings, 15, 2, "Item-details filter:", keywords_details_var, 30, "Rules for the detail follow-up destination only. Blank = shared filter. Saved to data/config/waha_keywords_details.txt.")
+    field(whatsapp_settings, 16, 0, "Status-changes filter:", keywords_status_var, 30, "Rules for the status-change destination only. Blank = shared filter. Saved to data/config/waha_keywords_status.txt.")
+    field(whatsapp_settings, 16, 2, "Open Now Opportunities filter:", keywords_open_now_var, 30, "Rules for the Open Now Opportunities destination only. Blank = Index alerts filter, then shared filter. Saved to data/config/waha_keywords_open_now.txt.")
 
-    group_title(whatsapp_settings, 16, "Delivery")
-    field(whatsapp_settings, 17, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
-    field(whatsapp_settings, 17, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
-    ttk.Label(whatsapp_settings, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=18, column=0, sticky="w", pady=3)
+    group_title(whatsapp_settings, 17, "Delivery")
+    field(whatsapp_settings, 18, 0, "Within N days (blank=all):", within_days_var, 8, "Only announce opportunities whose deadline is within this many days; blank announces all. Env: PC_NOTIFY_WITHIN_DAYS.")
+    field(whatsapp_settings, 18, 2, "Send retries:", retries_var, 8, "Extra WAHA send retries with short backoff before giving up. Env: PC_WAHA_RETRIES.")
+    ttk.Label(whatsapp_settings, text="WAHA events (comma separated):", style="Card.TLabel").grid(row=19, column=0, sticky="w", pady=3)
     events_entry = ttk.Entry(whatsapp_settings, textvariable=waha_events_var)
-    events_entry.grid(row=18, column=1, columnspan=3, sticky="ew", pady=3)
+    events_entry.grid(row=19, column=1, columnspan=3, sticky="ew", pady=3)
     add_tooltip(events_entry, "Which events are sent: info,start,done,failed,timeout,resume,update,new,none (or 'all'). Env: PC_WAHA_NOTIFY_EVENTS.")
     test_whatsapp_button = ttk.Button(whatsapp_settings, text="Send test WhatsApp", command=send_test_whatsapp)
-    test_whatsapp_button.grid(row=19, column=0, sticky="w", pady=3)
+    test_whatsapp_button.grid(row=20, column=0, sticky="w", pady=3)
     add_tooltip(test_whatsapp_button, "Send one WAHA test message to the configured destination using the saved settings, so you can verify the WhatsApp pipeline without waiting for a run. Requires 'Enable WAHA WhatsApp sending' and a chat id.")
 
-    group_title(whatsapp_settings, 20, "WAHA server (container; applied on the next docker stack restart)")
-    field(whatsapp_settings, 21, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
-    field(whatsapp_settings, 21, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
-    field(whatsapp_settings, 22, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
-    field(whatsapp_settings, 22, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
-    field(whatsapp_settings, 23, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
-    field(whatsapp_settings, 23, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. Setup generates a random one (saved in .env and data/config/integration-access.txt); blank here keeps that value. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
-    _track_wraplabel(ttk.Label(whatsapp_settings, text="Dashboard login: user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. To change it, set the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820)).grid(row=24, column=0, columnspan=4, sticky="w", pady=(4, 0))
+    group_title(whatsapp_settings, 21, "WAHA server (container; applied on the next docker stack restart)")
+    field(whatsapp_settings, 22, 0, "WAHA base URL:", waha_base_var, 24, "Base URL of the self-hosted WAHA HTTP API. Env: PC_WAHA_BASE_URL.")
+    field(whatsapp_settings, 22, 2, "WAHA session:", waha_session_var, 16, "WAHA session name used when sending. Env: PC_WAHA_SESSION.")
+    field(whatsapp_settings, 23, 0, "WAHA server port:", waha_port_var, 8, "Host port for the WAHA container (dashboard + API). Env: WAHA_PORT. Applied on the next docker stack restart; keep PC_WAHA_BASE_URL in sync.")
+    field(whatsapp_settings, 23, 2, "WAHA server API key:", waha_server_key_var, 24, "Optional API key the WAHA container requires (X-Api-Key). Env: WAHA_API_KEY; the notifier's PC_WAHA_API_KEY defaults to it. Blank keeps the value from .env. Applied on the next docker stack restart.")
+    field(whatsapp_settings, 24, 0, "Dashboard username:", waha_dash_user_var, 16, "Login user for the WAHA review dashboard (http://localhost:WAHA_PORT). Env: WAHA_DASHBOARD_USERNAME. Default admin.")
+    field(whatsapp_settings, 24, 2, "Dashboard password:", waha_dash_pass_var, 16, "Login password for the WAHA review dashboard. Setup generates a random one (saved in .env and data/config/integration-access.txt); blank here keeps that value. Env: WAHA_DASHBOARD_PASSWORD. Applied on the next docker stack restart.")
+    _track_wraplabel(ttk.Label(whatsapp_settings, text="Dashboard login: user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. To change it, set the password above and click Apply, then restart the docker stack (Operations → Integrations).", style="Card.TLabel", wraplength=820)).grid(row=25, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     whatsapp_apply_button = ttk.Button(whatsapp_settings, text="Apply & save settings", command=apply_settings, style="Accent.TButton")
-    whatsapp_apply_button.grid(row=25, column=0, sticky="w", pady=(10, 0))
+    whatsapp_apply_button.grid(row=26, column=0, sticky="w", pady=(10, 0))
     add_tooltip(whatsapp_apply_button, "Same as the Settings tab Apply: persists every setting from both tabs and saves the WhatsApp destination/keywords files.")
-    _track_wraplabel(ttk.Label(whatsapp_settings, text="WhatsApp sending requires 'Enable WAHA sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts sent right after the index scan and item-details follow-up after downloads, when enabled.", style="Card.TLabel", wraplength=820)).grid(row=26, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    _track_wraplabel(ttk.Label(whatsapp_settings, text="WhatsApp sending requires 'Enable WAHA sending' (PC_WAHA_ENABLED) and a reachable WAHA server. Source label, destination and keywords are read by the notifier; index alerts sent right after the index scan and item-details follow-up after downloads, when enabled.", style="Card.TLabel", wraplength=820)).grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     group_title(whatsapp_settings, 40, "Readability & index source")
     field(whatsapp_settings, 41, 0, "Delay between sends (s):", send_delay_var, 8, "Seconds to pause between consecutive WhatsApp sends so a batch arrives as separate readable messages instead of one burst. 0 disables pacing. Env: PC_WAHA_SEND_DELAY_SECONDS.")
@@ -1527,7 +1535,7 @@ def run_tk() -> int:
     add_section_header(whatsapp_clients, "Client Profiles",
                        "Each client fans a message out to its own WhatsApp destination when the message's phase matches.",
                        columnspan=4, row=0,
-                       detail="Fields: name, chat_id (destination), purposes (index/details/status/system/summary or \"all\"), "
+                       detail="Fields: name, chat_id (destination), purposes (index/details/status/open_now/system/summary or \"all\"; index also receives open_now), "
                               "filters (keyword rules like the shared ones above, comma-separated), enabled.")
     clients_text = tk.Text(whatsapp_clients, height=12, wrap="word")
     clients_text.grid(row=2, column=0, columnspan=4, sticky="ew", pady=3)
@@ -3197,6 +3205,8 @@ def run_tk() -> int:
             waha_details_var.set(str(snap.get("waha_chat_id_details", "")))
         if not waha_status_var.get():
             waha_status_var.set(str(snap.get("waha_chat_id_status", "")))
+        if not waha_open_now_var.get():
+            waha_open_now_var.set(str(snap.get("waha_chat_id_open_now", "")))
         if not waha_system_var.get():
             waha_system_var.set(str(snap.get("waha_chat_id_system", "")))
         if not waha_summary_var.get():

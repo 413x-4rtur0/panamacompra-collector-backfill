@@ -210,12 +210,12 @@ def waha_enabled() -> bool:
 
 def waha_destination() -> bool:
     """True when any WhatsApp destination is configured (the default chat id or
-    any of the per-purpose index/details/status/system/summary destinations, or
+    any of the per-purpose index/details/status/open_now/system/summary destinations, or
     at least one enabled client profile with its own chat/group id)."""
     return waha.any_destination_configured() or bool(load_client_profiles())
 
 
-FILTER_PURPOSES = ("index", "details", "status")
+FILTER_PURPOSES = ("index", "details", "status", "open_now")
 
 
 def keywords_path(purpose: str = "") -> Path:
@@ -255,8 +255,12 @@ def parse_filter_rules(text: str) -> tuple[list[list[str]], list[list[str]]]:
 
 def load_filter_rules(purpose: str = "") -> tuple[list[list[str]], list[list[str]]]:
     """Rules for a destination: its own file when it has rules, else the
-    shared filter file, else no filter (everything announced)."""
+    shared filter file, else no filter (everything announced). "open_now"
+    tries the "index" filter before the shared one (mirrors its destination
+    fallback)."""
     candidates = [keywords_path(purpose)] if purpose in FILTER_PURPOSES else []
+    if purpose == "open_now":
+        candidates.append(keywords_path("index"))
     candidates.append(KEYWORDS_PATH)
     for path in candidates:
         if path.exists():
@@ -335,7 +339,10 @@ def matching_client_profiles(purpose: str, row, summary: dict) -> list[dict]:
     haystack = row_filter_haystack(row, summary)
     for profile in load_client_profiles():
         purposes = profile["purposes"]
-        if "all" not in purposes and purpose not in purposes:
+        # Profiles subscribed to "index" also receive open-now alerts: those
+        # rode the index feed before the dedicated purpose existed.
+        effective = {purpose, "index"} if purpose == "open_now" else {purpose}
+        if "all" not in purposes and not effective.intersection(purposes):
             continue
         includes, excludes = parse_filter_rules(profile["filters"])
         if evaluate_filter(haystack, includes, excludes) is None:
@@ -1208,8 +1215,10 @@ def notify_status_change(conn, numero: str) -> bool:
     True only when a message was actually sent. Never raises.
 
     Programadas→Abiertas transitions (change_code="abierta") are routed to the
-    "index" destination so they appear in the same feed as new-opportunity alerts.
-    All other status changes continue going to the "status" destination."""
+    "open_now" destination (the user-fillable "Open Now Opportunities" field),
+    which falls back to the "index" destination — the feed they historically
+    shared — and then to the default chat id when left blank. All other status
+    changes continue going to the "status" destination."""
     try:
         if not (waha_enabled() and waha_destination()):
             return False
@@ -1217,8 +1226,8 @@ def notify_status_change(conn, numero: str) -> bool:
         if row is None or not row["pending_status_change"]:
             return False
         change_code = row["pending_status_change"]
-        # Abiertas transitions go to the index feed (new-opportunity channel).
-        purpose = "index" if change_code == "abierta" else "status"
+        # Abiertas transitions go to the Open Now Opportunities destination.
+        purpose = "open_now" if change_code == "abierta" else "status"
         summary = load_detail_summary(row["detail_json_path"])
         match_line = allowed_match_line_for(row, summary, purpose)
         if match_line is None:
