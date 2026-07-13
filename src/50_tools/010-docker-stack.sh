@@ -6,6 +6,7 @@
 #   ./src/50_tools/010-docker-stack.sh restart   down + up
 #   ./src/50_tools/010-docker-stack.sh status    show container state
 #   ./src/50_tools/010-docker-stack.sh logs      tail the stack logs
+#   ./src/50_tools/010-docker-stack.sh timer-sync sync the timer's API access/schedule
 #
 # Container data lives inside the self-contained state directory
 # ($PC_INTEGRATIONS_DIR, default var/integrations — or the XDG state dir in
@@ -172,6 +173,55 @@ ensure_access_credentials() {
 }
 
 
+sync_changedetection_timer_settings() {
+  local api_key="" interval_seconds="" attempt=0
+
+  # changedetection 0.55.x exposes watch last_checked values through its API,
+  # but not the global check interval. Read both private values inside the
+  # container and save them only to the ignored, mode-600 .env file. Nothing
+  # secret is printed to stdout or copied into the monitor settings file.
+  while [ "$attempt" -lt 10 ]; do
+    api_key="$("${COMPOSE[@]}" exec -T changedetection python -c '
+import json
+try:
+    data = json.load(open("/datastore/changedetection.json", encoding="utf-8"))
+    print(data.get("settings", {}).get("application", {}).get("api_access_token", ""))
+except (OSError, ValueError):
+    pass
+' 2>/dev/null || true)"
+    [ -n "$api_key" ] && break
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  if [ -z "$api_key" ]; then
+    note "WARNING: changedetection timer sync unavailable; timer will use its interval fallback."
+    return 0
+  fi
+
+  interval_seconds="$("${COMPOSE[@]}" exec -T changedetection python -c '
+import json
+try:
+    data = json.load(open("/datastore/changedetection.json", encoding="utf-8"))
+    parts = data.get("settings", {}).get("requests", {}).get("time_between_check", {}) or {}
+    units = {"weeks": 604800, "days": 86400, "hours": 3600, "minutes": 60, "seconds": 1}
+    print(sum(int(parts.get(name) or 0) * multiplier for name, multiplier in units.items()))
+except (OSError, TypeError, ValueError):
+    pass
+' 2>/dev/null || true)"
+
+  set_env_value CHANGEDETECTION_API_KEY "$api_key"
+  export CHANGEDETECTION_API_KEY="$api_key"
+  if [[ "$interval_seconds" =~ ^[0-9]+$ ]] && [ "$interval_seconds" -gt 0 ]; then
+    set_env_value PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS "$interval_seconds"
+    export PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS="$interval_seconds"
+    note "Changedetection timer synchronized (global check interval: ${interval_seconds}s; API key saved privately in .env)."
+  else
+    note "Changedetection API access synchronized; global interval unavailable, so the timer will use its fallback."
+  fi
+}
+
+
 # One-time migration: move a legacy repo-root ./integrations folder into the
 # self-contained state directory, leaving a symlink for older references.
 legacy="$APP_ROOT/integrations"
@@ -250,6 +300,7 @@ case "$ACTION" in
     ensure_access_credentials
     preflight
     "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed. Check that the Docker daemon is running and your user can access it."
+    sync_changedetection_timer_settings
     note "Stack is up."
     print_urls
     ;;
@@ -262,6 +313,7 @@ case "$ACTION" in
     "${COMPOSE[@]}" down --remove-orphans
     preflight
     "${COMPOSE[@]}" up -d --remove-orphans || fail "docker compose up failed after restart."
+    sync_changedetection_timer_settings
     note "Stack restarted."
     print_urls
     ;;
@@ -274,7 +326,10 @@ case "$ACTION" in
     shift
     "${COMPOSE[@]}" logs --tail 100 "$@"
     ;;
+  timer-sync|sync-timer)
+    sync_changedetection_timer_settings
+    ;;
   *)
-    fail "Unknown action: $ACTION (use up|down|restart|status|logs)"
+    fail "Unknown action: $ACTION (use up|down|restart|status|logs|timer-sync)"
     ;;
 esac

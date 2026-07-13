@@ -33,6 +33,7 @@ fi
 DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-0}"
 INDEX_LIMIT="${PC_WEBHOOK_INDEX_LIMIT:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 AUTORUN_SOURCE="${PC_AUTORUN_SOURCE:-changedetection}"
+CHANGEDETECTION_MONITOR_MODE="${PC_CHANGEDETECTION_MONITOR_MODE:-terminal}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 POLL_SECONDS="${PC_RUNNER_POLL_SECONDS:-5}"
 
@@ -70,6 +71,7 @@ while true; do
     . "$MONITOR_SETTINGS"
     set +a
     AUTORUN_SOURCE="${PC_AUTORUN_SOURCE:-changedetection}"
+    CHANGEDETECTION_MONITOR_MODE="${PC_CHANGEDETECTION_MONITOR_MODE:-terminal}"
   fi
   launch_queued_update_monitor
   if [ -f "$FLAG" ] && ! worker_running; then
@@ -82,7 +84,7 @@ while true; do
     log "request flag detected; launching host collector"
     # 110a-request-run.sh keeps/refreshes the flag and starts the host worker,
     # which consumes the request. Never let one failure stop the watcher.
-    PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "110a-request-run.sh returned non-zero"
+    PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "110a-request-run.sh returned non-zero"
   fi
   sleep "$POLL_SECONDS"
 done

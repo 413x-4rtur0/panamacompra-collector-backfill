@@ -8,11 +8,11 @@ file:line or function names).
 
 | File | Kind | Started by | Reads | Writes |
 |---|---|---|---|---|
-| `src/40_monitor/000-open-monitor.sh` | chooser | `pcc monitor` (`bin/pcc:104`), `110a-request-run.sh:35` | `PC_MONITOR_MODE` (default `tk`, `:22`) | starts 001a (`:92`) or 001b (`:114`) |
+| `src/40_monitor/000-open-monitor.sh` | chooser | `pcc monitor`, `110a-request-run.sh` | saved/explicit `PC_MONITOR_MODE` (manual default `tk`) | starts 001a, 001b, or 001c; Tk/terminal also start the small timer |
 | `src/40_monitor/001a-monitor-tk.py` | native Tk dashboard, 5 tabs | 000-open-monitor.sh | progress/summary env files, archive DB, settings env | `monitor_settings.env`, chat/keyword/format files; spawns 070/110a/110b/120b (`:1273-1286`) |
 | `src/40_monitor/001b-monitor-web.py` | web dashboard + JSON API (~25 endpoints, `:1625-1888`), 6 tabs | 000-open-monitor.sh, `src/50_tools/130-open-web-app.sh` | same as 001a | same as 001a via POST endpoints |
-| `src/40_monitor/001c-monitor-terminal.sh` | terminal watcher | `pcc watch` (`bin/pcc:143`) | progress/queue/logs | — |
-| `src/40_monitor/002-next-run-timer.py` | countdown widget | desktop launcher / manual | progress + last-summary env, DB | — |
+| `src/40_monitor/001c-monitor-terminal.sh` | terminal watcher | `pcc watch`, 000-open-monitor.sh when terminal mode is selected | progress/queue/logs | — |
+| `src/40_monitor/002-next-run-timer.py` | countdown widget | 000-open-monitor.sh / manual | changedetection watch API + synced interval; progress + last-summary env and DB as fallback/context | — |
 | `src/40_monitor/003-update-loader.py` | update-then-open-monitor loader | worker (`100-run-worker.sh:68`), `050-watch-queue-flag.sh:57` | — | runs `update-local-copy.sh`, then 000-open-monitor.sh |
 
 Both GUI monitors are **peers**: they render the same settings files and the
@@ -36,14 +36,14 @@ same data feeds. Neither talks to the other.
 ```
 bin/pcc
  ├─ start        → src/20_pipeline/110a-request-run.sh ──┬─ spawns 100-run-worker.sh
- │                                                    └─ opens src/40_monitor/000-open-monitor.sh
+ │                                                    └─ opens src/40_monitor/000-open-monitor.sh (manual Tk default)
  ├─ stop         → src/20_pipeline/120a-stop-everything.sh
  ├─ status       → src/20_pipeline/130a-queue-status.sh
  ├─ watch        → src/40_monitor/001c-monitor-terminal.sh
- ├─ monitor      → src/40_monitor/000-open-monitor.sh → 001a / 001b
+ ├─ monitor      → src/40_monitor/000-open-monitor.sh → 001a / 001b / 001c
  ├─ webhook start→ src/10_webhook/020-start-listener.sh → 010-webhook-listener.py
  ├─ webhook diag → src/10_webhook/040-diagnose-webhook.sh
- ├─ docker       → src/50_tools/010-docker-stack.sh (compose stack; writes .webhook_token)
+ ├─ docker       → src/50_tools/010-docker-stack.sh (compose stack; syncs changedetection timer access/interval privately)
  ├─ kpi          → inline Python heredoc (bin/pcc:190-341) over common.init_db
  ├─ calendar     → src/50_tools/030-opportunity-calendar.py
  ├─ notify       → src/20_pipeline/020-notify-whatsapp.py --record N
@@ -74,9 +74,13 @@ bin/pcc
 
 webhook trigger path
  changedetection ─▶ 010-webhook-listener.py
-   ├─ host mode:      060-run-collector.sh → 110a-request-run.sh (AUTO)
-   └─ enqueue mode:   run_all_requested.flag ◀─ polled by 050-watch-queue-flag.sh → 110a (AUTO)
+   ├─ host mode:      060-run-collector.sh → 110a-request-run.sh (AUTO + terminal monitor override)
+   └─ enqueue mode:   run_all_requested.flag ◀─ polled by 050-watch-queue-flag.sh → 110a (AUTO + terminal monitor override)
 ```
+
+`PC_MONITOR_MODE=tk` remains the manual/default dashboard choice.
+Changedetection paths read `PC_CHANGEDETECTION_MONITOR_MODE=terminal` and pass
+it as a command-scoped `PC_MONITOR_MODE`, so cron/manual launches are unchanged.
 
 Python-module reuse: every `src/**/*.py` inserts `src/` into `sys.path` and
 imports `common` (paths, DB, parsing, progress). Cross-file loading uses

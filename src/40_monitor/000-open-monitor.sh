@@ -19,7 +19,23 @@ FALLBACK_LOG="$PC_LOG_DIR/run_all_follow.log"
 WEB_LOG="$PC_LOG_DIR/monitor_server.log"
 TK_LOG="$PC_LOG_DIR/monitor_tk.log"
 TIMER_LOG="$PC_LOG_DIR/next_run_timer.log"
-MONITOR_MODE="${PC_MONITOR_MODE:-tk}"
+MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+
+saved_monitor_setting() {
+  local key="$1"
+  [ -f "$MONITOR_SETTINGS" ] || return 0
+  KEY="$key" bash -c '
+    set -a
+    # shellcheck disable=SC1090
+    source "$1"
+    printf "%s" "${!KEY-}"
+  ' bash "$MONITOR_SETTINGS"
+}
+
+SAVED_MONITOR_MODE="$(saved_monitor_setting PC_MONITOR_MODE)"
+SAVED_NEXT_RUN_TIMER="$(saved_monitor_setting PC_NEXT_RUN_TIMER)"
+MONITOR_MODE="${PC_MONITOR_MODE:-${SAVED_MONITOR_MODE:-tk}}"
+NEXT_RUN_TIMER="${PC_NEXT_RUN_TIMER:-${SAVED_NEXT_RUN_TIMER:-1}}"
 MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
 MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
@@ -61,7 +77,7 @@ next_run_timer_running() {
 }
 
 start_next_run_timer() {
-  if [ "${PC_NEXT_RUN_TIMER:-1}" = "0" ]; then
+  if [ "$NEXT_RUN_TIMER" = "0" ]; then
     log "Next-run timer disabled by PC_NEXT_RUN_TIMER=0."
     return 0
   fi
@@ -177,6 +193,10 @@ if [ "$MONITOR_MODE" = "web" ]; then
   echo "PanamaCompra web monitor: $MONITOR_URL"
   exit 0
 fi
+
+# Terminal mode keeps the tiny synchronized countdown but avoids the full Tk
+# dashboard. The terminal monitor itself auto-closes after the active run.
+start_next_run_timer || true
 
 if pgrep -f "[0]01c-monitor-terminal.sh" >/dev/null 2>&1; then
   log "Monitor already running. Not opening another window."

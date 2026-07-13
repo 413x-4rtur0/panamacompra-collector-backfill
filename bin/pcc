@@ -35,7 +35,9 @@ Monitors & services:
   changedetection-script [--copy|--path]    Print/copy the Browser Steps Execute JS
                                             script for all Programadas + Abiertas pages
   changedetection-check                     Validate the latest changedetection snapshot
-  docker up|down|restart|status|logs        Manage the changedetection + WAHA container stack
+  docker up|down|restart|status|logs|timer-sync
+                                            Manage the changedetection + WAHA stack;
+                                            timer-sync refreshes countdown API/schedule data
   docker-manager [list|audit|start|stop|    Review/manage ALL Docker containers on this host,
     restart|disable|enable|rm|logs|prune|     not just this repo's — flags orphaned/duplicate/
     menu] [name]                              stale ones left by other projects; no args = list

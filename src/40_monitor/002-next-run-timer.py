@@ -17,6 +17,8 @@ import sqlite3
 import subprocess
 import sys
 import tkinter as tk
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,16 +30,17 @@ PROGRESS_FILE = pc_common.PROGRESS_PATH
 LAST_SUMMARY_FILE = pc_common.LOG_DIR / "run_all_last_summary.env"
 ARCHIVE_DB = pc_common.DB_PATH
 SETTINGS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
+BOOTSTRAP_ENV_PATH = BASE_DIR / ".env"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
 
 
-def settings_file() -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    if not SETTINGS_PATH.exists():
+    if not path.exists():
         return values
-    for line in SETTINGS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if "=" not in line or line.lstrip().startswith("#"):
             continue
         key, raw = line.split("=", 1)
@@ -49,11 +52,16 @@ def settings_file() -> dict[str, str]:
     return values
 
 
+def settings_file() -> dict[str, str]:
+    return read_env_file(SETTINGS_PATH)
+
+
+_BOOTSTRAP_SETTINGS = read_env_file(BOOTSTRAP_ENV_PATH)
 _SETTINGS = settings_file()
 
 
 def setting(name: str, default: str) -> str:
-    return os.environ.get(name) or _SETTINGS.get(name) or default
+    return os.environ.get(name) or _BOOTSTRAP_SETTINGS.get(name) or _SETTINGS.get(name) or default
 
 
 def setting_int(name: str, default: str, minimum: int = 0) -> int:
@@ -75,6 +83,15 @@ def setting_bool(name: str, default: str) -> bool:
 
 
 INTERVAL_MINUTES = setting_int("PC_NEXT_RUN_INTERVAL_MINUTES", "30", 1)
+AUTORUN_SOURCE = setting("PC_AUTORUN_SOURCE", "changedetection").strip().lower()
+CHANGEDETECTION_BASE_URL = setting("CHANGEDETECTION_BASE_URL", "http://localhost:5000").rstrip("/")
+CHANGEDETECTION_API_KEY = setting("CHANGEDETECTION_API_KEY", "").strip()
+# Synced from changedetection's datastore by 010-docker-stack.sh. A watch-level
+# override returned by the API always takes precedence over this global value.
+CHANGEDETECTION_CHECK_INTERVAL_SECONDS = setting_int(
+    "PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS", str(INTERVAL_MINUTES * 60), 1
+)
+CHANGEDETECTION_REFRESH_SECONDS = setting_int("PC_CHANGEDETECTION_TIMER_REFRESH_SECONDS", "30", 5)
 # Fixed window size. Bigger by default than the old timer because it now carries
 # the branch, latest records and last-run summary; still pinned (resizable off).
 WINDOW_WIDTH = setting_int("PC_NEXT_RUN_TIMER_WIDTH", "380", 240)
@@ -181,7 +198,86 @@ def clock_bucket_next_run(now: datetime) -> datetime:
     return now.replace(minute=minute_bucket, second=0, microsecond=0)
 
 
-def next_run_time() -> datetime:
+def _duration_seconds(parts: object) -> int:
+    """Convert changedetection's {weeks,days,hours,minutes,seconds} value."""
+    if not isinstance(parts, dict):
+        return 0
+    multipliers = {
+        "weeks": 7 * 24 * 3600,
+        "days": 24 * 3600,
+        "hours": 3600,
+        "minutes": 60,
+        "seconds": 1,
+    }
+    total = 0
+    for name, multiplier in multipliers.items():
+        try:
+            total += int(parts.get(name) or 0) * multiplier
+        except (TypeError, ValueError):
+            continue
+    return max(0, total)
+
+
+_CHANGEDETECTION_CACHE: tuple[float, datetime | None, str] = (0.0, None, "")
+
+
+def changedetection_next_check() -> tuple[datetime | None, str]:
+    """Return the earliest active changedetection watch check from its local API.
+
+    The API supplies each watch's authoritative ``last_checked`` epoch and any
+    watch-level interval override. The global interval is synchronized into the
+    local environment by the Docker-stack helper because changedetection 0.55.x
+    does not expose global settings through its public API.
+    """
+    global _CHANGEDETECTION_CACHE
+
+    if AUTORUN_SOURCE != "changedetection" or not CHANGEDETECTION_API_KEY:
+        return None, ""
+
+    now_epoch = datetime.now().timestamp()
+    cached_at, cached_target, cached_note = _CHANGEDETECTION_CACHE
+    if now_epoch - cached_at < CHANGEDETECTION_REFRESH_SECONDS:
+        return cached_target, cached_note
+
+    request = urllib.request.Request(
+        f"{CHANGEDETECTION_BASE_URL}/api/v1/watch",
+        headers={"x-api-key": CHANGEDETECTION_API_KEY, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+    except (OSError, ValueError, urllib.error.URLError):
+        _CHANGEDETECTION_CACHE = (now_epoch, None, "")
+        return None, ""
+
+    if isinstance(payload, dict):
+        watches = payload.values()
+    elif isinstance(payload, list):
+        watches = payload
+    else:
+        watches = []
+    candidates: list[datetime] = []
+    for watch in watches:
+        if not isinstance(watch, dict) or watch.get("paused"):
+            continue
+        try:
+            last_checked = float(watch.get("last_checked") or 0)
+        except (TypeError, ValueError):
+            continue
+        if last_checked <= 0:
+            continue
+        interval = _duration_seconds(watch.get("time_between_check"))
+        if interval <= 0:
+            interval = CHANGEDETECTION_CHECK_INTERVAL_SECONDS
+        candidates.append(datetime.fromtimestamp(last_checked + interval))
+
+    target = min(candidates) if candidates else None
+    note = f"changedetection API · {len(candidates)} active watch{'es' if len(candidates) != 1 else ''}" if target else ""
+    _CHANGEDETECTION_CACHE = (now_epoch, target, note)
+    return target, note
+
+
+def interval_next_run_time() -> datetime:
     now = datetime.now()
     started = last_live_run_start()
     if started is not None:
@@ -192,6 +288,20 @@ def next_run_time() -> datetime:
             target += timedelta(minutes=INTERVAL_MINUTES)
         return target
     return clock_bucket_next_run(now)
+
+
+def next_run_schedule() -> tuple[datetime, str, bool]:
+    target, note = changedetection_next_check()
+    if target is not None:
+        return target, note, True
+    started = last_live_run_start()
+    basis = "after last run" if started is not None else "on the clock"
+    return interval_next_run_time(), f"Every {INTERVAL_MINUTES} min ({basis}; API fallback)", False
+
+
+def next_run_time() -> datetime:
+    """Backward-compatible timestamp-only helper used by older callers/tests."""
+    return next_run_schedule()[0]
 
 
 def countdown_string(target: datetime) -> str:
@@ -331,7 +441,8 @@ def main() -> int:
     root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{WINDOW_TOP}")
     root.after(300, apply_window_alpha)
 
-    tk.Label(root, text="Next live run", font=("Sans", 12, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(10, 1))
+    timer_title = "Next changedetection check" if AUTORUN_SOURCE == "changedetection" else "Next live run"
+    tk.Label(root, text=timer_title, font=("Sans", 12, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(10, 1))
     tk.Label(root, textvariable=transparency_var, font=("Sans", 8), bg="#1e293b", fg="#93c5fd", wraplength=WINDOW_WIDTH - 24).pack(pady=(0, 1))
     next_var = tk.StringVar(value="Loading...")
     tk.Label(root, textvariable=next_var, font=("Sans", 11), bg="#1e293b", fg="#e5e7eb").pack(pady=1)
@@ -427,14 +538,14 @@ def main() -> int:
             if root.state() == "withdrawn":
                 root.deiconify()
                 root.lift()
-            next_dt = next_run_time()
+            next_dt, schedule_note, changedetection_synced = next_run_schedule()
             remaining = int((next_dt - datetime.now()).total_seconds())
             next_var.set(next_dt.strftime("%H:%M:%S"))
             count_var.set(countdown_string(next_dt))
             # Turn the countdown amber when the next run is imminent (< 60s).
             count_label.configure(fg="#f59e0b" if remaining <= 60 else "#22c55e")
-            basis = "after last run" if last_live_run_start() is not None else "on the clock"
-            status_var.set(f"Every {INTERVAL_MINUTES} min ({basis})" + (" · run finished" if state["was_active"] else ""))
+            overdue = " · check overdue/queued" if changedetection_synced and remaining <= 0 else ""
+            status_var.set(schedule_note + overdue + (" · run finished" if state["was_active"] else ""))
             # Refresh the heavier branch/DB data periodically (and right after a run).
             if state["tick"] % DATA_REFRESH_TICKS == 0 or state["was_active"]:
                 refresh_data()

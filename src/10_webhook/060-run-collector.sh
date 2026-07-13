@@ -23,10 +23,11 @@ fi
 # 0 means: index every available page and download every pending detail row.
 DETAIL_LIMIT="${PC_WEBHOOK_DETAIL_LIMIT:-0}"
 INDEX_LIMIT="${PC_WEBHOOK_INDEX_LIMIT:-0}"
+CHANGEDETECTION_MONITOR_MODE="${PC_CHANGEDETECTION_MONITOR_MODE:-terminal}"
 
 echo "===== changedetection webhook received at $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$PC_LOG_DIR/collector_triggered.log"
 echo "Requesting full sequence: index + detail, index_page_cap=$INDEX_LIMIT, detail_limit=$DETAIL_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log"
 
-PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log" 2>&1
+PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log" 2>&1
 
 echo "Full sequence requested at $(date '+%Y-%m-%d %H:%M:%S')" >> "$PC_LOG_DIR/collector_triggered.log"

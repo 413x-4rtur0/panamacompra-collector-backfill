@@ -27,7 +27,7 @@ Examples:
 - `scripts/tasks/001a-setup-development.sh` — first bootstrap path for development/portable use.
 - `scripts/tasks/001b-install-update-monitor-launcher.sh` — alternate/conditional first-time desktop step.
 - `src/20_pipeline/010-collect-index.py` — STEP 1 of the run-all worker sequence.
-- `src/40_monitor/001a-monitor-tk.py` / `001b-monitor-web.py` / `001c-monitor-terminal.sh` — mutually exclusive monitor UI choices, selected by `PC_MONITOR_MODE`.
+- `src/40_monitor/001a-monitor-tk.py` / `001b-monitor-web.py` / `001c-monitor-terminal.sh` — mutually exclusive monitor UI choices. Manual launches use `PC_MONITOR_MODE` (default `tk`); changedetection-triggered runs pass `PC_CHANGEDETECTION_MONITOR_MODE` (default `terminal`) as a one-run override.
 
 Rules:
 
@@ -37,7 +37,8 @@ Rules:
    documented STEP 0-7 sequence in the main README.
 2. Optional letters (`001a`, `001b`, `001c`, ...) mark mutually exclusive or
    conditional variants inside the same phase/step (e.g. the three monitor
-   UIs, chosen by `PC_MONITOR_MODE`).
+   UIs, chosen manually by `PC_MONITOR_MODE` or automatically for
+   changedetection by `PC_CHANGEDETECTION_MONITOR_MODE`).
 3. The description is lowercase kebab-case and starts with a verb when
    possible. Scripts that are daemons/programs rather than actions (e.g.
    `listener.py`, `common.py`) may be a plain noun instead.
