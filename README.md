@@ -492,6 +492,7 @@ PC_DETAIL_LIMIT=5 ./src/20_pipeline/030-collect-details.py   # download up to 5 
 | `src/20_pipeline/100-run-worker.sh` | Locked sequential worker: pre-run update, **index → WhatsApp index alerts → details/downloads → storing/per-record calendars/detail views → WhatsApp item-detail follow-ups → verification → calendar packages**, optional test zone; repeats if re-requested. A failed pre-run update only logs a warning — the worker still collects with the current code. It records per-step durations in `data/logs/run_all_last_summary.env`, and live monitor ETA prefers the previous completion time when available. |
 | `src/20_pipeline/000-update-before-run.sh` | Lightweight pre-run updater called by the worker before every iteration; auto-stashes local tracked edits, fast-forwards Git (reset to remote if diverged) and refreshes requirements without stopping the active worker. Untracked runtime files never block it. |
 | `src/30_notify/010-waha-client.py` | Optional dependency-free WAHA notifier for short operational WhatsApp alerts (start/done/failed/…). Enabled only when WAHA environment variables are configured. |
+| `src/30_notify/015-waha-session-status.py` | Dependency-free WAHA session preflight. The worker calls it once per iteration; a `SCAN_QR_CODE`/`STARTING` session skips every WhatsApp path (including inline detail messages) without failing the collector and writes a persistent terminal-monitor warning. |
 | `src/20_pipeline/020-notify-whatsapp.py` | WhatsApp (WAHA) notifier helpers and entry point. Two notifier phases. The worker calls `--announce` in the first MESSAGING step **right after the index, before detail downloads**, sending one “🔔 Nueva Oportunidad” message per new record with per-message monitor progress (items shown as pending); after downloads + views it calls `--announce-details`, which sends the follow-up “📥 Detalles Completos” message per record with the real items and exports its calendar. `--idle` sends “⚪ Sin nuevas entradas”; `--flush` retries failed sends; `--sync-snapshots --since TS` is the silent fallback when `PC_NOTIFY_DETAILS=0`. Supports an optional keyword filter and a first-use baseline so the existing archive is never re-announced. |
 | `src/20_pipeline/110b-run-now.sh` | Runs the worker in the foreground for interactive use. |
 | `src/10_webhook/060-run-collector.sh` | Bridge called by the webhook listener; requests a full run. |
@@ -858,7 +859,15 @@ Test the notifier without running the collector:
 
 ```bash
 ./src/30_notify/010-waha-client.py --event info --status TEST --message "PanamaCompra WAHA test"
+./src/30_notify/015-waha-session-status.py --json
 ```
+
+Before each enabled run, the worker verifies the configured WAHA session. If
+WAHA is asking for a QR scan (`SCAN_QR_CODE` or `STARTING`), all WhatsApp sends
+for that iteration are skipped without failing or delaying collection. The
+automatic terminal monitor remains open with a prominent warning and the WAHA
+dashboard URL; scan the QR there, or press Ctrl+C to close the warning screen.
+The next healthy worker preflight clears the warning automatically.
 
 Keep this group private and low-volume. WAHA is a WhatsApp Web style automation
 bridge, not the official WhatsApp Business Cloud API, so the safest use is a
@@ -1647,7 +1656,7 @@ python src/40_monitor/002-next-run-timer.py
 ```
 In changedetection mode this mini-monitor reads active watch scheduling from the local API and counts down to the earliest `last_checked + effective interval`. Run `./bin/pcc docker timer-sync` once after an older installation is upgraded; future Docker `up`/`restart` operations synchronize the private API access and global interval automatically. If the API is unavailable, it falls back to the last live collector start plus `PC_NEXT_RUN_INTERVAL_MINUTES`, then to clock boundaries when no run is recorded. `src/40_monitor/000-open-monitor.sh` starts it automatically with the Tk or terminal monitor unless `PC_NEXT_RUN_TIMER=0` is set. When a live run starts, the timer window withdraws; when the run finishes, it reappears. Check `data/logs/next_run_timer.log` if it does not appear.
 
-The default split profile keeps `PC_MONITOR_MODE=tk` for manually opened dashboards and uses `PC_CHANGEDETECTION_MONITOR_MODE=terminal` only for changedetection-triggered runs. The automatic Bash monitor opens for the run and auto-closes afterward, while the small synchronized timer remains available. For the absolute minimum background use, set `PC_REQUEST_OPEN_MONITOR=0` and run `./bin/pcc watch` only when needed.
+The default split profile keeps `PC_MONITOR_MODE=tk` for manually opened dashboards and uses `PC_CHANGEDETECTION_MONITOR_MODE=terminal` only for changedetection-triggered runs. The automatic Bash monitor opens for the run and auto-closes afterward, except when WAHA requires a QR scan: messaging is skipped, collection completes, and the terminal stays open with the pairing warning. The small synchronized timer remains available. For the absolute minimum background use, set `PC_REQUEST_OPEN_MONITOR=0` and run `./bin/pcc watch` only when needed.
 
 The browser monitor remains available for hosts where Tk is not installed or where a
 remote browser dashboard is preferred: `PC_MONITOR_MODE=web ./src/40_monitor/000-open-monitor.sh`,
@@ -1680,6 +1689,15 @@ tail -120 data/logs/run_all_current.log
 ---
 
 ## Troubleshooting
+
+**Automatic monitor stays open with “WHATSAPP ATTENTION REQUIRED”** — WAHA is
+asking to pair the configured session. Collection has continued normally, but
+WhatsApp messages were intentionally skipped. Open the dashboard URL shown on
+the screen (normally `http://127.0.0.1:3000`), scan the QR code, and leave the
+next run to confirm the session is connected and clear the warning. The warning
+state is stored at `$PC_RUN_DIR/waha_qr_required.env` (`var/run/…` in a normal
+development/portable checkout); Ctrl+C closes only the
+terminal screen and does not stop the collector.
 
 **Monitor stays open** — a real process is probably still running:
 

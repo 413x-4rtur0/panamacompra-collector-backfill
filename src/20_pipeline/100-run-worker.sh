@@ -30,6 +30,7 @@ CURRENT_LOG="$PC_LOG_DIR/run_all_current.log"
 HISTORY_LOG="$PC_LOG_DIR/run_all_history.log"
 PROGRESS_FILE="$PC_LOG_DIR/run_all_progress.env"
 LAST_SUMMARY_FILE="$PC_LOG_DIR/run_all_last_summary.env"
+WAHA_QR_WARNING_FILE="$PC_RUN_DIR/waha_qr_required.env"
 UPDATE_QUEUE_FLAG="$PC_QUEUE_DIR/update_monitor_requested.flag"
 UPDATE_QUEUE_LOG="$PC_LOG_DIR/update_monitor_queue.log"
 PIPELINE_DIR="$APP_ROOT/src/20_pipeline"
@@ -37,6 +38,8 @@ PIPELINE_DIR="$APP_ROOT/src/20_pipeline"
 DETAIL_LIMIT="${1:-0}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
 RUN_COMPLETED=0
+WAHA_CONFIG_ENABLED="${PC_WAHA_ENABLED:-0}"
+WAHA_MESSAGING_SKIPPED=0
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$WORKER_LOG"
@@ -48,6 +51,10 @@ notify_waha() {
   local message="$3"
   local purpose="${4:-system}"
   local purpose_args=()
+  if [ "${WAHA_MESSAGING_SKIPPED:-0}" = "1" ]; then
+    log "WAHA $event message skipped: configured session requires a QR scan."
+    return 0
+  fi
   [ -z "$purpose" ] || purpose_args=(--purpose "$purpose")
   if [ -x "$APP_ROOT/src/30_notify/010-waha-client.py" ]; then
     "$PYTHON_BIN" "$APP_ROOT/src/30_notify/010-waha-client.py" --event "$event" --status "$status" --message "$message" "${purpose_args[@]}" >> "$WORKER_LOG" 2>&1 || true
@@ -72,6 +79,10 @@ launch_queued_update_monitor() {
 }
 
 notify_new_records() {
+  if [ "${WAHA_MESSAGING_SKIPPED:-0}" = "1" ]; then
+    log "WhatsApp record messaging skipped: configured WAHA session requires a QR scan."
+    return 0
+  fi
   if [ -x "$PIPELINE_DIR/020-notify-whatsapp.py" ]; then
     "$PYTHON_BIN" "$PIPELINE_DIR/020-notify-whatsapp.py" "$@" >> "$WORKER_LOG" 2>&1 || true
   fi
@@ -79,6 +90,63 @@ notify_new_records() {
 
 quote_value() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
+}
+
+write_waha_qr_warning() {
+  local session="$1"
+  local status="$2"
+  local dashboard_url="$3"
+  local tmp="${WAHA_QR_WARNING_FILE}.tmp"
+  mkdir -p "$(dirname "$WAHA_QR_WARNING_FILE")"
+  {
+    echo "SESSION='$(quote_value "$session")'"
+    echo "WAHA_STATUS='$(quote_value "$status")'"
+    echo "DASHBOARD_URL='$(quote_value "$dashboard_url")'"
+    echo "WAHA_WARNING_MESSAGE='$(quote_value "WAHA requires a QR scan. WhatsApp messaging was skipped; the collector continued normally.")'"
+    echo "WAHA_WARNING_UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
+  } > "$tmp"
+  mv "$tmp" "$WAHA_QR_WARNING_FILE"
+}
+
+check_waha_session_before_run() {
+  local checker="$APP_ROOT/src/30_notify/015-waha-session-status.py"
+  local result code session status dashboard_url
+  WAHA_MESSAGING_SKIPPED=0
+  export PC_WAHA_ENABLED="$WAHA_CONFIG_ENABLED"
+
+  case "${WAHA_CONFIG_ENABLED,,}" in
+    1|true|yes|on) ;;
+    *)
+      rm -f "$WAHA_QR_WARNING_FILE"
+      return 0
+      ;;
+  esac
+  if [ ! -f "$checker" ]; then
+    rm -f "$WAHA_QR_WARNING_FILE"
+    return 0
+  fi
+
+  result="$($PYTHON_BIN "$checker" --json 2>> "$WORKER_LOG")"
+  code=$?
+  session="$($PYTHON_BIN -c 'import json,sys; print(json.loads(sys.argv[1]).get("session", "default"))' "$result" 2>/dev/null || echo default)"
+  status="$($PYTHON_BIN -c 'import json,sys; print(json.loads(sys.argv[1]).get("status", "UNKNOWN"))' "$result" 2>/dev/null || echo UNKNOWN)"
+  dashboard_url="$($PYTHON_BIN -c 'import json,sys; print(json.loads(sys.argv[1]).get("dashboard_url", "http://127.0.0.1:3000"))' "$result" 2>/dev/null || echo http://127.0.0.1:3000)"
+
+  if [ "$code" -eq 10 ]; then
+    WAHA_MESSAGING_SKIPPED=1
+    # Child processes include inline detail notifications, so disable WAHA for
+    # this iteration only. The saved operator setting remains unchanged.
+    export PC_WAHA_ENABLED=0
+    write_waha_qr_warning "$session" "$status" "$dashboard_url"
+    log "WARNING: WAHA session '$session' is $status and requires a QR scan. All WhatsApp messaging is skipped for this iteration; collection continues. Open $dashboard_url to pair it."
+    return 0
+  fi
+
+  # A connected or different current state makes an old QR warning stale.
+  rm -f "$WAHA_QR_WARNING_FILE"
+  if [ "$code" -ne 0 ]; then
+    log "WAHA preflight status is $status (not a QR request); normal non-fatal notifier behavior remains active."
+  fi
 }
 
 format_eta() {
@@ -254,6 +322,7 @@ while true; do
   export PC_INDEX_LIMIT="$INDEX_LIMIT"
   export PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
+  check_waha_session_before_run
   {
     echo "============================================================"
     echo "RUN-ALL ITERATION $ITERATION STARTED: $STARTED"
@@ -392,7 +461,10 @@ PY
 )"
   fi
   NOTIFY_WHATSAPP="${NOTIFY_WHATSAPP:-1}"
-  if [ "$NOTIFY_WHATSAPP" != "0" ]; then
+  if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
+    write_progress "MESSAGING" "SKIPPED" "52" "Step 2/7: WAHA requires a QR scan; WhatsApp skipped and collection continues." "$STARTED"
+    log "ITERATION $ITERATION Step 2 WhatsApp skipped because WAHA requires QR pairing."
+  elif [ "$NOTIFY_WHATSAPP" != "0" ]; then
     write_progress "MESSAGING" "RUNNING" "52" "Step 2/7: sending WhatsApp index alerts (new opportunities + status changes) before downloads..." "$STARTED"
     {
       echo ""
@@ -484,7 +556,10 @@ PY
     # next run.
     if [ "$VIEW_EXIT" -eq 0 ]; then
       NOTIFY_DETAILS="${PC_NOTIFY_DETAILS:-1}"
-      if [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
+      if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
+        write_progress "MESSAGING" "SKIPPED" "80" "Step 5/7: WAHA still requires a QR scan; detail messages skipped and processing continues." "$STARTED"
+        log "ITERATION $ITERATION Step 5 WhatsApp details skipped because WAHA requires QR pairing."
+      elif [ "$NOTIFY_WHATSAPP" != "0" ] && [ "$NOTIFY_DETAILS" != "0" ]; then
         write_progress "MESSAGING" "RUNNING" "80" "Step 5/7: sending WhatsApp detail messages (downloaded items) for announced records..." "$STARTED"
         {
           echo ""
@@ -627,6 +702,7 @@ PY
       echo "VERIFY_SECONDS='$VERIFY_SECONDS'"
       echo "CALENDAR_SECONDS='$CALENDAR_SECONDS'"
       echo "MESSAGING_SECONDS='$MESSAGING_SECONDS'"
+      echo "WAHA_MESSAGING_STATUS='$( [ "$WAHA_MESSAGING_SKIPPED" = "1" ] && echo SKIPPED_QR || echo NORMAL )'"
       echo "INDEX_SOURCE='$(quote_value "$INDEX_SOURCE")'"
       echo "TOTAL_TEXT='$(quote_value "$(format_eta "$TOTAL_SECONDS")")'"
     } > "$LAST_SUMMARY_FILE"
@@ -644,7 +720,11 @@ $SUMMARY_COUNTS" "summary"
     {
       echo "Finished: $FINISHED"
     } >> "$CURRENT_LOG"
-    write_progress "DONE" "DONE" "100" "Index, WhatsApp index alerts, details, WhatsApp item details, verification/repair, per-record calendars and calendar packages completed." "$STARTED"
+    if [ "$WAHA_MESSAGING_SKIPPED" = "1" ]; then
+      write_progress "DONE" "DONE" "100" "Collection completed. WhatsApp was skipped because WAHA requires a QR scan; open the WAHA dashboard to pair the session." "$STARTED"
+    else
+      write_progress "DONE" "DONE" "100" "Index, WhatsApp index alerts, details, WhatsApp item details, verification/repair, per-record calendars and calendar packages completed." "$STARTED"
+    fi
     log "ITERATION $ITERATION finished successfully."
   fi
 

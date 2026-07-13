@@ -8,6 +8,7 @@ cd "$APP_ROOT"
 
 MONITOR_LOCK="/tmp/panamacompra_monitor_window.lock"
 PROGRESS_FILE="$PC_LOG_DIR/run_all_progress.env"
+WAHA_QR_WARNING_FILE="$PC_RUN_DIR/waha_qr_required.env"
 IDLE_CLOSE_SECONDS="${PC_MONITOR_IDLE_CLOSE_SECONDS:-8}"
 STABLE_DONE_CYCLES="${PC_MONITOR_STABLE_DONE_CYCLES:-3}"
 REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-5}"
@@ -42,6 +43,7 @@ render_signature() {
   printf 'progress=%s\n' "$(file_state "$PROGRESS_FILE")"
   printf 'worker_log=%s\n' "$(file_state "$PC_LOG_DIR/run_all_worker.log")"
   printf 'current_log=%s\n' "$(file_state "$PC_LOG_DIR/run_all_current.log")"
+  printf 'waha_qr_warning=%s\n' "$(file_state "$WAHA_QR_WARNING_FILE")"
 }
 
 run_all_worker_running() {
@@ -200,6 +202,22 @@ show_screen() {
   echo "Step:        $STEP_CURRENT / $STEP_TOTAL"
   echo "Item:        $ITEM_CURRENT / $ITEM_TOTAL"
   echo "Updated:     $UPDATED_AT"
+  if [ -f "$WAHA_QR_WARNING_FILE" ]; then
+    SESSION="default"
+    WAHA_STATUS="SCAN_QR_CODE"
+    DASHBOARD_URL="http://127.0.0.1:3000"
+    WAHA_WARNING_UPDATED_AT="-"
+    # shellcheck disable=SC1090
+    source "$WAHA_QR_WARNING_FILE"
+    echo ""
+    echo "!!!!!!!!!!!!!!!!!! WHATSAPP ATTENTION REQUIRED !!!!!!!!!!!!!!!!!!"
+    echo "  WAHA session '$SESSION' is $WAHA_STATUS and requires a QR scan."
+    echo "  WhatsApp messaging was SKIPPED; collection continues normally."
+    echo "  Open $DASHBOARD_URL and scan the QR code to pair the session."
+    echo "  Warning recorded: $WAHA_WARNING_UPDATED_AT"
+    echo "  It stays open until a healthy run clears it, or you press Ctrl+C."
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  fi
   echo ""
   echo "Current action:"
   echo "  $MESSAGE"
@@ -252,7 +270,11 @@ show_screen() {
 
   echo ""
   echo "============================================================"
-  echo "Auto-close: when worker/index/detail are all finished."
+  if [ -f "$WAHA_QR_WARNING_FILE" ]; then
+    echo "Auto-close: PAUSED while the WAHA QR warning is active."
+  else
+    echo "Auto-close: when worker/index/detail are all finished."
+  fi
   echo "Manual close: Ctrl+C"
   echo "============================================================"
 }
@@ -294,7 +316,9 @@ while true; do
     last_redraw_epoch="$now_epoch"
   fi
 
-  if system_is_done; then
+  if [ -f "$WAHA_QR_WARNING_FILE" ]; then
+    done_cycles=0
+  elif system_is_done; then
     done_cycles=$((done_cycles + 1))
   else
     saw_active=1
