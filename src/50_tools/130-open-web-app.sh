@@ -63,6 +63,7 @@ launch() {
 
 open_app_window() {
   local url="$1"
+  local app_class="${2:-PanamaCompra}"
   local mode="${PC_WEB_APP_MODE:-app}"
 
   if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
@@ -74,6 +75,8 @@ open_app_window() {
   if [ -n "${PC_WEB_APP_BROWSER:-}" ] && command -v "${PC_WEB_APP_BROWSER%% *}" >/dev/null 2>&1; then
     # shellcheck disable=SC2086  # allow flags inside PC_WEB_APP_BROWSER
     if [ "$mode" = "app" ]; then
+      # The explicit override may be a non-Chromium browser whose CLI rejects
+      # --class. Operators can include their own class flag in the override.
       launch ${PC_WEB_APP_BROWSER} --app="$url" && { note "Opened app window with PC_WEB_APP_BROWSER: $url"; return 0; }
     fi
     launch ${PC_WEB_APP_BROWSER} "$url" && { note "Opened with PC_WEB_APP_BROWSER: $url"; return 0; }
@@ -85,7 +88,7 @@ open_app_window() {
     local candidate
     for candidate in chromium chromium-browser google-chrome google-chrome-stable brave-browser microsoft-edge microsoft-edge-stable vivaldi opera; do
       if command -v "$candidate" >/dev/null 2>&1; then
-        launch "$candidate" --app="$url" --class=PanamaCompra
+        launch "$candidate" --app="$url" --class="$app_class"
         note "Opened chromeless app window with $candidate: $url"
         return 0
       fi
@@ -120,14 +123,14 @@ TARGET="${1:-help}"
 case "$TARGET" in
   monitor|web-monitor)
     ensure_web_monitor
-    open_app_window "http://${MONITOR_HOST}:${MONITOR_PORT}/"
+    open_app_window "http://${MONITOR_HOST}:${MONITOR_PORT}/" "PanamaCompraMonitorWeb"
     ;;
   changedetection|cd)
-    open_app_window "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}"
+    open_app_window "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}" "PanamaCompraChangedetection"
     ;;
   waha|whatsapp)
     note "WAHA dashboard login is in $PC_DATA_DIR/config/integration-access.txt (default admin / 12345678)."
-    open_app_window "http://localhost:${WAHA_PORT:-3000}"
+    open_app_window "http://localhost:${WAHA_PORT:-3000}" "PanamaCompraWAHA"
     ;;
   http://*|https://*)
     open_app_window "$TARGET"

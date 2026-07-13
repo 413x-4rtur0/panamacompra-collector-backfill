@@ -41,6 +41,7 @@ from monitor_common import (  # noqa: E402
     stats_to_csv,
     summarize_items_for_kpi,
     waha_fetch_all,
+    waha_filter_matches,
 )
 
 BASE_DIR = pc_common.APP_ROOT
@@ -315,26 +316,57 @@ def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=N
     }
 
 
-def waha_search(query: str) -> dict:
+_WAHA_DIRECTORY_LOCK = threading.Lock()
+_WAHA_DIRECTORY_CACHE: dict[str, object] = {"loaded_at": 0.0, "matches": []}
+
+
+def _waha_directory(*, refresh: bool = False) -> tuple[list[dict], bool]:
+    """Return a complete short-lived directory cache shared by web searches."""
+    try:
+        ttl = max(15.0, float(setting("PC_WAHA_DIRECTORY_CACHE_SECONDS", "120") or 120))
+    except ValueError:
+        ttl = 120.0
+    now = time.monotonic()
+    with _WAHA_DIRECTORY_LOCK:
+        loaded_at = float(_WAHA_DIRECTORY_CACHE.get("loaded_at") or 0.0)
+        cached = _WAHA_DIRECTORY_CACHE.get("matches")
+        if not refresh and loaded_at and now - loaded_at < ttl and isinstance(cached, list):
+            return list(cached), True
+        matches = waha_fetch_all(
+            "", include_chats=True, raise_on_connection_error=True, limit=None
+        )
+        _WAHA_DIRECTORY_CACHE["loaded_at"] = time.monotonic()
+        _WAHA_DIRECTORY_CACHE["matches"] = list(matches)
+        return matches, False
+
+
+def waha_search(query: str, *, refresh: bool = False) -> dict:
     """Search WAHA sessions by full/partial display name or chat ID.
 
     Returns {'sessions': [...], 'matches': [...]} where each match carries the
     session it was found in, the chat id to paste into a client profile, the
     display name and whether it is a group or contact. Empty query lists every
     group (the useful default for building client profiles)."""
-    health = monitor_connectivity_status()
-    if not health["internet"]["online"] or not health["connected"]:
+    try:
+        directory, cached = _waha_directory(refresh=refresh)
+    except Exception as exc:  # noqa: BLE001 - return a useful monitor diagnosis
+        health = monitor_connectivity_status()
         return {"sessions": [], "matches": [], "health": health,
-                "error": health["message"]}
-    matches = waha_fetch_all(query, include_chats=True)
+                "error": f"WAHA directory unavailable: {exc}"}
+    matches = waha_filter_matches(directory, query, limit=100)
+    public_matches = [
+        {key: match.get(key, "") for key in ("session", "id", "name", "kind")}
+        for match in matches
+    ]
     sessions: list[dict] = []
     seen = set()
-    for m in matches:
+    for m in directory:
         sname = m.get("session", "")
         if sname not in seen:
             seen.add(sname)
             sessions.append({"name": sname, "status": "WORKING"})
-    return {"sessions": sessions, "matches": matches[:100], "health": health}
+    return {"sessions": sessions, "matches": public_matches, "directory_count": len(directory),
+            "cached": cached}
 MONITOR_SETTINGS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
 MANUAL_ACTION_LOG = pc_common.LOG_DIR / "manual_actions.log"
 ARCHIVE_DB = pc_common.DB_PATH
@@ -1110,7 +1142,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp settings</h2><p class="small">All WhatsApp options in one place: destinations, delivery settings, WAHA server connection, toggles and per-destination content filters.</p><div class="subsection"><h3>Destinations & toggles</h3><div class="destination-grid"><label>Default / one group</label><textarea id="waha-message-wa" rows="2" placeholder="12036...@g.us (used when a purpose-specific group is blank)"></textarea><label>Index alerts</label><input id="waha-index-wa" size="32" placeholder="blank = default group"><label>Item details</label><input id="waha-details-wa" size="32" placeholder="blank = default group"><label>Status changes</label><input id="waha-status-wa" size="32" placeholder="blank = default group"><label>System health</label><input id="waha-system-wa" size="32" placeholder="blank = default group"><label>Final summary per round</label><input id="waha-summary-wa" size="32" placeholder="blank = default group"></div><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label><br><label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label></p><p><button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div><div class="subsection"><h3>Delivery & server settings</h3><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (generated by setup) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label></div><p><button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></p><p class="xs">The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div><div class="subsection"><h3>Content filters</h3><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div></div>
-<div class="card" data-tab="whatsapp"><h2>WhatsApp client profiles</h2><div class="subsection"><h3>Add / update a client</h3><p class="small">Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').</p><p><label class="small">Client name <input id="client-name" size="18"></label> <label class="small">Destination <select id="client-group-select"><option value="">— search first —</option></select></label> <label class="small">or custom chat ID <input id="client-chat-custom" size="22" placeholder="12036...@g.us"></label></p><p><span class="small">Purposes</span> <label class="small"><input type="checkbox" id="client-purpose-index" checked> index</label> <label class="small"><input type="checkbox" id="client-purpose-details" checked> details</label> <label class="small"><input type="checkbox" id="client-purpose-status" checked> status</label> <label class="small">Filter expression <input id="client-filters" size="30" placeholder="salud + insumos, -construccion"></label> <button onclick="addClientProfile()">Add to profiles</button></p></div><div class="subsection"><h3>Profiles (JSON)</h3><p class="small">Full list, editable by hand. Purposes: index, details, status, or all.</p><textarea id="waha-clients" rows="10" placeholder='[{{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion","enabled":true}}]'></textarea><p><button onclick="saveWahaClients()">Save client profiles</button></p></div></div><div class="card" data-tab="whatsapp"><h2>WAHA Directory Search</h2><p class="small">Search contacts, groups, communities and channels by full or partial name or chat ID. IDs: contacts commonly use <code>@c.us</code>, <code>@s.whatsapp.net</code> or <code>@lid</code>; groups/communities use <code>@g.us</code>; channels use <code>@newsletter</code>.</p><p><label class="small">Name or ID <input id="waha-search-q" size="40" placeholder="e.g. Compras, 12036, @g.us, @newsletter"></label> <button onclick="wahaSearch()">Search WAHA</button> <span id="waha-search-state" class="small"></span></p><div id="waha-search-results" class="small"></div></div>
+<div class="card" data-tab="whatsapp"><h2>WhatsApp client profiles</h2><div class="subsection"><h3>Add / update a client</h3><p class="small">Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').</p><p><label class="small">Client name <input id="client-name" size="18"></label> <label class="small">Destination <select id="client-group-select"><option value="">— search first —</option></select></label> <label class="small">or custom chat ID <input id="client-chat-custom" size="22" placeholder="12036...@g.us"></label></p><p><span class="small">Purposes</span> <label class="small"><input type="checkbox" id="client-purpose-index" checked> index</label> <label class="small"><input type="checkbox" id="client-purpose-details" checked> details</label> <label class="small"><input type="checkbox" id="client-purpose-status" checked> status</label> <label class="small">Filter expression <input id="client-filters" size="30" placeholder="salud + insumos, -construccion"></label> <button onclick="addClientProfile()">Add to profiles</button></p></div><div class="subsection"><h3>Profiles (JSON)</h3><p class="small">Full list, editable by hand. Purposes: index, details, status, or all.</p><textarea id="waha-clients" rows="10" placeholder='[{{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion","enabled":true}}]'></textarea><p><button onclick="saveWahaClients()">Save client profiles</button></p></div></div><div class="card" data-tab="whatsapp"><h2>WAHA Directory Search</h2><p class="small">Search the complete WAHA directory by one or more words from a name or chat ID. Results filter live from a short-lived local cache, so typing does not repeatedly download contacts, groups, communities and channels.</p><p><label class="small">Name or ID <input id="waha-search-q" size="40" placeholder="e.g. Chiriquí contratistas, 12036, @g.us" oninput="scheduleWahaSearch()" onkeydown="if (event.key === 'Enter') {{ event.preventDefault(); wahaSearch(); }}"></label> <button onclick="wahaSearch()">Search</button> <button onclick="wahaSearch(true)">Refresh directory</button> <span id="waha-search-state" class="small"></span></p><div id="waha-search-results" class="small"></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option><option value="system">System / health</option><option value="summary">Final summary</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div>
 <div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
@@ -1240,24 +1272,38 @@ function saveWahaClients() {{
   const box = document.getElementById('waha-clients');
   postForm('/api/waha-clients', 'clients=' + encodeURIComponent(box ? box.value : '[]'));
 }}
-async function wahaSearch() {{
+let wahaSearchTimer = null;
+let wahaLastMatches = [];
+function scheduleWahaSearch() {{
+  if (wahaSearchTimer) window.clearTimeout(wahaSearchTimer);
+  wahaSearchTimer = window.setTimeout(() => wahaSearch(false), 300);
+}}
+async function wahaSearch(refresh = false) {{
   const q = (document.getElementById('waha-search-q').value || '').trim();
   const state = document.getElementById('waha-search-state');
   const box = document.getElementById('waha-search-results');
-  state.textContent = 'Searching WAHA…';
+  state.textContent = refresh ? 'Refreshing the complete WAHA directory…' : 'Searching WAHA…';
   try {{
-    const data = await (await fetch('/api/waha-search?q=' + encodeURIComponent(q), {{cache: 'no-store'}})).json();
+    const url = '/api/waha-search?q=' + encodeURIComponent(q) + (refresh ? '&refresh=1' : '');
+    const response = await fetch(url, {{cache: 'no-store'}});
+    if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+    const data = await response.json();
     if (data.error) {{ state.textContent = data.error; box.innerHTML = ''; return; }}
     const sess = (data.sessions || []).map(s => `${{esc(s.name)}} (${{esc(s.status || '?')}})`).join(', ') || 'none';
-    state.textContent = `Sessions: ${{sess}} · ${{(data.matches || []).length}} match(es)`;
-    box.innerHTML = (data.matches || []).map(m =>
+    wahaLastMatches = data.matches || [];
+    state.textContent = `Sessions: ${{sess}} · ${{wahaLastMatches.length}} match(es) from ${{data.directory_count || 0}} destinations${{data.cached ? ' (cached)' : ''}}`;
+    box.innerHTML = wahaLastMatches.map((m, index) =>
       `<div>[${{esc(m.kind)}} · session ${{esc(m.session)}}] <b>${{esc(m.name)}}</b> — <code>${{esc(m.id)}}</code> ` +
-      `<button onclick="useWahaMatch('${{esc(m.id)}}', '${{esc(m.name).replace(/'/g, '&#39;')}}')">Use</button></div>`
+      `<button onclick="useWahaMatchIndex(${{index}})">Use</button></div>`
     ).join('') || '<div>No matches.</div>';
     const select = document.getElementById('client-group-select');
-    select.innerHTML = '<option value="">— pick a destination —</option>' +
-      (data.matches || []).map(m => `<option value="${{esc(m.id)}}">[${{esc(m.kind)}}] ${{esc(m.name)}} (${{esc(m.id)}})</option>`).join('');
+    select.replaceChildren(new Option('— pick a destination —', ''));
+    wahaLastMatches.forEach(m => select.add(new Option(`[${{m.kind}}] ${{m.name}} (${{m.id}})`, m.id)));
   }} catch (err) {{ state.textContent = 'Search failed: ' + err; }}
+}}
+function useWahaMatchIndex(index) {{
+  const match = wahaLastMatches[index];
+  if (match) useWahaMatch(match.id, match.name);
 }}
 function useWahaMatch(id, name) {{
   const custom = document.getElementById('client-chat-custom');
@@ -2426,7 +2472,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/waha-search":
             params = parse_qs(urlparse(self.path).query)
-            payload = waha_search(params.get("q", [""])[0])
+            refresh = (params.get("refresh", [""])[0] or "").strip().lower() in {"1", "true", "yes"}
+            payload = waha_search(params.get("q", [""])[0], refresh=refresh)
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/calendar-grid":

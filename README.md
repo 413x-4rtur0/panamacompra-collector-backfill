@@ -651,6 +651,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WAHA_ENABLED` | unset | WAHA notifier | Set `1` to enable private WhatsApp group/channel notifications. If `PC_WAHA_CHAT_ID` is not configured, notifications are skipped safely. |
 | `PC_WAHA_BASE_URL` | `http://127.0.0.1:3000` | WAHA notifier | Base URL for the self-hosted WAHA HTTP API. |
 | `PC_WAHA_SESSION` | `default` | WAHA notifier | WAHA session name to use when sending messages. |
+| `PC_WAHA_DIRECTORY_CACHE_SECONDS` | `120` | web monitor | Reuse the complete WAHA contact/group/channel directory while client-search text changes. **Refresh directory** bypasses the cache. Minimum 15 seconds. |
 | `PC_WAHA_CHAT_ID` | `data/config/waha_chat_id.txt` fallback | WAHA notifier | **Default** destination WhatsApp group/channel chat id, used by every message type that has no per-purpose destination. The env var wins; if unset, the notifier reads the chat id saved by the native/web monitor in `data/config/waha_chat_id.txt`. Group ids usually end in `@g.us`. |
 | `PC_WAHA_CHAT_ID_INDEX` | `data/config/waha_chat_id_index.txt` fallback | WAHA notifier | Optional destination for the **index alerts** (immediate “🔔 Nueva Oportunidad” messages and the “⚪ Sin nuevas entradas” status). Blank = default destination. |
 | `PC_WAHA_CHAT_ID_DETAILS` | `data/config/waha_chat_id_details.txt` fallback | WAHA notifier | Optional destination for the **item-detail follow-ups** (“📥 Detalles Completos” with the downloaded items). Blank = default destination. |
@@ -766,8 +767,12 @@ in addition to whatever the per-purpose destination above sends.
 
 Both monitors include a **WAHA Directory Search** that reads every active WAHA
 session and returns contacts, groups, communities, and subscribed/owned channels.
-Search accepts a full or partial display name **or chat ID**; exact matches sort
-first. Contact IDs commonly end in `@c.us`, `@s.whatsapp.net`, or `@lid`, groups
+The complete directory is fetched before the display limit is applied, then kept
+in a short-lived local cache; typing filters that cache instead of downloading the
+directory again for every key. Search accepts accent-insensitive, full/partial,
+multi-word display names **or chat IDs**; exact matches sort first. Use **Refresh
+directory** in the web monitor (or **Search** again in Tk) after adding a new WAHA
+contact/group. Contact IDs commonly end in `@c.us`, `@s.whatsapp.net`, or `@lid`, groups
 and communities use `@g.us` (community metadata distinguishes them), and channels
 use `@newsletter`. The monitors check outbound internet, DNS, and the WAHA session
 separately. Offline/DNS failures recommend waiting and retrying; when internet is
@@ -1652,12 +1657,12 @@ systemctl --user restart panamacompra-webhook.service
 ## Monitoring and logs
 
 The default monitor is now the native Tk window (`src/40_monitor/001a-monitor-tk.py`). Run
-`./src/40_monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The separate **PanamaCompra Monitor Only** launcher bypasses `update-local-copy.sh` and the updater loader entirely, forcing a one-shot native Tk monitor without changing the saved manual monitor preference. The same launcher installer also creates desktop/menu entries for **PanamaCompra changedetection**, **PanamaCompra WAHA**, **PanamaCompra Docker Integrations**, **PanamaCompra Stop All**, and **PanamaCompra Start All** so operators can open the two web dashboards, use a low-resource terminal URL/status shortcut, start/status the container stack, or stop/restart the whole PanamaCompra background stack (workers, monitors, webhook listener, Docker integrations) without typing commands; each launcher has its own icon and the installer creates the desktop folder when it is missing. Stop All and Start All run `src/20_pipeline/120a-stop-everything.sh` / `120c-start-everything.sh` in a terminal window so the step-by-step output stays visible. Update + Monitor opens a separate updater loader (`src/40_monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically; Monitor Only remains available because it never invokes the updater.
+`./src/40_monitor/000-open-monitor.sh` or launch the **PanamaCompra Update + Monitor** desktop/application-menu shortcut installed by `./setup.sh`, refreshed by `./update-local-copy.sh`, or explicitly created with `./bin/pcc launcher install`. The separate **PanamaCompra Monitor Only** launcher bypasses `update-local-copy.sh` and the updater loader entirely, forcing a one-shot native Tk monitor without changing the saved manual monitor preference. The same installer creates **PanamaCompra Next Run Timer**, changedetection, WAHA, Docker Integrations, Stop All, and Start All entries. Each has its own launcher icon and stable desktop-window identity, so the native monitor, timer, updater, changedetection and WAHA also keep the correct icon when pinned or shown in the taskbar. Reinstalling removes the obsolete `panamacompra-manual-monitor.desktop` entry that pointed to the retired `pc_update_loader.py`. Stop All and Start All run `src/20_pipeline/120a-stop-everything.sh` / `120c-start-everything.sh` in a terminal window so the step-by-step output stays visible. Update + Monitor opens a separate updater loader (`src/40_monitor/003-update-loader.py`) first: that window appears on top with a step-based progress bar and streams the update output, and only **after a successful update** does the normal monitor/timer open. If the update fails, the loader keeps the error visible and does **not** start the monitor automatically; Monitor Only remains available because it never invokes the updater.
 
 Launcher maintenance commands:
 
 ```bash
-./bin/pcc launcher install          # create/update monitor + changedetection + WAHA + URLs + Docker launchers
+./bin/pcc launcher install          # create/update monitor + timer + changedetection + WAHA + Docker launchers
 ./bin/pcc launcher install --no-desktop
 ./bin/pcc launcher install --monitor-only # only Update + Monitor
 ./bin/pcc launcher remove
@@ -1668,7 +1673,8 @@ For operators who prefer filenames to show workflow order, `scripts/tasks/` cont
 The monitor opens a lightweight desktop window without starting Firefox, a browser engine, or a web server. It shows the real progress bar, current step/item,
 diagnostics counters, process status, recent log tails, run-mode/limit selectors for manual pending-collector runs or the test-zone script, a unified KPIs tab, and manual controls grouped into **Runners**, **Tests**, **Updater / Migration**, and **Settings** zones. Log panes intentionally show compact tails (worker: 10 lines, action: 14 lines) with their own scrollbars to avoid large blank panels when logs are quiet. The record selector can order by downloaded date, end/deadline date, or start date, each newest-first or oldest-first. The runner zone includes stop controls for active collector processes. The test-zone button opens the `records_test/` parent folder after the test command finishes, so the generated sandbox output is immediately visible. The monitor body is scrollable with the scrollbar **and the mouse wheel** (Linux/X11 wheel events are handled, not only Windows/macOS), so smaller Linux Mint screens can reach the logs and manual actions. Each manual button has an adjacent comment explaining what it does before the user clicks it, and command output is appended to `data/logs/manual_actions.log`. The updater/migration actions include **Upload local changes to GitHub**, which runs `./bin/pcc upload-github` to commit local edits and push the current branch before another workstation updates. The **Full diagnostic report** action (also `./bin/pcc full-report`) writes a Markdown report under `data/reports/` with paths, settings (secrets redacted), integration URLs, process state, Docker status, queue flags, database counters, key files and recent logs. WhatsApp format editors now cover `index`, `details`, `status`, `system`, and `summary` messages, so System health / worker / test notifications and the final per-round summary are not left out. The manually-opened monitor **stays open** for manual work and does not auto-close by default (`PC_MONITOR_TK_AUTO_CLOSE_SECONDS=0`); if a positive auto-close value is configured, it is honored only for completed live runs, not for test-zone or manual desktop actions.
 
-For a tiny always-on-top countdown timer showing when the next live run is due, run:
+For a tiny always-on-top countdown timer showing when the next live run is due,
+use the **PanamaCompra Next Run Timer** launcher or run:
 ```bash
 python src/40_monitor/002-next-run-timer.py
 ```

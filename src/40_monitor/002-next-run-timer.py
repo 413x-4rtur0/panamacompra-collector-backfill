@@ -23,8 +23,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
+from window_icon import apply_window_icon, window_class
 
 BASE_DIR = pc_common.APP_ROOT
 PROGRESS_FILE = pc_common.PROGRESS_PATH
@@ -611,8 +613,9 @@ def _truncate(text: str, width: int) -> str:
 
 
 def main() -> int:
-    root = tk.Tk()
+    root = tk.Tk(className=window_class("timer"))
     root.title("Next Live Run")
+    apply_window_icon(root, "timer")
     root.configure(bg="#1e293b")
     root.resizable(False, False)
     root.attributes("-topmost", WINDOW_TOPMOST)

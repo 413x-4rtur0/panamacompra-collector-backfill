@@ -78,10 +78,62 @@ def _waha_kind_for_entry(item: dict, chat_id: str, default: str = "") -> str:
     return default or _waha_kind_for_chat_id(chat_id)
 
 
+def _waha_search_text(value: object) -> str:
+    """Normalize WAHA names/IDs for accent-insensitive token search."""
+    return " ".join(pc_common.strip_accents(str(value or "")).lower().split())
+
+
+def waha_filter_matches(matches: list[dict], query: str = "", *,
+                        limit: int | None = 250) -> list[dict]:
+    """Filter and rank a previously fetched WAHA directory.
+
+    Query words may appear anywhere in the display name or chat ID, so a
+    search such as ``chiriqui contratistas`` does not require one exact
+    contiguous substring. Filtering happens before ``limit`` is applied; this
+    is important when a directory contains more than the monitor's display
+    cap.
+    """
+    wanted = _waha_search_text(query)
+    terms = wanted.split()
+    filtered = []
+    for match in matches:
+        name = match.get("_waha_search_name")
+        if not isinstance(name, str):
+            name = _waha_search_text(match.get("name"))
+            match["_waha_search_name"] = name
+        chat_id = match.get("_waha_search_id")
+        if not isinstance(chat_id, str):
+            chat_id = _waha_search_text(match.get("id"))
+            match["_waha_search_id"] = chat_id
+        haystack = f"{name} {chat_id}"
+        if not terms or all(term in haystack for term in terms):
+            filtered.append(match)
+
+    kind_order = {"group": 0, "community": 1, "channel": 2, "contact": 3,
+                  "chat": 4, "broadcast": 5}
+
+    def _rank(match: dict) -> tuple:
+        name = str(match.get("_waha_search_name") or _waha_search_text(match.get("name")))
+        chat_id = str(match.get("_waha_search_id") or _waha_search_text(match.get("id")))
+        if wanted and wanted in {name, chat_id}:
+            match_rank = 0
+        elif wanted and (name.startswith(wanted) or chat_id.startswith(wanted)):
+            match_rank = 1
+        else:
+            match_rank = 2
+        return match_rank, kind_order.get(str(match.get("kind") or ""), 9), name, chat_id
+
+    filtered.sort(key=_rank)
+    if limit is None:
+        return filtered
+    return filtered[:max(0, int(limit))]
+
+
 def waha_fetch_all(query: str = "", *,
                    base_url: str = "", api_key: str = "",
                    include_chats: bool = True,
-                   raise_on_connection_error: bool = False) -> list[dict]:
+                   raise_on_connection_error: bool = False,
+                   limit: int | None = 250) -> list[dict]:
     """Fetch all groups/contacts/chats from every WAHA session and return
     structured matches.
 
@@ -110,8 +162,6 @@ def waha_fetch_all(query: str = "", *,
         req = urllib.request.Request(f"{base_url}{path}", headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8", "replace"))
-
-    wanted = pc_common.strip_accents(query or "").lower().strip()
 
     try:
         sessions = _get("/api/sessions?all=true")
@@ -174,26 +224,7 @@ def waha_fetch_all(query: str = "", *,
         except Exception:
             pass
 
-    matches = list(matches_by_key.values())
-    if wanted:
-        matches = [m for m in matches if wanted in pc_common.strip_accents(m["name"]).lower()
-                   or wanted in m["id"].lower()]
-
-    kind_order = {"group": 0, "community": 1, "channel": 2, "contact": 3, "chat": 4, "broadcast": 5}
-
-    def _rank(m: dict) -> tuple:
-        name = pc_common.strip_accents(m["name"]).lower()
-        chat_id = m["id"].lower()
-        if wanted and wanted in {name, chat_id}:
-            match_rank = 0
-        elif wanted and (name.startswith(wanted) or chat_id.startswith(wanted)):
-            match_rank = 1
-        else:
-            match_rank = 2
-        return match_rank, kind_order.get(m["kind"], 9), name, chat_id
-
-    matches.sort(key=_rank)
-    return matches[:250]
+    return waha_filter_matches(list(matches_by_key.values()), query, limit=limit)
 
 
 def internet_status(timeout: float = 1.5) -> dict:

@@ -40,6 +40,7 @@ from monitor_common import (  # noqa: E402
     setting,
     summarize_items_for_kpi,
     waha_fetch_all,
+    waha_filter_matches,
 )
 
 BASE_DIR = pc_common.APP_ROOT
@@ -575,12 +576,14 @@ def run_tk() -> int:
     try:
         import tkinter as tk
         from tkinter import messagebox, ttk
+        from window_icon import apply_window_icon, window_class
     except Exception as exc:  # pragma: no cover - depends on host packages
         print(f"ERROR: Tkinter is not available: {exc}", file=sys.stderr)
         return 2
 
-    root = tk.Tk()
+    root = tk.Tk(className=window_class("monitor"))
     root.title("PanamaCompra Progress")
+    apply_window_icon(root, "monitor")
     geometry = setting("PC_MONITOR_TK_GEOMETRY", "980x760")
     root.geometry(geometry)
     root.configure(bg="#0f172a")
@@ -1627,7 +1630,7 @@ def run_tk() -> int:
 
     def _waha_fetch(base_url: str, api_key: str) -> list[dict]:
         return waha_fetch_all(base_url=base_url, api_key=api_key, include_chats=True,
-                              raise_on_connection_error=True)
+                              raise_on_connection_error=True, limit=None)
 
     def _format_match(m: dict) -> str:
         return f"{m['name']}  [{m['id']}]  ({m['session']} · {m['kind']})"
@@ -1643,13 +1646,7 @@ def run_tk() -> int:
             cs_matches_cache.append(m)
 
     def _cs_filtered() -> list[dict]:
-        q = cs_query_var.get().strip()
-        if not q:
-            return list(cs_all_matches)
-        wanted = pc_common.strip_accents(q).lower()
-        return [m for m in cs_all_matches
-                if wanted in pc_common.strip_accents(m["name"]).lower()
-                or wanted in m["id"].lower()]
+        return waha_filter_matches(cs_all_matches, cs_query_var.get(), limit=250)
 
     def _apply_cs_filter() -> None:
         if cs_fetch_running or not cs_all_matches:
@@ -1701,6 +1698,9 @@ def run_tk() -> int:
                 return
             cs_all_matches[:] = matches
             _cs_show(_cs_filtered())
+            button_status_var.set(
+                f"Loaded {len(matches)} WAHA destinations; search covers the complete directory."
+            )
 
         _start_waha_fetch(done)
 

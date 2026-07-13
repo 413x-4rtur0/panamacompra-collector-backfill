@@ -19,8 +19,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
+from window_icon import apply_window_icon, window_class
 
 BASE_DIR = pc_common.APP_ROOT
 LOG_DIR = pc_common.LOG_DIR
@@ -51,8 +53,9 @@ def main() -> int:
             open_monitor()
         return result.returncode
 
-    root = tk.Tk()
+    root = tk.Tk(className=window_class("updater"))
     root.title("PanamaCompra Local Update")
+    apply_window_icon(root, "updater")
     geometry = "760x440"
     root.geometry(geometry)
     root.configure(bg="#0f172a")

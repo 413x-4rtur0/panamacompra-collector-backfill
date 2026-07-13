@@ -16,7 +16,7 @@ usage() {
 Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
-Update + Monitor, Monitor Only (native Tk, no update), changedetection.io, WAHA, low-resource Integration URLs, Docker
+Update + Monitor, Monitor Only (native Tk, no update), Next Run Timer, changedetection.io, WAHA, low-resource Integration URLs, Docker
 integrations, Docker Manager (all containers on this host), Stop All / Start All,
 and Dev Pause / Dev Resume. The Update +
 Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
@@ -57,6 +57,7 @@ app_path="$app_dir/$launcher_name"
 desktop_path="$desktop_dir/$launcher_name"
 icon_path="$icon_dir/panamacompra-update-monitor.svg"
 monitor_only_icon_path="$icon_dir/panamacompra-monitor-only.svg"
+timer_icon_path="$icon_dir/panamacompra-next-run-timer.svg"
 changedetection_icon_path="$icon_dir/panamacompra-changedetection.svg"
 waha_icon_path="$icon_dir/panamacompra-waha.svg"
 docker_icon_path="$icon_dir/panamacompra-docker-integrations.svg"
@@ -88,6 +89,14 @@ SVG
   <path d="M33 68h15l10-24 14 36 10-18h13" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="98" cy="38" r="8" fill="#4ade80"/>
   <path d="M42 106h44M64 90v16" stroke="#94a3b8" stroke-width="7" stroke-linecap="round"/>
+</svg>
+SVG
+  cat > "$timer_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <circle cx="64" cy="64" r="43" fill="#1e293b" stroke="#38bdf8" stroke-width="7"/>
+  <path d="M64 35v31h25" fill="none" stroke="#fbbf24" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="66" r="7" fill="#22c55e"/>
 </svg>
 SVG
   cat > "$changedetection_icon_path" <<'SVG'
@@ -174,6 +183,18 @@ cd "$APP_ROOT_VALUE"
 # loader. The operator's saved manual monitor preference is not changed.
 export PC_MONITOR_MODE=tk
 exec "$APP_ROOT_VALUE/src/40_monitor/000-open-monitor.sh"
+SH
+  cat > "$helper_dir/next-run-timer.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+if pgrep -f "[0]02-next-run-timer.py" >/dev/null 2>&1; then
+  exit 0
+fi
+python_bin="python3"
+[[ -x "$APP_ROOT_VALUE/.venv/bin/python" ]] && python_bin="$APP_ROOT_VALUE/.venv/bin/python"
+exec "$python_bin" "$APP_ROOT_VALUE/src/40_monitor/002-next-run-timer.py"
 SH
   cat > "$helper_dir/open-changedetection.sh" <<'SH'
 #!/usr/bin/env bash
@@ -325,9 +346,11 @@ SH
 
 write_desktop_entry() {
   local target_app="$1" target_desktop="$2" name="$3" comment="$4" exec_value="$5" terminal="$6" categories="$7"
+  local startup_wm_class="${8:-}" startup_line=""
   local selected_icon="$icon_path"
   case "$target_app" in
     *monitor-only*) selected_icon="$monitor_only_icon_path" ;;
+    *next-run-timer*) selected_icon="$timer_icon_path" ;;
     *changedetection*) selected_icon="$changedetection_icon_path" ;;
     *waha*) selected_icon="$waha_icon_path" ;;
     *docker-integrations*) selected_icon="$docker_icon_path" ;;
@@ -342,6 +365,7 @@ write_desktop_entry() {
   # without one. Icon= is a plain string field in the Desktop Entry spec: it
   # must NOT be quoted — quotes become part of the path and the icon breaks.
   [[ -f "$selected_icon" ]] || write_icon
+  [[ -z "$startup_wm_class" ]] || startup_line="StartupWMClass=$startup_wm_class"
   cat > "$target_app" <<DESKTOP
 [Desktop Entry]
 Type=Application
@@ -352,6 +376,7 @@ Icon=$selected_icon
 Terminal=$terminal
 Categories=$categories
 StartupNotify=false
+$startup_line
 DESKTOP
   chmod +x "$target_app"
   log "Installed application-menu launcher: $target_app"
@@ -375,21 +400,28 @@ install_integration_launchers() {
     "PanamaCompra Monitor Only" \
     "Open the native Tk monitor directly without updating the local copy" \
     "$(quote_desktop_value "$helper_dir/monitor-only.sh")" \
-    "false" "Utility;Monitor;"
+    "false" "Utility;Monitor;" "Panamacompramonitor"
+  write_desktop_entry \
+    "$app_dir/panamacompra-next-run-timer.desktop" \
+    "$desktop_dir/panamacompra-next-run-timer.desktop" \
+    "PanamaCompra Next Run Timer" \
+    "Open the lightweight countdown synchronized with changedetection" \
+    "$(quote_desktop_value "$helper_dir/next-run-timer.sh")" \
+    "false" "Utility;Monitor;Clock;" "Panamacompratimer"
   write_desktop_entry \
     "$app_dir/panamacompra-changedetection.desktop" \
     "$desktop_dir/panamacompra-changedetection.desktop" \
     "PanamaCompra changedetection" \
     "Open the changedetection.io watch dashboard" \
     "$(quote_desktop_value "$helper_dir/open-changedetection.sh")" \
-    "false" "Utility;Monitor;Network;"
+    "false" "Utility;Monitor;Network;" "PanamaCompraChangedetection"
   write_desktop_entry \
     "$app_dir/panamacompra-waha.desktop" \
     "$desktop_dir/panamacompra-waha.desktop" \
     "PanamaCompra WAHA" \
     "Open the WAHA WhatsApp session dashboard" \
     "$(quote_desktop_value "$helper_dir/open-waha.sh")" \
-    "false" "Utility;Monitor;Network;"
+    "false" "Utility;Monitor;Network;" "PanamaCompraWAHA"
   write_desktop_entry \
     "$app_dir/panamacompra-integration-urls.desktop" \
     "$desktop_dir/panamacompra-integration-urls.desktop" \
@@ -448,11 +480,14 @@ install_launcher() {
   fi
 
   mkdir -p "$app_dir"
+  # Removed in favor of panamacompra-update-monitor.desktop. Old installs left
+  # this duplicate pointing at pc_update_loader.py, which no longer exists.
+  rm -f "$app_dir/panamacompra-manual-monitor.desktop" "$desktop_dir/panamacompra-manual-monitor.desktop"
   write_icon
 
   local quoted_loader
   quoted_loader="$(quote_desktop_value "$loader_path")"
-  write_desktop_entry     "$app_path" "$desktop_path"     "PanamaCompra Update + Monitor"     "Update PanamaCompra Collector, then open the monitor"     "$quoted_loader --open-monitor-after"     "false" "Utility;Monitor;"
+  write_desktop_entry     "$app_path" "$desktop_path"     "PanamaCompra Update + Monitor"     "Update PanamaCompra Collector, then open the monitor"     "$quoted_loader --open-monitor-after"     "false" "Utility;Monitor;" "Panamacompraupdater"
   install_integration_launchers
   if [[ "$INSTALL_DESKTOP" == "1" ]]; then
     log "If your desktop asks, choose 'Allow Launching' or 'Trust and Launch' once."
@@ -473,6 +508,7 @@ remove_launcher() {
     rm -f "$app_path" "$desktop_path" \
       "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop" \
       "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop" \
+      "$app_dir/panamacompra-next-run-timer.desktop" "$desktop_dir/panamacompra-next-run-timer.desktop" \
       "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop" \
       "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop" \
       "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop" \
@@ -481,6 +517,7 @@ remove_launcher() {
       "$app_dir/panamacompra-dev-pause.desktop" "$desktop_dir/panamacompra-dev-pause.desktop" \
       "$app_dir/panamacompra-dev-resume.desktop" "$desktop_dir/panamacompra-dev-resume.desktop" \
       "$app_dir/panamacompra-docker-manager.desktop" "$desktop_dir/panamacompra-docker-manager.desktop"
+    rm -f "$app_dir/panamacompra-manual-monitor.desktop" "$desktop_dir/panamacompra-manual-monitor.desktop"
     rm -rf "$helper_dir"
   fi
   log "Removed PanamaCompra launcher files if present."
@@ -497,6 +534,7 @@ print_paths() {
   if [[ "$MONITOR_ONLY" != "1" ]]; then
     printf 'changedetection:  %s and %s\n' "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop"
     printf 'Monitor Only:     %s and %s\n' "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop"
+    printf 'Next Run Timer:   %s and %s\n' "$app_dir/panamacompra-next-run-timer.desktop" "$desktop_dir/panamacompra-next-run-timer.desktop"
     printf 'WAHA:             %s and %s\n' "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop"
     printf 'Integration URLs: %s and %s\n' "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop"
     printf 'Docker stack:     %s and %s\n' "$app_dir/panamacompra-docker-integrations.desktop" "$desktop_dir/panamacompra-docker-integrations.desktop"
