@@ -16,7 +16,7 @@ usage() {
 Usage: pcc launcher [install|remove|path] [options]
 
 Creates Linux desktop/application-menu launchers for PanamaCompra operator tools:
-Update + Monitor, Monitor Only (native Tk, no update), Next Run Timer, changedetection.io, WAHA, low-resource Integration URLs, Docker
+Update + Monitor, Monitor Only (native Tk, no update), CLI Monitor, Next Run Timer, changedetection.io, WAHA, low-resource Integration URLs, Docker
 integrations, Docker Manager (all containers on this host), Stop All / Start All,
 and Dev Pause / Dev Resume. The Update +
 Monitor launcher opens src/40_monitor/003-update-loader.py first; after a successful
@@ -57,6 +57,7 @@ app_path="$app_dir/$launcher_name"
 desktop_path="$desktop_dir/$launcher_name"
 icon_path="$icon_dir/panamacompra-update-monitor.svg"
 monitor_only_icon_path="$icon_dir/panamacompra-monitor-only.svg"
+cli_monitor_icon_path="$icon_dir/panamacompra-cli-monitor.svg"
 timer_icon_path="$icon_dir/panamacompra-next-run-timer.svg"
 changedetection_icon_path="$icon_dir/panamacompra-changedetection.svg"
 waha_icon_path="$icon_dir/panamacompra-waha.svg"
@@ -89,6 +90,15 @@ SVG
   <path d="M33 68h15l10-24 14 36 10-18h13" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="98" cy="38" r="8" fill="#4ade80"/>
   <path d="M42 106h44M64 90v16" stroke="#94a3b8" stroke-width="7" stroke-linecap="round"/>
+</svg>
+SVG
+  cat > "$cli_monitor_icon_path" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#07111f"/>
+  <rect x="13" y="19" width="102" height="90" rx="12" fill="#111827" stroke="#22d3ee" stroke-width="6"/>
+  <circle cx="28" cy="33" r="4" fill="#f87171"/><circle cx="41" cy="33" r="4" fill="#fbbf24"/><circle cx="54" cy="33" r="4" fill="#4ade80"/>
+  <path d="M29 56l15 13-15 13M52 84h36" fill="none" stroke="#a7f3d0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="98" cy="85" r="9" fill="#38bdf8"/>
 </svg>
 SVG
   cat > "$timer_icon_path" <<'SVG'
@@ -195,6 +205,37 @@ fi
 python_bin="python3"
 [[ -x "$APP_ROOT_VALUE/.venv/bin/python" ]] && python_bin="$APP_ROOT_VALUE/.venv/bin/python"
 exec "$python_bin" "$APP_ROOT_VALUE/src/40_monitor/002-next-run-timer.py"
+SH
+  cat > "$helper_dir/cli-monitor.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT_VALUE="__APP_ROOT__"
+cd "$APP_ROOT_VALUE"
+title="PanamaCompra CLI Monitor"
+wm_class="PanamaCompraCliMonitor"
+command=("$APP_ROOT_VALUE/bin/pcc" watch)
+
+# Launch a real terminal explicitly so the desktop can match the window to
+# this launcher's icon instead of grouping it under a generic terminal icon.
+if command -v gnome-terminal >/dev/null 2>&1; then
+  exec gnome-terminal --class="$wm_class" --title="$title" -- "${command[@]}"
+elif command -v xfce4-terminal >/dev/null 2>&1; then
+  exec xfce4-terminal --class="$wm_class" --title="$title" -x "${command[@]}"
+elif command -v mate-terminal >/dev/null 2>&1; then
+  exec mate-terminal --class="$wm_class" --title="$title" -- "${command[@]}"
+elif command -v kitty >/dev/null 2>&1; then
+  exec kitty --class "$wm_class" --title "$title" "${command[@]}"
+elif command -v alacritty >/dev/null 2>&1; then
+  exec alacritty --class "$wm_class,$wm_class" --title "$title" -e "${command[@]}"
+elif command -v konsole >/dev/null 2>&1; then
+  exec konsole --name "$wm_class" -p tabtitle="$title" -e "${command[@]}"
+elif command -v xterm >/dev/null 2>&1; then
+  exec xterm -class "$wm_class" -title "$title" -e "${command[@]}"
+elif command -v x-terminal-emulator >/dev/null 2>&1; then
+  exec x-terminal-emulator -T "$title" -e "${command[@]}"
+fi
+printf 'No supported terminal emulator was found. Run: %s\n' "$APP_ROOT_VALUE/bin/pcc watch" >&2
+exit 1
 SH
   cat > "$helper_dir/open-changedetection.sh" <<'SH'
 #!/usr/bin/env bash
@@ -350,6 +391,7 @@ write_desktop_entry() {
   local selected_icon="$icon_path"
   case "$target_app" in
     *monitor-only*) selected_icon="$monitor_only_icon_path" ;;
+    *cli-monitor*) selected_icon="$cli_monitor_icon_path" ;;
     *next-run-timer*) selected_icon="$timer_icon_path" ;;
     *changedetection*) selected_icon="$changedetection_icon_path" ;;
     *waha*) selected_icon="$waha_icon_path" ;;
@@ -408,6 +450,13 @@ install_integration_launchers() {
     "Open the lightweight countdown synchronized with changedetection" \
     "$(quote_desktop_value "$helper_dir/next-run-timer.sh")" \
     "false" "Utility;Monitor;Clock;" "Panamacompratimer"
+  write_desktop_entry \
+    "$app_dir/panamacompra-cli-monitor.desktop" \
+    "$desktop_dir/panamacompra-cli-monitor.desktop" \
+    "PanamaCompra CLI Monitor" \
+    "Open the lightweight interactive agent-style terminal monitor" \
+    "$(quote_desktop_value "$helper_dir/cli-monitor.sh")" \
+    "false" "Utility;Monitor;System;" "PanamaCompraCliMonitor"
   write_desktop_entry \
     "$app_dir/panamacompra-changedetection.desktop" \
     "$desktop_dir/panamacompra-changedetection.desktop" \
@@ -508,6 +557,7 @@ remove_launcher() {
     rm -f "$app_path" "$desktop_path" \
       "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop" \
       "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop" \
+      "$app_dir/panamacompra-cli-monitor.desktop" "$desktop_dir/panamacompra-cli-monitor.desktop" \
       "$app_dir/panamacompra-next-run-timer.desktop" "$desktop_dir/panamacompra-next-run-timer.desktop" \
       "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop" \
       "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop" \
@@ -534,6 +584,7 @@ print_paths() {
   if [[ "$MONITOR_ONLY" != "1" ]]; then
     printf 'changedetection:  %s and %s\n' "$app_dir/panamacompra-changedetection.desktop" "$desktop_dir/panamacompra-changedetection.desktop"
     printf 'Monitor Only:     %s and %s\n' "$app_dir/panamacompra-monitor-only.desktop" "$desktop_dir/panamacompra-monitor-only.desktop"
+    printf 'CLI Monitor:      %s and %s\n' "$app_dir/panamacompra-cli-monitor.desktop" "$desktop_dir/panamacompra-cli-monitor.desktop"
     printf 'Next Run Timer:   %s and %s\n' "$app_dir/panamacompra-next-run-timer.desktop" "$desktop_dir/panamacompra-next-run-timer.desktop"
     printf 'WAHA:             %s and %s\n' "$app_dir/panamacompra-waha.desktop" "$desktop_dir/panamacompra-waha.desktop"
     printf 'Integration URLs: %s and %s\n' "$app_dir/panamacompra-integration-urls.desktop" "$desktop_dir/panamacompra-integration-urls.desktop"

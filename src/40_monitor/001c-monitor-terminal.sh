@@ -13,6 +13,11 @@ IDLE_CLOSE_SECONDS="${PC_MONITOR_IDLE_CLOSE_SECONDS:-8}"
 STABLE_DONE_CYCLES="${PC_MONITOR_STABLE_DONE_CYCLES:-3}"
 REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-5}"
 FORCE_REDRAW_SECONDS="${PC_MONITOR_FORCE_REDRAW_SECONDS:-30}"
+INTERACTIVE_TUI=0
+PAUSED=0
+if [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  INTERACTIVE_TUI=1
+fi
 
 normalize_positive_int() {
   local value="$1"
@@ -173,35 +178,82 @@ load_progress() {
   fi
 }
 
-clear_once() {
-  clear
-  tput civis 2>/dev/null || true
+terminal_width() {
+  local width
+  width="$(tput cols 2>/dev/null || echo 100)"
+  [[ "$width" =~ ^[0-9]+$ ]] || width=100
+  [ "$width" -lt 72 ] && width=72
+  [ "$width" -gt 140 ] && width=140
+  echo "$width"
 }
 
-restore_cursor() {
-  tput cnorm 2>/dev/null || true
+fit_text() {
+  local text="$1" width="$2"
+  text="${text//$'\r'/}"
+  text="${text//$'\n'/ }"
+  if [ "${#text}" -gt "$width" ]; then
+    printf '%s…' "${text:0:$((width - 1))}"
+  else
+    printf '%s' "$text"
+  fi
 }
 
-show_screen() {
-  tput cup 0 0 2>/dev/null || clear
-  tput ed 2>/dev/null || true
+ui_rule() {
+  local left="$1" fill="$2" right="$3" inner=$((UI_WIDTH - 2)) line
+  printf -v line "%${inner}s" ''
+  line="${line// /$fill}"
+  printf '%s' "$left"
+  printf '%s' "$line"
+  printf '%s\n' "$right"
+}
 
+ui_line() {
+  local text
+  text="$(fit_text "$1" "$((UI_WIDTH - 3))")"
+  # No right border: Bash printf measures UTF-8 bytes rather than terminal
+  # cells, so accented WAHA names would otherwise make the box look jagged.
+  printf '│ %s\n' "$text"
+}
+
+ui_section() {
+  local title=" $1 " remaining line
+  remaining=$((UI_WIDTH - ${#title} - 2))
+  printf -v line "%${remaining}s" ''
+  line="${line// /─}"
+  printf '├%s' "$title"
+  printf '%s' "$line"
+  printf '┤\n'
+}
+
+process_word() {
+  if "$1"; then printf 'RUNNING'; else printf 'idle'; fi
+}
+
+render_log_panel() {
+  local title="$1" path="$2" lines="$3" line
+  ui_section "$title"
+  if [ -f "$path" ]; then
+    while IFS= read -r line; do
+      ui_line "  $(fit_text "$line" "$((UI_WIDTH - 6))")"
+    done < <(tail -n "$lines" "$path" 2>/dev/null)
+  else
+    ui_line "  No log yet: $(basename "$path")"
+  fi
+}
+
+render_screen() {
   load_progress
-
+  UI_WIDTH="$(terminal_width)"
   elapsed="$(format_duration "$(elapsed_seconds "$STARTED_AT")")"
 
-  echo "============================================================"
-  echo " PanamaCompra Progress Monitor"
-  echo "============================================================"
-  echo "Time:        $(date '+%Y-%m-%d %H:%M:%S')"
-  echo "Phase:       $PHASE"
-  echo "Status:      $STATUS"
-  echo "Progress:    $(progress_bar "$PERCENT")"
-  echo "Elapsed:     $elapsed"
-  echo "Detail limit:$DETAIL_LIMIT"
-  echo "Step:        $STEP_CURRENT / $STEP_TOTAL"
-  echo "Item:        $ITEM_CURRENT / $ITEM_TOTAL"
-  echo "Updated:     $UPDATED_AT"
+  ui_rule '╭' '─' '╮'
+  ui_line "PANAMACOMPRA AGENT MONITOR   $(date '+%Y-%m-%d %H:%M:%S')"
+  ui_line "Phase $PHASE · Status $STATUS · Elapsed $elapsed · Updated $UPDATED_AT"
+  ui_line "$(progress_bar "$PERCENT")"
+  ui_section "CURRENT TASK"
+  ui_line "$MESSAGE"
+  ui_line "Step $STEP_CURRENT/$STEP_TOTAL · Item $ITEM_CURRENT/$ITEM_TOTAL · Detail limit $DETAIL_LIMIT"
+
   if [ -f "$WAHA_QR_WARNING_FILE" ]; then
     SESSION="default"
     WAHA_STATUS="SCAN_QR_CODE"
@@ -211,74 +263,141 @@ show_screen() {
     WAHA_WARNING_UPDATED_AT="-"
     # shellcheck disable=SC1090
     source "$WAHA_QR_WARNING_FILE"
-    echo ""
-    echo "!!!!!!!!!!!!!!!!!! WHATSAPP ATTENTION REQUIRED !!!!!!!!!!!!!!!!!!"
-    echo "  WAHA session '$SESSION' is $WAHA_STATUS."
-    echo "  $WAHA_WARNING_MESSAGE"
-    echo "  $WAHA_WARNING_ACTION"
-    echo "  Warning recorded: $WAHA_WARNING_UPDATED_AT"
-    echo "  It stays open until a healthy run clears it, or you press Ctrl+C."
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-  fi
-  echo ""
-  echo "Current action:"
-  echo "  $MESSAGE"
-  echo ""
-  echo "Diagnostics:"
-  echo "  Found rows:         $RECORDS_FOUND"
-  echo "  New records:        $RECORDS_NEW"
-  echo "  Existing records:   $RECORDS_EXISTING"
-  echo "  Details saved/skip: $RECORDS_SAVED"
-  echo "  Detail failures:    $RECORDS_FAILED"
-  echo "  Pending details:    $RECORDS_PENDING"
-  echo "  Extra:              $EXTRA"
-  echo ""
-  echo "Processes:"
-  if run_all_worker_running; then
-    echo "  run-all worker:     RUNNING"
-  else
-    echo "  run-all worker:     not running"
+    ui_section "WHATSAPP ATTENTION"
+    ui_line "WAHA session '$SESSION' is $WAHA_STATUS — messaging skipped; collection continues."
+    ui_line "$WAHA_WARNING_MESSAGE"
+    ui_line "$WAHA_WARNING_ACTION"
+    ui_line "Warning recorded $WAHA_WARNING_UPDATED_AT; auto-close is paused."
   fi
 
-  if index_running; then
-    echo "  index collector:    RUNNING"
-  else
-    echo "  index collector:    not running"
-  fi
-
-  if detail_running; then
-    echo "  detail downloader:  RUNNING"
-  else
-    echo "  detail downloader:  not running"
-  fi
-
-  if request_pending; then
-    echo "  request flag:       YES"
-  else
-    echo "  request flag:       no"
-  fi
-
-  echo ""
-  echo "-------------------- Recent worker log ---------------------"
-  tail -12 "$PC_LOG_DIR/run_all_worker.log" 2>/dev/null || echo "No run_all_worker.log yet."
-
-  echo ""
-  echo "-------------------- Current action log --------------------"
-  if [ -f "$PC_LOG_DIR/run_all_current.log" ]; then
-    tail -25 "$PC_LOG_DIR/run_all_current.log"
-  else
-    echo "No current run log yet."
-  fi
-
-  echo ""
-  echo "============================================================"
+  ui_section "COUNTERS"
+  ui_line "Found $RECORDS_FOUND · New $RECORDS_NEW · Existing $RECORDS_EXISTING · Saved/skipped $RECORDS_SAVED"
+  ui_line "Failures $RECORDS_FAILED · Pending $RECORDS_PENDING · Extra $EXTRA"
+  ui_section "SERVICES"
+  ui_line "Worker $(process_word run_all_worker_running) · Index $(process_word index_running) · Details $(process_word detail_running) · Request $(request_pending && echo PENDING || echo none)"
+  render_log_panel "RECENT WORKER EVENTS" "$PC_LOG_DIR/run_all_worker.log" 6
+  render_log_panel "CURRENT ACTION EVENTS" "$PC_LOG_DIR/run_all_current.log" 9
+  ui_section "CONTROLS"
+  ui_line "q quit · r redraw · p pause/resume · m command menu · s search WAHA · h help"
   if [ -f "$WAHA_QR_WARNING_FILE" ]; then
-    echo "Auto-close: PAUSED while the WAHA attention warning is active."
+    ui_line "Auto-close paused while WhatsApp attention is required."
+  elif [ "$PAUSED" -eq 1 ]; then
+    ui_line "Display updates PAUSED; collection is not paused. Press p to resume."
   else
-    echo "Auto-close: when worker/index/detail are all finished."
+    ui_line "Display updates only when state changes; normal terminal history stays clean."
   fi
-  echo "Manual close: Ctrl+C"
-  echo "============================================================"
+  ui_rule '╰' '─' '╯'
+}
+
+show_screen() {
+  local content
+  content="$(render_screen)"
+  if [ "$INTERACTIVE_TUI" -eq 1 ]; then
+    printf '\033[H\033[2J%s\n' "$content"
+  else
+    printf '%s\n' "$content"
+  fi
+}
+
+enter_screen() {
+  [ "$INTERACTIVE_TUI" -eq 1 ] || return 0
+  tput smcup 2>/dev/null || true
+  tput civis 2>/dev/null || true
+  printf '\033[H\033[2J'
+}
+
+restore_screen() {
+  [ "$INTERACTIVE_TUI" -eq 1 ] || return 0
+  tput cnorm 2>/dev/null || true
+  tput rmcup 2>/dev/null || true
+}
+
+pause_for_key() {
+  printf '\nPress Enter to return to the monitor...'
+  IFS= read -r _answer
+  tput civis 2>/dev/null || true
+  last_signature=""
+}
+
+show_help() {
+  tput cnorm 2>/dev/null || true
+  printf '\033[H\033[2J%s\n' 'PanamaCompra terminal monitor controls'
+  printf '%s\n' '  q  Close only this monitor.'
+  printf '%s\n' '  r  Force a fresh screen render.'
+  printf '%s\n' '  p  Pause/resume display redraws (the collector keeps running).'
+  printf '%s\n' '  m  Open the command menu (run control, calendar, KPIs, Docker, reports).'
+  printf '%s\n' '  s  Search WAHA contacts, groups, communities and channels.'
+  printf '%s\n' '  h  Show this help.'
+  pause_for_key
+}
+
+search_clients() {
+  local query
+  tput cnorm 2>/dev/null || true
+  printf '\033[H\033[2JSearch WAHA name or chat ID (blank lists all): '
+  IFS= read -r query
+  printf '\n'
+  "$APP_ROOT/bin/pcc" clients search "$query" --limit 30 || true
+  pause_for_key
+}
+
+run_cli_page() {
+  local title="$1"
+  shift
+  tput cnorm 2>/dev/null || true
+  printf '\033[H\033[2J%s\n\n' "$title"
+  "$@" || true
+  pause_for_key
+}
+
+command_menu() {
+  local choice limit answer
+  tput cnorm 2>/dev/null || true
+  printf '\033[H\033[2J%s\n' 'PanamaCompra command menu'
+  printf '%s\n' \
+    '  1  Queue/start collector run' \
+    '  2  Stop active collector run' \
+    '  3  Status and queue snapshot' \
+    '  4  Opportunity calendar (month)' \
+    '  5  KPI summary and terminal diagrams' \
+    '  6  Search WAHA client directory' \
+    '  7  Docker integrations status' \
+    '  8  Generate full diagnostic report' \
+    '  9  Show saved monitor settings' \
+    '  0  Return to monitor'
+  printf '\nChoose: '
+  IFS= read -r choice
+  case "$choice" in
+    1)
+      printf 'Detail limit (0 = all) [0]: '
+      IFS= read -r limit
+      limit="${limit:-0}"
+      printf 'Queue collector run with detail limit %s? [y/N]: ' "$limit"
+      IFS= read -r answer
+      if [[ "$answer" =~ ^[Yy]$ ]]; then
+        run_cli_page "Queue collector run" "$APP_ROOT/bin/pcc" start "$limit"
+      else
+        last_signature=""
+      fi
+      ;;
+    2)
+      printf 'Stop the active collector run (monitor stays open)? [y/N]: '
+      IFS= read -r answer
+      if [[ "$answer" =~ ^[Yy]$ ]]; then
+        run_cli_page "Stop active collector" "$APP_ROOT/src/20_pipeline/120b-stop-collectors.sh"
+      else
+        last_signature=""
+      fi
+      ;;
+    3) run_cli_page "Status and queue" "$APP_ROOT/bin/pcc" status ;;
+    4) run_cli_page "Opportunity calendar — month" "$APP_ROOT/bin/pcc" calendar month ;;
+    5) run_cli_page "KPI summary" "$APP_ROOT/bin/pcc" kpi ;;
+    6) search_clients ;;
+    7) run_cli_page "Docker integrations status" "$APP_ROOT/bin/pcc" docker status ;;
+    8) run_cli_page "Full diagnostic report" "$APP_ROOT/bin/pcc" full-report ;;
+    9) run_cli_page "Saved monitor settings" "$APP_ROOT/bin/pcc" get ;;
+    *) last_signature="" ;;
+  esac
 }
 
 exec 9>"$MONITOR_LOCK"
@@ -289,14 +408,20 @@ if ! flock -n 9; then
   exit 0
 fi
 
-trap restore_cursor EXIT INT TERM
+trap restore_screen EXIT
+trap 'restore_screen; exit 130' INT TERM
 
-clear_once
+enter_screen
 
 IDLE_CLOSE_SECONDS="$(normalize_positive_int "$IDLE_CLOSE_SECONDS" "8")"
 STABLE_DONE_CYCLES="$(normalize_positive_int "$STABLE_DONE_CYCLES" "3")"
 REFRESH_SECONDS="$(normalize_positive_int "$REFRESH_SECONDS" "5")"
 FORCE_REDRAW_SECONDS="$(normalize_positive_int "$FORCE_REDRAW_SECONDS" "30")"
+
+if [ "$INTERACTIVE_TUI" -eq 0 ]; then
+  show_screen
+  exit 0
+fi
 
 done_cycles=0
 last_signature=""
@@ -312,7 +437,7 @@ while true; do
   current_signature="$(render_signature)"
   now_epoch="$(date +%s)"
 
-  if [ "$current_signature" != "$last_signature" ] || [ $((now_epoch - last_redraw_epoch)) -ge "$FORCE_REDRAW_SECONDS" ]; then
+  if [ "$PAUSED" -eq 0 ] && { [ "$current_signature" != "$last_signature" ] || [ $((now_epoch - last_redraw_epoch)) -ge "$FORCE_REDRAW_SECONDS" ]; }; then
     show_screen
     last_signature="$current_signature"
     last_redraw_epoch="$now_epoch"
@@ -328,14 +453,27 @@ while true; do
   fi
 
   if [ "$saw_active" -eq 1 ] && [ "$done_cycles" -ge "$STABLE_DONE_CYCLES" ]; then
-    echo ""
-    echo "Process finished. Closing in ${IDLE_CLOSE_SECONDS} seconds..."
+    printf '\nProcess finished. Closing in %s seconds...\n' "$IDLE_CLOSE_SECONDS"
     sleep "$IDLE_CLOSE_SECONDS"
     exit 0
   elif [ "$saw_active" -eq 0 ] && [ "$done_cycles" -eq "$STABLE_DONE_CYCLES" ]; then
-    echo ""
-    echo "Idle. Auto-close starts only after a run finishes while this window is open. Manual close: Ctrl+C"
+    : # The stable footer already explains idle behavior; do not append repeated lines.
   fi
 
-  sleep "$REFRESH_SECONDS"
+  key=""
+  if IFS= read -rsn1 -t "$REFRESH_SECONDS" key; then
+    case "$key" in
+      q|Q) exit 0 ;;
+      r|R) last_signature="" ;;
+      p|P)
+        if [ "$PAUSED" -eq 1 ]; then PAUSED=0; else PAUSED=1; fi
+        show_screen
+        last_signature="$current_signature"
+        last_redraw_epoch="$now_epoch"
+        ;;
+      m|M) command_menu ;;
+      s|S|/) search_clients ;;
+      h|H|'?') show_help ;;
+    esac
+  fi
 done

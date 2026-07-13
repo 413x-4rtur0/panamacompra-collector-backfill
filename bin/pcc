@@ -54,6 +54,10 @@ Settings (same files the GUI monitors use):
   notify-mode [grouped|individual] [MAX]    Show/set index alert batching
 
 WhatsApp:
+  clients|waha search [QUERY] [--kind KIND] [--limit N] [--refresh|--json]
+                                            Search WAHA contacts, groups, communities,
+                                            channels and chats. Multi-word/partial names
+                                            and chat IDs are supported; results are cached.
   test-whatsapp [message]                   Send one WAHA test message with the saved settings
   health [--chat-id ID] [--purpose P]       Run system health review; WAHA completion
                                             message uses system/default/index/details/status/summary
@@ -329,6 +333,15 @@ PYEOF
     load_monitor_settings
     exec "$PY_BIN" "$APP_ROOT/src/30_notify/010-waha-client.py" --event info --status TEST --force-send --purpose system \
       --message "${1:-Prueba de notificación desde la CLI pcc.}"
+    ;;
+  clients|waha|directory|waha-search|contacts)
+    load_monitor_settings
+    sub="${1:-search}"
+    case "$sub" in
+      search|find|list) [[ $# -gt 0 ]] && shift || true ;;
+      *) ;; # A bare query: `pcc clients compras publicas`.
+    esac
+    exec "$PY_BIN" "$APP_ROOT/src/50_tools/170-waha-directory.py" "$@"
     ;;
   health|system-health|review)
     load_monitor_settings
