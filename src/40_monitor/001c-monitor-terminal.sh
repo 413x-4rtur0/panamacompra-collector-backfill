@@ -15,6 +15,12 @@ REFRESH_SECONDS="${PC_MONITOR_REFRESH_SECONDS:-5}"
 FORCE_REDRAW_SECONDS="${PC_MONITOR_FORCE_REDRAW_SECONDS:-30}"
 INTERACTIVE_TUI=0
 PAUSED=0
+PREVIOUS_SCREEN_LINES=()
+# When the monitor auto-closes after a finished run, the lightweight CLI
+# countdown takes over this same terminal window (never the Tk timer — that
+# one is opened manually or via the Tk monitor's manual-cron settings).
+NEXT_RUN_TIMER="${PC_NEXT_RUN_TIMER:-1}"
+NEXT_RUN_TIMER_MODE="${PC_NEXT_RUN_TIMER_MODE:-cli}"
 if [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
   INTERACTIVE_TUI=1
 fi
@@ -290,13 +296,37 @@ render_screen() {
 }
 
 show_screen() {
+  # Interactive redraws update only the rows whose text changed (absolute
+  # cursor move + \033[2K per-line clear). A full-screen clear on every
+  # refresh made the whole window flash; static rows now stay untouched.
   local content
   content="$(render_screen)"
   if [ "$INTERACTIVE_TUI" -eq 1 ]; then
-    printf '\033[H\033[2J%s\n' "$content"
+    local -a current_lines=()
+    mapfile -t current_lines <<< "$content"
+    local total=${#current_lines[@]}
+    if [ ${#PREVIOUS_SCREEN_LINES[@]} -gt "$total" ]; then
+      total=${#PREVIOUS_SCREEN_LINES[@]}
+    fi
+    local index row previous_row
+    for ((index = 0; index < total; index++)); do
+      row="${current_lines[index]-}"
+      previous_row="${PREVIOUS_SCREEN_LINES[index]-$'\001'}"
+      if [ "$row" != "$previous_row" ]; then
+        printf '\033[%d;1H\033[2K%s' "$((index + 1))" "$row"
+      fi
+    done
+    PREVIOUS_SCREEN_LINES=("${current_lines[@]}")
   else
     printf '%s\n' "$content"
   fi
+}
+
+reset_screen_lines() {
+  # Full-screen pages (menu/help/search) wrote arbitrary content: forget the
+  # cached rows and clear once so the next show_screen repaints everything.
+  PREVIOUS_SCREEN_LINES=()
+  [ "$INTERACTIVE_TUI" -eq 1 ] && printf '\033[H\033[2J'
 }
 
 enter_screen() {
@@ -316,6 +346,7 @@ pause_for_key() {
   printf '\nPress Enter to return to the monitor...'
   IFS= read -r _answer
   tput civis 2>/dev/null || true
+  reset_screen_lines
   last_signature=""
 }
 
@@ -400,6 +431,22 @@ command_menu() {
   esac
 }
 
+start_cli_timer_handoff() {
+  # After a watched run finishes, this terminal window becomes the CLI
+  # countdown until the next run ('q' inside the timer closes it). Only the
+  # CLI timer takes over here — the Tk timer is a separate window started
+  # manually or through the Tk monitor's manual-cron settings.
+  [ "$INTERACTIVE_TUI" -eq 1 ] || return 0
+  [ "$NEXT_RUN_TIMER" != "0" ] || return 0
+  [ "$NEXT_RUN_TIMER_MODE" = "cli" ] || return 0
+  [ -f "$SCRIPT_DIR/002b-next-run-timer-cli.py" ] || return 0
+  local py_bin="$APP_ROOT/.venv/bin/python"
+  [ -x "$py_bin" ] || py_bin="python3"
+  restore_screen
+  exec 9>&-  # release the monitor window lock before this process is replaced
+  exec "$py_bin" "$SCRIPT_DIR/002b-next-run-timer-cli.py"
+}
+
 exec 9>"$MONITOR_LOCK"
 
 if ! flock -n 9; then
@@ -455,6 +502,7 @@ while true; do
   if [ "$saw_active" -eq 1 ] && [ "$done_cycles" -ge "$STABLE_DONE_CYCLES" ]; then
     printf '\nProcess finished. Closing in %s seconds...\n' "$IDLE_CLOSE_SECONDS"
     sleep "$IDLE_CLOSE_SECONDS"
+    start_cli_timer_handoff
     exit 0
   elif [ "$saw_active" -eq 0 ] && [ "$done_cycles" -eq "$STABLE_DONE_CYCLES" ]; then
     : # The stable footer already explains idle behavior; do not append repeated lines.

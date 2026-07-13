@@ -792,6 +792,36 @@ def status_payload() -> dict[str, object]:
         "last_summary": read_last_summary(),
     }
 
+_TIMER_CORE = None
+
+
+def _timer_core():
+    """Shared scheduling/data core of the next-run timer (002-next-run-timer.py).
+
+    Loaded lazily: importing the core reads settings and never needs tkinter,
+    so the web monitor can serve the same countdown the Tk/CLI timers show."""
+    global _TIMER_CORE
+    if _TIMER_CORE is None:
+        spec = _importlib_util.spec_from_file_location(
+            "panamacompra_next_run_timer_core", Path(__file__).resolve().with_name("002-next-run-timer.py")
+        )
+        assert spec and spec.loader
+        module = _importlib_util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _TIMER_CORE = module
+    return _TIMER_CORE
+
+
+def web_timer_payload() -> dict[str, object]:
+    """JSON payload for the web monitor's next-run countdown strip."""
+    try:
+        core = _timer_core()
+        return core.timer_json_payload(core.timer_snapshot(5))
+    except Exception as exc:  # noqa: BLE001 - the strip degrades, the page must not
+        return {"target": "", "countdown": "—", "error": str(exc)}
+
+
 ACTIONS_JSON = json.dumps([
     {"zone": action.zone, "label": action.label, "comment": action.comment}
     for action in MANUAL_ACTIONS
@@ -1110,7 +1140,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <body>
 <div class="card">
   <h1>PanamaCompra Progress Monitor</h1>
-  <p class="small"><span id="server-time">Loading...</span> · Low-power polling every <span id="refresh-label">{REFRESH_SECONDS}</span>s while running · JSON: <a href="/api/status">/api/status</a></p>
+  <p class="small"><span id="server-time">Loading...</span> · Next run in <b id="web-timer-countdown">…</b> · Low-power polling every <span id="refresh-label">{REFRESH_SECONDS}</span>s while running · JSON: <a href="/api/status">/api/status</a></p>
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
   <p id="done-note" class="done" hidden></p>
@@ -1151,7 +1181,98 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="settings"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
-';
+<script>
+let doneSince = null;
+let sawActive = false;
+let timer = null;
+const actionZones = {ACTIONS_JSON};
+const labels = [
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['ETA', 'ETA'], ['Index page cap', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
+  ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
+  ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
+  ['Pending details', 'RECORDS_PENDING'], ['Test records', 'RECORDS_TEST'], ['Extra', 'EXTRA']
+];
+function esc(value) {{
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
+}}
+function render(data) {{
+  const p = data.progress || {{}};
+  const percent = data.percent || 0;
+  document.getElementById('server-time').textContent = 'Server time: ' + (data.server_time || '-');
+  document.getElementById('refresh-label').textContent = data.refresh_seconds || {REFRESH_SECONDS};
+  const fill = document.getElementById('fill');
+  fill.style.width = percent + '%';
+  fill.textContent = percent + '%';
+  document.getElementById('message').textContent = p.MESSAGE || '';
+  const rows = labels.map(([label, key]) => {{
+    let value = p[key] ?? '-';
+    if (key === 'STEP') value = `${{p.STEP_CURRENT ?? '-'}} / ${{p.STEP_TOTAL ?? '-'}}`;
+    if (key === 'ITEM') value = `${{p.ITEM_CURRENT ?? '-'}} / ${{p.ITEM_TOTAL ?? '-'}}`;
+    return `<tr><th>${{esc(label)}}</th><td>${{esc(value)}}</td></tr>`;
+  }}).join('');
+  document.getElementById('diagnostics').innerHTML = rows;
+  document.getElementById('processes').innerHTML = Object.entries(data.processes || {{}}).map(([name, value]) =>
+    `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
+  ).join('');
+  updateRunControls(data);
+  renderQueue(data);
+  renderRecordSummary(data);
+  document.getElementById('worker-log').textContent = data.worker_log || '(no recent worker log lines)';
+  document.getElementById('current-log').textContent = data.current_log || '(no current action log lines)';
+  const waha = document.getElementById('waha-message');
+  if (waha && document.activeElement !== waha) waha.value = data.waha_chat_id || '';
+  const wahawa = document.getElementById('waha-message-wa'); if (wahawa && document.activeElement !== wahawa) wahawa.value = data.waha_chat_id || '';
+  const clientsBox = document.getElementById('waha-clients');
+  if (clientsBox && document.activeElement !== clientsBox) clientsBox.value = data.waha_clients || '[]';
+  [['waha-index','waha_chat_id_index'],['waha-details','waha_chat_id_details'],['waha-status','waha_chat_id_status'],['waha-open-now','waha_chat_id_open_now'],['waha-system','waha_chat_id_system'],['waha-summary','waha_chat_id_summary']].forEach(([id, key]) => {{
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = data[key] || '';
+    const mirror = document.getElementById(id + '-wa'); if (mirror && document.activeElement !== mirror) mirror.value = data[key] || '';
+  }});
+  const settings = data.settings || {{}};
+  const notifyToggle = document.getElementById('notify-whatsapp');
+  if (notifyToggle && document.activeElement !== notifyToggle) notifyToggle.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
+  const notifyToggleWa = document.getElementById('notify-whatsapp-wa'); if (notifyToggleWa) notifyToggleWa.checked = String(settings.PC_NOTIFY_WHATSAPP ?? '1') !== '0';
+  const detailsToggle = document.getElementById('notify-details');
+  if (detailsToggle && document.activeElement !== detailsToggle) detailsToggle.checked = String(settings.PC_NOTIFY_DETAILS ?? '1') !== '0';
+  const detailsToggleWa = document.getElementById('notify-details-wa'); if (detailsToggleWa) detailsToggleWa.checked = String(settings.PC_NOTIFY_DETAILS ?? '1') !== '0';
+  const calendarToggle = document.getElementById('calendar-auto-import');
+  if (calendarToggle && document.activeElement !== calendarToggle) calendarToggle.checked = String(settings.PC_CALENDAR_AUTO_IMPORT ?? '0') === '1';
+  [['records-dir', 'PC_RECORDS_DIR'], ['calendar-dir', 'PC_CALENDAR_DIR'], ['records-test-dir', 'PC_RECORDS_TEST_DIR']].forEach(([id, key]) => {{
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = settings[key] || '';
+  }});
+  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  updateAutorunSourceIndicators(settings);
+  [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_NOTIFY_DETAILS_INLINE','1'],['PC_INDEX_FROM_SNAPSHOT','1'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1'],['PC_WEBHOOK_AUTO_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
+  const cronEnabledEl = document.getElementById('cron-enabled');
+  if (cronEnabledEl && document.activeElement !== cronEnabledEl) cronEnabledEl.checked = String(settings.PC_AUTORUN_SOURCE ?? 'changedetection') === 'cron';
+  const cronDaysRadio = document.querySelector(`input[name="cron-days"][value="${{settings.PC_CRON_DAYS || 'daily'}}"]`);
+  if (cronDaysRadio && document.activeElement?.name !== 'cron-days') cronDaysRadio.checked = true;
+  [['cron-custom-days', 'PC_CRON_CUSTOM_DAYS'], ['cron-start', 'PC_CRON_START_TIME'], ['cron-end', 'PC_CRON_END_TIME'], ['cron-interval', 'PC_CRON_INTERVAL_MINUTES']].forEach(([id, key]) => {{
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key];
+  }});
+  const note = document.getElementById('done-note');
+  if (data.done) {{
+    if (!sawActive) {{
+      // Opened straight into a pre-existing idle/done state (e.g. right after
+      // an update with no run queued): show status, but never start the
+      // countdown, or the tab would close before any work runs. Mirrors the
+      // saw_active guard in 001a-monitor-tk.py / 001c-monitor-terminal.sh.
+      note.hidden = false;
+      note.textContent = 'Idle. Auto-close starts only after a run finishes while this monitor is open.';
+      return;
+    }}
+    if (!doneSince) doneSince = Date.now();
+    const wait = data.auto_close_enabled ? Number(data.auto_close_seconds || 0) : 0;
+    const remaining = Math.max(0, wait - Math.floor((Date.now() - doneSince) / 1000));
+    note.hidden = false;
+    note.textContent = wait > 0 ? `Live run finished. This monitor will auto-close in about ${{remaining}} seconds.` : 'Run finished. Auto-close is disabled for test zone and manual desktop actions.';
+    if (wait > 0 && remaining <= 0) {{
+      window.close();
+      document.body.innerHTML = '<div class="card"><h1>PanamaCompra monitor finished</h1><p>The run is done. You can close this tab.</p></div>';
       return;
     }}
   }} else {{
@@ -1924,6 +2045,29 @@ async function runReset(action) {{
   }} catch (err) {{ status.textContent = 'Reset failed: ' + err; }}
   setTimeout(refreshDbReview, 1500);
 }}
+let webTimerTarget = null;
+function tickWebTimer(text) {{
+  const el = document.getElementById('web-timer-countdown');
+  if (!el) return;
+  if (text) {{ el.textContent = text; return; }}
+  if (!webTimerTarget) return;
+  const target = new Date(String(webTimerTarget).replace(' ', 'T'));
+  if (isNaN(target)) return;
+  const total = Math.max(0, Math.floor((target - new Date()) / 1000));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  el.textContent = (h ? h + 'h ' : '') + String(m).padStart(2, '0') + 'm ' + String(s).padStart(2, '0') + 's';
+}}
+async function refreshWebTimer() {{
+  // Same schedule the Tk/CLI timers show (changedetection API or interval
+  // fallback); between fetches the countdown ticks locally every second.
+  try {{
+    const t = await (await fetch('/api/web-timer', {{cache: 'no-store'}})).json();
+    webTimerTarget = t.target || null;
+    tickWebTimer(t.countdown || '');
+  }} catch (err) {{ /* keep the last countdown ticking */ }}
+}}
+setInterval(() => tickWebTimer(''), 1000);
+setInterval(refreshWebTimer, 60000);
 async function poll() {{
   try {{
     const response = await fetch('/api/status', {{cache: 'no-store'}});
@@ -2007,6 +2151,7 @@ loadWahaFilters();
 refreshDbReview();
 refreshDecisionDashboard();
 loadWebhookAccess();
+refreshWebTimer();
 poll();
 </script>
 </body>
@@ -2265,6 +2410,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/web-timer":
+            self.send_text(200, json.dumps(web_timer_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
         if path == "/api/actions":
             # Same MANUAL_ACTIONS list the page's own buttons render from, as

@@ -25,6 +25,9 @@ Run control:
 
 Monitors & services:
   monitor                                   Open the monitor UI (native/web)
+  timer [cli|tk|once|json]                  Next-run countdown: cli = in this terminal
+                                            (auto-takes-over the terminal monitor when it
+                                            closes), tk = separate floating window
   open monitor|changedetection|waha|URL     Open a dashboard in a chromeless app
                                             window — no Firefox, no browser header
                                             (chromium --app when available; set
@@ -115,6 +118,20 @@ case "$cmd" in
   start-all) exec "$APP_ROOT/src/20_pipeline/120c-start-everything.sh" "$@" ;;
   status) exec "$APP_ROOT/src/20_pipeline/130a-queue-status.sh" "$@" ;;
   monitor) exec "$APP_ROOT/src/40_monitor/000-open-monitor.sh" "$@" ;;
+  timer)
+    load_monitor_settings
+    sub="${1:-cli}"; [[ $# -gt 0 ]] && shift || true
+    case "$sub" in
+      cli) exec "$PY_BIN" "$APP_ROOT/src/40_monitor/002b-next-run-timer-cli.py" "$@" ;;
+      tk)
+        nohup "$PY_BIN" "$APP_ROOT/src/40_monitor/002-next-run-timer.py" >> "$PC_LOG_DIR/next_run_timer.log" 2>&1 &
+        echo "Tk next-run timer started (log: $PC_LOG_DIR/next_run_timer.log)."
+        ;;
+      once) exec "$PY_BIN" "$APP_ROOT/src/40_monitor/002b-next-run-timer-cli.py" --once "$@" ;;
+      json) exec "$PY_BIN" "$APP_ROOT/src/40_monitor/002b-next-run-timer-cli.py" --json "$@" ;;
+      *) echo "Usage: pcc timer [cli|tk|once|json] (cli = terminal countdown, tk = floating window)" >&2; exit 2 ;;
+    esac
+    ;;
   open|app) exec "$APP_ROOT/src/50_tools/130-open-web-app.sh" "$@" ;;
   webhook)
     sub="${1:-start}"; [[ $# -gt 0 ]] && shift || true

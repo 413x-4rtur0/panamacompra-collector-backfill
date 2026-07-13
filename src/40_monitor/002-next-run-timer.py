@@ -16,7 +16,6 @@ import shlex
 import sqlite3
 import subprocess
 import sys
-import tkinter as tk
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -26,7 +25,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
-from window_icon import apply_window_icon, window_class
 
 BASE_DIR = pc_common.APP_ROOT
 PROGRESS_FILE = pc_common.PROGRESS_PATH
@@ -612,7 +610,50 @@ def _truncate(text: str, width: int) -> str:
     return (text[: width - 1] + "…") if len(text) > width else text
 
 
+def timer_snapshot(limit: int = RECORDS_SHOWN) -> dict[str, object]:
+    """One shared data snapshot for every timer front end (Tk window, CLI
+    terminal, web monitor strip), so they all show the same schedule/state."""
+    target, source, authoritative = next_run_schedule()
+    progress = progress_values()
+    summary = last_summary_values()
+    total, counts, latest = archive_snapshot(limit)
+    return {
+        "now": datetime.now(),
+        "target": target,
+        "countdown": countdown_string(target),
+        "source": source,
+        "authoritative": authoritative,
+        "progress": progress,
+        "summary": summary,
+        "archive_total": total,
+        "archive_counts": counts,
+        "latest": latest,
+        "active": is_live_run_active(),
+        "branch": git_branch(),
+        "queue": queue_text(),
+        "duration": duration_parts_text(summary),
+    }
+
+
+def timer_json_payload(snapshot: dict[str, object]) -> dict[str, object]:
+    """JSON-safe view of a timer snapshot (datetimes become ISO strings)."""
+    payload = dict(snapshot)
+    for key in ("now", "target"):
+        value = payload.get(key)
+        if isinstance(value, datetime):
+            payload[key] = value.strftime("%Y-%m-%d %H:%M:%S")
+    payload["autorun_source"] = AUTORUN_SOURCE
+    payload["latest"] = [list(row) for row in snapshot.get("latest") or []]
+    return payload
+
+
 def main() -> int:
+    # Imported here (not at module top) so headless front ends — the CLI timer
+    # and the web monitor — can reuse this module's scheduling/data helpers
+    # without needing tkinter or an X display.
+    import tkinter as tk
+    from window_icon import apply_window_icon, window_class
+
     root = tk.Tk(className=window_class("timer"))
     root.title("Next Live Run")
     apply_window_icon(root, "timer")

@@ -34,12 +34,39 @@ saved_monitor_setting() {
 
 SAVED_MONITOR_MODE="$(saved_monitor_setting PC_MONITOR_MODE)"
 SAVED_NEXT_RUN_TIMER="$(saved_monitor_setting PC_NEXT_RUN_TIMER)"
+SAVED_TIMER_MODE="$(saved_monitor_setting PC_NEXT_RUN_TIMER_MODE)"
+SAVED_AUTORUN_SOURCE="$(saved_monitor_setting PC_AUTORUN_SOURCE)"
 MONITOR_MODE="${PC_MONITOR_MODE:-${SAVED_MONITOR_MODE:-tk}}"
 NEXT_RUN_TIMER="${PC_NEXT_RUN_TIMER:-${SAVED_NEXT_RUN_TIMER:-1}}"
+AUTORUN_SOURCE="${PC_AUTORUN_SOURCE:-${SAVED_AUTORUN_SOURCE:-changedetection}}"
+
+# Timer front end selection. Automatic changedetection runs always use the
+# lightweight terminal monitor, and the CLI countdown takes over that terminal
+# when the monitor closes. The Tk timer never autostarts on this path — it is
+# a separate window the operator opens manually or through the Tk monitor's
+# manual-cron settings.
+if [ "${PC_RUN_MODE:-}" = "AUTO" ] && [ "$AUTORUN_SOURCE" = "changedetection" ]; then
+  MONITOR_MODE="terminal"
+  NEXT_RUN_TIMER=1
+  NEXT_RUN_TIMER_MODE="cli"
+elif [ "$MONITOR_MODE" = "tk" ]; then
+  NEXT_RUN_TIMER_MODE="${PC_NEXT_RUN_TIMER_MODE:-${SAVED_TIMER_MODE:-tk}}"
+else
+  NEXT_RUN_TIMER_MODE="${PC_NEXT_RUN_TIMER_MODE:-${SAVED_TIMER_MODE:-cli}}"
+fi
+
+# Diagnostic/test hook: print the resolved decision without touching processes.
+if [ "${PC_MONITOR_RESOLVE_ONLY:-0}" = "1" ]; then
+  echo "MONITOR_MODE=$MONITOR_MODE"
+  echo "NEXT_RUN_TIMER=$NEXT_RUN_TIMER"
+  echo "NEXT_RUN_TIMER_MODE=$NEXT_RUN_TIMER_MODE"
+  exit 0
+fi
+
 MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
 MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
-CMD="cd $(printf '%q' "$SCRIPT_DIR") && ./001c-monitor-terminal.sh"
+CMD="cd $(printf '%q' "$SCRIPT_DIR") && PC_NEXT_RUN_TIMER=$(printf '%q' "$NEXT_RUN_TIMER") PC_NEXT_RUN_TIMER_MODE=$(printf '%q' "$NEXT_RUN_TIMER_MODE") ./001c-monitor-terminal.sh"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" >> "$OPEN_LOG"
@@ -79,6 +106,12 @@ next_run_timer_running() {
 start_next_run_timer() {
   if [ "$NEXT_RUN_TIMER" = "0" ]; then
     log "Next-run timer disabled by PC_NEXT_RUN_TIMER=0."
+    return 0
+  fi
+  if [ "$NEXT_RUN_TIMER_MODE" != "tk" ]; then
+    # CLI timer mode: nothing to start here. The terminal monitor itself execs
+    # the CLI countdown in its own window when it closes after the run.
+    log "Next-run timer mode is '$NEXT_RUN_TIMER_MODE'; the CLI timer opens when the terminal monitor closes."
     return 0
   fi
   if next_run_timer_running; then
