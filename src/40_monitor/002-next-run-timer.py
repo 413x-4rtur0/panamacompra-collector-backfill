@@ -92,6 +92,7 @@ CHANGEDETECTION_API_KEY = setting("CHANGEDETECTION_API_KEY", "").strip()
 CHANGEDETECTION_CHECK_INTERVAL_SECONDS = setting_int(
     "PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS", str(INTERVAL_MINUTES * 60), 1
 )
+CHANGEDETECTION_SCHEDULER_TIMEZONE = setting("PC_CHANGEDETECTION_SCHEDULER_TIMEZONE", "").strip()
 CHANGEDETECTION_REFRESH_SECONDS = setting_int("PC_CHANGEDETECTION_TIMER_REFRESH_SECONDS", "30", 5)
 CHANGEDETECTION_SCHEDULE_REFRESH_SECONDS = setting_int(
     "PC_CHANGEDETECTION_SCHEDULE_REFRESH_SECONDS", "300", 30
@@ -277,7 +278,7 @@ def _changedetection_global_schedule() -> tuple[dict[str, object], str]:
         schedule = payload.get("schedule") if isinstance(payload, dict) else {}
         default_tz = payload.get("timezone") if isinstance(payload, dict) else ""
         schedule = schedule if isinstance(schedule, dict) else {}
-        timezone_name = str(default_tz or "")
+        timezone_name = str(default_tz or CHANGEDETECTION_SCHEDULER_TIMEZONE or "")
         _CHANGEDETECTION_SCHEDULE_CACHE = (now_epoch, schedule, timezone_name)
         return schedule, timezone_name
 
@@ -287,7 +288,7 @@ def _changedetection_global_schedule() -> tuple[dict[str, object], str]:
     schedule = requests.get("time_schedule_limit") if isinstance(requests, dict) else {}
     default_tz = application.get("scheduler_timezone_default") if isinstance(application, dict) else ""
     schedule = schedule if isinstance(schedule, dict) else {}
-    timezone_name = str(default_tz or "")
+    timezone_name = str(default_tz or CHANGEDETECTION_SCHEDULER_TIMEZONE or "")
     _CHANGEDETECTION_SCHEDULE_CACHE = (now_epoch, schedule, timezone_name)
     return schedule, timezone_name
 
@@ -411,7 +412,9 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
         watches = ((str(watch.get("uuid") or index), watch) for index, watch in enumerate(payload) if isinstance(watch, dict))
     else:
         watches = ()
-    global_schedule, scheduler_timezone = _changedetection_global_schedule()
+    global_schedule: dict[str, object] = {}
+    scheduler_timezone = CHANGEDETECTION_SCHEDULER_TIMEZONE
+    global_schedule_loaded = False
     candidates: list[tuple[datetime, str]] = []
     for watch_id, watch in watches:
         if not isinstance(watch, dict) or watch.get("paused"):
@@ -446,14 +449,26 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
         candidate = datetime.fromtimestamp(last_checked + interval, tz=timezone.utc)
         uses_default = bool(watch.get("time_between_check_use_default", True))
         watch_schedule = watch.get("time_schedule_limit")
-        schedule = global_schedule if uses_default else (watch_schedule if isinstance(watch_schedule, dict) else {})
+        if uses_default:
+            if not global_schedule_loaded:
+                global_schedule, datastore_timezone = _changedetection_global_schedule()
+                scheduler_timezone = datastore_timezone or scheduler_timezone
+                global_schedule_loaded = True
+            schedule = global_schedule
+        else:
+            schedule = watch_schedule if isinstance(watch_schedule, dict) else {}
+            if schedule.get("enabled") and not (schedule.get("timezone") or scheduler_timezone):
+                _unused_global, datastore_timezone = _changedetection_global_schedule()
+                scheduler_timezone = datastore_timezone or scheduler_timezone
         candidate, schedule_note = _next_allowed_schedule_time(candidate, schedule, scheduler_timezone)
         if candidate is not None:
             candidates.append((candidate, schedule_note))
 
     selected = min(candidates, key=lambda item: item[0]) if candidates else None
     target = selected[0].astimezone().replace(tzinfo=None) if selected else None
-    schedule_note = selected[1] if selected else _schedule_summary(global_schedule, scheduler_timezone)
+    schedule_note = selected[1] if selected else (
+        _schedule_summary(global_schedule, scheduler_timezone) if global_schedule_loaded else ""
+    )
     note = f"changedetection API · {len(candidates)} active watch{'es' if len(candidates) != 1 else ''}"
     if schedule_note:
         note += f" · {schedule_note}"

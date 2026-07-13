@@ -178,7 +178,7 @@ ensure_access_credentials() {
 
 
 sync_changedetection_timer_settings() {
-  local api_key="" interval_seconds="" attempt=0
+  local api_key="" interval_seconds="" scheduler_timezone="" timer_metadata="" attempt=0
 
   # changedetection 0.55.x exposes watch last_checked values through its API,
   # but not the global check interval. Read both private values inside the
@@ -203,23 +203,30 @@ except (OSError, ValueError):
     return 0
   fi
 
-  interval_seconds="$("${COMPOSE[@]}" exec -T changedetection python -c '
+  timer_metadata="$("${COMPOSE[@]}" exec -T changedetection python -c '
 import json
 try:
     data = json.load(open("/datastore/changedetection.json", encoding="utf-8"))
     parts = data.get("settings", {}).get("requests", {}).get("time_between_check", {}) or {}
     units = {"weeks": 604800, "days": 86400, "hours": 3600, "minutes": 60, "seconds": 1}
     print(sum(int(parts.get(name) or 0) * multiplier for name, multiplier in units.items()))
+    print(data.get("settings", {}).get("application", {}).get("scheduler_timezone_default", ""))
 except (OSError, TypeError, ValueError):
     pass
 ' 2>/dev/null || true)"
+  interval_seconds="$(printf '%s\n' "$timer_metadata" | sed -n '1p')"
+  scheduler_timezone="$(printf '%s\n' "$timer_metadata" | sed -n '2p')"
 
   set_env_value CHANGEDETECTION_API_KEY "$api_key"
   export CHANGEDETECTION_API_KEY="$api_key"
+  if [ -n "$scheduler_timezone" ]; then
+    set_env_value PC_CHANGEDETECTION_SCHEDULER_TIMEZONE "$scheduler_timezone"
+    export PC_CHANGEDETECTION_SCHEDULER_TIMEZONE="$scheduler_timezone"
+  fi
   if [[ "$interval_seconds" =~ ^[0-9]+$ ]] && [ "$interval_seconds" -gt 0 ]; then
     set_env_value PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS "$interval_seconds"
     export PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS="$interval_seconds"
-    note "Changedetection timer synchronized (global check interval: ${interval_seconds}s; API key saved privately in .env)."
+    note "Changedetection timer synchronized (global check interval: ${interval_seconds}s; scheduler timezone: ${scheduler_timezone:-system default}; API key saved privately in .env)."
   else
     note "Changedetection API access synchronized; global interval unavailable, so the timer will use its fallback."
   fi
