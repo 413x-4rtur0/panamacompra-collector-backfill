@@ -19,8 +19,9 @@ import sys
 import tkinter as tk
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
@@ -92,6 +93,18 @@ CHANGEDETECTION_CHECK_INTERVAL_SECONDS = setting_int(
     "PC_CHANGEDETECTION_CHECK_INTERVAL_SECONDS", str(INTERVAL_MINUTES * 60), 1
 )
 CHANGEDETECTION_REFRESH_SECONDS = setting_int("PC_CHANGEDETECTION_TIMER_REFRESH_SECONDS", "30", 5)
+CHANGEDETECTION_SCHEDULE_REFRESH_SECONDS = setting_int(
+    "PC_CHANGEDETECTION_SCHEDULE_REFRESH_SECONDS", "300", 30
+)
+_integrations_dir = Path(setting("PC_INTEGRATIONS_DIR", str(pc_common.STATE_DIR / "integrations"))).expanduser()
+if not _integrations_dir.is_absolute():
+    _integrations_dir = BASE_DIR / _integrations_dir
+_changedetection_datastore_dir = Path(
+    setting("PC_CHANGEDETECTION_DATASTORE", str(_integrations_dir / "changedetection"))
+).expanduser()
+if not _changedetection_datastore_dir.is_absolute():
+    _changedetection_datastore_dir = BASE_DIR / _changedetection_datastore_dir
+CHANGEDETECTION_DATASTORE_FILE = _changedetection_datastore_dir / "changedetection.json"
 # Fixed window size. Bigger by default than the old timer because it now carries
 # the branch, latest records and last-run summary; still pinned (resizable off).
 WINDOW_WIDTH = setting_int("PC_NEXT_RUN_TIMER_WIDTH", "380", 240)
@@ -219,6 +232,148 @@ def _duration_seconds(parts: object) -> int:
 
 
 _CHANGEDETECTION_CACHE: tuple[float, datetime | None, str] = (0.0, None, "")
+_CHANGEDETECTION_SCHEDULE_CACHE: tuple[float, dict[str, object], str] = (0.0, {}, "")
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _changedetection_global_schedule() -> tuple[dict[str, object], str]:
+    """Read and cache changedetection's global time window/timezone.
+
+    changedetection writes its datastore as root with mode 600 in the current
+    container image. Prefer a direct host read when permissions allow it;
+    otherwise ask the already-running container for only these two non-secret
+    fields. That fallback runs at most once every five minutes by default.
+    """
+    global _CHANGEDETECTION_SCHEDULE_CACHE
+
+    now_epoch = datetime.now().timestamp()
+    cached_at, cached_schedule, cached_timezone = _CHANGEDETECTION_SCHEDULE_CACHE
+    if now_epoch - cached_at < CHANGEDETECTION_SCHEDULE_REFRESH_SECONDS:
+        return cached_schedule, cached_timezone
+
+    data: dict[str, object] | None = None
+    try:
+        loaded = json.loads(CHANGEDETECTION_DATASTORE_FILE.read_text(encoding="utf-8"))
+        data = loaded if isinstance(loaded, dict) else None
+    except (OSError, ValueError):
+        pass
+
+    if data is None:
+        container_reader = (
+            "import json; "
+            "d=json.load(open('/datastore/changedetection.json',encoding='utf-8')); "
+            "s=d.get('settings',{}); "
+            "print(json.dumps({'schedule':s.get('requests',{}).get('time_schedule_limit',{}),"
+            "'timezone':s.get('application',{}).get('scheduler_timezone_default','')}))"
+        )
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "exec", "-T", "changedetection", "python", "-c", container_reader],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=8,
+            )
+            payload = json.loads(result.stdout) if result.returncode == 0 else {}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            payload = {}
+        schedule = payload.get("schedule") if isinstance(payload, dict) else {}
+        default_tz = payload.get("timezone") if isinstance(payload, dict) else ""
+        schedule = schedule if isinstance(schedule, dict) else {}
+        timezone_name = str(default_tz or "")
+        _CHANGEDETECTION_SCHEDULE_CACHE = (now_epoch, schedule, timezone_name)
+        return schedule, timezone_name
+
+    settings = data.get("settings") if isinstance(data, dict) else {}
+    requests = settings.get("requests") if isinstance(settings, dict) else {}
+    application = settings.get("application") if isinstance(settings, dict) else {}
+    schedule = requests.get("time_schedule_limit") if isinstance(requests, dict) else {}
+    default_tz = application.get("scheduler_timezone_default") if isinstance(application, dict) else ""
+    schedule = schedule if isinstance(schedule, dict) else {}
+    timezone_name = str(default_tz or "")
+    _CHANGEDETECTION_SCHEDULE_CACHE = (now_epoch, schedule, timezone_name)
+    return schedule, timezone_name
+
+
+def _schedule_timezone(schedule: dict[str, object], default_tz: str) -> tuple[ZoneInfo, str]:
+    timezone_name = str(schedule.get("timezone") or default_tz or "UTC").strip()
+    try:
+        return ZoneInfo(timezone_name), timezone_name
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC"), "UTC"
+
+
+def _schedule_duration_minutes(day: dict[str, object]) -> int:
+    duration = day.get("duration")
+    if not isinstance(duration, dict):
+        return 0
+    try:
+        return max(0, int(duration.get("hours") or 0) * 60 + int(duration.get("minutes") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _schedule_start(day_date, day: dict[str, object], tz: ZoneInfo) -> datetime | None:
+    try:
+        hour, minute = (int(part) for part in str(day.get("start_time") or "").split(":", 1))
+        return datetime(day_date.year, day_date.month, day_date.day, hour, minute, tzinfo=tz)
+    except (TypeError, ValueError):
+        return None
+
+
+def _schedule_summary(schedule: dict[str, object], default_tz: str) -> str:
+    if not schedule.get("enabled"):
+        return ""
+    tz, timezone_name = _schedule_timezone(schedule, default_tz)
+    enabled: list[tuple[str, dict[str, object]]] = []
+    for name in _WEEKDAYS:
+        day = schedule.get(name)
+        if isinstance(day, dict) and day.get("enabled"):
+            enabled.append((name, day))
+    if not enabled:
+        return f"schedule has no enabled days · {timezone_name}"
+    signatures = {
+        (str(day.get("start_time") or ""), _schedule_duration_minutes(day))
+        for _name, day in enabled
+    }
+    if len(enabled) == 7 and len(signatures) == 1:
+        start_text, duration_minutes = next(iter(signatures))
+        try:
+            hour, minute = (int(part) for part in start_text.split(":", 1))
+            start = datetime(2000, 1, 3, hour, minute, tzinfo=tz)
+            end = start + timedelta(minutes=duration_minutes)
+            end_text = end.strftime("%H:%M") + ("+1d" if end.date() != start.date() else "")
+            return f"allowed daily {start.strftime('%H:%M')}–{end_text} · {timezone_name}"
+        except ValueError:
+            pass
+    return f"allowed on {len(enabled)} scheduled day{'s' if len(enabled) != 1 else ''} · {timezone_name}"
+
+
+def _next_allowed_schedule_time(
+    candidate: datetime, schedule: dict[str, object], default_tz: str
+) -> tuple[datetime | None, str]:
+    """Move an interval candidate into changedetection's next allowed window.
+
+    ``candidate`` is timezone-aware. The returned timestamp stays aware and is
+    ``None`` only when scheduling is enabled but no valid day window exists.
+    """
+    if not schedule.get("enabled"):
+        return candidate, ""
+    tz, _timezone_name = _schedule_timezone(schedule, default_tz)
+    local_candidate = candidate.astimezone(tz)
+    summary = _schedule_summary(schedule, default_tz)
+    for offset in range(8):
+        day_date = local_candidate.date() + timedelta(days=offset)
+        day = schedule.get(_WEEKDAYS[day_date.weekday()])
+        if not isinstance(day, dict) or not day.get("enabled"):
+            continue
+        start = _schedule_start(day_date, day, tz)
+        duration_minutes = _schedule_duration_minutes(day)
+        if start is None or duration_minutes <= 0:
+            continue
+        end = start + timedelta(minutes=duration_minutes)
+        if start <= local_candidate <= end:
+            return candidate, summary
+        if local_candidate < start:
+            return start.astimezone(timezone.utc), summary
+    return None, summary
 
 
 def changedetection_next_check() -> tuple[datetime | None, str]:
@@ -251,15 +406,34 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
         return None, ""
 
     if isinstance(payload, dict):
-        watches = payload.values()
+        watches = payload.items()
     elif isinstance(payload, list):
-        watches = payload
+        watches = ((str(watch.get("uuid") or index), watch) for index, watch in enumerate(payload) if isinstance(watch, dict))
     else:
-        watches = []
-    candidates: list[datetime] = []
-    for watch in watches:
+        watches = ()
+    global_schedule, scheduler_timezone = _changedetection_global_schedule()
+    candidates: list[tuple[datetime, str]] = []
+    for watch_id, watch in watches:
         if not isinstance(watch, dict) or watch.get("paused"):
             continue
+        # The list API intentionally returns a compact watch summary in
+        # changedetection 0.55.x. Fetch the detail only when the scheduling
+        # fields are absent so watch-specific interval/window overrides remain
+        # authoritative. This stays inside the same 30-second API cache cycle.
+        if watch_id and not {
+            "time_between_check_use_default", "time_between_check", "time_schedule_limit"
+        }.issubset(watch):
+            detail_request = urllib.request.Request(
+                f"{CHANGEDETECTION_BASE_URL}/api/v1/watch/{watch_id}",
+                headers={"x-api-key": CHANGEDETECTION_API_KEY, "Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(detail_request, timeout=2) as response:
+                    detail = json.load(response)
+                if isinstance(detail, dict):
+                    watch = {**watch, **detail}
+            except (OSError, ValueError, urllib.error.URLError):
+                pass
         try:
             last_checked = float(watch.get("last_checked") or 0)
         except (TypeError, ValueError):
@@ -269,10 +443,22 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
         interval = _duration_seconds(watch.get("time_between_check"))
         if interval <= 0:
             interval = CHANGEDETECTION_CHECK_INTERVAL_SECONDS
-        candidates.append(datetime.fromtimestamp(last_checked + interval))
+        candidate = datetime.fromtimestamp(last_checked + interval, tz=timezone.utc)
+        uses_default = bool(watch.get("time_between_check_use_default", True))
+        watch_schedule = watch.get("time_schedule_limit")
+        schedule = global_schedule if uses_default else (watch_schedule if isinstance(watch_schedule, dict) else {})
+        candidate, schedule_note = _next_allowed_schedule_time(candidate, schedule, scheduler_timezone)
+        if candidate is not None:
+            candidates.append((candidate, schedule_note))
 
-    target = min(candidates) if candidates else None
-    note = f"changedetection API · {len(candidates)} active watch{'es' if len(candidates) != 1 else ''}" if target else ""
+    selected = min(candidates, key=lambda item: item[0]) if candidates else None
+    target = selected[0].astimezone().replace(tzinfo=None) if selected else None
+    schedule_note = selected[1] if selected else _schedule_summary(global_schedule, scheduler_timezone)
+    note = f"changedetection API · {len(candidates)} active watch{'es' if len(candidates) != 1 else ''}"
+    if schedule_note:
+        note += f" · {schedule_note}"
+    if target is None:
+        note = schedule_note
     _CHANGEDETECTION_CACHE = (now_epoch, target, note)
     return target, note
 
@@ -464,7 +650,10 @@ def main() -> int:
     tk.Label(root, text="Latest records", font=("Sans", 8, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(4, 0))
 
     status_var = tk.StringVar(value="")
-    tk.Label(root, textvariable=status_var, font=("Sans", 8), bg="#1e293b", fg="#94a3b8").pack(side="bottom", pady=(0, 6))
+    tk.Label(
+        root, textvariable=status_var, font=("Sans", 8), bg="#1e293b", fg="#94a3b8",
+        wraplength=WINDOW_WIDTH - 24, justify="center",
+    ).pack(side="bottom", pady=(0, 6))
 
     # The latest-record list lives in a scrollable, read-only Text so the window
     # can stay fixed-size yet show many recent entries — the operator scrolls the
@@ -540,7 +729,8 @@ def main() -> int:
                 root.lift()
             next_dt, schedule_note, changedetection_synced = next_run_schedule()
             remaining = int((next_dt - datetime.now()).total_seconds())
-            next_var.set(next_dt.strftime("%H:%M:%S"))
+            next_format = "%H:%M:%S" if next_dt.date() == datetime.now().date() else "%a %Y-%m-%d %H:%M:%S"
+            next_var.set(next_dt.strftime(next_format))
             count_var.set(countdown_string(next_dt))
             # Turn the countdown amber when the next run is imminent (< 60s).
             count_label.configure(fg="#f59e0b" if remaining <= 60 else "#22c55e")
