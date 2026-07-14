@@ -16,21 +16,23 @@
     afterNextPageWaitMs: 3500,
     waitMs: 25000,
 
-    // Order matters: first Programadas, then Abiertas.
+    // Order matters: Abiertas first. The second group crawled regularly loses
+    // the radio-switch race against the Angular re-render, and Abiertas are the
+    // time-critical records — if one group must fail, let it be Programadas.
     statuses: [
-      {
-        group: "Programadas",
-        radioId: "btnradio2",
-        labelText: "Programadas",
-        expectedEstado: "Programada",
-        totalLabel: "Programadas collected"
-      },
       {
         group: "Abiertas",
         radioId: "btnradio1",
         labelText: "Abiertas",
         expectedEstado: "Abierta",
         totalLabel: "Abiertas collected"
+      },
+      {
+        group: "Programadas",
+        radioId: "btnradio2",
+        labelText: "Programadas",
+        expectedEstado: "Programada",
+        totalLabel: "Programadas collected"
       }
     ],
 
@@ -247,10 +249,12 @@
   }
 
   function hasRowsWithEstado(expectedEstado) {
+    // startsWith instead of strict equality: tolerates portal suffixes such as
+    // "Abierta " variations without ever accepting the other group's estado.
     const wanted = normalize(expectedEstado);
 
     return getCurrentRowsRaw()
-      .some(row => normalize(row.estado) === wanted);
+      .some(row => normalize(row.estado).startsWith(wanted));
   }
 
   async function waitFor(checkFn, maxMs = CONFIG.waitMs) {
@@ -271,6 +275,28 @@
     }
   }
 
+  function getExpectedTotal() {
+    // The portal footer near the table/pagination shows the total record count
+    // (e.g. "Mostrando 1 - 50 de 123"). 0 when it cannot be found.
+    const scopes = [
+      document.querySelector("tabla-busqueda-avanzada-v3 .card"),
+      document.querySelector("tabla-busqueda-avanzada-v3"),
+      document.querySelector("ngb-pagination")?.parentElement
+    ].filter(Boolean);
+
+    for (const el of scopes) {
+      const text = clean(el.innerText || el.textContent || "");
+      const match = text.match(/de\s+([\d.,]+)\s*(?:registros|resultados|entradas)?/i);
+
+      if (match) {
+        const total = parseInt(match[1].replace(/[.,]/g, ""), 10);
+        if (Number.isFinite(total) && total > 0) return total;
+      }
+    }
+
+    return 0;
+  }
+
   function getPageSignature() {
     const table = getTable();
 
@@ -286,6 +312,13 @@
     await closePopup();
 
     const input = document.getElementById(statusConfig.radioId);
+
+    // Already on the right tab with matching rows: do not toggle away. Clicking
+    // an already-active radio re-renders the table and can race us into the
+    // "rows not ready" state for no reason.
+    if (input && input.checked && hasRowsWithEstado(statusConfig.expectedEstado)) {
+      return true;
+    }
 
     const label =
       document.querySelector(`label[for="${statusConfig.radioId}"]`) ||
@@ -401,7 +434,7 @@
     const wanted = normalize(statusConfig.expectedEstado);
 
     return getCurrentRowsRaw()
-      .filter(row => normalize(row.estado) === wanted);
+      .filter(row => normalize(row.estado).startsWith(wanted));
   }
 
   async function crawlStatus(statusConfig) {
@@ -441,13 +474,34 @@
       await sleep(CONFIG.retryBackoffMs);
     }
 
+    const rowsPerPage = parseInt(CONFIG.rowsPerPage, 10) || 50;
+
+    function paginationLine(expectedItems, crawledPages, firstBadPage) {
+      // Machine-readable health marker parsed by 015-import-index-snapshot.py:
+      // when consistent=no the crawler re-crawls this group starting at
+      // first_bad_page instead of importing a silently short snapshot.
+      const expectedPages = expectedItems > 0 ? Math.ceil(expectedItems / rowsPerPage) : crawledPages;
+      const crawledItems = recordsInCrawlOrder.length;
+      const consistent =
+        complete &&
+        firstBadPage === 0 &&
+        (expectedItems === 0 || crawledItems + duplicateCount >= expectedItems);
+
+      return `${statusConfig.group} PAGINATION: expected_items=${expectedItems} expected_pages=${expectedPages} ` +
+        `rows_per_page=${rowsPerPage} crawled_items=${crawledItems} crawled_pages=${crawledPages} ` +
+        `first_bad_page=${consistent ? 0 : (firstBadPage || crawledPages + 1)} consistent=${consistent ? "yes" : "no"}`;
+    }
+
     if (!ready) {
+      pageCounts.push(paginationLine(0, 0, 1));
       pageCounts.push(`${statusConfig.group}: ${failReason || "never became ready"}`);
       return {
         config: statusConfig,
         records: [],
         recordsInCrawlOrder: [],
-        pageCounts
+        pageCounts,
+        duplicateCount,
+        complete: false
       };
     }
 
@@ -458,6 +512,14 @@
       CONFIG.waitMs
     );
 
+    const expectedItems = getExpectedTotal();
+    let crawledPages = 0;
+    let firstBadPage = 0;
+
+    const markBadPage = (page) => {
+      if (!firstBadPage) firstBadPage = page;
+    };
+
     for (let page = 1; page <= CONFIG.maxPagesSafety; page++) {
       const ready = await waitFor(
         () => hasRowsWithEstado(statusConfig.expectedEstado),
@@ -465,9 +527,12 @@
       );
 
       if (!ready) {
+        markBadPage(page);
         pageCounts.push(`${statusConfig.group}: page ${page} never became ready`);
         break;
       }
+
+      crawledPages = page;
 
       const expectedRows = extractOnlyExpectedRows(statusConfig);
       const rows = expectedRows.filter(row => row.numero && row.link);
@@ -475,6 +540,7 @@
       pageCounts.push(`${statusConfig.group} page ${page}: ${rows.length}`);
 
       if (rows.length !== expectedRows.length) {
+        markBadPage(page);
         pageCounts.push(`${statusConfig.group}: page ${page} has ${expectedRows.length - rows.length} row(s) without a usable NUMERO/detail link`);
       }
 
@@ -493,16 +559,23 @@
 
       if (!next.moved) {
         complete = next.complete && rows.length === expectedRows.length;
+        if (!complete) markBadPage(page);
         pageCounts.push(complete
           ? `${statusConfig.group} COMPLETE: ${next.reason}`
           : `${statusConfig.group}: ${next.reason || "pagination incomplete"}`);
         break;
       }
+
+      // A short page that is not the last one means rows were dropped mid-list.
+      if (expectedRows.length < rowsPerPage) markBadPage(page);
     }
 
     if (!complete && pageCounts.length && !pageCounts.some(line => line.startsWith(`${statusConfig.group}:`))) {
+      markBadPage(crawledPages || 1);
       pageCounts.push(`${statusConfig.group}: safety page limit ${CONFIG.maxPagesSafety} reached`);
     }
+
+    pageCounts.unshift(paginationLine(expectedItems, crawledPages, firstBadPage));
 
     return {
       config: statusConfig,

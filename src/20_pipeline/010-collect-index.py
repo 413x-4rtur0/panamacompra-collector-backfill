@@ -53,6 +53,38 @@ def selected_groups():
 
 GROUPS = selected_groups()
 
+
+def index_start_pages(raw=None):
+    """Per-group crawl start pages from "Group:page" pairs (comma-separated).
+
+    Fed by PC_INDEX_START_PAGES (the worker copies SNAPSHOT_RECOVERY_PAGES from
+    a partial changedetection snapshot), so the crawler resumes each unhealthy
+    group at its first bad page instead of redoing the pages the snapshot
+    already imported. Group names are case-insensitive; unknown groups and
+    non-numeric pages are ignored so a malformed value can never break a crawl."""
+    if raw is None:
+        raw = os.environ.get("PC_INDEX_START_PAGES", "")
+    canonical = {g["name"].lower(): g["name"] for g in ALL_GROUPS}
+    starts = {}
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        name, _, value = part.partition(":")
+        group = canonical.get(name.strip().lower())
+        if not group:
+            continue
+        try:
+            page_number = int(value.strip())
+        except ValueError:
+            continue
+        if page_number >= 1:
+            starts[group] = page_number
+    return starts
+
+
+START_PAGES = index_start_pages()
+
 def close_popup(page):
     page.evaluate("""
     (() => {
@@ -347,6 +379,24 @@ def main():
             go_first_page(page)
 
             page_number = 1
+            start_page = START_PAGES.get(group_name, 1)
+            if start_page > 1:
+                # Partial snapshot recovery: skip the pages the snapshot already
+                # imported and resume this group at its first bad page.
+                write_run_progress(
+                    "INDEX", "RUNNING", 11,
+                    f"Step 1/7: {group_name} resuming at page {start_page} (earlier pages imported from snapshot).",
+                    step_current=1, step_total=7,
+                    extra=f"group={group_name}; start_page={start_page}",
+                )
+                while page_number < start_page:
+                    wait_for_table(page)
+                    moved, why = click_next(page)
+                    if not moved:
+                        stop_reasons.append(f"{group_name}: could not advance to recovery page {start_page} ({why}); crawling from page {page_number}")
+                        break
+                    page_number += 1
+
             while True:
                 if MAX_PAGES_PER_GROUP and page_number > MAX_PAGES_PER_GROUP:
                     stop_reasons.append(f"{group_name}: index page cap reached ({MAX_PAGES_PER_GROUP})")

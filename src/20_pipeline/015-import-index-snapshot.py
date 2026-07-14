@@ -35,6 +35,7 @@ decide which groups still need the browser crawler without parsing stdout.
 """
 import gzip
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -208,8 +209,9 @@ def parse_snapshot(text):
     lines = text.splitlines()
     marker_ok = bool(lines) and lines[0].strip() == SNAPSHOT_MARKER
 
-    groups = {g: {"collected": 0, "healthy": False, "reason": "not present in snapshot"} for g in EXPECTED_GROUPS}
+    groups = {g: {"collected": 0, "healthy": False, "reason": "not present in snapshot", "recovery_page": 0} for g in EXPECTED_GROUPS}
     page_seen = {g: False for g in EXPECTED_GROUPS}
+    pagination_consistent = {g: None for g in EXPECTED_GROUPS}
     section = "header"
     records = []
     current = {}
@@ -238,6 +240,19 @@ def parse_snapshot(text):
                         pass
         elif section == "pages":
             for group in EXPECTED_GROUPS:
+                if stripped.startswith(f"{group} PAGINATION:"):
+                    # Machine-readable health marker from the browser script:
+                    # "... first_bad_page=N consistent=yes|no". consistent=no
+                    # overrides a COMPLETE line (short crawls still paginate to
+                    # a disabled Next); first_bad_page tells the crawler where
+                    # to resume so it does not redo the healthy leading pages.
+                    tokens = dict(re.findall(r"(\w+)=(\S+)", stripped.split(":", 1)[1]))
+                    pagination_consistent[group] = tokens.get("consistent") == "yes"
+                    try:
+                        groups[group]["recovery_page"] = max(0, int(tokens.get("first_bad_page", "0")))
+                    except ValueError:
+                        pass
+                    continue
                 if stripped.startswith(f"{group} page "):
                     page_seen[group] = True
                     continue
@@ -277,6 +292,11 @@ def parse_snapshot(text):
         if info["healthy"] and parsed_counts[group] < info["collected"]:
             info["healthy"] = False
             info["reason"] = f"parsed {parsed_counts[group]} of {info['collected']} records"
+        if pagination_consistent[group] is False:
+            # consistent=no wins over COMPLETE: the crawl reached a disabled
+            # Next, but pages were short/skipped along the way.
+            info["healthy"] = False
+            info["reason"] = info["reason"] or f"pagination inconsistent (first bad page {info['recovery_page'] or 1})"
     return {"marker_ok": marker_ok, "groups": groups, "records": records}
 
 
@@ -379,10 +399,18 @@ def write_result_env(status, groups=None, stats=None, snapshot_path=None, reason
     result from a previous run can never steer the current one."""
     ensure_dirs()
     unhealthy = ",".join(g for g, info in (groups or {}).items() if not info["healthy"])
+    # "Group:page" pairs for unhealthy groups whose leading pages were imported
+    # fine — the crawler starts there (PC_INDEX_START_PAGES) instead of page 1.
+    recovery = ",".join(
+        f"{g}:{info['recovery_page']}"
+        for g, info in (groups or {}).items()
+        if not info["healthy"] and info.get("recovery_page", 0) > 0
+    )
     stats = stats or {}
     fields = {
         "SNAPSHOT_STATUS": status,
         "SNAPSHOT_UNHEALTHY_GROUPS": unhealthy,
+        "SNAPSHOT_RECOVERY_PAGES": recovery,
         "SNAPSHOT_PATH": str(snapshot_path or ""),
         "SNAPSHOT_REASON": reason,
         "SNAPSHOT_NEW": stats.get("new", 0),

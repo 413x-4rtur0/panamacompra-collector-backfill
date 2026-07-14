@@ -352,6 +352,7 @@ while true; do
   INDEX_START_EPOCH="$(date '+%s')"
   INDEX_SOURCE="crawler"
   INDEX_CRAWL_GROUPS=""
+  INDEX_START_PAGES=""
   SNAPSHOT_RESULT_FILE="$PC_QUEUE_DIR/index_snapshot_result.env"
   # Same precedence as PC_NOTIFY_WHATSAPP: environment variable first, then the
   # monitor Settings file, then the default (on) — so the monitors' checkbox works.
@@ -377,6 +378,7 @@ while true; do
       3)
         INDEX_SOURCE="snapshot+crawler"
         INDEX_CRAWL_GROUPS="$(sed -n "s/^SNAPSHOT_UNHEALTHY_GROUPS='\(.*\)'\$/\1/p" "$SNAPSHOT_RESULT_FILE" 2>/dev/null | head -n1)"
+        INDEX_START_PAGES="$(sed -n "s/^SNAPSHOT_RECOVERY_PAGES='\(.*\)'\$/\1/p" "$SNAPSHOT_RESULT_FILE" 2>/dev/null | head -n1)"
         ;;
       *) INDEX_SOURCE="crawler" ;;
     esac
@@ -398,11 +400,11 @@ while true; do
       echo ""
       echo "-------------------- STEP 1: INDEX COLLECTOR --------------------"
       echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
-      echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT${INDEX_CRAWL_GROUPS:+ PC_INDEX_GROUPS=$INDEX_CRAWL_GROUPS} timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
+      echo "Command: PC_INDEX_LIMIT=$INDEX_LIMIT${INDEX_CRAWL_GROUPS:+ PC_INDEX_GROUPS=$INDEX_CRAWL_GROUPS}${INDEX_START_PAGES:+ PC_INDEX_START_PAGES=$INDEX_START_PAGES} timeout 1h ${PYTHON_BIN} -u $PIPELINE_DIR/010-collect-index.py"
     } >> "$CURRENT_LOG"
 
     rm -f "$PC_QUEUE_DIR/index_crawl_result.env"
-    PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" PC_INDEX_GROUPS="$INDEX_CRAWL_GROUPS" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
+    PC_INDEX_LIMIT="$INDEX_LIMIT" PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT" PC_INDEX_GROUPS="$INDEX_CRAWL_GROUPS" PC_INDEX_START_PAGES="$INDEX_START_PAGES" timeout 1h "$PYTHON_BIN" -u "$PIPELINE_DIR/010-collect-index.py" >> "$CURRENT_LOG" 2>&1
     INDEX_EXIT=$?
 
     # A group the crawler could not open (e.g. the Abiertas radio never switched)
