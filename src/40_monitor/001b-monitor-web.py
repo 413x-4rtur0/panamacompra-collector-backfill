@@ -2720,14 +2720,78 @@ class MonitorHandler(BaseHTTPRequestHandler):
         self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 
 
+MONITOR_URL_ENV_PATH = pc_common.RUN_DIR / "monitor_web.env"
+# When the configured port is taken by another program, scan forward this many
+# ports for a free one instead of crashing. The actual bind is published to
+# run/monitor_web.env so the opener and launchers always find the real port.
+PORT_SCAN_RANGE = max(1, int(os.environ.get("PC_MONITOR_PORT_SCAN", "20")))
+
+
+def lan_ip() -> str:
+    """This PC's LAN address (for the URL other machines use), '' if unknown."""
+    import socket
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 80))  # UDP connect sends no packets
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return ""
+
+
+def bind_monitor_server(host: str, port: int):
+    """Bind the monitor, moving to the next free port on a conflict."""
+    last_error = None
+    for candidate in range(port, port + PORT_SCAN_RANGE):
+        try:
+            return ThreadingHTTPServer((host, candidate), MonitorHandler), candidate
+        except OSError as exc:
+            last_error = exc
+            print(f"Port {candidate} unavailable ({exc.strerror or exc}); trying {candidate + 1}...", flush=True)
+    raise SystemExit(f"No free monitor port in {port}-{port + PORT_SCAN_RANGE - 1}: {last_error}")
+
+
+def publish_monitor_url(host: str, port: int) -> None:
+    """Write the ACTUAL bind to run/monitor_web.env (atomic).
+
+    MONITOR_LOCAL_URL always works from this PC; MONITOR_LAN_URL is what other
+    machines on the network use (only set when the bind allows them in)."""
+    open_to_lan = host in ("0.0.0.0", "::", "")
+    local_host = "127.0.0.1" if open_to_lan else host
+    lan = lan_ip() if open_to_lan else (host if not host.startswith("127.") else "")
+    fields = {
+        "MONITOR_HOST": host,
+        "MONITOR_PORT": port,
+        "MONITOR_LOCAL_URL": f"http://{local_host}:{port}/",
+        "MONITOR_LAN_URL": f"http://{lan}:{port}/" if lan else "",
+        "MONITOR_PID": os.getpid(),
+        "MONITOR_STARTED_AT": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        pc_common.RUN_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = MONITOR_URL_ENV_PATH.with_suffix(".env.tmp")
+        tmp.write_text("".join(f"{key}='{value}'\n" for key, value in fields.items()), encoding="utf-8")
+        tmp.replace(MONITOR_URL_ENV_PATH)
+    except OSError as exc:
+        print(f"Could not publish monitor URL file: {exc}", flush=True)
+
+
 def main() -> None:
     pc_common.LOG_DIR.mkdir(parents=True, exist_ok=True)
     pc_common.QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     settings = load_monitor_settings()
     host = os.environ.get("PC_MONITOR_HOST") or settings.get("PC_MONITOR_HOST") or HOST
     port = int(os.environ.get("PC_MONITOR_PORT", str(PORT)))
-    server = ThreadingHTTPServer((host, port), MonitorHandler)
-    print(f"PanamaCompra web monitor: http://{host}:{port}/", flush=True)
+    server, bound_port = bind_monitor_server(host, port)
+    publish_monitor_url(host, bound_port)
+    local_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    print(f"PanamaCompra web monitor: http://{local_host}:{bound_port}/", flush=True)
+    if host in ("0.0.0.0", "::"):
+        lan = lan_ip()
+        if lan:
+            print(f"LAN access: http://{lan}:{bound_port}/", flush=True)
     server.serve_forever()
 
 

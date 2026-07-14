@@ -159,8 +159,23 @@ start_tk_monitor() {
   return 1
 }
 
+published_monitor_value() {
+  # Reads the ACTUAL bind the web monitor published (it moves to the next free
+  # port when the configured one is taken by another program).
+  local file="$PC_RUN_DIR/monitor_web.env"
+  [ -f "$file" ] || return 0
+  sed -n "s/^$1='\(.*\)'\$/\1/p" "$file" | head -n1
+}
+
+refresh_monitor_url() {
+  local published
+  published="$(published_monitor_value MONITOR_LOCAL_URL)"
+  [ -n "$published" ] && MONITOR_URL="$published"
+}
+
 monitor_server_running() {
-  "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('http://${MONITOR_HOST}:${MONITOR_PORT}/health', timeout=1).read()" >/dev/null 2>&1
+  refresh_monitor_url
+  "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('${MONITOR_URL}health', timeout=1).read()" >/dev/null 2>&1
 }
 
 start_web_monitor() {
@@ -168,8 +183,9 @@ start_web_monitor() {
     log "Web monitor already running at $MONITOR_URL."
   else
     PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup "$PYTHON_BIN" "$SCRIPT_DIR/001b-monitor-web.py" >> "$WEB_LOG" 2>&1 &
-    log "Started web monitor at $MONITOR_URL with log $WEB_LOG."
     sleep 1
+    refresh_monitor_url
+    log "Started web monitor at $MONITOR_URL with log $WEB_LOG."
   fi
 }
 
@@ -231,6 +247,8 @@ if [ "$MONITOR_MODE" = "web" ]; then
   start_web_monitor
   open_url_if_possible || true
   echo "PanamaCompra web monitor: $MONITOR_URL"
+  LAN_URL="$(published_monitor_value MONITOR_LAN_URL)"
+  [ -n "$LAN_URL" ] && echo "LAN access from other PCs: $LAN_URL"
   exit 0
 fi
 

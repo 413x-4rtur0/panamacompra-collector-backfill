@@ -46,8 +46,22 @@ MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
 PYTHON_BIN="python3"
 [ -x "$APP_ROOT/.venv/bin/python" ] && PYTHON_BIN="$APP_ROOT/.venv/bin/python"
 
+published_monitor_value() {
+  # The web monitor publishes its ACTUAL bind (it moves to the next free port
+  # when the configured one is busy) to run/monitor_web.env.
+  local file="$PC_RUN_DIR/monitor_web.env"
+  [ -f "$file" ] || return 0
+  sed -n "s/^$1='\(.*\)'\$/\1/p" "$file" | head -n1
+}
+
+monitor_local_url() {
+  local published
+  published="$(published_monitor_value MONITOR_LOCAL_URL)"
+  echo "${published:-http://${MONITOR_HOST}:${MONITOR_PORT}/}"
+}
+
 ensure_web_monitor() {
-  if "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('http://${MONITOR_HOST}:${MONITOR_PORT}/health', timeout=1).read()" >/dev/null 2>&1; then
+  if "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('$(monitor_local_url)health', timeout=1).read()" >/dev/null 2>&1; then
     return 0
   fi
   note "Starting the web monitor server at http://${MONITOR_HOST}:${MONITOR_PORT}/ (log: $PC_LOG_DIR/monitor_server.log)"
@@ -123,7 +137,7 @@ TARGET="${1:-help}"
 case "$TARGET" in
   monitor|web-monitor)
     ensure_web_monitor
-    open_app_window "http://${MONITOR_HOST}:${MONITOR_PORT}/" "PanamaCompraMonitorWeb"
+    open_app_window "$(monitor_local_url)" "PanamaCompraMonitorWeb"
     ;;
   changedetection|cd)
     open_app_window "${CHANGEDETECTION_BASE_URL:-http://localhost:5000}" "PanamaCompraChangedetection"
