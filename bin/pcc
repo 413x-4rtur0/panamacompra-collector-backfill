@@ -82,6 +82,8 @@ Maintenance:
   setup [args]                              Run repository setup
   uninstall [options]                       Stop services/containers and optionally purge state
   launcher [install|remove|path]            Manage desktop launchers (monitor, WAHA, changedetection, URLs, Docker)
+  ram | memory                              RAM/swap report: top consumers (incl. swapped),
+                                            container usage and recommended fixes
   env                                       Print resolved runtime environment
   help                                      Show this help
 USAGE
@@ -131,6 +133,68 @@ case "$cmd" in
       json) exec "$PY_BIN" "$APP_ROOT/src/40_monitor/002b-next-run-timer-cli.py" --json "$@" ;;
       *) echo "Usage: pcc timer [cli|tk|once|json] (cli = terminal countdown, tk = floating window)" >&2; exit 2 ;;
     esac
+    ;;
+  ram|memory)
+    "$PY_BIN" - <<'PYEOF'
+import os, subprocess
+from pathlib import Path
+
+def kib(line):
+    return int(line.split()[1])
+
+mem = {l.split(":")[0]: kib(l) for l in Path("/proc/meminfo").read_text().splitlines() if ":" in l}
+total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
+swap_total, swap_free = mem.get("SwapTotal", 0), mem.get("SwapFree", 0)
+swap_used = swap_total - swap_free
+gib = lambda k: f"{k/1024/1024:.1f}G"
+print(f"RAM {gib(total)} total · {gib(avail)} available · swap used {gib(swap_used)} of {gib(swap_total)}")
+pressure = swap_used > total // 2
+if pressure:
+    print("!! Heavy swapping: the PC holds more in swap than half its RAM — this is why it feels slow.")
+print()
+
+procs = []
+for pid_dir in Path("/proc").iterdir():
+    if not pid_dir.name.isdigit():
+        continue
+    try:
+        status = (pid_dir / "status").read_text()
+        fields = {l.split(":")[0]: l for l in status.splitlines() if ":" in l}
+        rss = kib(fields["VmRSS"]) if "VmRSS" in fields else 0
+        swap = kib(fields["VmSwap"]) if "VmSwap" in fields else 0
+        if rss + swap < 20 * 1024:
+            continue
+        cmd = (pid_dir / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()[:88]
+        procs.append((rss + swap, rss, swap, pid_dir.name, cmd or fields.get("Name", "?").split("\t")[-1]))
+    except (OSError, KeyError):
+        continue
+
+print("TOP MEMORY (resident + swapped), the real footprint per process:")
+print(f"{'PID':>7} {'RSS':>7} {'SWAP':>7}  COMMAND")
+for total_kib, rss, swap, pid, cmd in sorted(procs, reverse=True)[:12]:
+    print(f"{pid:>7} {rss//1024:>6}M {swap//1024:>6}M  {cmd}")
+print()
+
+try:
+    out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.MemUsage}}"],
+                         capture_output=True, text=True, timeout=20).stdout.strip()
+    if out:
+        print("DOCKER CONTAINERS (resident only; swapped pages not shown):")
+        print(out)
+        print()
+except (OSError, subprocess.SubprocessError):
+    pass
+
+print("WHAT HELPS ON THIS PC (biggest wins first):")
+print("  1. zram compressed swap (one-time, needs sudo — run these yourself):")
+print("       sudo apt install zram-tools && echo -e 'ALGO=zstd\\nPERCENT=50' | sudo tee /etc/default/zramswap && sudo systemctl restart zramswap")
+print("  2. Stop container stacks you are not using right now (pcc docker-manager list / stop NAME).")
+print("  3. WhatsApp engine: WAHA_ENGINE=NOWEB in .env removes WAHA's internal Chromium")
+print("     (restart stack + re-scan the QR once). Alerts/sendText keep working.")
+print("  4. Close idle heavy apps: extra AI CLI sessions, NX/remote desktop when unused.")
+print("  5. This repo already caps its containers (docker-compose mem_limit) and uses the")
+print("     changedetection snapshot import to avoid one full Firefox crawl per run.")
+PYEOF
     ;;
   open|app) exec "$APP_ROOT/src/50_tools/130-open-web-app.sh" "$@" ;;
   webhook)

@@ -23,12 +23,20 @@
 # PC_INTEGRATIONS_DIR for every mode (development/portable/installed), applies
 # monitor-saved container settings, and migrates a legacy ./integrations folder.
 
+# Memory limits (PC_MEM_* in .env): this stack runs on small machines (the
+# reference PC has 3.3 GiB RAM), and an unbounded Chromium (sockpuppet or
+# WAHA's WEBJS engine) can push the whole desktop into swap. The caps below
+# stop a runaway container without touching normal operation; raise them in
+# .env on bigger hosts.
 services:
   sockpuppetbrowser:
     image: dgtlmoon/sockpuppetbrowser:latest
     restart: unless-stopped
     # Chromium needs extra shared memory and a larger fd cap to stay stable.
-    shm_size: 2gb
+    # (shm is allocated on demand, not reserved, but it counts against RAM —
+    # keep it below the container cap on small hosts.)
+    shm_size: ${PC_MEM_SOCKPUPPET_SHM:-768m}
+    mem_limit: ${PC_MEM_SOCKPUPPET:-896m}
     cap_add:
       - SYS_ADMIN
     networks:
@@ -37,6 +45,7 @@ services:
   changedetection:
     image: dgtlmoon/changedetection.io:latest
     restart: unless-stopped
+    mem_limit: ${PC_MEM_CHANGEDETECTION:-384m}
     depends_on:
       - sockpuppetbrowser
     ports:
@@ -57,6 +66,10 @@ services:
   waha:
     image: devlikeapro/waha:latest
     restart: unless-stopped
+    # The default WEBJS engine runs a full Chromium inside this container; the
+    # cap keeps its leaks/spikes away from the host. WAHA_ENGINE=NOWEB (re-scan
+    # the QR after switching) drops WhatsApp RAM use to a fraction of this.
+    mem_limit: ${PC_MEM_WAHA:-768m}
     ports:
       - "${WAHA_PORT:-3000}:3000"
     environment:
@@ -80,6 +93,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.webhook
     restart: unless-stopped
+    mem_limit: ${PC_MEM_WEBHOOK:-128m}
     ports:
       - "${PC_WEBHOOK_PORT:-8765}:8765"
     environment:
