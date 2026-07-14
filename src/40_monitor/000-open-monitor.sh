@@ -111,6 +111,13 @@ start_next_run_timer() {
   if [ "$NEXT_RUN_TIMER_MODE" != "tk" ]; then
     # CLI timer mode: nothing to start here. The terminal monitor itself execs
     # the CLI countdown in its own window when it closes after the run.
+    # A Tk timer window left over from an earlier manual run would otherwise
+    # stay open forever next to the CLI one — close it, unless a manual Tk
+    # monitor session is open (then the floating timer belongs to it).
+    if ! tk_monitor_running && pgrep -f "[0]02-next-run-timer\.py" >/dev/null 2>&1; then
+      pkill -f "[0]02-next-run-timer\.py" 2>/dev/null || true
+      log "Closed leftover Tk timer window (CLI timer mode, no Tk monitor session)."
+    fi
     log "Next-run timer mode is '$NEXT_RUN_TIMER_MODE'; the CLI timer opens when the terminal monitor closes."
     return 0
   fi
