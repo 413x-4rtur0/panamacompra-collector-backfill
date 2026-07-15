@@ -2383,11 +2383,13 @@ def run_tk() -> int:
 
         def refresh_list(*_args: object) -> None:
             nonlocal records
-            needle = filter_var.get().strip().lower()
+            # Case- and accent-insensitive partial match: "construccion" matches
+            # "Construcción", "CONSTRUCCIÓN", etc. Only matching rows are shown.
+            needle = pc_common.strip_accents(filter_var.get()).strip().lower()
             records = [
                 rec for rec in load_record_index(limit=1000)
                 if (rec.get("detail_status") or "").lower() == detail_status
-                and (not needle or needle in label(rec).lower())
+                and (not needle or needle in pc_common.strip_accents(label(rec)).lower())
             ]
             newest_first = order_var.get() != "Oldest first"
             records.sort(key=lambda rec: parse_record_order_date(rec) or datetime.min, reverse=newest_first)
@@ -2599,7 +2601,9 @@ def run_tk() -> int:
             show_selected_detail()
 
     def apply_filter(*_args: object) -> None:
-        needle = index_filter_var.get().strip().lower()
+        # Case- and accent-insensitive partial match: "construccion" matches
+        # "Construcción", "CONSTRUCCIÓN", etc. Only matching rows are shown.
+        needle = pc_common.strip_accents(index_filter_var.get()).strip().lower()
         wanted_status = STATUS_FILTER_KEYS.get(index_status_var.get())
         wanted_detail_status = DETAIL_STATUS_FILTER_KEYS.get(index_detail_status_var.get())
         # Deadline (DTEND), start (DTSTART) and downloaded date windows. Each
@@ -2622,7 +2626,7 @@ def run_tk() -> int:
 
         records = []
         for rec in index_records:
-            if needle and needle not in index_label(rec).lower():
+            if needle and needle not in pc_common.strip_accents(index_label(rec)).lower():
                 continue
             if wanted_status and expiry_status(rec) != wanted_status:
                 continue

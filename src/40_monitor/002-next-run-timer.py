@@ -478,6 +478,125 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
     return target, note
 
 
+def changedetection_watch_status() -> dict[str, object]:
+    """Read-only snapshot of changedetection's own watch list and schedule.
+
+    Unlike ``changedetection_next_check`` (which only needs the single
+    earliest candidate for the countdown), this returns every watch so a
+    "what is active / what is scheduled" panel can be shown verbatim from
+    changedetection's data. Never mutates anything in changedetection —
+    scheduling is still controlled from there or via PC_AUTORUN_SOURCE/
+    PC_WEBHOOK_AUTO_RUN on this side.
+    """
+    global _CHANGEDETECTION_WATCH_STATUS_CACHE
+
+    now_epoch = datetime.now().timestamp()
+    cached_at, cached_payload = _CHANGEDETECTION_WATCH_STATUS_CACHE
+    if now_epoch - cached_at < CHANGEDETECTION_REFRESH_SECONDS:
+        return cached_payload
+
+    payload: dict[str, object] = {
+        "source": AUTORUN_SOURCE,
+        "configured": bool(CHANGEDETECTION_API_KEY),
+        "base_url": CHANGEDETECTION_BASE_URL,
+        "watches": [],
+        "schedule_note": "",
+        "error": "",
+    }
+    if AUTORUN_SOURCE != "changedetection":
+        payload["error"] = "Auto-run source is set to cron, not changedetection."
+        _CHANGEDETECTION_WATCH_STATUS_CACHE = (now_epoch, payload)
+        return payload
+    if not CHANGEDETECTION_API_KEY:
+        payload["error"] = "No changedetection API key configured (CHANGEDETECTION_API_KEY)."
+        _CHANGEDETECTION_WATCH_STATUS_CACHE = (now_epoch, payload)
+        return payload
+
+    request = urllib.request.Request(
+        f"{CHANGEDETECTION_BASE_URL}/api/v1/watch",
+        headers={"x-api-key": CHANGEDETECTION_API_KEY, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            raw = json.load(response)
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        payload["error"] = f"changedetection unreachable: {exc}"
+        _CHANGEDETECTION_WATCH_STATUS_CACHE = (now_epoch, payload)
+        return payload
+
+    if isinstance(raw, dict):
+        watches = list(raw.items())
+    elif isinstance(raw, list):
+        watches = [
+            (str(watch.get("uuid") or index), watch)
+            for index, watch in enumerate(raw) if isinstance(watch, dict)
+        ]
+    else:
+        watches = []
+
+    global_schedule, scheduler_timezone = _changedetection_global_schedule()
+    payload["schedule_note"] = _schedule_summary(global_schedule, scheduler_timezone)
+
+    entries: list[dict[str, object]] = []
+    for watch_id, watch in watches:
+        if not isinstance(watch, dict):
+            continue
+        if watch_id and not {
+            "time_between_check_use_default", "time_between_check", "time_schedule_limit", "title", "url"
+        }.issubset(watch):
+            detail_request = urllib.request.Request(
+                f"{CHANGEDETECTION_BASE_URL}/api/v1/watch/{watch_id}",
+                headers={"x-api-key": CHANGEDETECTION_API_KEY, "Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(detail_request, timeout=2) as response:
+                    detail = json.load(response)
+                if isinstance(detail, dict):
+                    watch = {**watch, **detail}
+            except (OSError, ValueError, urllib.error.URLError):
+                pass
+
+        paused = bool(watch.get("paused"))
+        try:
+            last_checked_epoch = float(watch.get("last_checked") or 0)
+        except (TypeError, ValueError):
+            last_checked_epoch = 0.0
+        interval = _duration_seconds(watch.get("time_between_check"))
+        if interval <= 0:
+            interval = CHANGEDETECTION_CHECK_INTERVAL_SECONDS
+        uses_default = bool(watch.get("time_between_check_use_default", True))
+        watch_schedule = watch.get("time_schedule_limit")
+        schedule = global_schedule if uses_default else (watch_schedule if isinstance(watch_schedule, dict) else {})
+        watch_tz = scheduler_timezone if uses_default else (schedule.get("timezone") or scheduler_timezone)
+
+        last_checked_iso = ""
+        next_check_iso = ""
+        next_check_note = ""
+        if not paused and last_checked_epoch > 0:
+            last_checked_iso = datetime.fromtimestamp(last_checked_epoch).astimezone().isoformat(timespec="seconds")
+            candidate = datetime.fromtimestamp(last_checked_epoch + interval, tz=timezone.utc)
+            adjusted, next_check_note = _next_allowed_schedule_time(candidate, schedule, watch_tz)
+            if adjusted is not None:
+                next_check_iso = adjusted.astimezone().isoformat(timespec="seconds")
+
+        entries.append({
+            "uuid": watch_id,
+            "title": str(watch.get("title") or watch.get("url") or watch_id or "").strip(),
+            "url": str(watch.get("url") or ""),
+            "paused": paused,
+            "last_checked": last_checked_iso,
+            "interval_seconds": interval,
+            "uses_default_schedule": uses_default,
+            "next_check": next_check_iso,
+            "schedule_note": next_check_note,
+        })
+
+    entries.sort(key=lambda item: (item["paused"], item["next_check"] or "9999"))
+    payload["watches"] = entries
+    _CHANGEDETECTION_WATCH_STATUS_CACHE = (now_epoch, payload)
+    return payload
+
+
 def interval_next_run_time() -> datetime:
     now = datetime.now()
     started = last_live_run_start()

@@ -246,6 +246,31 @@ def client_filter_fn(profile: dict):
     return _matches
 
 
+def calendar_keyword_filter_fn(query: str):
+    """Row predicate for the operator-facing calendar's free-text filter box.
+
+    Case- and accent-insensitive partial match (e.g. "construccion" matches
+    "Construcción"), against numero/descripcion/entidad/dependencia/modalidad/
+    grupo — only rows that partially or fully match stay visible. Returns
+    None when the query is blank so callers can skip filtering entirely.
+    """
+    needle = pc_common.strip_accents(query).strip().lower()
+    if not needle:
+        return None
+
+    def _matches(row) -> bool:
+        haystack = pc_common.strip_accents(" ".join(
+            str(row[col]) for col in (
+                "numero", "descripcion", "short_description", "estado",
+                "grupo", "entidad", "dependencia", "modalidad",
+            )
+            if row[col]
+        )).lower()
+        return needle in haystack
+
+    return _matches
+
+
 def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=None, shift: int = 0) -> dict:
     """Shared JSON payload builder behind /api/calendar-grid and
     /api/client-calendar-grid (the client version passes filter_fn so it only
@@ -822,6 +847,27 @@ def web_timer_payload() -> dict[str, object]:
         return {"target": "", "countdown": "—", "error": str(exc)}
 
 
+def changedetection_schedule_payload() -> dict[str, object]:
+    """Read-only "what is active / scheduled" snapshot for the Scheduler tab.
+
+    Combines changedetection's own watch list (via the timer core, which
+    already knows how to talk to its API) with the local automatic-run gate,
+    so the operator can see in one place whether messages *should* be going
+    out right now."""
+    settings = load_monitor_settings()
+    auto_run = str(settings.get("PC_WEBHOOK_AUTO_RUN", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    dev_mode_active = (pc_common.QUEUE_DIR / "dev_mode_active.flag").exists()
+    try:
+        core = _timer_core()
+        watch_status = core.changedetection_watch_status()
+    except Exception as exc:  # noqa: BLE001 - the panel degrades, the page must not
+        watch_status = {"source": "", "configured": False, "watches": [], "schedule_note": "", "error": str(exc)}
+    watch_status = dict(watch_status)
+    watch_status["webhook_auto_run"] = auto_run
+    watch_status["dev_mode_active"] = dev_mode_active
+    return watch_status
+
+
 ACTIONS_JSON = json.dumps([
     {"zone": action.zone, "label": action.label, "comment": action.comment}
     for action in MANUAL_ACTIONS
@@ -1171,7 +1217,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div>
+<div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <label class="small">Keyword <input id="cal-filter" size="16" placeholder="filter text" onchange="loadCalendar()"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div>
+<div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp settings</h2><p class="small">All WhatsApp options in one place: destinations, delivery settings, WAHA server connection, toggles and per-destination content filters.</p><div class="subsection"><h3>Destinations & toggles</h3><div class="destination-grid"><label>Default / one group</label><textarea id="waha-message-wa" rows="2" placeholder="12036...@g.us (used when a purpose-specific group is blank)"></textarea><label>Index alerts</label><input id="waha-index-wa" size="32" placeholder="blank = default group"><label>Item details</label><input id="waha-details-wa" size="32" placeholder="blank = default group"><label>Status changes</label><input id="waha-status-wa" size="32" placeholder="blank = default group"><label>Open Now Opportunities</label><input id="waha-open-now-wa" size="32" placeholder="blank = Index alerts / default group"><label>System health</label><input id="waha-system-wa" size="32" placeholder="blank = default group"><label>Final summary per round</label><input id="waha-summary-wa" size="32" placeholder="blank = default group"></div><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label><br><label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label></p><p><button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div><div class="subsection"><h3>Delivery & server settings</h3><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (generated by setup) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label></div><p><button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></p><p class="xs">The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div><div class="subsection"><h3>Content filters</h3><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <label class="small">Open Now Opportunities <input id="flt-open-now" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div></div>
@@ -1347,6 +1394,28 @@ async function refreshCronScheduleStatus() {{
     status.textContent = await res.text();
   }} catch (e) {{ status.textContent = 'Request failed: ' + e; }}
 }}
+async function refreshChangedetectionSchedule() {{
+  const banner = document.getElementById('cd-schedule-banner');
+  const summary = document.getElementById('cd-schedule-summary');
+  const table = document.getElementById('cd-schedule-table');
+  try {{
+    const res = await fetch('/api/changedetection-schedule', {{cache: 'no-store'}});
+    const data = await res.json();
+    const bits = [];
+    if (data.dev_mode_active) bits.push('<span style="color:#fca5a5;font-weight:700">⏸ Dev mode is ON — all automatic triggers are paused.</span>');
+    if (!data.webhook_auto_run) bits.push('<span style="color:#fca5a5;font-weight:700">⚠ Automatic runs from changedetection (webhook) is OFF — new changedetection changes will NOT start a run or send WhatsApp messages.</span>');
+    else bits.push('<span style="color:#86efac">✓ Automatic runs from changedetection (webhook) is ON.</span>');
+    banner.innerHTML = bits.join(' ');
+    if (data.error) {{
+      summary.textContent = data.error;
+      table.innerHTML = '';
+      return;
+    }}
+    summary.textContent = `Source: ${{data.source || '—'}} · ${{(data.watches || []).length}} watch(es) · ${{data.schedule_note || 'no schedule window set (checks any time)'}}`;
+    const rows = (data.watches || []).map(w => `<tr><td>${{esc(w.title || w.uuid || '')}}</td><td>${{w.paused ? '⏸ paused' : '● active'}}</td><td>${{esc(w.last_checked || '—')}}</td><td>${{Math.round((w.interval_seconds || 0) / 60)}} min${{w.uses_default_schedule ? '' : ' (override)'}}</td><td>${{esc(w.next_check || '—')}}</td></tr>`).join('');
+    table.innerHTML = `<tr><th>Watch</th><th>Status</th><th>Last checked</th><th>Interval</th><th>Next check</th></tr>${{rows || '<tr><td colspan="5">No watches found.</td></tr>'}}`;
+  }} catch (e) {{ summary.textContent = 'Request failed: ' + e; }}
+}}
 function runAction(label) {{ postForm('/api/manual-action', 'label=' + encodeURIComponent(label)); }}
 const ZONE_DESCRIPTIONS = {{
   'Runners': 'Start, queue or stop collection runs.',
@@ -1491,9 +1560,11 @@ async function loadCalendar(shift) {{
   const dateBox = document.getElementById('cal-date');
   if (shift === 0) {{ calendarAnchor = ''; dateBox.value = ''; }}
   const anchor = (dateBox.value || calendarAnchor).trim();
+  const keyword = (document.getElementById('cal-filter') || {{}}).value || '';
   let params = 'view=' + view + '&field=' + field;
   if (anchor) params += '&date=' + encodeURIComponent(anchor);
   if (shift) params += '&shift=' + shift;
+  if (keyword.trim()) params += '&filter=' + encodeURIComponent(keyword.trim());
   try {{
     const response = await fetch('/api/calendar?' + params, {{cache: 'no-store'}});
     const data = await response.json();
@@ -1693,8 +1764,10 @@ async function renderCalendarVisual() {{
   const field = (document.getElementById('cal-field') || {{}}).value || 'end';
   const view = (document.getElementById('cal-view') || {{}}).value || 'month';
   const anchor = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
+  const keyword = ((document.getElementById('cal-filter') || {{}}).value || '').trim();
   let params = 'field=' + encodeURIComponent(field) + '&view=' + encodeURIComponent(view);
   if (anchor) params += '&date=' + encodeURIComponent(anchor);
+  if (keyword) params += '&filter=' + encodeURIComponent(keyword);
   try {{
     const g = await (await fetch('/api/calendar-grid?' + params, {{cache: 'no-store'}})).json();
     const grouped = g.events || {{}};
@@ -1796,7 +1869,7 @@ function showTab(tab) {{
   if (tab === 'overview') refreshOverview();
   if (tab === 'records') refreshRecordIndex();
   if (tab === 'calendar') loadCalendar();
-  if (tab === 'scheduler') refreshCronScheduleStatus();
+  if (tab === 'scheduler') {{ refreshCronScheduleStatus(); refreshChangedetectionSchedule(); }}
 }}
 
 async function refreshOverview() {{
@@ -2414,6 +2487,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
         if path == "/api/web-timer":
             self.send_text(200, json.dumps(web_timer_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
+        if path == "/api/changedetection-schedule":
+            self.send_text(200, json.dumps(changedetection_schedule_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
         if path == "/api/actions":
             # Same MANUAL_ACTIONS list the page's own buttons render from, as
             # plain JSON — lets other clients (e.g. the Android app) drive
@@ -2533,11 +2609,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 shift = 0
             if shift:
                 anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
+            keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
             try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
-                    text = opportunity_calendar.render_view(conn, view, anchor, field)
+                    text = opportunity_calendar.render_view(conn, view, anchor, field, filter_fn=keyword_filter)
                 finally:
                     conn.close()
             except sqlite3.Error:
@@ -2637,10 +2714,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 shift = int(params.get("shift", ["0"])[0])
             except ValueError:
                 shift = 0
+            keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
             payload = calendar_grid_payload(
                 (params.get("view", ["month"])[0] or "month").lower(),
                 (params.get("field", ["end"])[0] or "end").lower(),
                 params.get("date", [""])[0],
+                filter_fn=keyword_filter,
                 shift=shift,
             )
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
