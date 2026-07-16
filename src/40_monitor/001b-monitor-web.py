@@ -302,12 +302,14 @@ def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=N
                 for row in rows:
                     value = opportunity_calendar.normalize_value(row["event_date"])
                     desc = (row["descripcion"] or row["short_description"] or "").strip()
+                    link = str(row["link"] or "")
                     grouped_events[day_key].append({
                         "numero": str(row["numero"] or ""),
                         "description": desc[:96],
                         "status": str(row["estado"] or row["grupo"] or ""),
                         "date": value,
                         "clock": value[11:16] if len(value) >= 16 else "--:--",
+                        "url": link if link.startswith("http") else "",
                     })
         finally:
             conn.close()
@@ -916,6 +918,8 @@ button { cursor: pointer; }
 .calcell .num { color: #cbd5e1; font-size: .85rem; font-weight: 700; display: flex; justify-content: space-between; margin-bottom: 4px; }
 .calcell .count { color: #94a3b8; font-size: .72rem; font-weight: 400; }
 .calevent { display: block; margin: 3px 0; padding: 3px 5px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .74rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.calevent { text-decoration: none; cursor: pointer; }
+a.calevent:hover { filter: brightness(1.25); }
 .calevent.soon { border-left-color: #facc15; background: #422006; color: #fde68a; }
 .calevent.expired { border-left-color: #f87171; background: #450a0a; color: #fecaca; }
 .calevent.more { border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }
@@ -965,7 +969,12 @@ function calendarEventClass(ev) {
 function renderCalendarEvent(ev) {
   const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
   const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
-  return `<span class="calevent ${calendarEventClass(ev)}" title="${esc(title)}">${esc(clock + title)}</span>`;
+  const cls = calendarEventClass(ev);
+  const label = esc(clock + title);
+  if (ev.url) {
+    return `<a class="calevent ${cls}" href="${esc(ev.url)}" target="_blank" rel="noopener" title="${esc(title)}">${label}</a>`;
+  }
+  return `<span class="calevent ${cls}" title="${esc(title)}">${label}</span>`;
 }
 function renderCalendarDayCell(day, events, blank, maxShown) {
   if (blank) return '<div class="calcell blank"></div>';
@@ -1145,6 +1154,8 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calcell .num {{ color: #cbd5e1; font-size: .95rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }}
 .calcell .count {{ color: #94a3b8; font-size: .82rem; font-weight: 400; }}
 .calevent {{ display: block; margin: 4px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .85rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+a.calevent {{ text-decoration: none; cursor: pointer; }}
+a.calevent:hover {{ filter: brightness(1.25); }}
 .calevent.soon {{ border-left-color: #facc15; background: #422006; color: #fde68a; }}
 .calevent.expired {{ border-left-color: #f87171; background: #450a0a; color: #fecaca; }}
 .calevent.more {{ border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }}
@@ -1747,7 +1758,12 @@ function calendarEventClass(ev) {{
 function renderCalendarEvent(ev) {{
   const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
   const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
-  return `<span class="calevent ${{calendarEventClass(ev)}}" title="${{esc(title)}}">${{esc(clock + title)}}</span>`;
+  const cls = calendarEventClass(ev);
+  const label = esc(clock + title);
+  if (ev.url) {{
+    return `<a class="calevent ${{cls}}" href="${{esc(ev.url)}}" target="_blank" rel="noopener" title="${{esc(title)}}">${{label}}</a>`;
+  }}
+  return `<span class="calevent ${{cls}}" title="${{esc(title)}}">${{label}}</span>`;
 }}
 function renderCalendarDayCell(day, events, blank, maxShown) {{
   if (blank) return '<div class="calcell blank"></div>';

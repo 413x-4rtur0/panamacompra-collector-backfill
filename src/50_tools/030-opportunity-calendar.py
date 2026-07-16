@@ -108,7 +108,7 @@ def fetch_events(conn, field: str, start: date, end: date, *, filter_fn=None) ->
     expr = FIELDS[field][0]
     rows = conn.execute(
         f"SELECT numero, descripcion, short_description, estado, grupo, entidad, dependencia, "
-        f"modalidad, detail_json_path, {expr} AS event_date "
+        f"modalidad, detail_json_path, link, {expr} AS event_date "
         f"FROM opportunities WHERE REPLACE(REPLACE(SUBSTR({expr}, 1, 10), '_', '-'), 'T', '') "
         f"BETWEEN ? AND ? ORDER BY {expr}, numero",
         (start.isoformat(), end.isoformat()),
