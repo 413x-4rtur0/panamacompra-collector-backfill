@@ -345,6 +345,57 @@ def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=N
     }
 
 
+# Location fields shown, in order, in the calendar hover tooltip. Keys match the
+# detail JSON's "summary" block; entidad/dependencia fall back to the archive DB.
+_LOCATION_KEYS = (
+    "provincia",
+    "direccion",
+    "provincia_de_entrega",
+    "forma_de_entrega",
+    "dias_de_entrega",
+    "dia_y_hora_de_entrega",
+)
+
+
+def opportunity_location(numero: str) -> dict:
+    """All delivery/location data for one opportunity, for the calendar hover
+    tooltip. entidad/dependencia come straight from the archive DB; the richer
+    fields (provincia, direccion, ...) are read on demand from that record's
+    detail JSON summary so the calendar grid payload stays lightweight."""
+    out: dict[str, str] = {"numero": numero}
+    row = None
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT descripcion, short_description, entidad, dependencia, detail_json_path "
+                "FROM opportunities WHERE numero = ? LIMIT 1",
+                (numero,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        row = None
+    if row is None:
+        return out
+    out["descripcion"] = (row["short_description"] or row["descripcion"] or "").strip()
+    out["entidad"] = (row["entidad"] or "").strip()
+    out["dependencia"] = (row["dependencia"] or "").strip()
+    path = (row["detail_json_path"] or "").strip()
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                summary = (json.load(handle) or {}).get("summary") or {}
+        except (OSError, ValueError):
+            summary = {}
+        for key in ("entidad", "dependencia", *_LOCATION_KEYS):
+            value = summary.get(key)
+            if value:
+                out[key] = str(value).strip()
+    return out
+
+
 _WAHA_DIRECTORY_LOCK = threading.Lock()
 _WAHA_DIRECTORY_CACHE: dict[str, object] = {"loaded_at": 0.0, "matches": []}
 
@@ -1064,6 +1115,82 @@ if (!uid) {
 </html>
 """
 
+# Calendar hover tooltip: on mouseover of a calendar event, fetch that
+# opportunity's location data once (cached) and show it near the cursor.
+# Injected verbatim into the admin page's <script> (single-brace JS, so it is
+# referenced as a plain {_LOC_TOOLTIP_JS} field in the f-string below).
+_LOC_TOOLTIP_JS = r"""
+const _locCache = {};
+let _locTipEl = null;
+function _locTip() {
+  if (!_locTipEl) {
+    _locTipEl = document.createElement('div');
+    _locTipEl.className = 'loc-tooltip';
+    document.body.appendChild(_locTipEl);
+  }
+  return _locTipEl;
+}
+function _locHide() { if (_locTipEl) _locTipEl.style.display = 'none'; }
+function _locPos(t, x, y) {
+  const w = t.offsetWidth || 300, h = t.offsetHeight || 130;
+  let left = x + 14, top = y + 16;
+  if (left + w > window.innerWidth) left = x - w - 14;
+  if (top + h > window.innerHeight) top = y - h - 16;
+  t.style.left = Math.max(4, left) + 'px';
+  t.style.top = Math.max(4, top) + 'px';
+}
+function _locFmt(d) {
+  const rows = [];
+  const add = (label, v) => { if (v) rows.push('<div><b>' + esc(label) + ':</b> ' + esc(v) + '</div>'); };
+  if (d.numero) rows.push('<div class="loc-head">' + esc(d.numero) + '</div>');
+  if (d.descripcion) rows.push('<div class="loc-desc">' + esc(d.descripcion) + '</div>');
+  add('Entidad', d.entidad);
+  add('Dependencia', d.dependencia);
+  add('Provincia', d.provincia);
+  add('Direccion', d.direccion);
+  add('Provincia de entrega', d.provincia_de_entrega);
+  add('Forma de entrega', d.forma_de_entrega);
+  add('Dias de entrega', d.dias_de_entrega);
+  add('Dia y hora de entrega', d.dia_y_hora_de_entrega);
+  return rows.join('') || '<div class="loc-desc">Sin datos de ubicacion</div>';
+}
+async function _locShow(numero, x, y) {
+  const t = _locTip();
+  let data = _locCache[numero];
+  if (data === undefined) {
+    t.innerHTML = '<div class="loc-desc">Cargando ubicacion...</div>';
+    _locPos(t, x, y);
+    t.style.display = 'block';
+    try {
+      const resp = await fetch('/api/opportunity-location?numero=' + encodeURIComponent(numero), {cache: 'no-store'});
+      data = await resp.json();
+    } catch (e) {
+      data = {};
+    }
+    _locCache[numero] = data;
+  }
+  t.innerHTML = _locFmt(data);
+  _locPos(t, x, y);
+  t.style.display = 'block';
+}
+function _locTarget(ev) {
+  return (ev.target && ev.target.closest) ? ev.target.closest('.calevent[data-numero]') : null;
+}
+document.addEventListener('mouseover', ev => {
+  const el = _locTarget(ev);
+  if (el) _locShow(el.getAttribute('data-numero'), ev.clientX, ev.clientY);
+});
+document.addEventListener('mousemove', ev => {
+  if (!_locTipEl || _locTipEl.style.display !== 'block') return;
+  const el = _locTarget(ev);
+  if (el) _locPos(_locTipEl, ev.clientX, ev.clientY);
+  else _locHide();
+});
+document.addEventListener('mouseout', ev => {
+  if (_locTarget(ev)) _locHide();
+});
+"""
+
 HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1156,6 +1283,10 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calevent {{ display: block; margin: 4px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .85rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 a.calevent {{ text-decoration: none; cursor: pointer; }}
 a.calevent:hover {{ filter: brightness(1.25); }}
+.loc-tooltip {{ position: fixed; z-index: 9999; max-width: 340px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px; font-size: .8rem; line-height: 1.35; box-shadow: 0 8px 24px rgba(0,0,0,.55); pointer-events: none; display: none; }}
+.loc-tooltip .loc-head {{ font-weight: 700; color: #93c5fd; margin-bottom: 2px; }}
+.loc-tooltip .loc-desc {{ color: #cbd5e1; margin-bottom: 6px; white-space: normal; }}
+.loc-tooltip b {{ color: #93c5fd; }}
 .calevent.soon {{ border-left-color: #facc15; background: #422006; color: #fde68a; }}
 .calevent.expired {{ border-left-color: #f87171; background: #450a0a; color: #fecaca; }}
 .calevent.more {{ border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }}
@@ -1761,9 +1892,9 @@ function renderCalendarEvent(ev) {{
   const cls = calendarEventClass(ev);
   const label = esc(clock + title);
   if (ev.url) {{
-    return `<a class="calevent ${{cls}}" href="${{esc(ev.url)}}" target="_blank" rel="noopener" title="${{esc(title)}}">${{label}}</a>`;
+    return `<a class="calevent ${{cls}}" data-numero="${{esc(ev.numero)}}" href="${{esc(ev.url)}}" target="_blank" rel="noopener">${{label}}</a>`;
   }}
-  return `<span class="calevent ${{cls}}" title="${{esc(title)}}">${{label}}</span>`;
+  return `<span class="calevent ${{cls}}" data-numero="${{esc(ev.numero)}}">${{label}}</span>`;
 }}
 function renderCalendarDayCell(day, events, blank, maxShown) {{
   if (blank) return '<div class="calcell blank"></div>';
@@ -2242,6 +2373,7 @@ refreshDecisionDashboard();
 loadWebhookAccess();
 refreshWebTimer();
 poll();
+{_LOC_TOOLTIP_JS}
 </script>
 </body>
 </html>"""
@@ -2739,6 +2871,16 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 shift=shift,
             )
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/opportunity-location":
+            # All delivery/location data for one opportunity — used by the
+            # calendar hover tooltip. Read on demand so the grid stays light.
+            params = parse_qs(urlparse(self.path).query)
+            numero = (params.get("numero", [""])[0] or "").strip()
+            if not numero:
+                self.send_text(400, "missing ?numero=\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, json.dumps(opportunity_location(numero), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/client-calendar-grid":
             # Same shape as /api/calendar-grid, scoped to one client's own
