@@ -1195,6 +1195,7 @@ HTML = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PanamaCompra Monitor</title>
 <style>
 body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; background: #0f172a; color: #e5e7eb; }}
@@ -1323,6 +1324,29 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 .waha-alert {{ background: #451a03; border: 2px solid #f59e0b; border-radius: 12px; padding: 12px 16px; margin: 0 0 16px; color: #fef3c7; }}
 .waha-alert button {{ margin-left: 10px; }}
 .waha-alert img {{ display: block; margin-top: 10px; background: #fff; padding: 8px; border-radius: 8px; }}
+/* Phone layout: single-column grids, edge-to-edge cards, stacked key/value
+   tables, and horizontally scrollable tab bar so nothing overflows the screen. */
+@media (max-width: 640px) {{
+  body {{ margin: 10px; }}
+  h1 {{ font-size: 1.5rem; }}
+  .card {{ padding: 12px; border-radius: 10px; }}
+  .tab-nav {{ flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
+  .tab-nav button {{ flex: 0 0 auto; }}
+  button {{ padding: 10px 14px; }}
+  th {{ width: auto; }}
+  /* Stack key/value rows so the 220px label column doesn't squeeze values. */
+  #diagnostics table, #diagnostics tbody, #diagnostics tr, #diagnostics th, #diagnostics td {{ display: block; width: auto; }}
+  #diagnostics th {{ border-bottom: 0; padding-bottom: 0; }}
+  #diagnostics td {{ padding-top: 2px; }}
+  .settings-grid, .destination-grid, .record-grid {{ grid-template-columns: 1fr; }}
+  select#record-index {{ min-width: 100%; min-height: 10rem; }}
+  .bar-row {{ grid-template-columns: 1fr; gap: 2px; }}
+  .calcell {{ min-height: 84px; }}
+  .calevent {{ font-size: .72rem; }}
+  .timeline {{ grid-template-columns: 44px 1fr; }}
+  .week-timeline {{ grid-template-columns: 40px repeat(7, minmax(0, 1fr)); }}
+  pre {{ font-size: .8rem; }}
+}}
 </style>
 </head>
 <body>
