@@ -505,6 +505,15 @@ VALUE_SETTING_DEFAULTS = {
     # works; edit here to change it. Blank keeps the generated .env value.
     "WAHA_DASHBOARD_USERNAME": "admin",
     "WAHA_DASHBOARD_PASSWORD": "",
+    # Firebase *web* app config for the browser client dashboard
+    # (/client-calendar). Same Firebase project as the Android app; add a Web
+    # app in Firebase console → Project settings → Your apps and copy the
+    # values here. Blank = client sign-in disabled (page explains how to
+    # enable it). These are public identifiers, not secrets.
+    "PC_FIREBASE_WEB_API_KEY": "",
+    "PC_FIREBASE_WEB_AUTH_DOMAIN": "",
+    "PC_FIREBASE_WEB_PROJECT_ID": "",
+    "PC_FIREBASE_WEB_APP_ID": "",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
@@ -938,183 +947,6 @@ _startup_settings = parse_settings_file()
 CHANGEDETECTION_URL = (os.environ.get("CHANGEDETECTION_BASE_URL") or _startup_settings.get("CHANGEDETECTION_BASE_URL") or "http://localhost:5000").rstrip("/")
 WAHA_DASHBOARD_URL = "http://localhost:" + (os.environ.get("WAHA_PORT") or _startup_settings.get("WAHA_PORT") or "3000")
 
-# Standalone page for the Android client apps' Calendar tab (loaded in a
-# WebView pointed at /client-calendar?uid=<firebase_uid>). Deliberately a
-# self-contained copy of just the calendar CSS/JS from the admin page's
-# calendar card below, not a shared include — the admin page's HTML is one
-# big f-string and factoring a shared fragment out of it isn't worth the risk
-# of a blind edit to an already-verified 600+ line string. If you change the
-# calendar's appearance (CSS in the "Ubuntu-style opportunity calendar" block
-# below, or the renderCalendar* functions), mirror it here too.
-CLIENT_CALENDAR_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PanamaCompra Calendar</title>
-<style>
-body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 10px; background: #0f172a; color: #e5e7eb; }
-.small { color: #94a3b8; font-size: .85rem; }
-.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
-select, input, button { border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: .9rem; }
-button { cursor: pointer; }
-.calendar-board { background: #020617; border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
-.calendar-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }
-.calendar-title h3 { margin: 0; color: #bfdbfe; font-size: 1rem; }
-.calgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.calgrid .dow { text-align: center; color: #93c5fd; font-weight: 700; font-size: .8rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }
-.calcell { min-height: 100px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 5px; cursor: pointer; background: #020617; overflow: hidden; }
-.calcell.blank { background: #02061799; cursor: default; }
-.calcell.today { box-shadow: inset 0 0 0 2px #facc15; }
-.calcell .num { color: #cbd5e1; font-size: .85rem; font-weight: 700; display: flex; justify-content: space-between; margin-bottom: 4px; }
-.calcell .count { color: #94a3b8; font-size: .72rem; font-weight: 400; }
-.calevent { display: block; margin: 3px 0; padding: 3px 5px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .74rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-a.calevent { text-decoration: none; cursor: pointer; }
-a.calevent:hover { filter: brightness(1.25); }
-.calevent.soon { border-left-color: #facc15; background: #422006; color: #fde68a; }
-.calevent.expired { border-left-color: #f87171; background: #450a0a; color: #fecaca; }
-.calevent.more { border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }
-.timeline-scroll { max-height: 70vh; overflow-y: auto; border-top: 1px solid #1e293b; }
-.timeline { display: grid; grid-template-columns: 56px 1fr; }
-.week-timeline { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); }
-.hour-label { color: #93c5fd; font-weight: 700; font-size: .74rem; padding: 5px 6px; text-align: right; border-bottom: 1px solid #1e293b; border-right: 1px solid #1e293b; background: #0f172a; }
-.hour-lane { min-height: 30px; padding: 3px 6px; display: flex; flex-direction: column; gap: 3px; border-bottom: 1px solid #1e293b; }
-.week-timeline .hour-lane { padding: 2px; gap: 2px; border-right: 1px solid #1e293b; }
-.timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime { background: #0b1220; border-bottom: 2px solid #334155; }
-.wk-head { padding: 6px 4px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .76rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }
-.wk-corner { background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }
-.year-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 10px; }
-.month-box { border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }
-.month-box b { color: #bfdbfe; }
-.bar-track { height: 10px; background: #1e293b; border-radius: 999px; overflow: hidden; margin-top: 6px; }
-.bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }
-</style>
-</head>
-<body>
-<div class="controls">
-  <select id="cal-view" onchange="loadCalendar()">
-    <option value="day">Day</option><option value="week">Week</option>
-    <option value="month" selected>Month</option><option value="year">Year</option>
-  </select>
-  <select id="cal-field" onchange="loadCalendar()">
-    <option value="end" selected>Deadline</option><option value="start">Start</option><option value="downloaded">Downloaded</option>
-  </select>
-  <input id="cal-date" size="10" placeholder="YYYY-MM-DD">
-  <button onclick="loadCalendar(-1)">&#9664;</button>
-  <button onclick="loadCalendar(0)">Today</button>
-  <button onclick="loadCalendar(1)">&#9654;</button>
-</div>
-<div id="calendar-visual" class="small">Loading calendar&hellip;</div>
-<script>
-const params = new URLSearchParams(location.search);
-const uid = params.get('uid') || '';
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-let calendarAnchor = '';
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function calendarEventClass(ev) {
-  const status = (ev.status || '').toLowerCase();
-  if (status.includes('venc') || status.includes('cerrad') || status.includes('expir')) return 'expired';
-  if (status.includes('pront') || status.includes('soon')) return 'soon';
-  return '';
-}
-function renderCalendarEvent(ev) {
-  const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
-  const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
-  const cls = calendarEventClass(ev);
-  const label = esc(clock + title);
-  if (ev.url) {
-    return `<a class="calevent ${cls}" href="${esc(ev.url)}" target="_blank" rel="noopener" title="${esc(title)}">${label}</a>`;
-  }
-  return `<span class="calevent ${cls}" title="${esc(title)}">${label}</span>`;
-}
-function renderCalendarDayCell(day, events, blank, maxShown) {
-  if (blank) return '<div class="calcell blank"></div>';
-  const limit = maxShown || 4;
-  const shown = (events || []).slice(0, limit).map(renderCalendarEvent).join('');
-  const more = (events || []).length > limit ? `<span class="calevent more">+${events.length - limit} more</span>` : '';
-  const classes = ['calcell'];
-  if (day.iso === day.today) classes.push('today');
-  return `<div class="${classes.join(' ')}" onclick="document.getElementById('cal-date').value='${day.iso}'; document.getElementById('cal-view').value='day'; loadCalendar()"><div class="num"><span>${day.label}</span><span class="count">${events.length || ''}</span></div>${shown}${more}</div>`;
-}
-async function loadCalendar(shift) {
-  const node = document.getElementById('calendar-visual');
-  const view = document.getElementById('cal-view').value || 'month';
-  const field = document.getElementById('cal-field').value || 'end';
-  const dateBox = document.getElementById('cal-date');
-  if (shift === 0) { calendarAnchor = ''; dateBox.value = ''; }
-  const anchor = (dateBox.value || calendarAnchor).trim();
-  let qs = 'uid=' + encodeURIComponent(uid) + '&view=' + encodeURIComponent(view) + '&field=' + encodeURIComponent(field);
-  if (anchor) qs += '&date=' + encodeURIComponent(anchor);
-  if (shift) qs += '&shift=' + shift;
-  try {
-    const g = await (await fetch('/api/client-calendar-grid?' + qs, {cache: 'no-store'})).json();
-    if (g.hidden) { node.textContent = 'Calendar hidden for this profile.'; return; }
-    calendarAnchor = g.anchor;
-    dateBox.value = g.anchor;
-    const grouped = g.events || {};
-    const title = `${g.label || view} · ${g.start} to ${g.end} · ${g.total || 0} opportunities`;
-    if (view === 'year') {
-      const peak = Math.max(1, ...Object.values(g.month_counts || {}).map(Number));
-      const boxes = (g.months || []).map(m => {
-        const count = Number((g.month_counts || {})[m.value] || 0);
-        const width = Math.round(100 * count / peak);
-        return `<div class="month-box" onclick="document.getElementById('cal-date').value='${m.value}-01'; document.getElementById('cal-view').value='month'; loadCalendar()"><b>${esc(m.label)}</b><div class="small">${count} opportunities</div><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div></div>`;
-      }).join('');
-      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="year-grid">${boxes}</div></div>`;
-      return;
-    }
-    const days = g.days || [];
-    const hasTime = ev => ev.clock && ev.clock !== '--:--';
-    const hourOf = ev => parseInt(ev.clock.slice(0, 2), 10) || 0;
-    if (view === 'day') {
-      const day = days[0] || {};
-      const evs = grouped[day.iso] || [];
-      const notime = evs.filter(ev => !hasTime(ev));
-      const byHour = Array.from({length: 24}, () => []);
-      evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
-      const notimeRow = notime.length
-        ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${notime.map(renderCalendarEvent).join('')}</div>` : '';
-      const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${String(h).padStart(2, '0')}:00</div><div class="hour-lane">${evsAtHour.map(renderCalendarEvent).join('')}</div>`).join('');
-      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="timeline-scroll"><div class="timeline">${notimeRow}${hourRows}</div></div></div>`;
-      return;
-    }
-    if (view === 'week') {
-      const cols = days.map((day, i) => {
-        const evs = grouped[day.iso] || [];
-        const byHour = Array.from({length: 24}, () => []);
-        evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
-        return {i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour};
-      });
-      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head">${WEEKDAY_LABELS[c.i] || ''} ${esc((c.iso || '').slice(5))}</div>`).join('');
-      const anyNotime = cols.some(c => c.notime.length);
-      const notimeRow = anyNotime
-        ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${c.notime.map(renderCalendarEvent).join('')}</div>`).join('') : '';
-      let hourRows = '';
-      for (let h = 0; h < 24; h++) {
-        hourRows += `<div class="hour-label">${String(h).padStart(2, '0')}:00</div>`;
-        hourRows += cols.map(c => `<div class="hour-lane">${c.byHour[h].map(renderCalendarEvent).join('')}</div>`).join('');
-      }
-      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="timeline-scroll"><div class="week-timeline">${head}${notimeRow}${hourRows}</div></div></div>`;
-      return;
-    }
-    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${d}</div>`).join('');
-    for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
-    cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
-    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3></div><div class="calgrid">${cells}</div></div>`;
-  } catch (err) {
-    node.textContent = 'Calendar unavailable: ' + err;
-  }
-}
-if (!uid) {
-  document.getElementById('calendar-visual').textContent = 'Missing uid.';
-} else {
-  loadCalendar(0);
-}
-</script>
-</body>
-</html>
-"""
-
 # Calendar hover tooltip: on mouseover of a calendar event, fetch that
 # opportunity's location data once (cached) and show it near the cursor.
 # Injected verbatim into the admin page's <script> (single-brace JS, so it is
@@ -1189,6 +1021,346 @@ document.addEventListener('mousemove', ev => {
 document.addEventListener('mouseout', ev => {
   if (_locTarget(ev)) _locHide();
 });
+"""
+
+# Standalone client dashboard at /client-calendar (alias /client): the only
+# page a client ever needs — sign-in plus their scoped calendar, nothing else
+# from the admin monitor. Two access modes:
+#   * Browser: Firebase Auth login (email/password or Google; config comes
+#     from /api/client-auth-config, i.e. the PC_FIREBASE_WEB_* settings). On
+#     first sign-in it asks for email + phone and upserts the client profile.
+#   * Android WebView (legacy): ?uid=<firebase_uid> skips the login UI.
+# Deliberately a self-contained copy of just the calendar CSS/JS from the
+# admin page's calendar card below, not a shared include — the admin page's
+# HTML is one big f-string and factoring a shared fragment out of it isn't
+# worth the risk of a blind edit to an already-verified 600+ line string.
+# The location hover tooltip (_LOC_TOOLTIP_JS above) IS shared verbatim. If
+# you change the calendar's appearance (CSS in the "Ubuntu-style opportunity
+# calendar" block below, or the renderCalendar* functions), mirror it here.
+CLIENT_CALENDAR_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PanamaCompra Calendar</title>
+<style>
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 10px; background: #0f172a; color: #e5e7eb; }
+.small { color: #94a3b8; font-size: .85rem; }
+.err { color: #fca5a5; font-size: .85rem; min-height: 1.2em; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+select, input, button { border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 6px 8px; font-size: .9rem; }
+button { cursor: pointer; }
+button.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 700; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.topbar h1 { margin: 0; font-size: 1.1rem; color: #bfdbfe; }
+.topbar a { color: #93c5fd; }
+.auth-card { max-width: 380px; margin: 8vh auto 0; background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.auth-card h1 { margin: 0 0 4px; font-size: 1.15rem; color: #bfdbfe; }
+.auth-card input { width: 100%; box-sizing: border-box; }
+.auth-sep { text-align: center; color: #64748b; font-size: .8rem; }
+.calendar-board { background: #020617; border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
+.calendar-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }
+.calendar-title h3 { margin: 0; color: #bfdbfe; font-size: 1rem; }
+.calgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calgrid .dow { text-align: center; color: #93c5fd; font-weight: 700; font-size: .8rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }
+.calcell { min-height: 100px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 5px; cursor: pointer; background: #020617; overflow: hidden; }
+.calcell:hover { background: #0b1220; box-shadow: inset 0 0 0 1px #38bdf8; }
+.calcell.blank { background: #02061799; cursor: default; }
+.calcell.today { box-shadow: inset 0 0 0 2px #facc15; }
+.calcell .num { color: #cbd5e1; font-size: .85rem; font-weight: 700; display: flex; justify-content: space-between; margin-bottom: 4px; }
+.calcell .count { color: #94a3b8; font-size: .72rem; font-weight: 400; }
+.calevent { display: block; margin: 3px 0; padding: 3px 5px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .74rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.calevent { text-decoration: none; cursor: pointer; }
+a.calevent:hover { filter: brightness(1.25); }
+.calevent.soon { border-left-color: #facc15; background: #422006; color: #fde68a; }
+.calevent.expired { border-left-color: #f87171; background: #450a0a; color: #fecaca; }
+.calevent.more { border-left-color: #64748b; background: #1e293b; color: #cbd5e1; }
+.timeline-scroll { max-height: 70vh; overflow-y: auto; border-top: 1px solid #1e293b; }
+.timeline { display: grid; grid-template-columns: 56px 1fr; }
+.week-timeline { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); }
+.hour-label { color: #93c5fd; font-weight: 700; font-size: .74rem; padding: 5px 6px; text-align: right; border-bottom: 1px solid #1e293b; border-right: 1px solid #1e293b; background: #0f172a; }
+.hour-lane { min-height: 30px; padding: 3px 6px; display: flex; flex-direction: column; gap: 3px; border-bottom: 1px solid #1e293b; }
+.week-timeline .hour-lane { padding: 2px; gap: 2px; border-right: 1px solid #1e293b; }
+.timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime { background: #0b1220; border-bottom: 2px solid #334155; }
+.wk-head { padding: 6px 4px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .76rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }
+.wk-head.zoomable { cursor: pointer; }
+.wk-head.zoomable:hover { background: #172554; color: #dbeafe; }
+.wk-corner { background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }
+.year-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 10px; }
+.month-box { border: 1px solid #334155; border-radius: 8px; padding: 10px; background: #0b1220; cursor: pointer; }
+.month-box b { color: #bfdbfe; }
+.bar-track { height: 10px; background: #1e293b; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); border-radius: 999px; }
+.loc-tooltip { position: fixed; z-index: 9999; max-width: 340px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px; font-size: .8rem; line-height: 1.35; box-shadow: 0 8px 24px rgba(0,0,0,.55); pointer-events: none; display: none; }
+.loc-tooltip .loc-head { font-weight: 700; color: #93c5fd; margin-bottom: 2px; }
+.loc-tooltip .loc-desc { color: #cbd5e1; margin-bottom: 6px; white-space: normal; }
+.loc-tooltip b { color: #93c5fd; }
+</style>
+</head>
+<body>
+<div id="boot-msg" class="small">Loading&hellip;</div>
+<div id="auth-screen" class="auth-card" hidden>
+  <h1>PanamaCompra &mdash; client access</h1>
+  <p class="small">Sign in to see your opportunity calendar.</p>
+  <input id="auth-email" type="email" placeholder="Email" autocomplete="username">
+  <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password">
+  <div class="err" id="auth-error"></div>
+  <button class="primary" onclick="emailSignIn()">Sign in</button>
+  <button onclick="emailSignUp()">Create account</button>
+  <div class="auth-sep">&mdash; or &mdash;</div>
+  <button onclick="googleSignIn()">Sign in with Google</button>
+</div>
+<div id="profile-screen" class="auth-card" hidden>
+  <h1>Your contact details</h1>
+  <p class="small">Confirm the email and phone number where we can reach you.</p>
+  <input id="profile-email" type="email" placeholder="Email" autocomplete="email">
+  <input id="profile-phone" type="tel" placeholder="Phone (e.g. +507 6000-0000)" autocomplete="tel">
+  <div class="err" id="profile-error"></div>
+  <button class="primary" onclick="saveProfile()">Save and continue</button>
+  <button onclick="doSignOut()">Sign out</button>
+</div>
+<div id="app-screen" hidden>
+<div class="topbar"><h1>Opportunity calendar</h1><span class="small" id="user-box"></span></div>
+<div class="controls">
+  <select id="cal-view" onchange="loadCalendar()">
+    <option value="day">Day</option><option value="week">Week</option>
+    <option value="month" selected>Month</option><option value="year">Year</option>
+  </select>
+  <select id="cal-field" onchange="loadCalendar()">
+    <option value="end" selected>Deadline</option><option value="start">Start</option><option value="downloaded">Downloaded</option>
+  </select>
+  <input id="cal-date" size="10" placeholder="YYYY-MM-DD">
+  <button onclick="loadCalendar(-1)">&#9664;</button>
+  <button onclick="loadCalendar(0)">Today</button>
+  <button onclick="loadCalendar(1)">&#9654;</button>
+</div>
+<div id="calendar-visual" class="small">Loading calendar&hellip;</div>
+</div>
+<script>
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+""" + _LOC_TOOLTIP_JS + """
+const params = new URLSearchParams(location.search);
+let uid = params.get('uid') || '';
+const legacyMode = !!uid;  // Android WebView passes ?uid= and skips the login UI.
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let calendarAnchor = '';
+let calendarEventsInteractive = false;
+let fbUser = null;
+let existingProfile = null;
+
+function show(id) {
+  for (const s of ['boot-msg', 'auth-screen', 'profile-screen', 'app-screen']) {
+    document.getElementById(s).hidden = (s !== id);
+  }
+}
+function bootText(text) { show('boot-msg'); document.getElementById('boot-msg').textContent = text; }
+
+// Progressive zoom: year -> month -> week -> day. Events only link to the
+// opportunity page (and show the location hover tooltip) in the day view;
+// in month/week a click zooms in instead.
+function calendarZoomTo(iso, view) {
+  document.getElementById('cal-date').value = iso;
+  document.getElementById('cal-view').value = view;
+  loadCalendar();
+}
+function calendarEventClass(ev) {
+  const status = (ev.status || '').toLowerCase();
+  if (status.includes('venc') || status.includes('cerrad') || status.includes('expir')) return 'expired';
+  if (status.includes('pront') || status.includes('soon')) return 'soon';
+  return '';
+}
+function renderCalendarEvent(ev) {
+  const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
+  const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
+  const cls = calendarEventClass(ev);
+  const label = esc(clock + title);
+  if (!calendarEventsInteractive) {
+    return `<span class="calevent ${cls}">${label}</span>`;
+  }
+  if (ev.url) {
+    return `<a class="calevent ${cls}" data-numero="${esc(ev.numero)}" href="${esc(ev.url)}" target="_blank" rel="noopener" title="${esc(title)}">${label}</a>`;
+  }
+  return `<span class="calevent ${cls}" data-numero="${esc(ev.numero)}" title="${esc(title)}">${label}</span>`;
+}
+function renderCalendarDayCell(day, events, blank, maxShown) {
+  if (blank) return '<div class="calcell blank"></div>';
+  const limit = maxShown || 4;
+  const shown = (events || []).slice(0, limit).map(renderCalendarEvent).join('');
+  const more = (events || []).length > limit ? `<span class="calevent more">+${events.length - limit} more</span>` : '';
+  const classes = ['calcell'];
+  if (day.iso === day.today) classes.push('today');
+  return `<div class="${classes.join(' ')}" onclick="calendarZoomTo('${day.iso}', 'week')"><div class="num"><span>${day.label}</span><span class="count">${events.length || ''}</span></div>${shown}${more}</div>`;
+}
+async function loadCalendar(shift) {
+  const node = document.getElementById('calendar-visual');
+  const view = document.getElementById('cal-view').value || 'month';
+  const field = document.getElementById('cal-field').value || 'end';
+  const dateBox = document.getElementById('cal-date');
+  calendarEventsInteractive = view === 'day';
+  if (shift === 0) { calendarAnchor = ''; dateBox.value = ''; }
+  const anchor = (dateBox.value || calendarAnchor).trim();
+  let qs = 'uid=' + encodeURIComponent(uid) + '&view=' + encodeURIComponent(view) + '&field=' + encodeURIComponent(field);
+  if (anchor) qs += '&date=' + encodeURIComponent(anchor);
+  if (shift) qs += '&shift=' + shift;
+  try {
+    const resp = await fetch('/api/client-calendar-grid?' + qs, {cache: 'no-store'});
+    if (resp.status === 404) { node.textContent = 'Your account is not enabled yet — please contact the administrator.'; return; }
+    if (!resp.ok) { node.textContent = 'Calendar unavailable (' + resp.status + ').'; return; }
+    const g = await resp.json();
+    if (g.hidden) { node.textContent = 'Calendar hidden for this profile.'; return; }
+    calendarAnchor = g.anchor;
+    dateBox.value = g.anchor;
+    const grouped = g.events || {};
+    const title = `${g.label || view} · ${g.start} to ${g.end} · ${g.total || 0} opportunities`;
+    if (view === 'year') {
+      const peak = Math.max(1, ...Object.values(g.month_counts || {}).map(Number));
+      const boxes = (g.months || []).map(m => {
+        const count = Number((g.month_counts || {})[m.value] || 0);
+        const width = Math.round(100 * count / peak);
+        return `<div class="month-box" onclick="calendarZoomTo('${m.value}-01', 'month')"><b>${esc(m.label)}</b><div class="small">${count} opportunities</div><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div></div>`;
+      }).join('');
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3><span class="small">Click a month to open it.</span></div><div class="year-grid">${boxes}</div></div>`;
+      return;
+    }
+    const days = g.days || [];
+    const hasTime = ev => ev.clock && ev.clock !== '--:--';
+    const hourOf = ev => parseInt(ev.clock.slice(0, 2), 10) || 0;
+    if (view === 'day') {
+      const day = days[0] || {};
+      const evs = grouped[day.iso] || [];
+      const notime = evs.filter(ev => !hasTime(ev));
+      const byHour = Array.from({length: 24}, () => []);
+      evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
+      const notimeRow = notime.length
+        ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${notime.map(renderCalendarEvent).join('')}</div>` : '';
+      const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${String(h).padStart(2, '0')}:00</div><div class="hour-lane">${evsAtHour.map(renderCalendarEvent).join('')}</div>`).join('');
+      const note = evs.length ? 'Click an event to open the opportunity.' : 'No opportunities on this day.';
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3><span class="small">${note}</span></div><div class="timeline-scroll"><div class="timeline">${notimeRow}${hourRows}</div></div></div>`;
+      return;
+    }
+    if (view === 'week') {
+      const cols = days.map((day, i) => {
+        const evs = grouped[day.iso] || [];
+        const byHour = Array.from({length: 24}, () => []);
+        evs.forEach(ev => { if (hasTime(ev)) byHour[hourOf(ev)].push(ev); });
+        return {i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour};
+      });
+      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head zoomable" onclick="calendarZoomTo('${c.iso}', 'day')">${WEEKDAY_LABELS[c.i] || ''} ${esc((c.iso || '').slice(5))}</div>`).join('');
+      const anyNotime = cols.some(c => c.notime.length);
+      const notimeRow = anyNotime
+        ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${c.notime.map(renderCalendarEvent).join('')}</div>`).join('') : '';
+      let hourRows = '';
+      for (let h = 0; h < 24; h++) {
+        hourRows += `<div class="hour-label">${String(h).padStart(2, '0')}:00</div>`;
+        hourRows += cols.map(c => `<div class="hour-lane">${c.byHour[h].map(renderCalendarEvent).join('')}</div>`).join('');
+      }
+      node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${head}${notimeRow}${hourRows}</div></div></div>`;
+      return;
+    }
+    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${d}</div>`).join('');
+    for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
+    cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${esc(title)}</h3><span class="small">Click a day to zoom to its week.</span></div><div class="calgrid">${cells}</div></div>`;
+  } catch (err) {
+    node.textContent = 'Calendar unavailable: ' + err;
+  }
+}
+
+// ---- Sign-in (Firebase Auth: email/password + Google) ----
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+function authError(e) { document.getElementById('auth-error').textContent = (e && e.message) || String(e); }
+function emailSignIn() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { authError('Enter your email and password.'); return; }
+  firebase.auth().signInWithEmailAndPassword(email, password).catch(authError);
+}
+function emailSignUp() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { authError('Enter an email and a password (6+ characters).'); return; }
+  firebase.auth().createUserWithEmailAndPassword(email, password).catch(authError);
+}
+function googleSignIn() {
+  firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(authError);
+}
+function doSignOut() {
+  if (window.firebase && firebase.auth) firebase.auth().signOut();
+}
+async function afterSignIn(user) {
+  existingProfile = null;
+  try {
+    const resp = await fetch('/api/client-profile?uid=' + encodeURIComponent(user.uid), {cache: 'no-store'});
+    if (resp.ok) existingProfile = await resp.json();
+  } catch (e) { /* offline profile check: fall through to the form */ }
+  const email = existingProfile && (existingProfile.email || '').trim();
+  const phone = existingProfile && (existingProfile.phone || '').trim();
+  if (!email || !phone) {
+    document.getElementById('profile-email').value = email || user.email || '';
+    document.getElementById('profile-phone').value = phone || user.phoneNumber || '';
+    show('profile-screen');
+    return;
+  }
+  enterApp(user);
+}
+function enterApp(user) {
+  document.getElementById('user-box').innerHTML =
+    esc(user.email || user.displayName || user.uid) + ' &middot; <a href="#" onclick="doSignOut(); return false;">Sign out</a>';
+  show('app-screen');
+  loadCalendar(0);
+}
+async function saveProfile() {
+  const errBox = document.getElementById('profile-error');
+  const email = document.getElementById('profile-email').value.trim();
+  const phone = document.getElementById('profile-phone').value.trim();
+  if (!email) { errBox.textContent = 'Email is required.'; return; }
+  if (!phone) { errBox.textContent = 'Phone number is required.'; return; }
+  const payload = {firebase_uid: uid, email: email, phone: phone};
+  if (!existingProfile) payload.name = (fbUser && fbUser.displayName) || email.split('@')[0];
+  try {
+    const resp = await fetch('/api/client-profile', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'profile=' + encodeURIComponent(JSON.stringify(payload)),
+    });
+    if (!resp.ok) { errBox.textContent = await resp.text(); return; }
+  } catch (e) { errBox.textContent = 'Could not save: ' + e; return; }
+  enterApp(fbUser);
+}
+async function boot() {
+  if (legacyMode) { show('app-screen'); loadCalendar(0); return; }
+  let cfg;
+  try {
+    cfg = await (await fetch('/api/client-auth-config', {cache: 'no-store'})).json();
+  } catch (e) { bootText('Server unavailable: ' + e); return; }
+  if (!cfg.configured) {
+    bootText('Client sign-in is not configured yet. Ask the administrator to fill in the Firebase web app settings on the monitor Settings tab.');
+    return;
+  }
+  try {
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js');
+  } catch (e) { bootText('Could not load the sign-in library — internet access is needed to log in.'); return; }
+  firebase.initializeApp({apiKey: cfg.apiKey, authDomain: cfg.authDomain, projectId: cfg.projectId, appId: cfg.appId});
+  firebase.auth().onAuthStateChanged(user => {
+    fbUser = user;
+    if (!user) { show('auth-screen'); return; }
+    uid = user.uid;
+    afterSignIn(user);
+  });
+}
+boot();
+</script>
+</body>
+</html>
 """
 
 HTML = f"""<!doctype html>
@@ -1301,6 +1473,13 @@ a.calevent:hover {{ filter: brightness(1.25); }}
 .week-timeline .hour-lane {{ padding: 3px; gap: 3px; border-right: 1px solid #1e293b; }}
 .timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime {{ background: #0b1220; border-bottom: 2px solid #334155; }}
 .wk-head {{ padding: 7px 6px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .82rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }}
+.wk-head.zoomable {{ cursor: pointer; }}
+.wk-head.zoomable:hover {{ background: #172554; color: #dbeafe; }}
+/* Keyword filter gets its own full row under the calendar controls so the
+   active filter is always visible at a glance. */
+.cal-filter-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; padding: 8px 10px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
+.cal-filter-row input {{ background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; }}
+.cal-filter-row button {{ margin: 0; padding: 6px 12px; }}
 .wk-corner {{ background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }}
 .agenda-empty {{ padding: 16px; }}
 .year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
@@ -1383,14 +1562,14 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <label class="small">Keyword <input id="cal-filter" size="16" placeholder="filter text" onchange="loadCalendar()"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div>
+<div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div>
 <div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp settings</h2><p class="small">All WhatsApp options in one place: destinations, delivery settings, WAHA server connection, toggles and per-destination content filters.</p><div class="subsection"><h3>Destinations & toggles</h3><div class="destination-grid"><label>Default / one group</label><textarea id="waha-message-wa" rows="2" placeholder="12036...@g.us (used when a purpose-specific group is blank)"></textarea><label>Index alerts</label><input id="waha-index-wa" size="32" placeholder="blank = default group"><label>Item details</label><input id="waha-details-wa" size="32" placeholder="blank = default group"><label>Status changes</label><input id="waha-status-wa" size="32" placeholder="blank = default group"><label>Open Now Opportunities</label><input id="waha-open-now-wa" size="32" placeholder="blank = Index alerts / default group"><label>System health</label><input id="waha-system-wa" size="32" placeholder="blank = default group"><label>Final summary per round</label><input id="waha-summary-wa" size="32" placeholder="blank = default group"></div><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label><br><label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label></p><p><button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div><div class="subsection"><h3>Delivery & server settings</h3><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (generated by setup) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label></div><p><button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></p><p class="xs">The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div><div class="subsection"><h3>Content filters</h3><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <label class="small">Open Now Opportunities <input id="flt-open-now" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp client profiles</h2><div class="subsection"><h3>Add / update a client</h3><p class="small">Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').</p><p><label class="small">Client name <input id="client-name" size="18"></label> <label class="small">Destination <select id="client-group-select"><option value="">— search first —</option></select></label> <label class="small">or custom chat ID <input id="client-chat-custom" size="22" placeholder="12036...@g.us"></label></p><p><span class="small">Purposes</span> <label class="small"><input type="checkbox" id="client-purpose-index" checked> index</label> <label class="small"><input type="checkbox" id="client-purpose-details" checked> details</label> <label class="small"><input type="checkbox" id="client-purpose-status" checked> status</label> <label class="small">Filter expression <input id="client-filters" size="30" placeholder="salud + insumos, -construccion"></label> <button onclick="addClientProfile()">Add to profiles</button></p></div><div class="subsection"><h3>Profiles (JSON)</h3><p class="small">Full list, editable by hand. Purposes: index, details, status, or all.</p><textarea id="waha-clients" rows="10" placeholder='[{{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion","enabled":true}}]'></textarea><p><button onclick="saveWahaClients()">Save client profiles</button></p></div></div><div class="card" data-tab="whatsapp"><h2>WAHA Directory Search</h2><p class="small">Search the complete WAHA directory by one or more words from a name or chat ID. Results filter live from a short-lived local cache, so typing does not repeatedly download contacts, groups, communities and channels.</p><p><label class="small">Name or ID <input id="waha-search-q" size="40" placeholder="e.g. Chiriquí contratistas, 12036, @g.us" oninput="scheduleWahaSearch()" onkeydown="if (event.key === 'Enter') {{ event.preventDefault(); wahaSearch(); }}"></label> <button onclick="wahaSearch()">Search</button> <button onclick="wahaSearch(true)">Refresh directory</button> <span id="waha-search-state" class="small"></span></p><div id="waha-search-results" class="small"></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option><option value="system">System / health</option><option value="summary">Final summary</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div>
-<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
+<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><h3>Client dashboard sign-in (Firebase web app)</h3><p class="xs">Powers the login screen at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a> (email/password + Google, same Firebase project as the Android app). In Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config values here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = the client dashboard keeps working only with ?uid= links.</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="settings"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
@@ -1456,7 +1635,7 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   updateAutorunSourceIndicators(settings);
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_NOTIFY_DETAILS_INLINE','1'],['PC_INDEX_FROM_SNAPSHOT','1'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1'],['PC_WEBHOOK_AUTO_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const cronEnabledEl = document.getElementById('cron-enabled');
@@ -1750,7 +1929,7 @@ function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
 function saveAdvancedSettings() {{
-  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
+  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 function updateAutorunSourceIndicators(settings) {{
   const source = String((settings || {{}}).PC_AUTORUN_SOURCE || 'changedetection').toLowerCase();
@@ -1910,11 +2089,23 @@ function calendarEventClass(ev) {{
   }}
   return '';
 }}
+// Progressive zoom: year → month → week → day. Events are only interactive
+// (location hover tooltip + link to the opportunity page) in the day view —
+// in month/week views a click anywhere in a cell zooms in instead.
+let calendarEventsInteractive = false;
+function calendarZoomTo(iso, view) {{
+  document.getElementById('cal-date').value = iso;
+  document.getElementById('cal-view').value = view;
+  loadCalendar();
+}}
 function renderCalendarEvent(ev) {{
   const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
   const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
   const cls = calendarEventClass(ev);
   const label = esc(clock + title);
+  if (!calendarEventsInteractive) {{
+    return `<span class="calevent ${{cls}}">${{label}}</span>`;
+  }}
   if (ev.url) {{
     return `<a class="calevent ${{cls}}" data-numero="${{esc(ev.numero)}}" href="${{esc(ev.url)}}" target="_blank" rel="noopener">${{label}}</a>`;
   }}
@@ -1927,13 +2118,14 @@ function renderCalendarDayCell(day, events, blank, maxShown) {{
   const more = (events || []).length > limit ? `<span class="calevent more">+${{events.length - limit}} more</span>` : '';
   const classes = ['calcell'];
   if (day.iso === day.today) classes.push('today');
-  return `<div class="${{classes.join(' ')}}" onclick="document.getElementById('cal-date').value='${{day.iso}}'; document.getElementById('cal-view').value='day'; loadCalendar()"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
+  return `<div class="${{classes.join(' ')}}" onclick="calendarZoomTo('${{day.iso}}', 'week')"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
 }}
 async function renderCalendarVisual() {{
   const node = document.getElementById('calendar-visual');
   if (!node) return;
   const field = (document.getElementById('cal-field') || {{}}).value || 'end';
   const view = (document.getElementById('cal-view') || {{}}).value || 'month';
+  calendarEventsInteractive = view === 'day';
   const anchor = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
   const keyword = ((document.getElementById('cal-filter') || {{}}).value || '').trim();
   let params = 'field=' + encodeURIComponent(field) + '&view=' + encodeURIComponent(view);
@@ -1967,7 +2159,7 @@ async function renderCalendarVisual() {{
       const notimeRow = notime.length
         ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${{notime.map(renderCalendarEvent).join('')}}</div>` : '';
       const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`).join('');
-      const note = evs.length ? 'Hourly agenda.' : 'No opportunities on this day.';
+      const note = evs.length ? 'Hover an event for location details; click it to open the opportunity.' : 'No opportunities on this day.';
       node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div><div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
@@ -1980,7 +2172,7 @@ async function renderCalendarVisual() {{
         evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
         return {{ i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour }};
       }});
-      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
+      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head zoomable" onclick="calendarZoomTo('${{c.iso}}', 'day')">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
       const anyNotime = cols.some(c => c.notime.length);
       const notimeRow = anyNotime
         ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
@@ -1989,13 +2181,13 @@ async function renderCalendarVisual() {{
         hourRows += `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div>`;
         hourRows += cols.map(c => `<div class="hour-lane">${{c.byHour[h].map(renderCalendarEvent).join('')}}</div>`).join('');
       }}
-      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{hourRows}}</div></div></div>`;
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
     for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
     cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
-    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a date to open the day view.</span></div><div class="calgrid">${{cells}}</div></div>`;
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to zoom to its week.</span></div><div class="calgrid">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
@@ -2936,8 +3128,23 @@ class MonitorHandler(BaseHTTPRequestHandler):
             )
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
-        if path == "/client-calendar":
+        if path in ("/client-calendar", "/client"):
             self.send_text(200, CLIENT_CALENDAR_HTML, "text/html; charset=utf-8")
+            return
+        if path == "/api/client-auth-config":
+            # Firebase web-app config for the browser client dashboard's
+            # sign-in screen. Public identifiers only (Firebase web configs
+            # are not secrets); "configured" tells the page whether the
+            # operator has filled them in yet.
+            settings = load_monitor_settings()
+            config = {
+                "apiKey": settings.get("PC_FIREBASE_WEB_API_KEY", ""),
+                "authDomain": settings.get("PC_FIREBASE_WEB_AUTH_DOMAIN", ""),
+                "projectId": settings.get("PC_FIREBASE_WEB_PROJECT_ID", ""),
+                "appId": settings.get("PC_FIREBASE_WEB_APP_ID", ""),
+            }
+            config["configured"] = bool(config["apiKey"] and config["authDomain"] and config["projectId"] and config["appId"])
+            self.send_text(200, json.dumps(config, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/client-profile":
             params = parse_qs(urlparse(self.path).query)
