@@ -2229,18 +2229,19 @@ function renderEta(p) {{
   if (!node) return;
   if ((p.STATUS || '') !== 'RUNNING') {{ node.hidden = true; stepEta = {{key: '', samples: []}}; return; }}
   const parts = [];
+  const started = p.STARTED_AT ? new Date(String(p.STARTED_AT).replace(' ', 'T')) : null;
+  const elapsedSec = started && !isNaN(started.getTime()) ? (Date.now() - started.getTime()) / 1000 : null;
+  if (elapsedSec != null && elapsedSec >= 0) {{
+    parts.push(`▶ Running for ${{fmtDuration(elapsedSec)}} (started ${{String(p.STARTED_AT).slice(11, 16)}})`);
+  }}
   let totalSec = parseEtaSeconds(p.ETA);
-  if (totalSec == null && p.STARTED_AT) {{
-    const started = new Date(String(p.STARTED_AT).replace(' ', 'T'));
+  if (totalSec == null && elapsedSec != null) {{
     const pct = Number(p.PERCENT || 0);
-    if (!isNaN(started.getTime()) && pct > 2 && pct < 100) {{
-      const elapsed = (Date.now() - started.getTime()) / 1000;
-      totalSec = elapsed * (100 - pct) / pct;
-    }}
+    if (pct > 2 && pct < 100) totalSec = elapsedSec * (100 - pct) / pct;
   }}
   if (totalSec != null) {{
     const src = String(p.ETA || '').includes('previous run') ? ' (from the previous run)' : '';
-    parts.push(`⏳ Run: ~${{fmtDuration(totalSec)}} left · estimated finish ${{fmtClock(totalSec * 1000)}}${{src}}`);
+    parts.push(`⏳ ~${{fmtDuration(totalSec)}} left · estimated finish ${{fmtClock(totalSec * 1000)}}${{src}}`);
   }}
   // Per-step: live item throughput while this step reports item counters.
   const itemCur = Number(p.ITEM_CURRENT), itemTot = Number(p.ITEM_TOTAL);
