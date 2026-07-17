@@ -694,10 +694,21 @@ def monitor_env() -> dict[str, str]:
     return env
 
 
+# Credential-bearing settings a blank save must never erase: an empty value
+# for one of these keeps the stored value instead of overwriting it (this
+# once wiped WAHA_API_KEY and the manager login in one bad Save click). To
+# intentionally clear one, edit data/config/monitor_settings.env by hand.
+PROTECTED_NONBLANK_SETTINGS = {"WAHA_API_KEY", "PC_ADMIN_USERNAME", "PC_ADMIN_PASSWORD", "PC_ADMIN_EMAILS", "PC_ADMIN_API_TOKEN",
+                               "WAHA_DASHBOARD_PASSWORD", "PC_FIREBASE_WEB_API_KEY", "PC_FIREBASE_WEB_AUTH_DOMAIN",
+                               "PC_FIREBASE_WEB_PROJECT_ID", "PC_FIREBASE_WEB_APP_ID"}
+
+
 def save_monitor_setting(key: str, value: str) -> None:
     if key not in ALLOWED_MONITOR_SETTINGS:
         raise ValueError(f"unsupported setting: {key}")
     settings = parse_settings_file()
+    if key in PROTECTED_NONBLANK_SETTINGS and not value.strip() and settings.get(key, "").strip():
+        return
     for default_key, default_value in {**BOOLEAN_SETTING_DEFAULTS, **PATH_SETTING_DEFAULTS, **VALUE_SETTING_DEFAULTS}.items():
         settings.setdefault(default_key, os.environ.get(default_key, default_value))
     if key in BOOLEAN_SETTING_DEFAULTS:
