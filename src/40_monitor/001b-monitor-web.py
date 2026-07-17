@@ -2012,6 +2012,21 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .cal-nav button:last-child {{ border-radius: 0 var(--radius-md) var(--radius-md) 0; border-right-width: 1px; }}
 .cal-nav button.today {{ background: var(--amber-500); border: 1px solid var(--amber-600); color: var(--ink-900); font-weight: 700; }}
 .cal-nav button.today:hover {{ background: var(--amber-600); }}
+/* Text-summary pane: counts table instead of the old ASCII grid. */
+.cal-summary-wrap {{ background: var(--concrete-0); border: 1px solid var(--concrete-200); border-radius: var(--radius-lg); padding: 10px 12px; margin: 8px 0; }}
+.cal-summary-table {{ border-collapse: collapse; width: 100%; }}
+.cal-summary-table th {{ width: auto; text-align: center; background: var(--concrete-50); border: 1px solid var(--concrete-200); padding: 7px 6px; }}
+.cal-summary-table td {{ border: 1px solid var(--concrete-100); padding: 8px 10px; vertical-align: top; }}
+.cal-summary-table tbody tr:hover td, .cal-summary-table td:hover {{ background: var(--amber-50); cursor: pointer; }}
+.cal-summary-table td.blank {{ background: var(--concrete-50); cursor: default; }}
+.cal-summary-table td.blank:hover {{ background: var(--concrete-50); }}
+.cal-summary-table td.today-cell {{ box-shadow: inset 0 0 0 2px var(--amber-500); }}
+.cal-summary-month td {{ text-align: center; width: 14.28%; }}
+.cal-summary-month td b {{ display: block; color: var(--ink-900); margin-bottom: 3px; }}
+.cal-summary-table .cnt {{ display: inline-block; background: var(--blue-tint); color: var(--blueprint-600); border-radius: var(--radius-pill); padding: 1px 9px; font-family: var(--font-mono); font-weight: 600; font-size: .8rem; }}
+.cal-summary-table .cnt.zero {{ background: transparent; color: var(--concrete-300); }}
+.cal-summary-table .num-cell {{ font-family: var(--font-mono); font-weight: 600; text-align: center; width: 130px; }}
+.cal-summary-table .trend-cell {{ width: 40%; }}
 .cal-subtabs {{ display: flex; gap: 0; margin: 10px 0 0; border-bottom: 2px solid var(--ink-900); }}
 .cal-subtabs button {{ margin: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; border: 1px solid var(--concrete-300); border-bottom: 0; background: var(--concrete-100); color: var(--concrete-600); padding: 7px 14px; }}
 .cal-subtabs button.active {{ background: var(--ink-900); color: var(--amber-400); border-color: var(--ink-900); }}
@@ -2089,7 +2104,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div class="cal-subtabs"><button type="button" class="active" data-calpane="visual" onclick="showCalPane('visual')">Visual calendar</button><button type="button" data-calpane="text" onclick="showCalPane('text')">Text summary</button><button type="button" data-calpane="list" onclick="showCalPane('list')">Opportunities list</button></div><div id="calpane-visual"><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div></div><div id="calpane-text" hidden><pre id="calendar-text" style="max-height: 480px">Loading calendar…</pre></div><div id="calpane-list" hidden><pre id="calendar-list" style="max-height: 520px">Loading…</pre></div></div>
+<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div class="cal-subtabs"><button type="button" class="active" data-calpane="visual" onclick="showCalPane('visual')">Visual calendar</button><button type="button" data-calpane="text" onclick="showCalPane('text')">Text summary</button><button type="button" data-calpane="list" onclick="showCalPane('list')">Opportunities list</button></div><div id="calpane-visual"><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div></div><div id="calpane-text" hidden><div id="calendar-text" class="cal-summary-wrap" style="max-height: 520px; overflow: auto">Loading calendar…</div></div><div id="calpane-list" hidden><pre id="calendar-list" style="max-height: 520px">Loading…</pre></div></div>
 <div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
@@ -2485,12 +2500,13 @@ async function loadCalendar(shift) {{
     calendarAnchor = data.anchor;
     if (document.activeElement !== dateBox) dateBox.value = data.anchor;
     // The text renderer returns the ASCII calendar grid followed by the
-    // day-by-day opportunity list; split them into their own panes at the
-    // first "Ddd YYYY-MM-DD — N opportunity(ies):" heading.
+    // day-by-day opportunity list. The list still feeds the "Opportunities
+    // list" pane (cut at the first "Ddd YYYY-MM-DD — …" heading); the grid
+    // half is superseded by the HTML summary table that
+    // renderCalendarTextTable() builds from the calendar-grid JSON.
     const text = data.text || '';
     const firstDay = text.match(/^\\S{{3}} \\d{{4}}-\\d{{2}}-\\d{{2}} — /m);
     const cut = firstDay ? firstDay.index : text.length;
-    document.getElementById('calendar-text').textContent = text.slice(0, cut).trimEnd() || '(no calendar grid for this view)';
     document.getElementById('calendar-list').textContent = text.slice(cut).trim() || '(no opportunities in this range)';
     renderCalendarVisual();
   }} catch (err) {{ document.getElementById('calendar-text').textContent = 'Calendar unavailable: ' + err; }}
@@ -2846,6 +2862,56 @@ function calendarVisibilityWarning(earlyCount, weekendCount) {{
   if (weekendCount) notices.push(`${{weekendCount}} event(s) on Saturday/Sunday are hidden. Use “Show Sat/Sun”.`);
   return notices.length ? `<div class="calendar-warning" role="status">⚠ ${{notices.join(' ')}}</div>` : '';
 }}
+// "Text summary" pane: the same range as the visual calendar, rendered as a
+// compact counts TABLE (per view) instead of the old ASCII <pre> — easier to
+// read and every cell zooms like the visual calendar does.
+function renderCalendarTextTable(g, view, title) {{
+  const node = document.getElementById('calendar-text');
+  if (!node) return;
+  const grouped = g.events || {{}};
+  const countOf = iso => (grouped[iso] || []).length;
+  let html = `<p class="small" style="margin:2px 0 8px">${{esc(title)}}</p>`;
+  if (view === 'year') {{
+    const peak = Math.max(1, ...Object.values(g.month_counts || {{}}).map(Number));
+    const rows = (g.months || []).map(m => {{
+      const count = Number((g.month_counts || {{}})[m.value] || 0);
+      const width = Math.round(100 * count / peak);
+      return `<tr onclick="calendarZoomTo('${{m.value}}-01', 'month')"><td>${{esc(m.label)}}</td><td class="num-cell">${{count || ''}}</td><td class="trend-cell"><div class="bar-track"><div class="bar-fill" style="width:${{width}}%"></div></div></td></tr>`;
+    }}).join('');
+    html += `<table class="cal-summary-table"><thead><tr><th>Month</th><th>Opportunities</th><th>Trend</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+  }} else if (view === 'month') {{
+    const days = g.days || [];
+    const leading = Number(g.first_weekday || 0);
+    const rowCount = Math.ceil((leading + days.length) / 7);
+    let body = '';
+    for (let row = 0; row < rowCount; row++) {{
+      let tr = '';
+      for (let col = 0; col < 7; col++) {{
+        const index = row * 7 + col - leading;
+        if (index < 0 || index >= days.length) {{ tr += '<td class="blank"></td>'; continue; }}
+        const day = days[index];
+        const count = countOf(day.iso);
+        tr += `<td${{day.iso === g.today ? ' class="today-cell"' : ''}} onclick="calendarZoomTo('${{day.iso}}', 'week')" title="Open week of ${{day.iso}}"><b>${{day.label}}</b>${{count ? `<span class="cnt">${{count}}</span>` : '<span class="cnt zero">·</span>'}}</td>`;
+      }}
+      body += `<tr>${{tr}}</tr>`;
+    }}
+    html += `<table class="cal-summary-table cal-summary-month"><thead><tr>${{WEEKDAY_LABELS.map(d => `<th>${{d}}</th>`).join('')}}</tr></thead><tbody>${{body}}</tbody></table>`;
+  }} else if (view === 'week') {{
+    const rows = (g.days || []).map((day, i) => `<tr onclick="calendarZoomTo('${{day.iso}}', 'day')"><td>${{WEEKDAY_LABELS[i] || ''}} ${{esc(day.iso)}}${{day.iso === g.today ? ' <b>(today)</b>' : ''}}</td><td class="num-cell">${{countOf(day.iso) || ''}}</td></tr>`).join('');
+    html += `<table class="cal-summary-table"><thead><tr><th>Day</th><th>Opportunities</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+  }} else {{
+    const day = (g.days || [])[0] || {{}};
+    const evs = grouped[day.iso] || [];
+    const hasTime = ev => ev.clock && ev.clock !== '--:--';
+    const byHour = {{}};
+    let notime = 0;
+    evs.forEach(ev => {{ if (hasTime(ev)) {{ const hour = ev.clock.slice(0, 2); byHour[hour] = (byHour[hour] || 0) + 1; }} else {{ notime += 1; }} }});
+    let rows = notime ? `<tr><td>No time</td><td class="num-cell">${{notime}}</td></tr>` : '';
+    rows += Object.keys(byHour).sort().map(hour => `<tr><td>${{hour}}:00</td><td class="num-cell">${{byHour[hour]}}</td></tr>`).join('');
+    html += `<table class="cal-summary-table"><thead><tr><th>Hour</th><th>Opportunities</th></tr></thead><tbody>${{rows || '<tr><td colspan="2">No opportunities this day.</td></tr>'}}</tbody></table>`;
+  }}
+  node.innerHTML = html;
+}}
 async function renderCalendarVisual() {{
   const node = document.getElementById('calendar-visual');
   if (!node) return;
@@ -2861,6 +2927,7 @@ async function renderCalendarVisual() {{
     const g = await (await fetch('/api/calendar-grid?' + params, {{cache: 'no-store'}})).json();
     const grouped = g.events || {{}};
     const title = `${{g.label || view}} · ${{g.start}} to ${{g.end}} · ${{g.total || 0}} opportunities`;
+    renderCalendarTextTable(g, view, title);
     if (view === 'year') {{
       const peak = Math.max(1, ...Object.values(g.month_counts || {{}}).map(Number));
       const boxes = (g.months || []).map(m => {{
