@@ -2203,6 +2203,7 @@ let calendarAnchor = '';
 let calendarShowHours = false;
 let calendarShowNumbers = false;
 let calendarShowEarlyHours = false;
+let calendarShowWeekend = false;
 function initCalendarDisplayControls() {{
   const filter = document.getElementById('cal-filter');
   const filterRow = filter && filter.closest('.cal-filter-row');
@@ -2216,7 +2217,8 @@ function initCalendarDisplayControls() {{
   row.innerHTML = '<b>Event display</b>'
     + ' <label class="small"><input type="checkbox" id="cal-show-hours"> Show hours</label>'
     + ' <label class="small"><input type="checkbox" id="cal-show-numbers"> Show numbers</label>'
-    + ' <label class="small"><input type="checkbox" id="cal-show-early-hours"> Show 00–07 rows</label>';
+    + ' <label class="small"><input type="checkbox" id="cal-show-early-hours"> Show 00–06 rows</label>'
+    + ' <label class="small"><input type="checkbox" id="cal-show-weekend"> Show Sat/Sun</label>';
   filterRow.parentNode.insertBefore(row, filterRow.nextSibling);
   document.getElementById('cal-show-hours').addEventListener('change', event => {{
     calendarShowHours = event.target.checked;
@@ -2228,6 +2230,10 @@ function initCalendarDisplayControls() {{
   }});
   document.getElementById('cal-show-early-hours').addEventListener('change', event => {{
     calendarShowEarlyHours = event.target.checked;
+    renderCalendarVisual();
+  }});
+  document.getElementById('cal-show-weekend').addEventListener('change', event => {{
+    calendarShowWeekend = event.target.checked;
     renderCalendarVisual();
   }});
 }}
@@ -2525,10 +2531,10 @@ async function renderCalendarVisual() {{
       evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
       const notimeRow = notime.length
         ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${{notime.map(renderCalendarEvent).join('')}}</div>` : '';
-      const earlyEvents = byHour.slice(0, 8).flat();
+      const earlyEvents = byHour.slice(0, 7).flat();
       const collapsedEarlyRow = !calendarShowEarlyHours && earlyEvents.length
-        ? `<div class="hour-label timeline-collapsed">00–07</div><div class="hour-lane timeline-collapsed">${{earlyEvents.map(renderCalendarEvent).join('')}}</div>` : '';
-      const firstHour = calendarShowEarlyHours ? 0 : 8;
+        ? `<div class="hour-label timeline-collapsed">00–06</div><div class="hour-lane timeline-collapsed">${{earlyEvents.map(renderCalendarEvent).join('')}}</div>` : '';
+      const firstHour = calendarShowEarlyHours ? 0 : 7;
       const hourRows = byHour.slice(firstHour).map((evsAtHour, index) => {{
         const h = index + firstHour;
         return `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`;
@@ -2538,48 +2544,50 @@ async function renderCalendarVisual() {{
       return;
     }}
     if (view === 'week') {{
-      // Hourly timeline with one column per day: a time-label column plus 7
-      // day columns, each split into 24 hour lanes so events line up by time.
+      // Hourly timeline with one column per visible day: a time-label column
+      // plus weekday/weekend columns, each split into 24 hour lanes.
       const cols = days.map((day, i) => {{
         const evs = grouped[day.iso] || [];
         const byHour = Array.from({{length: 24}}, () => []);
         evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
         return {{ i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour }};
       }});
-      const head = '<div class="wk-corner"></div>' + cols.map(c => `<div class="wk-head zoomable" onclick="calendarZoomTo('${{c.iso}}', 'day')">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
-      const anyNotime = cols.some(c => c.notime.length);
-      const notimeRow = anyNotime
-        ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
-      const hasEarlyEvents = cols.some(c => c.byHour.slice(0, 8).some(evsAtHour => evsAtHour.length));
+      const visibleCols = calendarShowWeekend ? cols : cols.filter(c => c.i < 5);
+      const anyNotime = visibleCols.some(c => c.notime.length);
+      const hasEarlyEvents = visibleCols.some(c => c.byHour.slice(0, 7).some(evsAtHour => evsAtHour.length));
       const collapsedEarlyRow = !calendarShowEarlyHours && hasEarlyEvents
-        ? '<div class="hour-label wk-collapsed">00–07</div>' + cols.map(c => `<div class="hour-lane wk-collapsed">${{c.byHour.slice(0, 8).flat().map(renderCalendarEvent).join('')}}</div>`).join('') : '';
+        ? '<div class="hour-label wk-collapsed">00–06</div>' + visibleCols.map(c => `<div class="hour-lane wk-collapsed">${{c.byHour.slice(0, 7).flat().map(renderCalendarEvent).join('')}}</div>`).join('') : '';
       let hourRows = '';
-      const firstHour = calendarShowEarlyHours ? 0 : 8;
+      const firstHour = calendarShowEarlyHours ? 0 : 7;
       for (let h = firstHour; h < 24; h++) {{
         hourRows += `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div>`;
-        hourRows += cols.map(c => `<div class="hour-lane">${{c.byHour[h].map(renderCalendarEvent).join('')}}</div>`).join('');
+        hourRows += visibleCols.map(c => `<div class="hour-lane">${{c.byHour[h].map(renderCalendarEvent).join('')}}</div>`).join('');
       }}
-      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
+      const visibleHead = '<div class="wk-corner"></div>' + visibleCols.map(c => `<div class="wk-head zoomable" onclick="calendarZoomTo('${{c.iso}}', 'day')">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
+      const visibleNotimeRow = anyNotime
+        ? '<div class="hour-label wk-notime">No time</div>' + visibleCols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline" style="grid-template-columns: 64px repeat(${{visibleCols.length}}, minmax(0, 1fr));">${{visibleHead}}${{visibleNotimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     const leading = Number(g.first_weekday || 0);
     const rowCount = Math.ceil((leading + days.length) / 7);
     const weeks = g.weeks || [];
-    let cells = '<div class="week-number-header">Wk</div>' + WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
+    const visibleDayColumns = calendarShowWeekend ? [0, 1, 2, 3, 4, 5, 6] : [0, 1, 2, 3, 4];
+    let cells = '<div class="week-number-header">Wk</div>' + visibleDayColumns.map(i => `<div class="dow">${{WEEKDAY_LABELS[i]}}</div>`).join('');
     for (let row = 0; row < rowCount; row++) {{
       const weekInfo = weeks[row] || {{}};
       const weekStart = weekInfo.start ? new Date(weekInfo.start + 'T12:00:00Z') : calendarMonthWeekStart(g, row);
       const weekIso = weekInfo.start || weekStart.toISOString().slice(0, 10);
       const weekNumber = weekInfo.number || calendarIsoWeekNumber(weekStart);
       cells += `<button class="week-number" type="button" title="Open week ${{weekNumber}}" onclick="calendarZoomTo('${{weekIso}}', 'week')">${{weekNumber}}</button>`;
-      for (let col = 0; col < 7; col++) {{
+      for (const col of visibleDayColumns) {{
         const index = row * 7 + col - leading;
         cells += index < 0 || index >= days.length
           ? renderCalendarDayCell(null, [], true)
           : renderCalendarDayCell(days[index], grouped[days[index].iso] || [], false);
       }}
     }}
-    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to open its day view; click Wk to open the week.</span></div><div class="calgrid">${{cells}}</div></div>`;
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to open its day view; click Wk to open the week.</span></div><div class="calgrid" style="grid-template-columns: 48px repeat(${{visibleDayColumns.length}}, minmax(0, 1fr));">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
