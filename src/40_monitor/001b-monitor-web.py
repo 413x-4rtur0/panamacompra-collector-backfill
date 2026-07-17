@@ -236,19 +236,58 @@ def upsert_client_profile(update: dict) -> dict:
         return normalized
 
 
+# row_filter_haystack() reads each record's detail-items JSON from disk; on a
+# busy month that is thousands of file reads per calendar request (~15s
+# measured). Cache the built haystack per record, invalidated by the detail
+# file's mtime, so only the first filtered request pays the I/O. Matching
+# semantics (accent/case-insensitive, includes detail items text) unchanged —
+# and the WhatsApp sender path is untouched.
+_HAYSTACK_CACHE: dict[str, tuple[float, str]] = {}
+_HAYSTACK_CACHE_MAX = 30000
+
+
+def _row_haystack_cached(row) -> str:
+    """The record's ALREADY-NORMALIZED (accent-stripped, lowercased) filter
+    haystack, cached per numero and invalidated by the detail file's mtime."""
+    numero = str(row["numero"] or "")
+    detail_path = row["detail_json_path"] or ""
+    mtime = 0.0
+    if detail_path:
+        try:
+            mtime = os.stat(detail_path).st_mtime
+        except OSError:
+            mtime = 0.0
+    cached = _HAYSTACK_CACHE.get(numero)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    haystack = pc_common.strip_accents(notify_formats.row_filter_haystack(row, {})).lower()
+    if len(_HAYSTACK_CACHE) >= _HAYSTACK_CACHE_MAX:
+        _HAYSTACK_CACHE.clear()
+    _HAYSTACK_CACHE[numero] = (mtime, haystack)
+    return haystack
+
+
 def client_filter_fn(profile: dict):
     """Row predicate for a client's own filters, for opportunity_calendar.fetch_events().
 
-    Reuses notify_whatsapp's own parse_filter_rules()/evaluate_filter() so the
-    client-scoped calendar always agrees with what that client's WhatsApp
-    group / app notifications actually receive — one filter implementation,
-    not two that could drift apart.
+    Same rules and semantics as notify_whatsapp (parse_filter_rules + the
+    accent/case-insensitive substring match of evaluate_filter; operators:
+    comma = OR, '+' = AND, leading '-' = NOT), evaluated over pre-normalized
+    cached haystacks so a filtered month view answers in well under a second
+    instead of ~15s. If evaluate_filter's semantics ever change, mirror the
+    change here.
     """
     includes, excludes = notify_formats.parse_filter_rules(profile.get("filters", ""))
+    includes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in includes]
+    excludes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in excludes]
 
     def _matches(row) -> bool:
-        haystack = notify_formats.row_filter_haystack(row, {})
-        return notify_formats.evaluate_filter(haystack, includes, excludes) is not None
+        normalized = _row_haystack_cached(row)
+        if any(all(term in normalized for term in rule) for rule in excludes_n):
+            return False
+        if not includes_n:
+            return True
+        return any(all(term in normalized for term in rule) for rule in includes_n)
 
     return _matches
 
