@@ -1896,6 +1896,8 @@ pre.log-pane {{ max-height: 180px; min-height: 2.8rem; }}
 .pill {{ display: inline-block; padding: 4px 10px; border-radius: var(--radius-pill); font-weight: 600; font-size: .8rem; font-family: var(--font-mono); }}
 .on {{ background: var(--green-tint); color: var(--green-600); border: 1px solid var(--green-500); }} .off {{ background: var(--concrete-100); color: var(--concrete-500); border: 1px solid var(--concrete-200); }}
 .message {{ font-size: 1.15rem; color: var(--ink-900); font-weight: 600; }}
+.eta-line {{ background: var(--amber-50); border: 1px solid var(--amber-300); border-radius: var(--radius-md); padding: 7px 10px; color: var(--ink-900); font-weight: 600; }}
+.eta-line .eta-sep {{ color: var(--concrete-400); font-weight: 400; }}
 .small {{ color: var(--concrete-500); font-size: 0.90rem; }}
 .xs {{ color: var(--concrete-500); font-size: 0.78rem; }}
 .done {{ color: var(--green-600); font-weight: 700; }}
@@ -2144,6 +2146,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
   <p class="small"><span id="server-time">Loading...</span> · Next run in <b id="web-timer-countdown">…</b> · Low-power polling every <span id="refresh-label">{REFRESH_SECONDS}</span>s while running · JSON: <a href="/api/status">/api/status</a></p>
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
+  <p id="eta-line" class="small eta-line" hidden></p>
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
@@ -2199,6 +2202,70 @@ const labels = [
 function esc(value) {{
   return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
 }}
+// ---- Finish-time estimation shown in the progress card ----
+// Overall remaining comes from the worker's own ETA field (historical run
+// profile, else percent-based); the per-step estimate is computed here from
+// the live ITEM_CURRENT rate observed across monitor polls.
+let stepEta = {{key: '', samples: []}};
+function parseEtaSeconds(text) {{
+  const m = String(text || '').match(/^(?:(\\d+)h\\s*)?(?:(\\d+)m)?(?:\\s*(\\d+)s)?/);
+  if (!m || (!m[1] && !m[2] && !m[3])) return null;
+  return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
+}}
+function fmtDuration(sec) {{
+  if (sec == null || !isFinite(sec) || sec < 0) return '';
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), min = Math.floor((sec % 3600) / 60);
+  if (h > 0) return h + 'h ' + String(min).padStart(2, '0') + 'm';
+  if (min > 0) return min + 'm ' + String(sec % 60).padStart(2, '0') + 's';
+  return sec + 's';
+}}
+function fmtClock(msFromNow) {{
+  const d = new Date(Date.now() + msFromNow);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}}
+function renderEta(p) {{
+  const node = document.getElementById('eta-line');
+  if (!node) return;
+  if ((p.STATUS || '') !== 'RUNNING') {{ node.hidden = true; stepEta = {{key: '', samples: []}}; return; }}
+  const parts = [];
+  let totalSec = parseEtaSeconds(p.ETA);
+  if (totalSec == null && p.STARTED_AT) {{
+    const started = new Date(String(p.STARTED_AT).replace(' ', 'T'));
+    const pct = Number(p.PERCENT || 0);
+    if (!isNaN(started.getTime()) && pct > 2 && pct < 100) {{
+      const elapsed = (Date.now() - started.getTime()) / 1000;
+      totalSec = elapsed * (100 - pct) / pct;
+    }}
+  }}
+  if (totalSec != null) {{
+    const src = String(p.ETA || '').includes('previous run') ? ' (from the previous run)' : '';
+    parts.push(`⏳ Run: ~${{fmtDuration(totalSec)}} left · estimated finish ${{fmtClock(totalSec * 1000)}}${{src}}`);
+  }}
+  // Per-step: live item throughput while this step reports item counters.
+  const itemCur = Number(p.ITEM_CURRENT), itemTot = Number(p.ITEM_TOTAL);
+  const stepKey = `${{p.PHASE}}|${{p.STEP_CURRENT}}`;
+  if (stepEta.key !== stepKey) stepEta = {{key: stepKey, samples: []}};
+  if (isFinite(itemCur) && isFinite(itemTot) && itemTot > 0) {{
+    const samples = stepEta.samples;
+    const now = Date.now() / 1000;
+    if (!samples.length || samples[samples.length - 1].item !== itemCur) samples.push({{t: now, item: itemCur}});
+    if (samples.length > 30) samples.splice(0, samples.length - 30);
+    let stepText = `Step ${{p.STEP_CURRENT}}/${{p.STEP_TOTAL}}: item ${{itemCur}}/${{itemTot}}`;
+    const span = samples.length > 1 ? samples[samples.length - 1].t - samples[0].t : 0;
+    const doneInWindow = samples.length > 1 ? samples[samples.length - 1].item - samples[0].item : 0;
+    if (span > 20 && doneInWindow > 0) {{
+      const rate = doneInWindow / span;  // items per second
+      const stepRemain = (itemTot - itemCur) / rate;
+      stepText += ` · ~${{fmtDuration(stepRemain)}} left in this step (${{(rate * 60).toFixed(1)}}/min) · step ends ≈ ${{fmtClock(stepRemain * 1000)}}`;
+    }}
+    parts.push(stepText);
+  }} else if (p.STEP_CURRENT && p.STEP_CURRENT !== '-') {{
+    parts.push(`Step ${{p.STEP_CURRENT}}/${{p.STEP_TOTAL}}`);
+  }}
+  node.hidden = parts.length === 0;
+  node.innerHTML = parts.map(esc).join('<span class="eta-sep"> — </span>');
+}}
 function render(data) {{
   const p = data.progress || {{}};
   const percent = data.percent || 0;
@@ -2208,6 +2275,7 @@ function render(data) {{
   fill.style.width = percent + '%';
   fill.textContent = percent + '%';
   document.getElementById('message').textContent = p.MESSAGE || '';
+  renderEta(p);
   const rows = labels.map(([label, key]) => {{
     let value = p[key] ?? '-';
     if (key === 'STEP') value = `${{p.STEP_CURRENT ?? '-'}} / ${{p.STEP_TOTAL ?? '-'}}`;
