@@ -1763,6 +1763,7 @@ a.calevent:hover {{ filter: brightness(1.25); }}
 .hour-lane {{ min-height: 34px; padding: 4px 8px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid #1e293b; }}
 .week-timeline .hour-lane {{ padding: 3px; gap: 3px; border-right: 1px solid #1e293b; }}
 .timeline-notime .hour-label, .timeline-notime .hour-lane, .wk-notime {{ background: #0b1220; border-bottom: 2px solid #334155; }}
+.timeline-collapsed .hour-label, .timeline-collapsed .hour-lane, .wk-collapsed {{ background: #111827; border-bottom: 2px solid #334155; }}
 .wk-head {{ padding: 7px 6px; text-align: center; font-weight: 700; color: #93c5fd; font-size: .82rem; border-bottom: 1px solid #1e293b; background: #0f172a; position: sticky; top: 0; z-index: 1; }}
 .wk-head.zoomable {{ cursor: pointer; }}
 .wk-head.zoomable:hover {{ background: #172554; color: #dbeafe; }}
@@ -2201,6 +2202,7 @@ let calendarAnchor = '';
 // reveal the source hour and opportunity number when those details are useful.
 let calendarShowHours = false;
 let calendarShowNumbers = false;
+let calendarShowEarlyHours = false;
 function initCalendarDisplayControls() {{
   const filter = document.getElementById('cal-filter');
   const filterRow = filter && filter.closest('.cal-filter-row');
@@ -2213,7 +2215,8 @@ function initCalendarDisplayControls() {{
   row.className = 'cal-display-row';
   row.innerHTML = '<b>Event display</b>'
     + ' <label class="small"><input type="checkbox" id="cal-show-hours"> Show hours</label>'
-    + ' <label class="small"><input type="checkbox" id="cal-show-numbers"> Show numbers</label>';
+    + ' <label class="small"><input type="checkbox" id="cal-show-numbers"> Show numbers</label>'
+    + ' <label class="small"><input type="checkbox" id="cal-show-early-hours"> Show 00–07 rows</label>';
   filterRow.parentNode.insertBefore(row, filterRow.nextSibling);
   document.getElementById('cal-show-hours').addEventListener('change', event => {{
     calendarShowHours = event.target.checked;
@@ -2221,6 +2224,10 @@ function initCalendarDisplayControls() {{
   }});
   document.getElementById('cal-show-numbers').addEventListener('change', event => {{
     calendarShowNumbers = event.target.checked;
+    renderCalendarVisual();
+  }});
+  document.getElementById('cal-show-early-hours').addEventListener('change', event => {{
+    calendarShowEarlyHours = event.target.checked;
     renderCalendarVisual();
   }});
 }}
@@ -2518,9 +2525,16 @@ async function renderCalendarVisual() {{
       evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
       const notimeRow = notime.length
         ? `<div class="hour-label timeline-notime">No time</div><div class="hour-lane timeline-notime">${{notime.map(renderCalendarEvent).join('')}}</div>` : '';
-      const hourRows = byHour.map((evsAtHour, h) => `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`).join('');
+      const earlyEvents = byHour.slice(0, 8).flat();
+      const collapsedEarlyRow = !calendarShowEarlyHours && earlyEvents.length
+        ? `<div class="hour-label timeline-collapsed">00–07</div><div class="hour-lane timeline-collapsed">${{earlyEvents.map(renderCalendarEvent).join('')}}</div>` : '';
+      const firstHour = calendarShowEarlyHours ? 0 : 8;
+      const hourRows = byHour.slice(firstHour).map((evsAtHour, index) => {{
+        const h = index + firstHour;
+        return `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`;
+      }}).join('');
       const note = evs.length ? 'Hover an event for location details; click it to open the opportunity.' : 'No opportunities on this day.';
-      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div><div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{hourRows}}</div></div></div>`;
+      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div><div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     if (view === 'week') {{
@@ -2536,12 +2550,16 @@ async function renderCalendarVisual() {{
       const anyNotime = cols.some(c => c.notime.length);
       const notimeRow = anyNotime
         ? '<div class="hour-label wk-notime">No time</div>' + cols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
+      const hasEarlyEvents = cols.some(c => c.byHour.slice(0, 8).some(evsAtHour => evsAtHour.length));
+      const collapsedEarlyRow = !calendarShowEarlyHours && hasEarlyEvents
+        ? '<div class="hour-label wk-collapsed">00–07</div>' + cols.map(c => `<div class="hour-lane wk-collapsed">${{c.byHour.slice(0, 8).flat().map(renderCalendarEvent).join('')}}</div>`).join('') : '';
       let hourRows = '';
-      for (let h = 0; h < 24; h++) {{
+      const firstHour = calendarShowEarlyHours ? 0 : 8;
+      for (let h = firstHour; h < 24; h++) {{
         hourRows += `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div>`;
         hourRows += cols.map(c => `<div class="hour-lane">${{c.byHour[h].map(renderCalendarEvent).join('')}}</div>`).join('');
       }}
-      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{hourRows}}</div></div></div>`;
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     const leading = Number(g.first_weekday || 0);
