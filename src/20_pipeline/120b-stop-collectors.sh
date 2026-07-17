@@ -36,6 +36,7 @@ pkill -TERM -f "[t]imeout .*030-collect-details.py" 2>/dev/null || true
 pkill -TERM -f "[0]40-build-detail-views.py" 2>/dev/null || true
 pkill -TERM -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -TERM -f "[0]70-test-zone.py" 2>/dev/null || true
+pkill -TERM -f "[0]50-repair-missing-deadlines.py" 2>/dev/null || true
 pkill -TERM -f "[0]00-update-before-run.sh" 2>/dev/null || true
 
 # Give them a short window to exit cleanly, then force-kill stragglers.
@@ -46,6 +47,7 @@ pkill -9 -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -9 -f "[0]40-build-detail-views.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
+pkill -9 -f "[0]50-repair-missing-deadlines.py" 2>/dev/null || true
 sleep 1
 
 # If the worker handled TERM, its EXIT trap already wrote a STOPPED progress and

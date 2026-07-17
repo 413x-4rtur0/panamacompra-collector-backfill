@@ -510,7 +510,7 @@ PC_DETAIL_LIMIT=5 ./src/20_pipeline/030-collect-details.py   # download up to 5 
 | `src/50_tools/100-migrate-apps-layout.sh` | Dry-run/apply helper to consolidate older `/Apps/panamacompra-monitor`, `/Apps/panamacompra-webhook-receiver`, and `/Apps/waha` folders into `/Apps/panamacompra-collector/integrations/`, with optional compatibility symlinks. |
 | `src/40_monitor/001a-monitor-tk.py` | Preferred lightweight native Tk monitor window; no Firefox/browser or web server required. Organized into unified tabs — **Operations** (locked automatic/restart/manual/test run controls, live diagnostics, grouped manual actions, logs), **Settings** (window/paths/collector/timer/integrations/templates/reset, grouped in a fixed order), **WhatsApp** (all destinations, filters, delivery, WAHA server + dashboard login, message formats), **KPIs** (decision cards, item-line analysis, item keywords, trend/status mix, drawn diagrams of groups/entities/locations/monthly trend, database review), **Records & Database** (Records Pendings/Completed, record selector, database review), and **Calendar** (opportunity day/week/month/year views) — under an always-visible live progress header. |
 | `src/40_monitor/002-next-run-timer.py` | Small **fixed-size** always-on-top dashboard centered near the top of the desktop. In changedetection mode it counts down from the API's authoritative watch `last_checked` time plus the effective interval, then applies changedetection's enabled-day/time-window limits and shows that allowed window/timezone on screen; the older last-collector-run/clock calculation remains an automatic fallback when the API is unavailable. It also shows the **current git branch**, the **queue state**, the **latest collected records** (newest NUMERO + end date/status + short description, read from `data/panamacompra_archive.db`), a **last-run summary** (New/Saved counts + total archive size + saved/pending/failed DB counts), and the previous completion time broken down into index, detail/download, storing/views, calendar and messaging durations. Withdraws while a live run is active and reappears when finished. Size/position and the number of records shown are configurable via `PC_NEXT_RUN_TIMER_WIDTH/HEIGHT/TOP` and `PC_NEXT_RUN_TIMER_RECORDS`. |
-| `src/40_monitor/001b-monitor-web.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and mirrors the native monitor tabs (Overview / Operations / Opportunities / Calendar / KPIs / WhatsApp / Scheduler / Integrations / Settings) with the same locked run controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, a dedicated Calendar tab, compact keyword filtering, two-line event chips, default-hidden event hours/numbers toggles, collapsed 00:00–06:00 timeline rows with 07:00 visible, hidden weekend columns by default in week/month views, and a KPIs tab with decision cards, item-line analysis, item keywords, and bar diagrams of status mix, groups, monthly trend, contracting entities and detail locations. |
+| `src/40_monitor/001b-monitor-web.py` | Optional local browser monitor at `http://127.0.0.1:8766/`; loads once, polls lightweight JSON, and provides grouped tabs (Overview / System status / Calendar / KPIs / Opportunities / Integrations / Scheduler / WhatsApp / Settings / Operations), page-wide English/Spanish labels, persistent Light/Dark theme, locked run controls, **Records Pendings**, **Records Completed**, detailed DB summary, grouped action buttons, compact keyword filtering, two-line event chips, default-hidden event hours/numbers toggles, collapsed 00:00–06:00 timeline rows with 07:00 visible, hidden weekend columns by default, KPI diagrams, live host health metrics and guarded reboot/power-off scheduling with optional RTC wake-up. |
 | `src/40_monitor/030-install-web-service.sh` | Installs/enables the persistent user `panamacompra-monitor-web.service`, which supervises the web monitor on its saved `PC_MONITOR_HOST` / `PC_MONITOR_PORT` without a background terminal. |
 | `src/40_monitor/001c-monitor-terminal.sh` | Optional live terminal progress monitor; auto-closes when idle. |
 | `src/50_tools/170-waha-directory.py` | CLI WAHA directory search shared with `pcc clients search` / `pcc waha search`: complete contacts, groups, communities, channels and chats; partial/accent-insensitive multi-word name or ID matching, kind filters, JSON output, and a private short-lived disk cache for fast repeated searches. |
@@ -613,7 +613,7 @@ Behavior is controlled with environment variables (all optional):
 | `PC_WEBHOOK_ENQUEUE_ONLY` | `0` | webhook listener | When `1` (set by the Docker `webhook` service), the listener only writes `data/queue/run_all_requested.flag` instead of running `src/10_webhook/060-run-collector.sh`, so a host runner performs the actual collection. |
 | `PC_WEBHOOK_AUTO_RUN` | `1` | webhook listener | Manual/automatic scheduler switch, also a checkbox in both monitors' Settings tab ("Automatic runs from changedetection (webhook)"). `1` (default) triggers a collector run on every changedetection webhook call, same as before. `0` puts the listener in manual mode: it keeps running (so status/health checks stay accurate and it never needs to be stopped/restarted) but acknowledges and ignores incoming triggers instead of starting a run. Re-read on every request, so toggling it from the monitor takes effect immediately. |
 | `PC_RUNNER_POLL_SECONDS` | `5` | `src/10_webhook/050-watch-queue-flag.sh` | How often the host runner polls for an enqueued run request. |
-| `PC_AUTORUN_SOURCE` | `changedetection` | `src/20_pipeline/115-cron-run.sh` | Exclusive automatic-trigger source: `changedetection` (default, webhook-driven) or `cron` (time-based schedule below). Set from the monitor's Scheduler tab. |
+| `PC_AUTORUN_SOURCE` | `changedetection` | `src/20_pipeline/115-cron-run.sh` | Automatic sources: `changedetection` (default), `cron`, or `both`. When both are enabled, `125-run-priority.sh` serializes the work and gives Cron priority over changedetection. |
 | `PC_CRON_DAYS` | `daily` | Scheduler tab | Day pattern for the cron schedule: `daily`, `weekdays`, `weekends`, or `custom` (with `PC_CRON_CUSTOM_DAYS`). |
 | `PC_CRON_CUSTOM_DAYS` | (empty) | Scheduler tab | Comma-separated cron day-of-week numbers (`0`=Sunday .. `6`=Saturday) used when `PC_CRON_DAYS=custom`. |
 | `PC_CRON_START_TIME` / `PC_CRON_END_TIME` | `08:00` / `18:00` | Scheduler tab | Daily time window (`HH:MM`) the schedule runs within. The window must not cross midnight. |
@@ -684,7 +684,7 @@ Behavior is controlled with environment variables (all optional):
 ### Automatic scheduler (cron)
 
 The **Scheduler** tab in either monitor lets an operator run the collector on a
-repeating time-based schedule instead of relying on the changedetection webhook
+repeating time-based schedule alongside (or instead of) the changedetection webhook
 trigger. Configure a day pattern (Daily, Weekdays, Weekends, or Custom days),
 a start/end time window, and a repeat interval (e.g. every 30 minutes), then
 **Save & Apply schedule**. This:
@@ -692,9 +692,11 @@ a start/end time window, and a repeat interval (e.g. every 30 minutes), then
 1. Saves the choice to `monitor_settings.env` (`PC_CRON_DAYS`,
    `PC_CRON_CUSTOM_DAYS`, `PC_CRON_START_TIME`, `PC_CRON_END_TIME`,
    `PC_CRON_INTERVAL_MINUTES`).
-2. Sets `PC_AUTORUN_SOURCE=cron` (exclusive with `changedetection` — enabling
-   one disables the other, same rule already used by the Settings tab's
-   Auto-run source selector).
+2. Sets `PC_AUTORUN_SOURCE=both`, enabling the Cron and changedetection sources
+   together. The priority dispatcher runs only one job at a time: update/migration
+   first, repair, test, manual collector, Cron, then changedetection. A job that
+   arrives while another is active is queued and resumed after the active job
+   finishes; the active job is not killed mid-step.
 3. Installs a single, clearly-marked entry (`# PANAMACOMPRA-CRON-SCHEDULE`)
    into your user crontab via `src/50_tools/160-manage-cron-schedule.py
    install`, which computes the actual cron expression and calls
@@ -703,10 +705,9 @@ a start/end time window, and a repeat interval (e.g. every 30 minutes), then
 
 Unchecking **Enable scheduled automatic runs** removes that crontab entry
 (`160-manage-cron-schedule.py remove`) and switches `PC_AUTORUN_SOURCE` back to
-`changedetection`. `src/20_pipeline/115-cron-run.sh` (the script the crontab
-entry actually calls) ignores its own trigger whenever `PC_AUTORUN_SOURCE` is
-not `cron`, so a stale/forgotten crontab entry never double-triggers a run
-alongside the webhook. You can also drive it directly:
+`changedetection`. `src/20_pipeline/115-cron-run.sh` and the webhook runner
+accept only their enabled source (or `both`), so a stale/forgotten crontab entry
+does not trigger a disabled source. You can also drive it directly:
 ```
 ./src/50_tools/160-manage-cron-schedule.py install --days weekdays --start 08:00 --end 17:00 --interval 30
 ./src/50_tools/160-manage-cron-schedule.py show
@@ -799,7 +800,7 @@ The detail limit can also be passed positionally for manual runs: `./src/20_pipe
 
 #### Monitor layout — unified tabs
 
-Both monitors share the same five-tab layout, so switching between the native
+The browser monitor uses grouped tabs, so switching between sections never means relearning where a control lives. The live header (progress bar, message, process pills and queue state) always stays visible above the tab bar. The page-wide language selector supports English/Spanish and the theme selector supports Light/Dark; both choices persist in the browser.
 window and the browser page never means relearning where a control lives. The
 live header (progress bar, message, process pills and queue state) always stays
 visible above the tab bar:
@@ -807,11 +808,13 @@ visible above the tab bar:
 | Tab | Contents |
 |-----|----------|
 | **Operations** | Run controls, live diagnostics, grouped manual action buttons, worker/current logs. |
-| **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, changedetection integration, work templates, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), and the Reset / review-from-zero actions. |
+| **Settings** | Monitor window options, storage paths, collector & webhook automation, next-run timer window, work templates, Access & sign-in, and the Reset / review-from-zero actions. |
+| **Integrations** | Monitor/changedetection/webhook connection settings, the **Webhook trigger access** panel (token + changedetection/docker/local URLs, read live), and the changedetection Browser Steps script. |
 | **WhatsApp** | Every WhatsApp/WAHA option in one place: toggles, destinations, per-destination filters, delivery options, the WAHA server/container settings (port, API key, dashboard username/password) and the message-format editor. |
 | **KPIs** | The whole KPI dashboard with **filters** (time window · index group · contracting entity) that slice every card and diagram: decision cards, item analysis, trend/status mix, decision guidance, the drawn diagrams (index groups, top contracting entities, locations/buying units parsed from the details, monthly intake trend, **daily intake for the last 14 days**, **most frequent items**), a **latest parsed items** feed, and the database review snapshot. |
 | **Records & Database** | Records Pendings/Completed counters, the pending/completed browsers, the full record selector and filters, plus database review panels. |
 | **Calendar** | Opportunity calendar with a **graphical month grid** (per-day counts, today highlighted, click a day to open its detail) above the day/week/month/year text views. |
+| **System status** | Live server health: CPU, temperature, RAM, swap, disk, load, uptime, OS/kernel/architecture, CPU model, GPU detection and guarded reboot/power-off scheduling. Optional RTC wake-up can power the host back on after a scheduled rest period. |
 
 Inside the tabs, the sections are:
 

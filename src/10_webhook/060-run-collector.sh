@@ -14,10 +14,13 @@ if [ -f "$MONITOR_SETTINGS" ]; then
   set +a
 fi
 
-if [ "${PC_AUTORUN_SOURCE:-changedetection}" = "cron" ]; then
-  echo "===== changedetection webhook ignored at $(date '+%Y-%m-%d %H:%M:%S') because PC_AUTORUN_SOURCE=cron =====" >> "$PC_LOG_DIR/collector_triggered.log"
-  exit 0
-fi
+case "${PC_AUTORUN_SOURCE:-changedetection}" in
+  changedetection|both|all) ;;
+  *)
+    echo "===== changedetection webhook ignored at $(date '+%Y-%m-%d %H:%M:%S') because changedetection autorun is disabled =====" >> "$PC_LOG_DIR/collector_triggered.log"
+    exit 0
+    ;;
+esac
 
 # Changedetection/AUTO runs should not use the manual/test limit controls.
 # 0 means: index every available page and download every pending detail row.
@@ -28,6 +31,7 @@ CHANGEDETECTION_MONITOR_MODE="${PC_CHANGEDETECTION_MONITOR_MODE:-terminal}"
 echo "===== changedetection webhook received at $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$PC_LOG_DIR/collector_triggered.log"
 echo "Requesting full sequence: index + detail, index_page_cap=$INDEX_LIMIT, detail_limit=$DETAIL_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log"
 
-PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log" 2>&1
+PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_SOURCE=changedetection PC_PRIORITY_LABEL="changedetection automatic collector" \
+  PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$PC_LOG_DIR/collector_triggered.log" 2>&1
 
 echo "Full sequence requested at $(date '+%Y-%m-%d %H:%M:%S')" >> "$PC_LOG_DIR/collector_triggered.log"

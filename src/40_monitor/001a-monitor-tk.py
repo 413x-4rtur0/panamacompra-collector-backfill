@@ -189,17 +189,17 @@ MANUAL_ACTIONS = [
     ManualAction("Collector Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops workers, test zone, calendar builder, webhook listener and updaters; all monitors stay open so you can resume from here."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
-    ManualAction("Updater & Migration", "Update local copy", ("./src/40_monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
-    ManualAction("Updater & Migration", "Pre-run update only", ("./src/20_pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh used before worker iterations (no browser install)."),
+    ManualAction("Updater & Migration", "Update local copy", ("./src/20_pipeline/125-run-priority.sh", "update", "100", "update", "--", "./src/40_monitor/003-update-loader.py", "--open-monitor-after"), "Runs the updater at the highest priority after active work finishes, then reopens the monitor."),
+    ManualAction("Updater & Migration", "Pre-run update only", ("./src/20_pipeline/125-run-priority.sh", "update", "100", "update", "--", "./src/20_pipeline/000-update-before-run.sh"), "Queues the lightweight git/dependency refresh used before worker iterations."),
     ManualAction("Updater & Migration", "Upload local changes to GitHub", ("./bin/pcc", "upload-github"), "Commits local checkout changes and pushes the current branch to GitHub/origin. Use after local edits when you want the cloud repo updated before pulling elsewhere."),
-    ManualAction("Updater & Migration", "Normalize folder names", ("./src/50_tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names using the current naming rules."),
-    ManualAction("Updater & Migration", "Migrate old records", ("./src/50_tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives into the current layout."),
+    ManualAction("Updater & Migration", "Normalize folder names", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "rename", "--", "./src/50_tools/070-rename-record-folders.py", "--apply"), "Queues folder normalization so it cannot overlap collection."),
+    ManualAction("Updater & Migration", "Migrate old records", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "migrate", "--", "./src/50_tools/090a-migrate-previous-records.sh"), "Queues record migration so it cannot overlap collection."),
 
     # --- 3. Data Tools: rebuild views/calendars and integrations -------------
-    ManualAction("Data Tools", "Rebuild detail views", ("./src/20_pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files and split tables from stored data (no browser)."),
-    ManualAction("Data Tools", "Repair missing deadlines", ("./src/20_pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds records/folders missing DTEND/deadline, force re-downloads their details, and renames folders when a deadline is recovered."),
-    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/20_pipeline/060-build-calendar.py", "--all"), "Rebuilds the calendar import packages (.ics) for all dated record folders."),
-    ManualAction("Data Tools", "Import calendars to app", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/20_pipeline/060-build-calendar.py --all"), "Rebuilds all packages and opens each .ics with the desktop calendar app."),
+    ManualAction("Data Tools", "Rebuild detail views", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "views", "--", "./src/20_pipeline/040-build-detail-views.py", "--apply"), "Queues saved-view rebuilding so it cannot overlap collection."),
+    ManualAction("Data Tools", "Repair missing deadlines", ("./src/20_pipeline/125-run-priority.sh", "repair", "90", "repair", "--", "./src/20_pipeline/050-repair-missing-deadlines.py", "--apply"), "Queues deadline repair ahead of Cron and changedetection."),
+    ManualAction("Data Tools", "Rebuild calendar packages", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "calendar", "--", "./src/20_pipeline/060-build-calendar.py", "--all"), "Queues calendar packaging so it cannot overlap collection."),
+    ManualAction("Data Tools", "Import calendars to app", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "calendar-import", "--", "bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/20_pipeline/060-build-calendar.py --all"), "Queues calendar rebuilding and import so it cannot overlap collection."),
     ManualAction("Data Tools", "Apply work templates", ("./src/50_tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder. Files already present in a record are kept untouched."),
     ManualAction("Data Tools", "Start webhook listener", ("./src/10_webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener in the background; use STOP all runners to halt it."),
     ManualAction("Data Tools", "Install webhook service", ("./src/10_webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service using the safe foreground starter."),
@@ -215,7 +215,7 @@ MANUAL_ACTIONS = [
     ManualAction("Integrations (Docker)", "Open WAHA dashboard", ("./src/50_tools/130-open-web-app.sh", "waha"), "Opens the WAHA dashboard in a chromeless app window (no Firefox needed) to pair the WhatsApp session by QR. Login: admin + the password from data/config/integration-access.txt (see data/config/integration-access.txt)."),
 
     # --- 5. Testing & Validation: sandbox runs and health checks -------------
-    ManualAction("Testing & Validation", "Run test zone", ("./src/20_pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest 5 records in the isolated sandbox (records_test/); the real archive is left untouched.", RECORDS_TEST_PARENT),
+    ManualAction("Testing & Validation", "Run test zone", ("./src/20_pipeline/125-run-priority.sh", "test", "80", "test", "--", "./src/20_pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Queues the isolated test behind active work; the real archive is left untouched.", RECORDS_TEST_PARENT),
     ManualAction("Testing & Validation", "Review system health", ("./review-system.sh",), "Runs the repository health checks and troubleshooting summary; on completion WAHA sends a System health message to the system destination (override with pcc health --chat-id/--purpose)."),
     ManualAction("Testing & Validation", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
 
@@ -240,6 +240,10 @@ DEFAULT_PROGRESS = {
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
     "MODE": "IDLE",
+    "RUN_TYPE": "-",
+    "RUN_SOURCE": "-",
+    "RUN_TRIGGER": "-",
+    "TEST_AUTORUN": "0",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -1011,7 +1015,7 @@ def run_tk() -> int:
         detail_limit = selected_limit(detail_limit_var, "0")
         mode = run_mode_var.get()
         if mode == "test":
-            subprocess.Popen([str(BASE_DIR / "src/20_pipeline/070-test-zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(BASE_DIR / "src/20_pipeline/125-run-priority.sh"), "test", "80", "test", "--", str(BASE_DIR / "src/20_pipeline/070-test-zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             button_status_var.set(f"Test-zone run requested with detail limit {detail_limit}.")
             return
         if mode == "manual":
@@ -2018,7 +2022,8 @@ def run_tk() -> int:
     # full-width row because it can hold a long human-readable note.
     fields = [
         ("Phase", "PHASE"), ("Status", "STATUS"),
-        ("Mode", "MODE"), ("ETA", "ETA"), ("Index page cap", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
+        ("Mode", "MODE"), ("Run type", "RUN_TYPE"), ("Run source", "RUN_SOURCE"), ("Trigger", "RUN_TRIGGER"),
+        ("Test autorun", "TEST_AUTORUN"), ("ETA", "ETA"), ("Index page cap", "INDEX_LIMIT"), ("Detail limit", "DETAIL_LIMIT"),
         ("Step", "STEP"), ("Item", "ITEM"),
         ("Started", "STARTED_AT"), ("Updated", "UPDATED_AT"),
         ("Found", "RECORDS_FOUND"), ("New", "RECORDS_NEW"),

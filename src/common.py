@@ -118,6 +118,9 @@ def write_run_progress(
     if index_limit is None:
         index_limit = os.environ.get("PC_INDEX_LIMIT", os.environ.get("PC_MAX_PAGES_PER_GROUP", "-"))
 
+    effective_mode = str(mode or os.environ.get("PC_RUN_MODE", "IDLE"))
+    run_type = os.environ.get("PC_RUN_TYPE") or ("TEST" if effective_mode.upper() == "TEST" else "COLLECTOR")
+    run_source = os.environ.get("PC_RUN_SOURCE") or os.environ.get("PC_PRIORITY_SOURCE") or ("manual-test" if run_type == "TEST" else "unknown")
     fields = {
         "PHASE": phase,
         "STATUS": status,
@@ -129,7 +132,11 @@ def write_run_progress(
         "STARTED_AT": started_at,
         "UPDATED_AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "WORKER_PID": os.environ.get("PC_WORKER_PID", "-"),
-        "MODE": mode or os.environ.get("PC_RUN_MODE", "IDLE"),
+        "MODE": effective_mode,
+        "RUN_TYPE": run_type,
+        "RUN_SOURCE": run_source,
+        "RUN_TRIGGER": os.environ.get("PC_RUN_TRIGGER", "unknown"),
+        "TEST_AUTORUN": os.environ.get("PC_TEST_AUTORUN", "0"),
         "STEP_CURRENT": step_current if step_current is not None else "-",
         "STEP_TOTAL": step_total if step_total is not None else "-",
         "ITEM_CURRENT": item_current if item_current is not None else "-",

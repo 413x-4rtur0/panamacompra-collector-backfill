@@ -23,10 +23,14 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | cron-run | $1" | tee -a "$REQUEST_LOG"
 }
 
-if [ "$AUTORUN_SOURCE" != "cron" ]; then
-  log "ignored: PC_AUTORUN_SOURCE=$AUTORUN_SOURCE (changedetection/webhook is active)"
-  exit 0
-fi
+case "$AUTORUN_SOURCE" in
+  cron|both|all) ;;
+  *)
+    log "ignored: PC_AUTORUN_SOURCE=$AUTORUN_SOURCE (Cron autorun is disabled)"
+    exit 0
+    ;;
+esac
 
 log "requesting cron collector run index_page_cap=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT"
-PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT"
+PC_RUN_SOURCE=cron PC_PRIORITY_LABEL="Cron automatic collector" PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" \
+  "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT"

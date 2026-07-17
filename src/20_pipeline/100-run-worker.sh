@@ -37,6 +37,21 @@ PIPELINE_DIR="$APP_ROOT/src/20_pipeline"
 
 DETAIL_LIMIT="${1:-0}"
 INDEX_LIMIT="${2:-${PC_INDEX_LIMIT:-${PC_MAX_PAGES_PER_GROUP:-0}}}"
+RUN_TYPE="${PC_RUN_TYPE:-COLLECTOR}"
+RUN_SOURCE="${PC_RUN_SOURCE:-${PC_PRIORITY_SOURCE:-}}"
+if [ -z "$RUN_SOURCE" ]; then
+  case "${PC_RUN_MODE:-RESTART}" in
+    AUTO) RUN_SOURCE="legacy-auto" ;;
+    MANUAL|RESTART) RUN_SOURCE="manual" ;;
+    TEST) RUN_SOURCE="manual-test" ;;
+    *) RUN_SOURCE="unknown" ;;
+  esac
+fi
+RUN_TRIGGER="${PC_RUN_TRIGGER:-$RUN_SOURCE}"
+export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
+BASE_RUN_TYPE="$RUN_TYPE"
+BASE_RUN_SOURCE="$RUN_SOURCE"
+BASE_RUN_TRIGGER="$RUN_TRIGGER"
 RUN_COMPLETED=0
 WAHA_CONFIG_ENABLED="${PC_WAHA_ENABLED:-0}"
 WAHA_MESSAGING_SKIPPED=0
@@ -224,6 +239,10 @@ write_progress() {
     echo "UPDATED_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
     echo "WORKER_PID='$$'"
     echo "MODE='$(quote_value "${PC_RUN_MODE:-RESTART}")'"
+    echo "RUN_TYPE='$(quote_value "$RUN_TYPE")'"
+    echo "RUN_SOURCE='$(quote_value "$RUN_SOURCE")'"
+    echo "RUN_TRIGGER='$(quote_value "$RUN_TRIGGER")'"
+    echo "TEST_AUTORUN='$(quote_value "${PC_TEST_ZONE_AUTORUN:-0}")'"
     echo "STEP_CURRENT='-'"
     echo "STEP_TOTAL='-'"
     echo "ITEM_CURRENT='-'"
@@ -278,6 +297,13 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# Requests entering through 110a/110b are marked by the priority dispatcher
+# only when that dispatcher has acquired the exclusive run slot. This keeps a
+# queued request from making an already-running worker repeat prematurely.
+if [ "${PC_PRIORITY_START_REQUEST:-0}" = "1" ]; then
+  touch "$REQUEST_FLAG"
+fi
+
 write_progress "STARTING" "RUNNING" "2" "Starting run-all worker..." "$(date '+%Y-%m-%d %H:%M:%S')"
 touch "$IN_PROGRESS_FLAG"
 log "RUN-ALL WORKER STARTED index_page_cap=$INDEX_LIMIT detail_limit=$DETAIL_LIMIT mode=${PC_RUN_MODE:-RESTART}"
@@ -330,6 +356,10 @@ while true; do
   export PC_INDEX_LIMIT="$INDEX_LIMIT"
   export PC_MAX_PAGES_PER_GROUP="$INDEX_LIMIT"
   export PC_DETAIL_LIMIT="$DETAIL_LIMIT"
+  RUN_TYPE="$BASE_RUN_TYPE"
+  RUN_SOURCE="$BASE_RUN_SOURCE"
+  RUN_TRIGGER="$BASE_RUN_TRIGGER"
+  export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
   check_waha_session_before_run
   {
     echo "============================================================"
@@ -337,6 +367,9 @@ while true; do
     echo "INDEX_PAGE_CAP: $INDEX_LIMIT (0 = all pages)"
     echo "DETAIL_LIMIT: $DETAIL_LIMIT"
     echo "PID: $$"
+    echo "RUN_TYPE: $RUN_TYPE"
+    echo "RUN_SOURCE: $RUN_SOURCE"
+    echo "RUN_TRIGGER: $RUN_TRIGGER"
     echo "============================================================"
   } > "$CURRENT_LOG"
 
@@ -598,6 +631,10 @@ PY
     # retry failed rows and folders/DB rows missing DTEND before calendar packages
     # are built, so any repaired records are included in the packages.
     if [ "$VIEW_EXIT" -eq 0 ]; then
+      RUN_TYPE="REPAIR"
+      RUN_SOURCE="worker-verify"
+      RUN_TRIGGER="collector-step"
+      export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
       write_progress "VERIFY" "RUNNING" "84" "Step 6/7: compiling collector scripts and checking failed/missing-deadline records..." "$STARTED"
       {
         echo ""
@@ -635,6 +672,10 @@ PY
       fi
       VERIFY_SECONDS=$(( $(date '+%s') - VERIFY_START_EPOCH ))
       VERIFY_EXIT=$COMPILE_EXIT
+      RUN_TYPE="$BASE_RUN_TYPE"
+      RUN_SOURCE="$BASE_RUN_SOURCE"
+      RUN_TRIGGER="$BASE_RUN_TRIGGER"
+      export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
     fi
 
     # STEP 7: build timestamped Thunderbird/ICS import packages from the
@@ -768,6 +809,10 @@ $SUMMARY_COUNTS" "summary"
   TEST_AUTORUN="${PC_TEST_ZONE_AUTORUN:-0}"
   TEST_LIMIT="${PC_TEST_ZONE_LIMIT:-5}"
   if [ "$TEST_AUTORUN" = "1" ] && printf '%s' "$TEST_LIMIT" | grep -qE '^[0-9]+$' && [ "$TEST_LIMIT" -gt 0 ] && [ "$PENDING_BEFORE" = "0" ]; then
+    RUN_TYPE="TEST"
+    RUN_SOURCE="autotest"
+    RUN_TRIGGER="idle-no-new-records"
+    export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
     log "ITERATION $ITERATION had no new records — running test zone on the last $TEST_LIMIT."
     {
       echo ""
@@ -786,6 +831,10 @@ $SUMMARY_COUNTS" "summary"
       notify_waha "failed" "FAILED" "Iteration $ITERATION test zone failed with exit=$TEST_EXIT (real archive untouched)."
       log "ITERATION $ITERATION test zone failed with exit=$TEST_EXIT."
     fi
+    RUN_TYPE="$BASE_RUN_TYPE"
+    RUN_SOURCE="$BASE_RUN_SOURCE"
+    RUN_TRIGGER="$BASE_RUN_TRIGGER"
+    export PC_RUN_TYPE="$RUN_TYPE" PC_RUN_SOURCE="$RUN_SOURCE" PC_RUN_TRIGGER="$RUN_TRIGGER"
   fi
 
   if [ -f "$REQUEST_FLAG" ]; then

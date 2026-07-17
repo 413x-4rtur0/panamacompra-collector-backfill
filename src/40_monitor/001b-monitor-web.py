@@ -15,14 +15,16 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import platform
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -60,6 +62,9 @@ UPDATE_QUEUE_FLAG = pc_common.QUEUE_DIR / "update_monitor_requested.flag"
 UPDATE_IN_PROGRESS_FLAG = pc_common.QUEUE_DIR / "update_monitor_in_progress.flag"
 REQUEST_LOG = pc_common.LOG_DIR / "run_all_requests.log"
 UPDATE_QUEUE_LOG = pc_common.LOG_DIR / "update_monitor_queue.log"
+PRIORITY_STATE_FILE = pc_common.QUEUE_DIR / "priority-run.state"
+PRIORITY_PENDING_DIR = pc_common.QUEUE_DIR / "priority-pending"
+PRIORITY_LOG = pc_common.LOG_DIR / "priority-run.log"
 CHANGEDETECTION_BROWSER_STEPS_JS = pc_common.APP_ROOT / "config" / "changedetection-browser-steps.js"
 # Work-templates helper imported as a module so the web monitor lists/saves the
 # same source folder and selection the CLI and native monitor use.
@@ -625,23 +630,23 @@ MANUAL_ACTIONS = [
     ManualAction("Runners", "Pause for development", ("./src/20_pipeline/121-dev-mode.sh", "pause"), "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe. Docker integrations and the monitors stay running."),
     ManualAction("Runners", "Resume automatic collection", ("./src/20_pipeline/121-dev-mode.sh", "resume"), "Restores every setting 'Pause for development' changed, to its exact previous value. Does not queue a run by itself."),
     ManualAction("Runners", "Show run status", ("./src/20_pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Tests", "Test zone", ("./src/20_pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Re-runs the latest five records in records_test, then opens that sandbox folder.", RECORDS_TEST_PARENT),
+    ManualAction("Tests", "Test zone", ("./src/20_pipeline/125-run-priority.sh", "test", "80", "test", "--", "./src/20_pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Queues the isolated test behind active work, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary; on completion WAHA sends a System health message to the system destination (override with pcc health --chat-id/--purpose)."),
     ManualAction("Tests", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
-    ManualAction("Updater / Migration", "Update local copy", ("./src/40_monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater loader, refreshes this checkout/dependencies, then reopens the monitor."),
-    ManualAction("Updater / Migration", "Pre-run update only", ("./src/20_pipeline/000-update-before-run.sh",), "Runs the lightweight git/dependency refresh normally used before worker iterations."),
+    ManualAction("Updater / Migration", "Update local copy", ("./src/20_pipeline/125-run-priority.sh", "update", "100", "update", "--", "./src/40_monitor/003-update-loader.py", "--open-monitor-after"), "Runs the updater at the highest priority after active work finishes, then reopens the monitor."),
+    ManualAction("Updater / Migration", "Pre-run update only", ("./src/20_pipeline/125-run-priority.sh", "update", "100", "update", "--", "./src/20_pipeline/000-update-before-run.sh"), "Queues the lightweight git/dependency refresh ahead of automatic collection."),
     ManualAction("Updater / Migration", "Upload local changes to GitHub", ("./bin/pcc", "upload-github"), "Commits local checkout changes and pushes the current branch to GitHub/origin before other machines update."),
-    ManualAction("Updater / Migration", "Rename folders", ("./src/50_tools/070-rename-record-folders.py", "--apply"), "Normalizes existing record folder names."),
-    ManualAction("Updater / Migration", "Migrate records", ("./src/50_tools/090a-migrate-previous-records.sh",), "Imports/migrates previous record archives."),
+    ManualAction("Updater / Migration", "Rename folders", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "rename", "--", "./src/50_tools/070-rename-record-folders.py", "--apply"), "Queues folder normalization so it cannot overlap collection."),
+    ManualAction("Updater / Migration", "Migrate records", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "migrate", "--", "./src/50_tools/090a-migrate-previous-records.sh"), "Queues record migration so it cannot overlap collection."),
     ManualAction("Integrations", "Start/refresh docker stack", ("./src/50_tools/010-docker-stack.sh", "up"), "Pulls/starts (or refreshes) the changedetection + WAHA + webhook containers; data stays in var/integrations."),
     ManualAction("Integrations", "Docker stack status", ("./src/50_tools/010-docker-stack.sh", "status"), "Writes container states plus the changedetection/WAHA URLs to the manual action log."),
     ManualAction("Integrations", "Restart docker stack", ("./src/50_tools/010-docker-stack.sh", "restart"), "Stops and starts the containers, applying the container settings saved below (changedetection URL, WAHA port/API key)."),
     ManualAction("Integrations", "Stop docker stack", ("./src/50_tools/010-docker-stack.sh", "down"), "Stops and removes the changedetection/WAHA/webhook containers; their data stays in var/integrations."),
     ManualAction("Settings", "Apply work templates", ("./src/50_tools/020-record-templates.py", "apply", "--apply"), "Copies the selected template files into templates/ inside every saved record folder (existing files kept)."),
-    ManualAction("Settings", "Build detail views", ("./src/20_pipeline/040-build-detail-views.py", "--apply"), "Rebuilds saved record views, ICS files, and split tables."),
-    ManualAction("Settings", "Repair missing deadlines", ("./src/20_pipeline/050-repair-missing-deadlines.py", "--apply"), "Finds folders/rows missing DTEND, re-downloads details, and renames folders after a deadline is recovered."),
-    ManualAction("Settings", "Build calendars", ("./src/20_pipeline/060-build-calendar.py", "--all"), "Rebuilds calendar import packages."),
-    ManualAction("Settings", "Import generated calendars", ("bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/20_pipeline/060-build-calendar.py --all"), "Rebuilds and opens generated ICS files."),
+    ManualAction("Settings", "Build detail views", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "views", "--", "./src/20_pipeline/040-build-detail-views.py", "--apply"), "Queues saved-view rebuilding so it cannot overlap collection."),
+    ManualAction("Settings", "Repair missing deadlines", ("./src/20_pipeline/125-run-priority.sh", "repair", "90", "repair", "--", "./src/20_pipeline/050-repair-missing-deadlines.py", "--apply"), "Queues deadline repair ahead of Cron and changedetection."),
+    ManualAction("Settings", "Build calendars", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "calendar", "--", "./src/20_pipeline/060-build-calendar.py", "--all"), "Queues calendar packaging so it cannot overlap collection."),
+    ManualAction("Settings", "Import generated calendars", ("./src/20_pipeline/125-run-priority.sh", "maintenance", "50", "calendar-import", "--", "bash", "-lc", "PC_CALENDAR_AUTO_IMPORT=1 ./src/20_pipeline/060-build-calendar.py --all"), "Queues calendar rebuilding and import so it cannot overlap collection."),
     ManualAction("Settings", "Webhook listener", ("./src/10_webhook/020-start-listener.sh", "--replace-port-owner"), "Starts/restarts the local webhook listener."),
     ManualAction("Settings", "Install webhook service", ("./src/10_webhook/030-install-service.sh",), "Installs/repairs the persistent user systemd webhook service."),
     ManualAction("Settings", "Open web monitor", ("./src/50_tools/130-open-web-app.sh", "monitor"), "Starts/opens the browser monitor (chromeless app window when available)."),
@@ -662,6 +667,10 @@ DEFAULT_PROGRESS = {
     "UPDATED_AT": "-",
     "WORKER_PID": "-",
     "MODE": "IDLE",
+    "RUN_TYPE": "-",
+    "RUN_SOURCE": "-",
+    "RUN_TRIGGER": "-",
+    "TEST_AUTORUN": "0",
     "STEP_CURRENT": "-",
     "STEP_TOTAL": "-",
     "ITEM_CURRENT": "-",
@@ -900,6 +909,18 @@ def queue_payload() -> dict[str, str]:
     else:
         update_state = "none"
         update_since = "-"
+    priority = {}
+    if PRIORITY_STATE_FILE.exists():
+        for line in PRIORITY_STATE_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in line:
+                continue
+            key, raw = line.split("=", 1)
+            try:
+                parsed = shlex.split(raw, posix=True)
+                priority[key.strip()] = parsed[0] if parsed else ""
+            except ValueError:
+                priority[key.strip()] = raw.strip().strip("'").strip('"')
+    pending_jobs = sorted(PRIORITY_PENDING_DIR.glob("*.job")) if PRIORITY_PENDING_DIR.exists() else []
     return {
         "collector_state": "PENDING" if collector_pending else "none",
         "collector_since": file_timestamp(REQUEST_FLAG) if collector_pending else "-",
@@ -907,6 +928,13 @@ def queue_payload() -> dict[str, str]:
         "update_since": update_since,
         "request_log": tail(REQUEST_LOG, 8),
         "update_log": tail(UPDATE_QUEUE_LOG, 8),
+        "priority_state": priority.get("STATUS", "none"),
+        "priority_source": priority.get("SOURCE", "-"),
+        "priority_label": priority.get("LABEL", "-"),
+        "priority_phase": priority.get("PHASE", "-"),
+        "priority_message": priority.get("MESSAGE", "-"),
+        "priority_pending_count": str(len(pending_jobs)),
+        "priority_log": tail(PRIORITY_LOG, 12),
     }
 
 
@@ -928,6 +956,245 @@ def run_manual_action(action: ManualAction) -> None:
             proc.wait()
             open_folder(action.open_after)
         threading.Thread(target=wait_then_open, daemon=True).start()
+
+
+SYSTEM_STATS_LOCK = threading.Lock()
+SYSTEM_CPU_PREVIOUS: tuple[int, int] | None = None
+
+
+def _proc_cpu_sample() -> tuple[int, int] | None:
+    """Return total and idle jiffies from Linux /proc without extra packages."""
+    try:
+        line = Path("/proc/stat").read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        fields = [int(value) for value in line.split()[1:]]
+        if len(fields) < 4:
+            return None
+        return sum(fields), fields[3] + (fields[4] if len(fields) > 4 else 0)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _proc_memory() -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, raw = line.partition(":")
+            bits = raw.strip().split()
+            if bits and bits[0].isdigit():
+                # Linux reports these values in KiB; expose bytes internally.
+                values[key] = int(bits[0]) * 1024
+    except OSError:
+        pass
+    return values
+
+
+def _human_bytes(value: int) -> str:
+    amount = float(max(0, value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    return "0 B"
+
+
+def _temperature_status() -> dict[str, object]:
+    sensors = []
+    for path in sorted(Path("/sys/class/thermal").glob("thermal_zone*/temp")):
+        try:
+            raw = float(path.read_text(encoding="utf-8").strip()) / 1000
+            type_path = path.parent / "type"
+            name = type_path.read_text(encoding="utf-8", errors="replace").strip() if type_path.exists() else path.parent.name
+            sensors.append({"name": name, "celsius": round(raw, 1)})
+        except (OSError, ValueError):
+            continue
+    if not sensors:
+        for path in sorted(Path("/sys/class/hwmon").glob("hwmon*/temp*_input")):
+            try:
+                raw = float(path.read_text(encoding="utf-8").strip()) / 1000
+                label_path = path.with_name(path.name.replace("_input", "_label"))
+                name = label_path.read_text(encoding="utf-8", errors="replace").strip() if label_path.exists() else path.parent.name + "/" + path.stem
+                sensors.append({"name": name, "celsius": round(raw, 1)})
+            except (OSError, ValueError):
+                continue
+    values = [float(item["celsius"]) for item in sensors]
+    return {"celsius": round(max(values), 1) if values else None, "sensors": sensors}
+
+
+def system_power_payload() -> dict[str, object]:
+    scheduled = ""
+    shutdown = shutil.which("shutdown")
+    if shutdown:
+        try:
+            result = subprocess.run([shutdown, "--show"], cwd=BASE_DIR, capture_output=True, text=True, timeout=2, check=False)
+            scheduled = (result.stdout or result.stderr).strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    wake_alarm = ""
+    for path in (Path("/sys/class/rtc/rtc0/wakealarm"), Path("/sys/class/rtc/rtc1/wakealarm")):
+        try:
+            wake_alarm = path.read_text(encoding="utf-8", errors="replace").strip()
+            if wake_alarm:
+                break
+        except OSError:
+            continue
+    return {"scheduled_shutdown": scheduled or "none", "wake_alarm": wake_alarm or "none", "shutdown_available": bool(shutdown), "rtcwake_available": bool(shutil.which("rtcwake"))}
+
+
+def apply_system_power_action(action: str, when_text: str = "", wake_text: str = "") -> tuple[bool, str]:
+    """Apply an explicitly requested reboot/poweroff schedule.
+
+    This deliberately uses the host's normal shutdown/RTC tools instead of a
+    background monitor process. If the service account lacks the required
+    polkit/root permission, the UI receives that error and no fake schedule is
+    reported as active.
+    """
+    shutdown = shutil.which("shutdown")
+    if not shutdown:
+        return False, "The host shutdown command is not available."
+    if action == "cancel":
+        messages = []
+        result = subprocess.run([shutdown, "-c"], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+        messages.append((result.stdout or result.stderr).strip() or "shutdown schedule cancelled")
+        rtcwake = shutil.which("rtcwake")
+        if rtcwake:
+            subprocess.run([rtcwake, "-m", "disable"], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+        return result.returncode == 0, " ".join(messages)
+    if action in {"reboot", "poweroff"} and not when_text:
+        flag = "-r" if action == "reboot" else "-h"
+        result = subprocess.run([shutdown, flag, "now"], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+        message = (result.stdout or result.stderr).strip() or ("Reboot requested." if action == "reboot" else "Power off requested.")
+        return result.returncode == 0, message
+    if action not in {"reboot", "poweroff"}:
+        return False, "Unknown power action."
+    try:
+        when = datetime.fromisoformat(when_text)
+    except ValueError:
+        return False, "Use a valid local date and time for the schedule."
+    seconds = int((when - datetime.now()).total_seconds())
+    if seconds < 60:
+        return False, "The scheduled time must be at least one minute from now."
+    if wake_text:
+        try:
+            wake = datetime.fromisoformat(wake_text)
+        except ValueError:
+            return False, "Use a valid local date and time for the wake-up schedule."
+        if action != "poweroff":
+            return False, "Automatic wake-up is only used with power off."
+        if wake <= when:
+            return False, "Wake-up must be later than the power-off time."
+        rtcwake = shutil.which("rtcwake")
+        if not rtcwake:
+            return False, "rtcwake is not available; the server cannot schedule automatic power-on."
+        wake_result = subprocess.run([rtcwake, "-m", "no", "-t", str(int(wake.timestamp()))], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+        if wake_result.returncode != 0:
+            return False, "Wake-up was not programmed: " + ((wake_result.stderr or wake_result.stdout).strip() or "permission denied")
+    minutes = max(1, (seconds + 59) // 60)
+    flag = "-r" if action == "reboot" else "-h"
+    result = subprocess.run([shutdown, flag, f"+{minutes}"], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+    message = (result.stdout or result.stderr).strip() or f"{action} scheduled in about {minutes} minute(s)."
+    return result.returncode == 0, message
+
+
+def _gpu_status() -> dict[str, object]:
+    """Read NVIDIA/AMD metrics when their vendor tools are available."""
+    nvidia = shutil.which("nvidia-smi")
+    if nvidia:
+        try:
+            result = subprocess.run(
+                [nvidia, "--query-gpu=name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False,
+            )
+            devices = []
+            for line in result.stdout.splitlines():
+                fields = [part.strip() for part in line.split(",")]
+                if len(fields) >= 5:
+                    devices.append({"name": fields[0], "utilization": fields[1] + "%", "memory": f"{fields[3]} / {fields[2]} MiB", "temperature": fields[4] + " °C"})
+            if devices:
+                return {"available": True, "vendor": "NVIDIA", "devices": devices, "source": "nvidia-smi"}
+        except (OSError, subprocess.SubprocessError):
+            pass
+    rocm = shutil.which("rocm-smi")
+    if rocm:
+        try:
+            result = subprocess.run([rocm, "--showproductname", "--showuse", "--showmemuse"], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+            if result.stdout.strip():
+                return {"available": True, "vendor": "AMD", "devices": [{"name": "AMD GPU", "details": line.strip()} for line in result.stdout.splitlines() if line.strip()], "source": "rocm-smi"}
+        except (OSError, subprocess.SubprocessError):
+            pass
+    lspci = shutil.which("lspci")
+    if lspci:
+        try:
+            result = subprocess.run([lspci], cwd=BASE_DIR, capture_output=True, text=True, timeout=3, check=False)
+            devices = [line.split(" ", 1)[1] if " " in line else line for line in result.stdout.splitlines() if re.search(r"(VGA compatible controller|3D controller|Display controller)", line, re.I)]
+            if devices:
+                return {"available": False, "vendor": "Detected", "devices": [{"name": item} for item in devices], "source": "lspci", "note": "Vendor metrics tool not available"}
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"available": False, "vendor": "-", "devices": [], "source": "none", "note": "No GPU metrics tool or GPU detected"}
+
+
+def system_status_payload() -> dict[str, object]:
+    """Return a read-only live snapshot of the monitor server host."""
+    global SYSTEM_CPU_PREVIOUS
+    sample = _proc_cpu_sample()
+    cpu_percent: float | None = None
+    with SYSTEM_STATS_LOCK:
+        if sample and SYSTEM_CPU_PREVIOUS:
+            total_delta = sample[0] - SYSTEM_CPU_PREVIOUS[0]
+            idle_delta = sample[1] - SYSTEM_CPU_PREVIOUS[1]
+            if total_delta > 0:
+                cpu_percent = round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 1)
+        SYSTEM_CPU_PREVIOUS = sample
+    memory = _proc_memory()
+    total = memory.get("MemTotal", 0)
+    available = memory.get("MemAvailable", memory.get("MemFree", 0))
+    used = max(0, total - available)
+    swap_total = memory.get("SwapTotal", 0)
+    swap_free = memory.get("SwapFree", 0)
+    disk = shutil.disk_usage(BASE_DIR)
+    try:
+        load = [round(float(value), 2) for value in Path("/proc/loadavg").read_text(encoding="utf-8").split()[:3]]
+    except (OSError, ValueError):
+        load = []
+    try:
+        uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        uptime = None
+    os_name = platform.platform()
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                os_name = line.split("=", 1)[1].strip().strip('"')
+                break
+    except OSError:
+        pass
+    model = "-"
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith(("model name", "hardware")) and ":" in line:
+                model = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    return {
+        "resources": {
+            "cpu_percent": cpu_percent,
+            "load": load,
+            "memory_percent": round((used / total) * 100, 1) if total else None,
+            "memory_used": _human_bytes(used), "memory_total": _human_bytes(total),
+            "swap_percent": round(((swap_total - swap_free) / swap_total) * 100, 1) if swap_total else 0,
+            "swap_used": _human_bytes(max(0, swap_total - swap_free)), "swap_total": _human_bytes(swap_total),
+            "disk_percent": round((disk.used / disk.total) * 100, 1) if disk.total else 0,
+            "disk_used": _human_bytes(disk.used), "disk_total": _human_bytes(disk.total),
+            "temperature": _temperature_status(),
+        },
+        "specs": {"hostname": platform.node() or "-", "os": os_name, "kernel": platform.release(), "architecture": platform.machine(), "cpu": model, "logical_cpus": os.cpu_count() or 0, "python": platform.python_version(), "uptime_seconds": uptime},
+        "gpu": _gpu_status(),
+        "power": system_power_payload(),
+        "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
 
 def status_payload() -> dict[str, object]:
     progress = parse_progress_file()
@@ -1112,7 +1379,7 @@ def verify_firebase_id_token(id_token: str) -> dict | None:
 # users & tab access". The main PC_ADMIN_USERNAME account always has all tabs.
 MONITOR_USERS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_users.json"
 MONITOR_USERS_LOCK = threading.Lock()
-VALID_MONITOR_TABS = ("overview", "calendar", "decision", "records", "operations", "whatsapp", "scheduler", "integrations", "settings")
+VALID_MONITOR_TABS = ("overview", "calendar", "decision", "records", "operations", "whatsapp", "scheduler", "integrations", "settings", "system")
 
 
 def _normalize_monitor_user(item: dict) -> dict | None:
@@ -1354,6 +1621,16 @@ CLIENT_CALENDAR_HTML = """<!doctype html>
   --focus-ring: 0 0 0 3px rgba(45,108,223,.35);
 }
 body { font-family: var(--font-sans); margin: 10px; background: var(--concrete-50); color: var(--ink-700); }
+body.theme-dark {
+  --ink-900: #F3F7FA; --ink-800: #E2EAF0; --ink-700: #D0DAE2; --ink-600: #BCC8D1;
+  --concrete-0: #182027; --concrete-50: #11171C; --concrete-100: #222C34; --concrete-200: #34434E;
+  --concrete-300: #4A5C68; --concrete-400: #687B88; --concrete-500: #A4B1BB; --concrete-600: #BFCADE;
+  --amber-50: #493713; --amber-100: #604915; --amber-800: #FFD16A;
+  --blue-tint: #152E50; --green-tint: #173C2A; --red-tint: #4A2520;
+}
+.site-controls { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.site-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--concrete-600); font-size: .82rem; }
+.site-controls select { padding: 5px 7px; font-size: .82rem; }
 .small { color: var(--concrete-500); font-size: .85rem; }
 .err { color: var(--red-600); font-size: .85rem; min-height: 1.2em; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
@@ -1413,6 +1690,7 @@ a.calevent:hover { filter: brightness(.94); }
 </style>
 </head>
 <body>
+<div class="site-controls"><label data-site-label="language">Language <select id="site-language" onchange="setSiteLanguage(this.value)"><option value="en">English</option><option value="es">Español</option></select></label><label data-site-label="theme">Theme <select id="site-theme" onchange="setSiteTheme(this.value)"><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
 <div id="boot-msg" class="small">Loading&hellip;</div>
 <div id="auth-screen" class="auth-card" hidden>
   <h1>PanamaCompra &mdash; client access</h1>
@@ -1454,10 +1732,71 @@ a.calevent:hover { filter: brightness(.94); }
 <script>
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 """ + _LOC_TOOLTIP_JS + """
+const SITE_TRANSLATIONS = {
+  es: {
+    'Language': 'Idioma', 'Theme': 'Tema', 'Light': 'Claro', 'Dark': 'Oscuro',
+    'Loading…': 'Cargando…', 'Loading...': 'Cargando…', 'Opportunity calendar': 'Calendario de oportunidades',
+    'Sign in to see your opportunity calendar.': 'Inicia sesión para ver tu calendario de oportunidades.',
+    'Your contact details': 'Tus datos de contacto', 'Confirm the email and phone number where we can reach you.': 'Confirma el correo y teléfono donde podemos contactarte.',
+    'Sign in': 'Iniciar sesión', 'Create account': 'Crear cuenta', 'Sign in with Google': 'Iniciar sesión con Google',
+    'Save and continue': 'Guardar y continuar', 'Sign out': 'Cerrar sesión', 'or': 'o',
+    'Day': 'Día', 'Week': 'Semana', 'Month': 'Mes', 'Year': 'Año', 'Deadline': 'Fecha límite', 'Start': 'Inicio', 'Downloaded': 'Descargado', 'Today': 'Hoy',
+    'Click a month to open it.': 'Haz clic en un mes para abrirlo.', 'Click a day header to zoom to that day.': 'Haz clic en el encabezado de un día para ampliarlo.', 'Click a day to zoom to its week.': 'Haz clic en un día para ampliar su semana.', 'Click an event to open the opportunity.': 'Haz clic en un evento para abrir la oportunidad.', 'No opportunities on this day.': 'No hay oportunidades este día.', 'No time': 'Sin hora',
+    'Calendar hidden for this profile.': 'El calendario está oculto para este perfil.', 'Calendar unavailable.': 'Calendario no disponible.', 'Email': 'Correo electrónico', 'Username': 'Usuario', 'Phone (e.g. +507 6000-0000)': 'Teléfono (ej. +507 6000-0000)'
+  }
+};
+let siteLanguage = 'en';
+const siteOriginals = new WeakMap();
+function translateSite() {
+  const map = SITE_TRANSLATIONS[siteLanguage] || {};
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach(textNode => {
+    const parent = textNode.parentElement;
+    if (!parent || /^(SCRIPT|STYLE|PRE|TEXTAREA)$/i.test(parent.tagName)) return;
+    const raw = textNode.nodeValue || '', trimmed = raw.trim();
+    if (!trimmed) return;
+    if (!siteOriginals.has(textNode)) siteOriginals.set(textNode, trimmed);
+    const original = siteOriginals.get(textNode);
+    textNode.nodeValue = raw.replace(trimmed, map[original] || original);
+  });
+  document.querySelectorAll('input[placeholder], [title], [aria-label]').forEach(el => {
+    ['placeholder', 'title', 'aria-label'].forEach(attr => {
+      if (!el.hasAttribute(attr)) return;
+      const originalKey = 'site-original-' + attr;
+      if (!el.dataset[originalKey]) el.dataset[originalKey] = el.getAttribute(attr);
+      const original = el.dataset[originalKey];
+      el.setAttribute(attr, map[original] || original);
+    });
+  });
+}
+function setSiteTheme(theme) {
+  const selected = theme === 'dark' ? 'dark' : 'light';
+  document.body.classList.toggle('theme-dark', selected === 'dark');
+  const selector = document.getElementById('site-theme');
+  if (selector) selector.value = selected;
+  try { localStorage.setItem('panamacompra-ui-theme', selected); } catch (err) {}
+}
+function setSiteLanguage(language) {
+  siteLanguage = SITE_TRANSLATIONS[language] ? language : 'en';
+  document.documentElement.lang = siteLanguage;
+  const selector = document.getElementById('site-language');
+  if (selector) selector.value = siteLanguage;
+  translateSite();
+  if (typeof WEEKDAY_LABELS !== 'undefined') {
+    WEEKDAY_LABELS = siteLanguage === 'es' ? ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'] : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  }
+  try { localStorage.setItem('panamacompra-ui-language', siteLanguage); } catch (err) {}
+  if (!document.getElementById('app-screen').hidden && typeof loadCalendar === 'function') loadCalendar();
+}
+const siteObserver = new MutationObserver(() => { if (siteLanguage === 'es') translateSite(); });
+siteObserver.observe(document.body, {childList: true, subtree: true});
 const params = new URLSearchParams(location.search);
 let uid = params.get('uid') || '';
 const legacyMode = !!uid;  // Android WebView passes ?uid= and skips the login UI.
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 let calendarAnchor = '';
 let calendarEventsInteractive = false;
 let fbUser = null;
@@ -1672,6 +2011,12 @@ async function boot() {
     afterSignIn(user);
   });
 }
+let initialSiteLanguage = 'en';
+let initialSiteTheme = 'light';
+try { initialSiteLanguage = localStorage.getItem('panamacompra-ui-language') || 'en'; } catch (err) {}
+try { initialSiteTheme = localStorage.getItem('panamacompra-ui-theme') || 'light'; } catch (err) {}
+setSiteTheme(initialSiteTheme);
+setSiteLanguage(initialSiteLanguage);
 boot();
 </script>
 </body>
@@ -1722,12 +2067,23 @@ button:hover { background: var(--concrete-100); }
 button.primary { background: var(--amber-500); border-color: var(--amber-600); color: var(--ink-900); font-weight: 700; }
 button.primary:hover { background: var(--amber-600); }
 .auth-card { max-width: 380px; margin: 10vh auto 0; background: var(--concrete-0); border: 1px solid var(--concrete-200); border-top: 4px solid var(--amber-500); border-radius: var(--radius-lg); padding: 22px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow-md); }
+body.theme-dark {
+  --ink-900: #F3F7FA; --ink-800: #E2EAF0; --ink-700: #D0DAE2; --ink-600: #BCC8D1;
+  --concrete-0: #182027; --concrete-50: #11171C; --concrete-100: #222C34; --concrete-200: #34434E;
+  --concrete-300: #4A5C68; --concrete-400: #687B88; --concrete-500: #A4B1BB; --concrete-600: #BFCADE;
+  --amber-50: #493713; --amber-100: #604915; --amber-800: #FFD16A;
+  --blue-tint: #152E50; --green-tint: #173C2A; --red-tint: #4A2520;
+}
+.site-controls { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.site-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--concrete-600); font-size: .82rem; }
+.site-controls select { padding: 5px 7px; font-size: .82rem; }
 .auth-card h1 { margin: 0 0 4px; font-size: 1.2rem; color: var(--ink-900); font-family: var(--font-display); letter-spacing: -0.015em; }
 .auth-card input { width: 100%; box-sizing: border-box; }
 .auth-sep { text-align: center; color: var(--concrete-400); font-size: .8rem; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.14em; }
 </style>
 </head>
 <body>
+<div class="site-controls"><label data-site-label="language">Language <select id="site-language" onchange="setSiteLanguage(this.value)"><option value="en">English</option><option value="es">Español</option></select></label><label data-site-label="theme">Theme <select id="site-theme" onchange="setSiteTheme(this.value)"><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
 <div id="login-card" class="auth-card">
   <h1>PanamaCompra Monitor</h1>
   <p class="small" id="login-note">Sign in to continue. Managers open the admin monitor; clients open their opportunity calendar.</p>
@@ -1750,6 +2106,64 @@ button.primary:hover { background: var(--amber-600); }
   </div>
 </div>
 <script>
+const SITE_TRANSLATIONS = {
+  es: {
+    'Language': 'Idioma', 'Theme': 'Tema', 'Light': 'Claro', 'Dark': 'Oscuro',
+    'Sign in to continue. Managers open the admin monitor; clients open their opportunity calendar.': 'Inicia sesión para continuar. Los administradores abren el monitor; los clientes abren su calendario de oportunidades.',
+    'Manager': 'Administrador', 'Client': 'Cliente', 'Sign in': 'Iniciar sesión', 'Create account': 'Crear cuenta', 'Sign in with Google': 'Iniciar sesión con Google',
+    'Manager sign in': 'Iniciar sesión como administrador', 'or': 'o', 'Username': 'Usuario', 'Email': 'Correo electrónico', 'Password': 'Contraseña'
+  }
+};
+let siteLanguage = 'en';
+const siteOriginals = new WeakMap();
+function translateSite() {
+  const map = SITE_TRANSLATIONS[siteLanguage] || {};
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach(textNode => {
+    const parent = textNode.parentElement;
+    if (!parent || /^(SCRIPT|STYLE|PRE|TEXTAREA)$/i.test(parent.tagName)) return;
+    const raw = textNode.nodeValue || '', trimmed = raw.trim();
+    if (!trimmed) return;
+    if (!siteOriginals.has(textNode)) siteOriginals.set(textNode, trimmed);
+    const original = siteOriginals.get(textNode);
+    textNode.nodeValue = raw.replace(trimmed, map[original] || original);
+  });
+  document.querySelectorAll('input[placeholder], [title], [aria-label]').forEach(el => {
+    ['placeholder', 'title', 'aria-label'].forEach(attr => {
+      if (!el.hasAttribute(attr)) return;
+      const key = 'data-site-original-' + attr;
+      if (!el.hasAttribute(key)) el.setAttribute(key, el.getAttribute(attr));
+      const original = el.getAttribute(key);
+      el.setAttribute(attr, map[original] || original);
+    });
+  });
+}
+function setSiteTheme(theme) {
+  const selected = theme === 'dark' ? 'dark' : 'light';
+  document.body.classList.toggle('theme-dark', selected === 'dark');
+  const selector = document.getElementById('site-theme');
+  if (selector) selector.value = selected;
+  try { localStorage.setItem('panamacompra-ui-theme', selected); } catch (err) {}
+}
+function setSiteLanguage(language) {
+  siteLanguage = SITE_TRANSLATIONS[language] ? language : 'en';
+  document.documentElement.lang = siteLanguage;
+  const selector = document.getElementById('site-language');
+  if (selector) selector.value = siteLanguage;
+  translateSite();
+  try { localStorage.setItem('panamacompra-ui-language', siteLanguage); } catch (err) {}
+}
+const siteObserver = new MutationObserver(() => { if (siteLanguage === 'es') translateSite(); });
+siteObserver.observe(document.body, {childList: true, subtree: true});
+let initialSiteLanguage = 'en';
+let initialSiteTheme = 'light';
+try { initialSiteLanguage = localStorage.getItem('panamacompra-ui-language') || 'en'; } catch (err) {}
+try { initialSiteTheme = localStorage.getItem('panamacompra-ui-theme') || 'light'; } catch (err) {}
+setSiteTheme(initialSiteTheme);
+setSiteLanguage(initialSiteLanguage);
 function note(text) { document.getElementById('login-note').textContent = text; }
 function authError(e) { document.getElementById('auth-error').textContent = (e && e.message) || String(e); }
 async function managerSignIn() {
@@ -1876,6 +2290,19 @@ HTML = f"""<!doctype html>
   --focus-ring: 0 0 0 3px rgba(45,108,223,.35);
 }}
 body {{ font-family: var(--font-sans); margin: 24px; background: var(--concrete-50); color: var(--ink-700); }}
+/* The monitor keeps the same design tokens in both themes so every card,
+   control, table and calendar surface changes together. */
+body.theme-dark {{
+  --ink-900: #F3F7FA; --ink-800: #E2EAF0; --ink-700: #D0DAE2; --ink-600: #BCC8D1;
+  --concrete-0: #182027; --concrete-50: #11171C; --concrete-100: #222C34; --concrete-200: #34434E;
+  --concrete-300: #4A5C68; --concrete-400: #687B88; --concrete-500: #A4B1BB; --concrete-600: #BFCADE;
+  --amber-50: #493713; --amber-100: #604915; --amber-800: #FFD16A;
+  --blue-tint: #152E50; --green-tint: #173C2A; --red-tint: #4A2520;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.35), 0 1px 1px rgba(0,0,0,.25);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.35); --shadow-lg: 0 12px 30px rgba(0,0,0,.45);
+}}
+body.theme-dark .tab-nav {{ background: rgba(17,23,28,.92); }}
+body.theme-dark .chart {{ background-color: var(--concrete-0); }}
 a {{ color: var(--blueprint-600); }}
 h1, h2, h3 {{ font-family: var(--font-display); color: var(--ink-900); letter-spacing: -0.015em; }}
 .card {{ background: var(--concrete-0); border: 1px solid var(--concrete-200); border-radius: var(--radius-lg); padding: 18px; margin: 0 0 16px; box-shadow: var(--shadow-sm); overflow-x: auto; }}
@@ -1947,12 +2374,21 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; font-family: var(--font-mono); font-size: .88rem; }}
 .tab-nav {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; position: sticky; top: 0; z-index: 5; background: #F6F5F2E6; backdrop-filter: blur(8px); padding: 8px 0; border-bottom: 2px solid var(--ink-900); }}
 .tab-nav button.active {{ background: var(--ink-900); border-color: var(--ink-900); color: var(--amber-400); }}
+.tab-nav .tab-divider {{ width: 1px; min-height: 28px; margin: 0 2px; background: var(--ink-300); align-self: center; }}
+.ui-language {{ margin-left: auto; font-size: .82rem; }}
+.ui-theme {{ margin-left: 0; }}
 .card[data-tab] {{ display: none; }}
 .card[data-tab].tab-active {{ display: block; }}
 .subsection {{ border: 1px solid var(--concrete-200); border-radius: var(--radius-lg); padding: 12px; margin: 10px 0; background: var(--concrete-50); }}
 .subsection h3 {{ margin: 0 0 8px; color: var(--ink-900); }}
 .setting-actions {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
 .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+.system-spec-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }}
+.system-spec {{ background: var(--concrete-50); border: 1px solid var(--concrete-200); border-radius: var(--radius-md); padding: 10px; min-width: 0; }}
+.system-spec b {{ display: block; color: var(--ink-900); font-size: 1.05rem; overflow-wrap: anywhere; }}
+.system-spec .small {{ display: block; margin-bottom: 4px; }}
+.system-meter {{ height: 8px; margin-top: 8px; background: var(--concrete-100); border: 1px solid var(--concrete-200); border-radius: var(--radius-pill); overflow: hidden; }}
+.system-meter span {{ display: block; height: 100%; background: linear-gradient(90deg, var(--blueprint-400), var(--amber-500)); border-radius: inherit; transition: width .3s ease; }}
 .kpi {{ background: var(--concrete-0); border: 2px solid var(--ink-900); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-sm); }}
 .kpi b {{ display: block; font-size: 1.7rem; color: var(--ink-900); font-family: var(--font-display); }}
 .diagram-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }}
@@ -2056,6 +2492,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .header-actions button:hover {{ background: var(--ink-600); }}
 .header-actions button.signout {{ background: var(--amber-500); color: var(--ink-900); border-color: var(--amber-600); font-weight: 700; }}
 .header-actions button.signout:hover {{ background: var(--amber-600); }}
+.header-actions .ui-language {{ margin-left: 0; display: inline-flex; align-items: center; gap: 5px; color: var(--concrete-100); font-size: .82rem; white-space: nowrap; }}
+.header-actions .ui-language select {{ padding: 5px 7px; font-size: .82rem; }}
 /* Calendar controls: selector cluster left, Prev|Today|Next as one segmented
    group center, Show on the right. */
 .cal-controls-row {{ justify-content: space-between; }}
@@ -2160,7 +2598,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
     <p class="small">Open WhatsApp on your phone → Linked Devices → Link a Device, and scan. The code refreshes automatically while shown.</p>
   </div>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" data-i18n="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="calendar" data-i18n="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" data-i18n="kpis" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" data-i18n="opportunities" onclick="showTab('records')">Opportunities</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="integrations" data-i18n="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="scheduler" data-i18n="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="whatsapp" data-i18n="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="settings" data-i18n="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="operations" data-i18n="operations" onclick="showTab('operations')">Operations</button><label class="ui-language"><span data-i18n="language">Language</span> <select id="ui-language" onchange="setUiLanguage(this.value)"><option value="en">English</option><option value="es">Español</option></select></label><label class="ui-language ui-theme"><span data-i18n="theme">Theme</span> <select id="ui-theme" onchange="setUiTheme(this.value)"><option value="light" data-i18n="theme_light">Light</option><option value="dark" data-i18n="theme_dark">Dark</option></select></label></div>
 <div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#247A47;font-weight:700">upcoming</span> · <span style="color:#B06E00;font-weight:700">next to expire</span> · <span style="color:#AE2D1C;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
@@ -2185,7 +2623,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><h3>Access &amp; sign-in</h3><p class="xs">The front page (/) is a login for everyone except this PC itself (127.0.0.1 always gets straight in). <b>Manager</b>: local username/password below — grants this admin monitor. <b>Clients</b>: Firebase email/Google sign-in — they land on the calendar-only dashboard at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a>. An email listed in "Admin emails" also gets the admin monitor when signing in via Firebase. The API token lets the Android admin app call the protected APIs (X-PC-Admin-Token header or ?admin_token=).</p><div class="settings-grid"><label class="small">Manager username <input id="set-PC_ADMIN_USERNAME" size="18" autocomplete="off"></label> <label class="small">Manager password <input id="set-PC_ADMIN_PASSWORD" size="18" type="password" autocomplete="new-password"></label> <label class="small">Admin emails (comma separated) <input id="set-PC_ADMIN_EMAILS" size="34" placeholder="you@gmail.com, other@x.com"></label> <label class="small">Admin API token (Android admin app) <input id="set-PC_ADMIN_API_TOKEN" size="26" placeholder="blank = off"></label></div><h4 class="small" style="margin:10px 0 4px">Client sign-in (Firebase web app)</h4><p class="xs">Same Firebase project as the Android app: in Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = client sign-in disabled (manager login and ?uid= links keep working).</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
 <div class="card" data-tab="settings"><h2>Monitor users &amp; tab access</h2><p class="small">Users you add here sign in with the same front-page <b>Manager</b> form, but only see — and can only drive — the tabs you grant them. Full admin stays with the manager account and PC_ADMIN_EMAILS. Server-side, their sessions get read access plus the actions belonging to their tabs; secret settings values are never sent to them.</p><div class="subsection"><h3>Add / update a user</h3><p><label class="small">Username <input id="mu-username" size="14" autocomplete="off"></label> <label class="small">Password <input id="mu-password" size="14" type="password" autocomplete="new-password"></label></p><p><span class="small">Tabs:</span> <label class="small"><input type="checkbox" id="mu-tab-overview" checked> Overview</label> <label class="small"><input type="checkbox" id="mu-tab-calendar" checked> Calendar</label> <label class="small"><input type="checkbox" id="mu-tab-decision"> KPIs</label> <label class="small"><input type="checkbox" id="mu-tab-records"> Opportunities</label> <label class="small"><input type="checkbox" id="mu-tab-operations"> Operations</label> <label class="small"><input type="checkbox" id="mu-tab-whatsapp"> WhatsApp</label> <label class="small"><input type="checkbox" id="mu-tab-scheduler"> Scheduler</label> <label class="small"><input type="checkbox" id="mu-tab-integrations"> Integrations</label> <label class="small"><input type="checkbox" id="mu-tab-settings"> Settings</label> <button class="primary" onclick="addMonitorUser()">Add / update user</button></p></div><div class="subsection"><h3>Users (JSON)</h3><p class="small">Full list, editable by hand. Remove a line to delete the user; set "enabled": false to suspend without deleting.</p><textarea id="monitor-users" rows="6" placeholder='[{{"username":"maria","password":"secret","tabs":["overview","calendar"],"enabled":true}}]'></textarea><p><button onclick="saveMonitorUsers()">Save users</button> <button onclick="loadMonitorUsers()">Reload</button> <span id="mu-state" class="small"></span></p></div></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
-<div class="card" data-tab="settings"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
+<div class="card" data-tab="integrations"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <script>
 let doneSince = null;
@@ -2193,7 +2631,7 @@ let sawActive = false;
 let timer = null;
 const actionZones = {ACTIONS_JSON};
 const labels = [
-  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['ETA', 'ETA'], ['Index page cap', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
+  ['Phase', 'PHASE'], ['Status', 'STATUS'], ['Mode', 'MODE'], ['Run type', 'RUN_TYPE'], ['Run source', 'RUN_SOURCE'], ['Trigger', 'RUN_TRIGGER'], ['Test autorun', 'TEST_AUTORUN'], ['ETA', 'ETA'], ['Index page cap', 'INDEX_LIMIT'], ['Detail limit', 'DETAIL_LIMIT'],
   ['Step', 'STEP'], ['Item', 'ITEM'], ['Started', 'STARTED_AT'], ['Updated', 'UPDATED_AT'],
   ['Found rows', 'RECORDS_FOUND'], ['New records', 'RECORDS_NEW'], ['Existing records', 'RECORDS_EXISTING'],
   ['Details saved/skipped', 'RECORDS_SAVED'], ['Detail failures', 'RECORDS_FAILED'],
@@ -2321,7 +2759,7 @@ function render(data) {{
   moveWebhookAutoRunControlToScheduler();
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_NOTIFY_DETAILS_INLINE','1'],['PC_INDEX_FROM_SNAPSHOT','1'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1'],['PC_WEBHOOK_AUTO_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const cronEnabledEl = document.getElementById('cron-enabled');
-  if (cronEnabledEl && document.activeElement !== cronEnabledEl) cronEnabledEl.checked = String(settings.PC_AUTORUN_SOURCE ?? 'changedetection') === 'cron';
+  if (cronEnabledEl && document.activeElement !== cronEnabledEl) cronEnabledEl.checked = ['cron', 'both', 'all'].includes(String(settings.PC_AUTORUN_SOURCE ?? 'changedetection').toLowerCase());
   const cronDaysRadio = document.querySelector(`input[name="cron-days"][value="${{settings.PC_CRON_DAYS || 'daily'}}"]`);
   if (cronDaysRadio && document.activeElement?.name !== 'cron-days') cronDaysRadio.checked = true;
   [['cron-custom-days', 'PC_CRON_CUSTOM_DAYS'], ['cron-start', 'PC_CRON_START_TIME'], ['cron-end', 'PC_CRON_END_TIME'], ['cron-interval', 'PC_CRON_INTERVAL_MINUTES']].forEach(([id, key]) => {{
@@ -2778,7 +3216,7 @@ async function adminSignOut() {{
   location.href = siteUrl(ARL_HOME_PORT);  // leave the monitor for the ARL-89 home site
 }}
 // ---- Monitor users & tab access (manager only) ----
-const MONITOR_TAB_IDS = ['overview', 'calendar', 'decision', 'records', 'operations', 'whatsapp', 'scheduler', 'integrations', 'settings'];
+const MONITOR_TAB_IDS = ['overview', 'calendar', 'decision', 'records', 'integrations', 'scheduler', 'whatsapp', 'settings', 'operations', 'system'];
 async function loadMonitorUsers() {{
   const box = document.getElementById('monitor-users');
   if (!box) return;
@@ -2834,15 +3272,23 @@ function saveAdvancedSettings() {{
 }}
 function updateAutorunSourceIndicators(settings) {{
   const source = String((settings || {{}}).PC_AUTORUN_SOURCE || 'changedetection').toLowerCase();
-  const changedetection = source !== 'cron';
+  const changedetection = ['changedetection', 'both', 'all'].includes(source);
+  const cron = ['cron', 'both', 'all'].includes(source);
+  const sourceSelect = document.getElementById('set-PC_AUTORUN_SOURCE');
+  if (sourceSelect && !sourceSelect.querySelector('option[value="both"]')) sourceSelect.insertAdjacentHTML('beforeend', '<option value="both">both (priority queue)</option>');
+  if (sourceSelect && ['changedetection', 'cron', 'both'].includes(source)) sourceSelect.value = source;
   const cdBox = document.getElementById('source-changedetection-active');
   const cronBox = document.getElementById('source-cron-active');
   if (cdBox) cdBox.checked = changedetection;
-  if (cronBox) cronBox.checked = !changedetection;
+  if (cronBox) cronBox.checked = cron;
   const note = document.getElementById('autorun-source-note');
-  if (note) note.textContent = changedetection
-    ? 'changedetection/webhook is the automatic collector source; cron collection is ignored.'
-    : 'cron is the automatic collector source; changedetection/webhook collection is ignored.';
+  if (note) note.textContent = changedetection && cron
+    ? 'Both automatic sources are enabled; the priority queue runs one collector at a time (Cron before changedetection).'
+    : changedetection
+      ? 'changedetection/webhook is the automatic collector source; Cron is disabled.'
+      : 'Cron is the automatic collector source; changedetection/webhook is disabled.';
+  const schedulerIntro = document.querySelector('[data-tab="scheduler"] p.small');
+  if (schedulerIntro) schedulerIntro.textContent = 'Runs Cron and changedetection through the shared priority queue. Enable the schedule below to allow Cron requests; one job runs at a time and queued work resumes automatically.';
 }}
 let recordIndex = [];
 let recordFiltered = [];
@@ -3266,6 +3712,222 @@ function importSelectedCalendars() {{
 }}
 
 let staffAllowedTabs = null;  // null = full admin (all tabs); Set for staff sessions
+const UI_LABELS = {{
+  en: {{overview: 'Overview', system_status: 'System status', calendar: 'Calendar', kpis: 'KPIs', opportunities: 'Opportunities', operations: 'Operations', whatsapp: 'WhatsApp', scheduler: 'Scheduler', integrations: 'Integrations', settings: 'Settings', language: 'Language', theme: 'Theme', theme_light: 'Light', theme_dark: 'Dark'}},
+  es: {{overview: 'Resumen', system_status: 'Estado del sistema', calendar: 'Calendario', kpis: 'KPIs', opportunities: 'Oportunidades', operations: 'Operaciones', whatsapp: 'WhatsApp', scheduler: 'Programador', integrations: 'Integraciones', settings: 'Configuración', language: 'Idioma', theme: 'Tema', theme_light: 'Claro', theme_dark: 'Oscuro'}},
+}};
+/* Exact static labels are translated globally. Values from the collector,
+   record descriptions, user-entered text and logs are intentionally kept
+   unchanged because they are data, not monitor chrome. */
+const STATIC_TRANSLATIONS = {{
+  es: {{
+    'Progress monitor': 'Monitor de progreso', 'Hide progress': 'Ocultar progreso', 'Show progress': 'Mostrar progreso', 'Sign out': 'Cerrar sesión',
+    'System health': 'Salud del sistema', 'Last run stages': 'Etapas de la última ejecución', 'Services': 'Servicios', 'Queue process': 'Proceso de cola', 'Monitor buttons': 'Botones del monitor', 'Run controls': 'Controles de ejecución', 'Action buttons': 'Botones de acción', 'Diagnostics': 'Diagnóstico', 'Recent worker log': 'Registro reciente del worker', 'Current action log': 'Registro de acciones actual',
+    'Mode': 'Modo', 'automatic': 'automático', 'run pending only': 'ejecutar solo pendientes', 'manual run': 'ejecución manual', 'test run': 'ejecución de prueba', 'Run': 'Ejecutar', 'Index page cap': 'Límite de páginas del índice', 'Detail limit': 'Límite de detalles', 'Request selected run': 'Solicitar ejecución seleccionada', 'Stop active run': 'Detener ejecución activa', 'Start All': 'Iniciar todo', 'Stop All': 'Detener todo', 'Dev Pause': 'Pausa de desarrollo', 'Dev Resume': 'Reanudar desarrollo',
+    'KPI Dashboard': 'Panel de KPIs', 'All time': 'Todo el tiempo', 'Last 7 days': 'Últimos 7 días', 'Last 30 days': 'Últimos 30 días', 'Last 90 days': 'Últimos 90 días', 'Last year': 'Último año', 'Apply filters': 'Aplicar filtros', 'Reset': 'Restablecer', 'Export CSV': 'Exportar CSV', 'Detail status mix': 'Mezcla de estados de detalle', 'Index groups': 'Grupos del índice', 'Daily intake (last 14 days)': 'Captura diaria (últimos 14 días)', 'Monthly intake trend': 'Tendencia mensual de captura', 'Top contracting entities': 'Principales entidades contratantes', 'Locations / buying units (from details)': 'Ubicaciones / unidades compradoras (de detalles)', 'Most frequent items': 'Artículos más frecuentes', 'Latest parsed items': 'Últimos artículos procesados', 'Detail queue pressure': 'Presión de la cola de detalles', 'Items analysis': 'Análisis de artículos', 'Item keywords': 'Palabras clave de artículos',
+    'Opportunity calendar': 'Calendario de oportunidades', 'Visual calendar': 'Calendario visual', 'Text summary': 'Resumen de texto', 'Opportunities list': 'Lista de oportunidades', 'View': 'Vista', 'Date field': 'Campo de fecha', 'Deadline (end)': 'Fecha límite (fin)', 'Start': 'Inicio', 'Downloaded': 'Descargado', 'Anchor': 'Referencia', 'Prev': 'Anterior', 'Today': 'Hoy', 'Next': 'Siguiente', 'Show': 'Mostrar', 'Keyword filter': 'Filtro por palabras clave', 'Apply': 'Aplicar', 'Clear': 'Limpiar', 'Calendar visual loading…': 'Cargando calendario visual…', 'Loading calendar…': 'Cargando calendario…',
+    'Record selector and filters': 'Selector y filtros de registros', 'Deadline': 'Fecha límite', 'All': 'Todos', 'Next to expire': 'Próximos a vencer', 'Expired': 'Vencidos', 'Upcoming': 'Próximos', 'No date / needs repair': 'Sin fecha / necesita reparación', 'Detail status': 'Estado del detalle', 'Pending records': 'Registros pendientes', 'Completed records': 'Registros completados', 'Failed records': 'Registros fallidos', 'Order by': 'Ordenar por', 'Downloaded date': 'Fecha de descarga', 'End date': 'Fecha final', 'Start date': 'Fecha de inicio', 'Newest first': 'Más recientes primero', 'Oldest first': 'Más antiguos primero', 'Refresh list': 'Actualizar lista', 'Open record folder': 'Abrir carpeta del registro', 'Open in portal': 'Abrir en el portal', 'Notify selected WhatsApp': 'Notificar seleccionados por WhatsApp', 'Import selected calendars': 'Importar calendarios seleccionados', 'Copy templates to selected': 'Copiar plantillas a seleccionados',
+    'Automatic scheduler (cron)': 'Programador automático (cron)', 'Enable scheduled automatic runs': 'Activar ejecuciones automáticas programadas', 'Save & Apply schedule': 'Guardar y aplicar programación', 'Refresh status': 'Actualizar estado', 'Daily': 'Diario', 'Weekdays': 'Días laborables', 'Weekends': 'Fines de semana', 'Custom': 'Personalizado', 'Start time': 'Hora de inicio', 'End time': 'Hora final', 'Repeat every (minutes)': 'Repetir cada (minutos)',
+    'WhatsApp settings': 'Configuración de WhatsApp', 'Destinations & toggles': 'Destinos y activadores', 'Delivery & server settings': 'Entrega y configuración del servidor', 'Content filters': 'Filtros de contenido', 'Save': 'Guardar', 'Send test WhatsApp': 'Enviar WhatsApp de prueba', 'Webhook trigger access': 'Acceso al activador webhook', 'Refresh webhook access': 'Actualizar acceso webhook', 'Docker stack status': 'Estado de la pila Docker', 'System status': 'Estado del sistema', 'Server specifications': 'Especificaciones del servidor', 'Power management': 'Gestión de energía', 'Refresh system status': 'Actualizar estado del sistema', 'Reboot now': 'Reiniciar ahora', 'Power off now': 'Apagar ahora', 'Cancel scheduled power action': 'Cancelar acción de energía programada', 'Schedule': 'Programar', 'Action': 'Acción', 'GPU': 'GPU', 'Settings': 'Configuración', 'Operations': 'Operaciones', 'Language': 'Idioma', 'Theme': 'Tema', 'Light': 'Claro', 'Dark': 'Oscuro', 'English': 'English', 'Español': 'Español',
+    'Loading overview…': 'Cargando resumen…', 'Loading services…': 'Cargando servicios…', 'Loading queue…': 'Cargando cola…', 'Loading record index…': 'Cargando índice de registros…', 'Loading database snapshot…': 'Cargando estado de la base de datos…', 'Database summary loading…': 'Cargando resumen de la base de datos…', 'Loading decision signals…': 'Cargando señales de decisión…', 'Loading webhook access…': 'Cargando acceso webhook…', 'Loading client profiles…': 'Cargando perfiles de clientes…', 'Loading template files…': 'Cargando archivos de plantillas…',
+    'Add / update a user': 'Agregar / actualizar usuario', 'Users (JSON)': 'Usuarios (JSON)', 'Work templates': 'Plantillas de trabajo', 'Storage paths': 'Rutas de almacenamiento', 'Run cadence': 'Cadencia de ejecución', 'Timer window': 'Ventana del temporizador', 'Integrations': 'Integraciones', 'Access & sign-in': 'Acceso e inicio de sesión', 'Automatic run flags': 'Banderas de ejecución automática', 'Auto-run test zone when no new records': 'Ejecutar zona de prueba automáticamente cuando no haya registros nuevos', 'Update local copy before each run': 'Actualizar copia local antes de cada ejecución', 'Save paths': 'Guardar rutas', 'Save settings': 'Guardar configuración', 'Save users': 'Guardar usuarios', 'Reload': 'Recargar', 'Save source': 'Guardar origen', 'Refresh files': 'Actualizar archivos', 'Save selection': 'Guardar selección', 'Apply to all records': 'Aplicar a todos los registros', 'Reset / review from zero': 'Restablecer / revisar desde cero', 'Re-queue all details': 'Volver a poner todos los detalles en cola', 'Reset notify / review flags': 'Restablecer avisos / banderas de revisión', 'Wipe database only': 'Borrar solo la base de datos', 'Wipe EVERYTHING': 'Borrar TODO',
+  }}
+}};
+let currentUiLanguage = 'en';
+let translatingStaticUi = false;
+const translationOriginals = new WeakMap();
+const attributeOriginals = new WeakMap();
+function translateStaticUi(lang) {{
+  const map = STATIC_TRANSLATIONS[lang] || {{}};
+  if (translatingStaticUi) return;
+  translatingStaticUi = true;
+  try {{
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let node;
+    while ((node = walker.nextNode())) nodes.push(node);
+    nodes.forEach(textNode => {{
+      const parent = textNode.parentElement;
+      if (!parent || /^(SCRIPT|STYLE|PRE|TEXTAREA)$/i.test(parent.tagName)) return;
+      const raw = textNode.nodeValue || '';
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      if (!translationOriginals.has(textNode)) translationOriginals.set(textNode, trimmed);
+      const original = translationOriginals.get(textNode);
+      const translated = map[original] || original;
+      textNode.nodeValue = raw.replace(trimmed, translated);
+    }});
+    document.querySelectorAll('input[placeholder], textarea[placeholder], [title], [aria-label]').forEach(el => {{
+      ['placeholder', 'title', 'aria-label'].forEach(attr => {{
+        if (!el.hasAttribute(attr)) return;
+        const key = el.tagName + '|' + attr;
+        let originals = attributeOriginals.get(el);
+        if (!originals) {{ originals = {{}}; attributeOriginals.set(el, originals); }}
+        if (!Object.prototype.hasOwnProperty.call(originals, key)) originals[key] = el.getAttribute(attr);
+        const original = originals[key];
+        el.setAttribute(attr, map[original] || original);
+      }});
+    }});
+  }} finally {{ translatingStaticUi = false; }}
+}}
+function setUiTheme(theme) {{
+  const selected = theme === 'dark' ? 'dark' : 'light';
+  document.body.classList.toggle('theme-dark', selected === 'dark');
+  document.documentElement.dataset.theme = selected;
+  const selector = document.getElementById('ui-theme');
+  if (selector) selector.value = selected;
+  try {{ localStorage.setItem('panamacompra-ui-theme', selected); }} catch (err) {{ /* storage optional */ }}
+}}
+function moveUiControlsToHeader() {{
+  const header = document.querySelector('.header-actions');
+  const signout = header && header.querySelector('.signout');
+  if (!header || !signout) return;
+  ['ui-language', 'ui-theme'].forEach(id => {{
+    const selector = document.getElementById(id);
+    const control = selector && selector.closest('.ui-language');
+    if (control) header.insertBefore(control, signout);
+  }});
+}}
+function moveIntegrationSettingsToTab() {{
+  const settingsCard = [...document.querySelectorAll('.card[data-tab="settings"]')].find(card =>
+    [...card.querySelectorAll('h3')].some(heading => heading.textContent.trim() === 'Integrations'));
+  if (!settingsCard || document.getElementById('integration-settings-card')) return;
+  const heading = [...settingsCard.querySelectorAll('h3')].find(item => item.textContent.trim() === 'Integrations');
+  const grid = heading && heading.nextElementSibling;
+  if (!heading || !grid || !grid.classList.contains('settings-grid')) return;
+  const card = document.createElement('div');
+  card.id = 'integration-settings-card';
+  card.className = 'card'; card.dataset.tab = 'integrations';
+  card.innerHTML = '<h2>Integrations</h2><p class="small">Monitor, changedetection and webhook connection settings. Changes apply on the next service or Docker stack restart.</p>';
+  card.appendChild(heading);
+  card.appendChild(grid);
+  const existing = [...document.querySelectorAll('.card[data-tab="integrations"]')].pop();
+  if (existing && existing.parentNode) existing.parentNode.insertBefore(card, existing.nextSibling);
+  else document.body.appendChild(card);
+}}
+function moveAutomaticRunFlagsToOperations() {{
+  const operations = [...document.querySelectorAll('.card[data-tab="operations"]')].find(card =>
+    (card.querySelector('h2') || {{}}).textContent.trim() === 'Monitor buttons');
+  if (!operations || document.getElementById('automatic-run-flags')) return;
+  const labels = ['set-PC_TEST_ZONE_AUTORUN', 'set-PC_RUN_UPDATE_BEFORE_RUN']
+    .map(id => document.getElementById(id))
+    .filter(Boolean)
+    .map(input => input.closest('label'));
+  if (labels.length !== 2) return;
+  const section = document.createElement('div');
+  section.id = 'automatic-run-flags';
+  section.className = 'subsection';
+  section.innerHTML = '<h3>Automatic run flags</h3><p class="small">These controls affect how the next automatic or manually requested collector run starts.</p>';
+  const row = document.createElement('p');
+  row.className = 'small';
+  labels.forEach(label => row.appendChild(label));
+  section.appendChild(row);
+  operations.appendChild(section);
+}}
+function ensureSystemStatusTab() {{
+  const nav = document.querySelector('.tab-nav');
+  if (!nav || nav.querySelector('[data-tab-button="system"]')) return;
+  const divider = document.createElement('span');
+  divider.className = 'tab-divider'; divider.setAttribute('aria-hidden', 'true');
+  const button = document.createElement('button');
+  button.dataset.tabButton = 'system'; button.dataset.i18n = 'system_status';
+  button.textContent = 'System status'; button.onclick = () => showTab('system');
+  const uiControl = nav.querySelector('.ui-language');
+  if (uiControl) {{ nav.insertBefore(divider, uiControl); nav.insertBefore(button, uiControl); }}
+  else {{ nav.appendChild(divider); nav.appendChild(button); }}
+  const card = document.createElement('div');
+  card.className = 'card'; card.dataset.tab = 'system';
+  card.innerHTML = '<h2>System status <span class="kpi-live">LIVE</span></h2><p class="small">Live host resources and server specifications. GPU metrics appear when the vendor tool is installed.</p><p><button class="primary" onclick="refreshSystemStatus()">Refresh system status</button> <span id="system-status-stamp" class="small"></span></p><div id="system-resources" class="system-spec-grid"></div><h3>Server specifications</h3><div id="system-specs" class="system-spec-grid"></div><h3>GPU</h3><div id="system-gpu" class="system-spec-grid"></div><h3>Power management</h3><p class="small">Schedule a server rest period with power off and optional RTC wake-up. Automatic power-on requires BIOS/RTC support and host permission.</p><p><button class="danger" onclick="systemPowerNow(&quot;reboot&quot;)">Reboot now</button><button class="danger" onclick="systemPowerNow(&quot;poweroff&quot;)">Power off now</button><button onclick="systemPowerCancel()">Cancel scheduled power action</button></p><p><label class="small">Action <select id="system-power-action"><option value="reboot">Reboot</option><option value="poweroff">Power off</option></select></label> <label class="small">Turn off / reboot at <input id="system-power-at" type="datetime-local"></label> <label class="small">Turn on again at (power off only) <input id="system-power-wake" type="datetime-local"></label> <button class="primary" onclick="systemPowerSchedule()">Schedule</button></p><p id="system-power-status" class="small"></p>';
+  const firstTabCard = document.querySelector('.card[data-tab]');
+  if (firstTabCard) firstTabCard.parentNode.insertBefore(card, firstTabCard); else document.body.appendChild(card);
+  const overviewAccess = document.getElementById('mu-tab-overview');
+  if (overviewAccess && !document.getElementById('mu-tab-system')) {{
+    const label = document.createElement('label'); label.className = 'small';
+    label.innerHTML = '<input type="checkbox" id="mu-tab-system"> System status';
+    overviewAccess.parentNode.parentNode.insertBefore(label, overviewAccess.parentNode.nextSibling);
+  }}
+}}
+const SYSTEM_LABELS = {{
+  en: {{cpu: 'CPU', memory: 'RAM', swap: 'Swap', disk: 'Disk', temperature: 'Temperature', load: 'Load average', host: 'Hostname', os: 'Operating system', kernel: 'Kernel', architecture: 'Architecture', cpu_model: 'CPU model', logical_cpus: 'Logical CPUs', python: 'Python', uptime: 'Uptime', gpu: 'GPU', no_gpu: 'No GPU metrics detected', detected: 'Detected GPU', available: 'Metrics available', unavailable: 'Metrics unavailable', source: 'Source', refresh: 'Refresh system status', loading: 'Loading system status…', error: 'System status error: ', power_none: 'No scheduled power action', power_shutdown: 'Shutdown schedule', power_wake: 'Wake alarm', power_reboot: 'Reboot now', power_off: 'Power off now', power_cancel: 'Cancel scheduled power action'}},
+  es: {{cpu: 'CPU', memory: 'RAM', swap: 'Intercambio', disk: 'Disco', temperature: 'Temperatura', load: 'Promedio de carga', host: 'Nombre del host', os: 'Sistema operativo', kernel: 'Kernel', architecture: 'Arquitectura', cpu_model: 'Modelo de CPU', logical_cpus: 'CPU lógicas', python: 'Python', uptime: 'Tiempo activo', gpu: 'GPU', no_gpu: 'No se detectaron métricas de GPU', detected: 'GPU detectada', available: 'Métricas disponibles', unavailable: 'Métricas no disponibles', source: 'Origen', refresh: 'Actualizar estado del sistema', loading: 'Cargando estado del sistema…', error: 'Error del estado del sistema: ', power_none: 'Sin acción de energía programada', power_shutdown: 'Programación de apagado', power_wake: 'Alarma de encendido', power_reboot: 'Reiniciar ahora', power_off: 'Apagar ahora', power_cancel: 'Cancelar acción de energía programada'}},
+}};
+function systemUptime(seconds) {{
+  if (seconds == null || !isFinite(Number(seconds))) return '-';
+  const total = Math.max(0, Math.floor(Number(seconds)));
+  const days = Math.floor(total / 86400), hours = Math.floor((total % 86400) / 3600), minutes = Math.floor((total % 3600) / 60);
+  return (days ? days + 'd ' : '') + hours + 'h ' + minutes + 'm';
+}}
+function refreshSystemStatus() {{
+  const resources = document.getElementById('system-resources');
+  const specs = document.getElementById('system-specs');
+  const gpuBox = document.getElementById('system-gpu');
+  if (!resources || !specs || !gpuBox) return;
+  const labels = SYSTEM_LABELS[currentUiLanguage] || SYSTEM_LABELS.en;
+  resources.innerHTML = '<div class="system-spec"><span class="small">' + labels.loading + '</span></div>';
+  fetch('/api/system-status', {{cache: 'no-store'}}).then(response => response.json()).then(data => {{
+    const r = data.resources || {{}}; const s = data.specs || {{}}; const g = data.gpu || {{}};
+    const meter = (label, value, pct) => '<div class="system-spec"><span class="small">' + esc(label) + '</span><b>' + esc(value) + '</b>' + (pct == null ? '' : '<div class="system-meter"><span style="width:' + Math.max(0, Math.min(100, Number(pct) || 0)) + '%"></span></div>') + '</div>';
+    const temperature = r.temperature && r.temperature.celsius != null ? r.temperature.celsius + ' °C' : '—';
+    resources.innerHTML = [meter(labels.cpu, r.cpu_percent == null ? '—' : r.cpu_percent + '%', r.cpu_percent), meter(labels.memory, (r.memory_used || '—') + ' / ' + (r.memory_total || '—'), r.memory_percent), meter(labels.swap, (r.swap_used || '—') + ' / ' + (r.swap_total || '—'), r.swap_percent), meter(labels.disk, (r.disk_used || '—') + ' / ' + (r.disk_total || '—'), r.disk_percent), meter(labels.temperature, temperature, null), meter(labels.load, (r.load || []).join(' · ') || '—', null)].join('');
+    const spec = (label, value) => '<div class="system-spec"><span class="small">' + esc(label) + '</span><b>' + esc(value == null || value === '' ? '—' : value) + '</b></div>';
+    specs.innerHTML = [spec(labels.host, s.hostname), spec(labels.os, s.os), spec(labels.kernel, s.kernel), spec(labels.architecture, s.architecture), spec(labels.cpu_model, s.cpu), spec(labels.logical_cpus, s.logical_cpus), spec(labels.python, s.python), spec(labels.uptime, systemUptime(s.uptime_seconds))].join('');
+    if (!g.devices || !g.devices.length) {{ gpuBox.innerHTML = '<div class="system-spec"><span class="small">' + labels.gpu + '</span><b>' + labels.no_gpu + '</b></div>'; }}
+    else {{ gpuBox.innerHTML = g.devices.map(device => spec(g.name || labels.detected, Object.entries(device).map(([key, value]) => key === 'name' ? value : key + ': ' + value).join(' · '))).join('') + spec(labels.source, g.source || '—') + spec(g.available ? labels.available : labels.unavailable, g.note || ''); }}
+    const stamp = document.getElementById('system-status-stamp'); if (stamp) stamp.textContent = (data.server_time || '') + ' · ' + (g.source || '');
+  }}).catch(error => {{ resources.innerHTML = '<div class="system-spec"><b>' + esc(labels.error + error) + '</b></div>'; }});
+  refreshSystemPowerStatus();
+}}
+async function refreshSystemPowerStatus() {{
+  const node = document.getElementById('system-power-status');
+  if (!node) return;
+  const labels = SYSTEM_LABELS[currentUiLanguage] || SYSTEM_LABELS.en;
+  try {{
+    const data = await (await fetch('/api/system-power', {{cache: 'no-store'}})).json();
+    const shutdown = data.scheduled_shutdown && data.scheduled_shutdown !== 'none' ? data.scheduled_shutdown : labels.power_none;
+    const wake = data.wake_alarm && data.wake_alarm !== 'none' ? data.wake_alarm : 'none';
+    node.textContent = labels.power_shutdown + ': ' + shutdown + ' · ' + labels.power_wake + ': ' + wake;
+  }} catch (error) {{ node.textContent = labels.error + error; }}
+}}
+async function systemPowerRequest(body, confirmation) {{
+  if (confirmation && !window.confirm(confirmation)) return;
+  const node = document.getElementById('system-power-status');
+  try {{
+    const response = await fetch('/api/system-power', {{method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body}});
+    const text = await response.text();
+    if (node) node.textContent = text.trim();
+    if (response.ok) setTimeout(refreshSystemPowerStatus, 700);
+  }} catch (error) {{ if (node) node.textContent = String(error); }}
+}}
+function systemPowerNow(action) {{
+  const labels = SYSTEM_LABELS[currentUiLanguage] || SYSTEM_LABELS.en;
+  const text = action === 'reboot' ? labels.power_reboot : labels.power_off;
+  systemPowerRequest('action=' + encodeURIComponent(action), text + '? The monitor connection will close.');
+}}
+function systemPowerSchedule() {{
+  const action = document.getElementById('system-power-action').value;
+  const when = document.getElementById('system-power-at').value;
+  const wake = document.getElementById('system-power-wake').value;
+  if (!when) {{ document.getElementById('system-power-status').textContent = 'Choose a date and time first.'; return; }}
+  systemPowerRequest('action=' + encodeURIComponent(action) + '&when=' + encodeURIComponent(when) + '&wake=' + encodeURIComponent(wake), 'Schedule ' + action + ' for ' + when + '?');
+}}
+function systemPowerCancel() {{
+  systemPowerRequest('action=cancel', 'Cancel the scheduled shutdown and wake-up alarm?');
+}}
+function setUiLanguage(lang) {{
+  const selected = UI_LABELS[lang] ? lang : 'en';
+  const labels = UI_LABELS[selected];
+  currentUiLanguage = selected;
+  document.documentElement.lang = selected;
+  document.querySelectorAll('[data-i18n]').forEach(el => {{
+    const key = el.dataset.i18n;
+    if (labels[key]) el.textContent = labels[key];
+  }});
+  translateStaticUi(selected);
+  const selector = document.getElementById('ui-language');
+  if (selector) selector.value = selected;
+  try {{ localStorage.setItem('panamacompra-ui-language', selected); }} catch (err) {{ /* storage optional */ }}
+  if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
+}}
 function showTab(tab) {{
   if (staffAllowedTabs && !staffAllowedTabs.has(tab)) return;
   document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
@@ -3275,6 +3937,7 @@ function showTab(tab) {{
   if (tab === 'records') refreshRecordIndex();
   if (tab === 'calendar') loadCalendar();
   if (tab === 'scheduler') {{ refreshCronScheduleStatus(); refreshChangedetectionSchedule(); }}
+  if (tab === 'system') refreshSystemStatus();
 }}
 
 async function refreshOverview() {{
@@ -3467,7 +4130,8 @@ function renderQueue(data) {{
   const q = data.queue || {{}};
   document.getElementById('queue-summary').textContent =
     `Collector request: ${{q.collector_state || 'none'}} (since ${{q.collector_since || '-'}}) · ` +
-    `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}})`;
+    `Update + Monitor: ${{q.update_state || 'none'}} (since ${{q.update_since || '-'}}) · ` +
+    `Priority: ${{q.priority_state || 'none'}} / ${{q.priority_label || q.priority_source || '-'}} · waiting: ${{q.priority_pending_count || '0'}}`;
   document.getElementById('queue-log').textContent =
     'Recent collector queue log:\\n' + (q.request_log || '(missing)') +
     '\\nRecent Update + Monitor queue log:\\n' + (q.update_log || '(missing)');
@@ -3619,7 +4283,24 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
 }});
 assignDedicatedTabs();
+moveUiControlsToHeader();
+moveIntegrationSettingsToTab();
+moveAutomaticRunFlagsToOperations();
+ensureSystemStatusTab();
+const uiObserver = new MutationObserver(() => {{
+  if (currentUiLanguage === 'es') translateStaticUi('es');
+}});
+uiObserver.observe(document.body, {{childList: true, subtree: true}});
+let initialUiLanguage = 'en';
+let initialUiTheme = 'light';
+try {{ initialUiLanguage = localStorage.getItem('panamacompra-ui-language') || 'en'; }} catch (err) {{ /* storage optional */ }}
+try {{ initialUiTheme = localStorage.getItem('panamacompra-ui-theme') || 'light'; }} catch (err) {{ /* storage optional */ }}
+setUiTheme(initialUiTheme);
+setUiLanguage(initialUiLanguage);
 showTab('overview');
+setInterval(() => {{
+  if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
+}}, 10000);
 initCollapsibleSections();
 initHeaderLinks();
 initProgressCard();
@@ -3772,6 +4453,14 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 if required_tab is None or required_tab not in tabs:
                     self.send_text(403, "your account does not have access to this action\n", "text/plain; charset=utf-8")
                     return
+        if path == "/api/system-power":
+            if self._access_level()[0] != "admin":
+                self.send_text(403, "manager access required for host power controls\n", "text/plain; charset=utf-8")
+                return
+            action = form.get("action", [""])[0].strip().lower()
+            ok, message = apply_system_power_action(action, form.get("when", [""])[0].strip(), form.get("wake", [""])[0].strip())
+            self.send_text(200 if ok else 400, message.rstrip() + "\n", "text/plain; charset=utf-8")
+            return
         if path == "/api/request-run":
             raw_detail = form.get("detail_limit", ["0"])[0].strip()
             raw_index = form.get("index_limit", ["0"])[0].strip()
@@ -3780,8 +4469,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
             index_limit_text = "all" if index_limit == "0" else index_limit
             mode = form.get("mode", ["restart"])[0].strip().lower()
             if mode == "test":
-                subprocess.Popen([str(BASE_DIR / "src/20_pipeline/070-test-zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_text(202, f"Test-zone run requested with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
+                subprocess.Popen([str(BASE_DIR / "src/20_pipeline/125-run-priority.sh"), "test", "80", "test", "--", str(BASE_DIR / "src/20_pipeline/070-test-zone.py"), "--limit", detail_limit, "--apply"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.send_text(202, f"Test-zone run queued at priority 80 with detail limit {detail_limit}.\n", "text/plain; charset=utf-8")
                 return
             if mode == "manual":
                 subprocess.Popen([str(BASE_DIR / "src/20_pipeline/110b-run-now.sh"), detail_limit, index_limit, "MANUAL"], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -3831,7 +4520,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 ("PC_CRON_INTERVAL_MINUTES", interval),
             ):
                 save_monitor_setting(key, value)
-            save_monitor_setting("PC_AUTORUN_SOURCE", "cron" if enabled else "changedetection")
+            save_monitor_setting("PC_AUTORUN_SOURCE", "both" if enabled else "changedetection")
 
             script = str(BASE_DIR / "src/50_tools/160-manage-cron-schedule.py")
             if not enabled:
@@ -4041,6 +4730,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 if isinstance(settings_map, dict):
                     payload["settings"] = {k: v for k, v in settings_map.items() if k not in SENSITIVE_SETTING_KEYS}
             self.send_text(200, json.dumps(payload, ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/system-status":
+            self.send_text(200, json.dumps(system_status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/system-power":
+            self.send_text(200, json.dumps(system_power_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
         if path == "/api/web-timer":
             self.send_text(200, json.dumps(web_timer_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")

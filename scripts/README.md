@@ -97,6 +97,14 @@ Numbered runner/inspector helpers in the same folder (`100-run-worker.sh`, `110a
 `120a-stop-everything.sh`, `120b-stop-collectors.sh`) orchestrate or inspect the sequence
 above rather than being a step in it.
 
+`125-run-priority.sh` is the shared exclusive dispatcher. Its runtime state is
+under `data/queue/priority-run.state`, pending jobs are under
+`data/queue/priority-pending/`, and the monitor displays both the active job and
+the number waiting. Priority order is update/migration (100), repair (90), test
+(80), manual collector (60), maintenance/Cron (50/40), and changedetection (20).
+Requests are coalesced by operation where appropriate, and queued jobs resume
+automatically after the current job exits.
+
 ## Legacy one-time tools
 
 These completed their purpose and are kept only for reference/recovery; do not

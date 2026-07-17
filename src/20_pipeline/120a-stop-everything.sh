@@ -31,6 +31,7 @@ pkill -TERM -f "[t]imeout .*030-collect-details.py" 2>/dev/null || true
 echo "2) Stopping test zone runner..."
 pkill -TERM -f "[p]ython3? -u .*070-test-zone.py" 2>/dev/null || true
 pkill -TERM -f "[0]70-test-zone.py" 2>/dev/null || true
+pkill -TERM -f "[0]50-repair-missing-deadlines.py" 2>/dev/null || true
 
 # ============================================================================
 # STEP 3: Stop calendar builder (ICS package generation)
@@ -81,6 +82,7 @@ pkill -9 -f "[w]atch-queue-flag.sh" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u .*010-collect-index.py" 2>/dev/null || true
 pkill -9 -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
+pkill -9 -f "[0]50-repair-missing-deadlines.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate-local-copy.sh" 2>/dev/null || true
 pc_webhook_kill_host_processes KILL

@@ -75,16 +75,20 @@ while true; do
   fi
   launch_queued_update_monitor
   if [ -f "$FLAG" ] && ! worker_running; then
-    if [ "$AUTORUN_SOURCE" = "cron" ]; then
-      log "request flag ignored because PC_AUTORUN_SOURCE=cron; remove flag and leave cron as the only automatic runner"
-      rm -f "$FLAG"
-      sleep "$POLL_SECONDS"
-      continue
-    fi
+    case "$AUTORUN_SOURCE" in
+      changedetection|both|all) ;;
+      *)
+        log "request flag ignored because changedetection autorun is disabled (PC_AUTORUN_SOURCE=$AUTORUN_SOURCE)"
+        rm -f "$FLAG"
+        sleep "$POLL_SECONDS"
+        continue
+        ;;
+    esac
     log "request flag detected; launching host collector"
     # 110a-request-run.sh keeps/refreshes the flag and starts the host worker,
     # which consumes the request. Never let one failure stop the watcher.
-    PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "110a-request-run.sh returned non-zero"
+    PC_MONITOR_MODE="$CHANGEDETECTION_MONITOR_MODE" PC_RUN_SOURCE=changedetection PC_PRIORITY_LABEL="changedetection automatic collector" \
+      PC_RUN_MODE=AUTO PC_INDEX_LIMIT="$INDEX_LIMIT" "$APP_ROOT/src/20_pipeline/110a-request-run.sh" "$DETAIL_LIMIT" AUTO "$INDEX_LIMIT" >> "$REQUEST_LOG" 2>&1 || log "110a-request-run.sh returned non-zero"
   fi
   sleep "$POLL_SECONDS"
 done

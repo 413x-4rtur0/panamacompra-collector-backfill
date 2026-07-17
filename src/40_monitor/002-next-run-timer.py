@@ -387,7 +387,7 @@ def changedetection_next_check() -> tuple[datetime | None, str]:
     """
     global _CHANGEDETECTION_CACHE
 
-    if AUTORUN_SOURCE != "changedetection" or not CHANGEDETECTION_API_KEY:
+    if AUTORUN_SOURCE not in {"changedetection", "both", "all"} or not CHANGEDETECTION_API_KEY:
         return None, ""
 
     now_epoch = datetime.now().timestamp()
@@ -503,8 +503,8 @@ def changedetection_watch_status() -> dict[str, object]:
         "schedule_note": "",
         "error": "",
     }
-    if AUTORUN_SOURCE != "changedetection":
-        payload["error"] = "Auto-run source is set to cron, not changedetection."
+    if AUTORUN_SOURCE not in {"changedetection", "both", "all"}:
+        payload["error"] = "Auto-run source is set to Cron, not changedetection."
         _CHANGEDETECTION_WATCH_STATUS_CACHE = (now_epoch, payload)
         return payload
     if not CHANGEDETECTION_API_KEY:
@@ -805,7 +805,7 @@ def main() -> int:
     root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{WINDOW_TOP}")
     root.after(300, apply_window_alpha)
 
-    timer_title = "Next changedetection check" if AUTORUN_SOURCE == "changedetection" else "Next live run"
+    timer_title = "Next changedetection check" if AUTORUN_SOURCE in {"changedetection", "both", "all"} else "Next live run"
     tk.Label(root, text=timer_title, font=("Sans", 12, "bold"), bg="#1e293b", fg="#fbbf24").pack(pady=(10, 1))
     tk.Label(root, textvariable=transparency_var, font=("Sans", 8), bg="#1e293b", fg="#93c5fd", wraplength=WINDOW_WIDTH - 24).pack(pady=(0, 1))
     next_var = tk.StringVar(value="Loading...")
