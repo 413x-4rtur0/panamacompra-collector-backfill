@@ -1722,6 +1722,8 @@ hours** and **Show numbers** when the source time or opportunity number is neede
 Day/week timelines keep 07:00 visible and collapse 00:00–06:00 by default into one
 compact row; use **Show 00–06 rows** to expand them. Saturday and Sunday are hidden
 by default in week/month views; use **Show Sat/Sun** when weekend columns are needed.
+When matching events exist in a hidden range, the calendar displays a warning with
+the hidden count and the control needed to reveal it.
 Event chips are limited to two visible lines, while the **Prev**, **Today**, **Next**,
 and **Show** date controls wrap cleanly on narrow screens. In the monthly grid, the
 left **Wk** column shows backend-calculated ISO week numbers: click a day to open its

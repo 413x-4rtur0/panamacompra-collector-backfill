@@ -1777,6 +1777,7 @@ a.calevent:hover {{ filter: brightness(1.25); }}
 .cal-filter-row .xs {{ flex: 1 1 220px; min-width: 0; }}
 .cal-display-row {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 6px 0 2px; padding: 6px 10px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
 .cal-display-row label {{ white-space: nowrap; }}
+.calendar-warning {{ margin: 8px 10px 0; padding: 7px 10px; border: 1px solid #f59e0b; border-radius: 7px; background: #451a03; color: #fde68a; font-size: .82rem; line-height: 1.35; }}
 .wk-corner {{ background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }}
 .agenda-empty {{ padding: 16px; }}
 .year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
@@ -2493,6 +2494,12 @@ function renderCalendarDayCell(day, events, blank, maxShown) {{
   if (day.iso === day.today) classes.push('today');
   return `<div class="${{classes.join(' ')}}" onclick="calendarZoomTo('${{day.iso}}', 'day')"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
 }}
+function calendarVisibilityWarning(earlyCount, weekendCount) {{
+  const notices = [];
+  if (earlyCount) notices.push(`${{earlyCount}} event(s) between 00:00 and 06:00 are hidden. Use “Show 00–06 rows”.`);
+  if (weekendCount) notices.push(`${{weekendCount}} event(s) on Saturday/Sunday are hidden. Use “Show Sat/Sun”.`);
+  return notices.length ? `<div class="calendar-warning" role="status">⚠ ${{notices.join(' ')}}</div>` : '';
+}}
 async function renderCalendarVisual() {{
   const node = document.getElementById('calendar-visual');
   if (!node) return;
@@ -2534,13 +2541,14 @@ async function renderCalendarVisual() {{
       const earlyEvents = byHour.slice(0, 7).flat();
       const collapsedEarlyRow = !calendarShowEarlyHours && earlyEvents.length
         ? `<div class="hour-label timeline-collapsed">00–06</div><div class="hour-lane timeline-collapsed">${{earlyEvents.map(renderCalendarEvent).join('')}}</div>` : '';
+      const visibilityWarning = calendarVisibilityWarning(calendarShowEarlyHours ? 0 : earlyEvents.length, 0);
       const firstHour = calendarShowEarlyHours ? 0 : 7;
       const hourRows = byHour.slice(firstHour).map((evsAtHour, index) => {{
         const h = index + firstHour;
         return `<div class="hour-label">${{String(h).padStart(2, '0')}}:00</div><div class="hour-lane">${{evsAtHour.map(renderCalendarEvent).join('')}}</div>`;
       }}).join('');
       const note = evs.length ? 'Hover an event for location details; click it to open the opportunity.' : 'No opportunities on this day.';
-      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div><div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
+      node.innerHTML = `<div class="calendar-board day-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">${{note}}</span></div>${{visibilityWarning}}<div class="timeline-scroll"><div class="timeline">${{notimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     if (view === 'week') {{
@@ -2550,10 +2558,14 @@ async function renderCalendarVisual() {{
         const evs = grouped[day.iso] || [];
         const byHour = Array.from({{length: 24}}, () => []);
         evs.forEach(ev => {{ if (hasTime(ev)) byHour[hourOf(ev)].push(ev); }});
-        return {{ i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour }};
+        return {{ i, iso: day.iso, notime: evs.filter(ev => !hasTime(ev)), byHour, total: evs.length }};
       }});
       const visibleCols = calendarShowWeekend ? cols : cols.filter(c => c.i < 5);
       const anyNotime = visibleCols.some(c => c.notime.length);
+      const hiddenWeekendEvents = calendarShowWeekend
+        ? 0 : cols.filter(c => c.i >= 5).reduce((sum, c) => sum + c.total, 0);
+      const hiddenEarlyEvents = calendarShowEarlyHours
+        ? 0 : visibleCols.reduce((sum, c) => sum + c.byHour.slice(0, 7).flat().length, 0);
       const hasEarlyEvents = visibleCols.some(c => c.byHour.slice(0, 7).some(evsAtHour => evsAtHour.length));
       const collapsedEarlyRow = !calendarShowEarlyHours && hasEarlyEvents
         ? '<div class="hour-label wk-collapsed">00–06</div>' + visibleCols.map(c => `<div class="hour-lane wk-collapsed">${{c.byHour.slice(0, 7).flat().map(renderCalendarEvent).join('')}}</div>`).join('') : '';
@@ -2566,13 +2578,19 @@ async function renderCalendarVisual() {{
       const visibleHead = '<div class="wk-corner"></div>' + visibleCols.map(c => `<div class="wk-head zoomable" onclick="calendarZoomTo('${{c.iso}}', 'day')">${{WEEKDAY_LABELS[c.i] || ''}} ${{esc((c.iso || '').slice(5))}}</div>`).join('');
       const visibleNotimeRow = anyNotime
         ? '<div class="hour-label wk-notime">No time</div>' + visibleCols.map(c => `<div class="hour-lane wk-notime">${{c.notime.map(renderCalendarEvent).join('')}}</div>`).join('') : '';
-      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline" style="grid-template-columns: 64px repeat(${{visibleCols.length}}, minmax(0, 1fr));">${{visibleHead}}${{visibleNotimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
+      const visibilityWarning = calendarVisibilityWarning(hiddenEarlyEvents, hiddenWeekendEvents);
+      node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div>${{visibilityWarning}}<div class="timeline-scroll"><div class="week-timeline" style="grid-template-columns: 64px repeat(${{visibleCols.length}}, minmax(0, 1fr));">${{visibleHead}}${{visibleNotimeRow}}${{collapsedEarlyRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
     const leading = Number(g.first_weekday || 0);
     const rowCount = Math.ceil((leading + days.length) / 7);
     const weeks = g.weeks || [];
     const visibleDayColumns = calendarShowWeekend ? [0, 1, 2, 3, 4, 5, 6] : [0, 1, 2, 3, 4];
+    const hiddenWeekendEvents = calendarShowWeekend ? 0 : days.reduce((sum, day) => {{
+      const weekday = new Date(day.iso + 'T12:00:00Z').getUTCDay();
+      return sum + ((weekday === 0 || weekday === 6) ? (grouped[day.iso] || []).length : 0);
+    }}, 0);
+    const visibilityWarning = calendarVisibilityWarning(0, hiddenWeekendEvents);
     let cells = '<div class="week-number-header">Wk</div>' + visibleDayColumns.map(i => `<div class="dow">${{WEEKDAY_LABELS[i]}}</div>`).join('');
     for (let row = 0; row < rowCount; row++) {{
       const weekInfo = weeks[row] || {{}};
@@ -2587,7 +2605,7 @@ async function renderCalendarVisual() {{
           : renderCalendarDayCell(days[index], grouped[days[index].iso] || [], false);
       }}
     }}
-    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to open its day view; click Wk to open the week.</span></div><div class="calgrid" style="grid-template-columns: 48px repeat(${{visibleDayColumns.length}}, minmax(0, 1fr));">${{cells}}</div></div>`;
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to open its day view; click Wk to open the week.</span></div>${{visibilityWarning}}<div class="calgrid" style="grid-template-columns: 48px repeat(${{visibleDayColumns.length}}, minmax(0, 1fr));">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
