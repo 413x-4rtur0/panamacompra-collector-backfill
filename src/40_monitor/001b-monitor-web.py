@@ -1882,10 +1882,37 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .waha-alert {{ background: var(--amber-50); border: 2px solid var(--amber-500); border-radius: var(--radius-lg); padding: 12px 16px; margin: 0 0 16px; color: var(--ink-900); }}
 .waha-alert button {{ margin-left: 10px; }}
 .waha-alert img {{ display: block; margin-top: 10px; background: #fff; padding: 8px; border-radius: var(--radius-md); border: 1px solid var(--concrete-200); }}
+/* App header: ink bar with the ARL-89 mark, sister-site links, the progress
+   toggle and sign-out — brand pairing is amber on ink. */
+.app-header {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--ink-900); border-radius: var(--radius-lg); padding: 10px 16px; margin: 0 0 14px; border-bottom: 3px solid var(--amber-500); }}
+.app-header .brand {{ display: flex; align-items: center; gap: 10px; }}
+.app-header .brand svg {{ display: block; border-radius: 4px; }}
+.app-header .brand-name {{ font-family: var(--font-display); color: var(--concrete-0); font-size: 1.15rem; letter-spacing: -0.015em; }}
+.app-header .brand-name b {{ color: var(--amber-400); }}
+.header-actions {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+.header-actions a {{ color: var(--concrete-200); text-decoration: none; font-size: .9rem; padding: 6px 10px; border-radius: var(--radius-sm); }}
+.header-actions a:hover {{ color: var(--amber-300); background: var(--ink-700); }}
+.header-actions button {{ margin: 0; background: var(--ink-700); color: var(--concrete-100); border-color: var(--ink-600); }}
+.header-actions button:hover {{ background: var(--ink-600); }}
+.header-actions button.signout {{ background: var(--amber-500); color: var(--ink-900); border-color: var(--amber-600); font-weight: 700; }}
+.header-actions button.signout:hover {{ background: var(--amber-600); }}
+/* Calendar controls: selector cluster left, Prev|Today|Next as one segmented
+   group center, Show on the right. */
+.cal-controls-row {{ justify-content: space-between; }}
+.cal-cluster {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+.cal-nav {{ display: inline-flex; }}
+.cal-nav button {{ margin: 0; border-radius: 0; border-right-width: 0; }}
+.cal-nav button:first-child {{ border-radius: var(--radius-md) 0 0 var(--radius-md); }}
+.cal-nav button:last-child {{ border-radius: 0 var(--radius-md) var(--radius-md) 0; border-right-width: 1px; }}
+.cal-nav button.today {{ background: var(--amber-500); border: 1px solid var(--amber-600); color: var(--ink-900); font-weight: 700; }}
+.cal-nav button.today:hover {{ background: var(--amber-600); }}
+.subsection h3 .section-toggle {{ float: right; }}
 /* Phone layout: single-column grids, edge-to-edge cards, stacked key/value
    tables, and horizontally scrollable tab bar so nothing overflows the screen. */
 @media (max-width: 640px) {{
   body {{ margin: 10px; }}
+  .app-header {{ padding: 8px 10px; }}
+  .app-header .brand-name {{ font-size: 1rem; }}
   h1 {{ font-size: 1.5rem; }}
   .card {{ padding: 12px; border-radius: var(--radius-lg); }}
   .tab-nav {{ flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
@@ -1909,8 +1936,20 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>PanamaCompra Progress Monitor</h1>
+<header class="app-header">
+  <div class="brand">
+    <svg width="34" height="34" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ARL-89 mark"><rect width="128" height="128" rx="8" fill="#F5A300"></rect><path d="M0 0H44L0 44V0Z" fill="#121417"></path><path d="M0 52V32L32 0H52L0 52Z" fill="#F5A300"></path><path d="M0 32V20L20 0H32L0 32Z" fill="#121417"></path><text x="70" y="90" font-family="Archivo, 'Arial Black', system-ui, sans-serif" font-size="60" font-weight="800" fill="#121417" text-anchor="middle" letter-spacing="-2">89</text></svg>
+    <span class="brand-name">PanamaCompra <b>MONITOR</b></span>
+  </div>
+  <nav class="header-actions">
+    <a id="link-home-site" href="#" title="ARL-89 home site (WordPress)">ARL-89 Home</a>
+    <a id="link-tools-site" href="#" title="Tools portal (Homepage dashboard)">Tools</a>
+    <button id="progress-toggle" onclick="toggleProgressCard()" title="Hide or show the progress monitor card">Hide progress</button>
+    <button class="signout" onclick="adminSignOut()" title="End the admin session and go to the ARL-89 home site">Sign out</button>
+  </nav>
+</header>
+<div class="card" id="progress-card">
+  <h2>Progress monitor</h2>
   <p class="small"><span id="server-time">Loading...</span> · Next run in <b id="web-timer-countdown">…</b> · Low-power polling every <span id="refresh-label">{REFRESH_SECONDS}</span>s while running · JSON: <a href="/api/status">/api/status</a></p>
   <div class="bar"><div class="fill" id="fill">0%</div></div>
   <p class="message" id="message">Loading...</p>
@@ -1927,12 +1966,12 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
     <p class="small">Open WhatsApp on your phone → Linked Devices → Link a Device, and scan. The code refreshes automatically while shown.</p>
   </div>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button><button style="margin-left:auto" title="End the admin session on this browser" onclick="adminSignOut()">Sign out</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
+<div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#247A47;font-weight:700">upcoming</span> · <span style="color:#B06E00;font-weight:700">next to expire</span> · <span style="color:#AE2D1C;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
 <div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div>
-<div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#247A47;font-weight:700">upcoming</span> · <span style="color:#B06E00;font-weight:700">next to expire</span> · <span style="color:#AE2D1C;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card" data-tab="overview"><h2>System health <span class="kpi-live" id="overview-live-stamp">LIVE</span></h2><p class="small">Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.</p><div id="overview-kpis" class="kpi-grid">Loading overview…</div></div>
 <div class="card" data-tab="overview"><h2>Last run stages</h2><p class="small" id="overview-last-run">No completed run recorded yet.</p><div id="overview-stages" class="chart"></div></div>
 <div class="card" data-tab="overview"><h2>Services</h2><div id="overview-services" class="small">Loading services…</div><p class="small">Webhook access details and the changedetection script live in the Integrations tab.</p></div>
@@ -1942,7 +1981,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="records"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. <label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label> <button onclick="loadCalendar(-1)">◀ Prev</button> <button onclick="loadCalendar(0)">Today</button> <button onclick="loadCalendar(1)">Next ▶</button> <button onclick="loadCalendar()">Show</button></p><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><pre id="calendar-text" style="max-height: 420px">Loading calendar…</pre></div>
+<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><div class="subsection"><h3>Calendar text summary <button class="section-toggle" onclick="togglePane('calendar-text', this)">Show</button></h3><pre id="calendar-text" style="max-height: 320px" hidden>Loading calendar…</pre></div><div class="subsection"><h3>Opportunities in this range <button class="section-toggle" onclick="togglePane('calendar-list', this)">Show</button></h3><pre id="calendar-list" style="max-height: 420px" hidden>Loading…</pre></div></div>
 <div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
@@ -2335,7 +2374,14 @@ async function loadCalendar(shift) {{
     const data = await response.json();
     calendarAnchor = data.anchor;
     if (document.activeElement !== dateBox) dateBox.value = data.anchor;
-    document.getElementById('calendar-text').textContent = data.text;
+    // The text renderer returns the ASCII calendar grid followed by the
+    // day-by-day opportunity list; split them into their own panes at the
+    // first "Ddd YYYY-MM-DD — N opportunity(ies):" heading.
+    const text = data.text || '';
+    const firstDay = text.match(/^\\S{{3}} \\d{{4}}-\\d{{2}}-\\d{{2}} — /m);
+    const cut = firstDay ? firstDay.index : text.length;
+    document.getElementById('calendar-text').textContent = text.slice(0, cut).trimEnd() || '(no calendar grid for this view)';
+    document.getElementById('calendar-list').textContent = text.slice(cut).trim() || '(no opportunities in this range)';
     renderCalendarVisual();
   }} catch (err) {{ document.getElementById('calendar-text').textContent = 'Calendar unavailable: ' + err; }}
 }}
@@ -2362,9 +2408,38 @@ function moveWebhookAutoRunControlToScheduler() {{
 }}
 moveWebhookAutoRunControlToScheduler();
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
+// Sister ARL-89 sites on this same host: WordPress home (8095) and the
+// Homepage tools dashboard (8080). Links are built from location.hostname so
+// they work identically from localhost and from any LAN PC.
+const ARL_HOME_PORT = 8095;
+const ARL_TOOLS_PORT = 8080;
+function siteUrl(port) {{ return 'http://' + (location.hostname || '127.0.0.1') + ':' + port + '/'; }}
+function initHeaderLinks() {{
+  const home = document.getElementById('link-home-site');
+  const tools = document.getElementById('link-tools-site');
+  if (home) home.href = siteUrl(ARL_HOME_PORT);
+  if (tools) tools.href = siteUrl(ARL_TOOLS_PORT);
+}}
+function toggleProgressCard() {{
+  const card = document.getElementById('progress-card');
+  const btn = document.getElementById('progress-toggle');
+  card.classList.toggle('collapsed');
+  const hidden = card.classList.contains('collapsed');
+  if (btn) btn.textContent = hidden ? 'Show progress' : 'Hide progress';
+  try {{ localStorage.setItem('pc_progress_hidden', hidden ? '1' : '0'); }} catch (err) {{ /* private mode */ }}
+}}
+function initProgressCard() {{
+  try {{ if (localStorage.getItem('pc_progress_hidden') === '1') toggleProgressCard(); }} catch (err) {{ /* private mode */ }}
+}}
+function togglePane(id, btn) {{
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.hidden = !el.hidden;
+  if (btn) btn.textContent = el.hidden ? 'Show' : 'Hide';
+}}
 async function adminSignOut() {{
   try {{ await fetch('/api/session-logout', {{method: 'POST'}}); }} catch (err) {{ /* cookie clear is best-effort */ }}
-  location.href = '/?signedout=1';  // ?signedout=1 tells the login page not to auto-resume the Firebase session
+  location.href = siteUrl(ARL_HOME_PORT);  // leave the monitor for the ARL-89 home site
 }}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
@@ -3078,6 +3153,8 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
 assignDedicatedTabs();
 showTab('overview');
 initCollapsibleSections();
+initHeaderLinks();
+initProgressCard();
 initCalendarDisplayControls();
 refreshRecordIndex();
 loadTemplates();
