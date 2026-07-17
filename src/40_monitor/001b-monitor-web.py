@@ -46,6 +46,7 @@ from monitor_common import (  # noqa: E402
     setting,
     stats_to_csv,
     summarize_items_for_kpi,
+    waha_api_key,
     waha_fetch_all,
     waha_filter_matches,
 )
@@ -1001,8 +1002,8 @@ def _sign_session(payload_b64: str) -> str:
     return hmac.new(_session_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
 
 
-def make_session_token(uid: str, email: str, role: str) -> str:
-    payload = json.dumps({"uid": uid, "email": email, "role": role, "exp": int(time.time()) + SESSION_TTL_SECONDS})
+def make_session_token(uid: str, email: str, role: str, tabs: list[str] | None = None) -> str:
+    payload = json.dumps({"uid": uid, "email": email, "role": role, "tabs": tabs or [], "exp": int(time.time()) + SESSION_TTL_SECONDS})
     payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
     return payload_b64 + "." + _sign_session(payload_b64)
 
@@ -1053,6 +1054,97 @@ def verify_firebase_id_token(id_token: str) -> dict | None:
         return None
     return {"uid": str(users[0].get("localId") or ""), "email": str(users[0].get("email") or "").strip().lower()}
 
+
+# ---- Manager-created monitor users (per-tab access) -------------------------
+# The manager can add named users who sign in with the same front-page
+# "Manager" form but only see (and can only drive) the tabs granted to them.
+# Stored in data/config/monitor_users.json, managed from Settings → "Monitor
+# users & tab access". The main PC_ADMIN_USERNAME account always has all tabs.
+MONITOR_USERS_PATH = pc_common.DATA_CONFIG_DIR / "monitor_users.json"
+MONITOR_USERS_LOCK = threading.Lock()
+VALID_MONITOR_TABS = ("overview", "calendar", "decision", "records", "operations", "whatsapp", "scheduler", "integrations", "settings")
+
+
+def _normalize_monitor_user(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        raise ValueError("each monitor user must be an object")
+    username = str(item.get("username") or "").strip()
+    if not username:
+        return None
+    tabs = item.get("tabs") or []
+    if isinstance(tabs, str):
+        tabs = [t.strip() for t in tabs.split(",")]
+    if not isinstance(tabs, list):
+        raise ValueError("tabs must be a list or comma-separated string")
+    tabs = [t for t in (str(t).strip().lower() for t in tabs) if t in VALID_MONITOR_TABS]
+    return {
+        "username": username,
+        "password": str(item.get("password") or ""),
+        "tabs": tabs or ["overview", "calendar"],
+        "enabled": bool(item.get("enabled", True)),
+    }
+
+
+def read_monitor_users() -> list[dict]:
+    try:
+        parsed = json.loads(MONITOR_USERS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for item in parsed:
+        try:
+            user = _normalize_monitor_user(item)
+        except ValueError:
+            continue
+        if user is not None:
+            out.append(user)
+    return out
+
+
+def save_monitor_users_text(text: str) -> list[dict]:
+    try:
+        parsed = json.loads(text or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid users JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError("monitor users must be a JSON list")
+    normalized = [u for u in (_normalize_monitor_user(item) for item in parsed) if u is not None]
+    with MONITOR_USERS_LOCK:
+        MONITOR_USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MONITOR_USERS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return normalized
+
+
+def find_monitor_user(username: str, password: str) -> dict | None:
+    """Constant-time-ish credential check against monitor_users.json."""
+    for user in read_monitor_users():
+        if not user.get("enabled", True) or not user.get("password"):
+            continue
+        if hmac.compare_digest(username, user["username"]) and hmac.compare_digest(password, user["password"]):
+            return user
+    return None
+
+
+# Settings keys whose values never leave the server for staff sessions —
+# staff /api/status responses carry a redacted settings map.
+SENSITIVE_SETTING_KEYS = {"WAHA_API_KEY", "WAHA_DASHBOARD_PASSWORD", "PC_ADMIN_PASSWORD", "PC_ADMIN_API_TOKEN", "PC_ADMIN_USERNAME", "PC_FIREBASE_WEB_API_KEY"}
+
+# POST endpoints a staff session may call, mapped to the tab that grants
+# them. Anything not listed here stays full-admin-only.
+STAFF_POST_TAB_MAP = {
+    "/api/request-run": "operations",
+    "/api/manual-action": "operations",
+    "/api/import-calendars": "records",
+    "/api/selected-record-action": "records",
+    "/api/open-record-folder": "records",
+    "/api/test-whatsapp": "whatsapp",
+    "/api/waha-filters": "whatsapp",
+    "/api/waha-clients": "whatsapp",
+    "/api/waha-format": "whatsapp",
+    "/api/cron-schedule": "scheduler",
+}
 
 # Paths a request may hit WITHOUT admin access: the client dashboard, the
 # uid-scoped client APIs the Android client app already relies on, and the
@@ -1782,7 +1874,10 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .destination-grid label {{ color: var(--concrete-500); }}
 .destination-grid input, .destination-grid textarea {{ width: 100%; box-sizing: border-box; }}
 .settings-grid input {{ width: 100%; box-sizing: border-box; }}
-.section-toggle {{ float: right; margin-left: 12px; padding: 5px 10px; font-size: .8rem; }}
+/* Card/section headings are flex rows so the Show/Hide toggle (and LIVE
+   badges) stay aligned INSIDE the card instead of floating out of it. */
+.card > h1, .card > h2, .subsection > h3 {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+.section-toggle {{ float: none; margin: 0 0 0 auto; padding: 5px 10px; font-size: .8rem; }}
 .card.collapsed > *:not(h1):not(h2) {{ display: none; }}
 #diagnostics td {{ font-variant-numeric: tabular-nums; word-break: break-word; user-select: text; font-family: var(--font-mono); font-size: .88rem; }}
 .tab-nav {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; position: sticky; top: 0; z-index: 5; background: #F6F5F2E6; backdrop-filter: blur(8px); padding: 8px 0; border-bottom: 2px solid var(--ink-900); }}
@@ -1906,7 +2001,9 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .cal-nav button:last-child {{ border-radius: 0 var(--radius-md) var(--radius-md) 0; border-right-width: 1px; }}
 .cal-nav button.today {{ background: var(--amber-500); border: 1px solid var(--amber-600); color: var(--ink-900); font-weight: 700; }}
 .cal-nav button.today:hover {{ background: var(--amber-600); }}
-.subsection h3 .section-toggle {{ float: right; }}
+.cal-subtabs {{ display: flex; gap: 0; margin: 10px 0 0; border-bottom: 2px solid var(--ink-900); }}
+.cal-subtabs button {{ margin: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; border: 1px solid var(--concrete-300); border-bottom: 0; background: var(--concrete-100); color: var(--concrete-600); padding: 7px 14px; }}
+.cal-subtabs button.active {{ background: var(--ink-900); color: var(--amber-400); border-color: var(--ink-900); }}
 /* Phone layout: single-column grids, edge-to-edge cards, stacked key/value
    tables, and horizontally scrollable tab bar so nothing overflows the screen. */
 @media (max-width: 640px) {{
@@ -1981,7 +2078,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
 <div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div><div class="subsection"><h3>Calendar text summary <button class="section-toggle" onclick="togglePane('calendar-text', this)">Show</button></h3><pre id="calendar-text" style="max-height: 320px" hidden>Loading calendar…</pre></div><div class="subsection"><h3>Opportunities in this range <button class="section-toggle" onclick="togglePane('calendar-list', this)">Show</button></h3><pre id="calendar-list" style="max-height: 420px" hidden>Loading…</pre></div></div>
+<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div class="cal-subtabs"><button type="button" class="active" data-calpane="visual" onclick="showCalPane('visual')">Visual calendar</button><button type="button" data-calpane="text" onclick="showCalPane('text')">Text summary</button><button type="button" data-calpane="list" onclick="showCalPane('list')">Opportunities list</button></div><div id="calpane-visual"><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div></div><div id="calpane-text" hidden><pre id="calendar-text" style="max-height: 480px">Loading calendar…</pre></div><div id="calpane-list" hidden><pre id="calendar-list" style="max-height: 520px">Loading…</pre></div></div>
 <div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
@@ -1989,6 +2086,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="whatsapp"><h2>WhatsApp client profiles</h2><div class="subsection"><h3>Add / update a client</h3><p class="small">Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').</p><p><label class="small">Client name <input id="client-name" size="18"></label> <label class="small">Destination <select id="client-group-select"><option value="">— search first —</option></select></label> <label class="small">or custom chat ID <input id="client-chat-custom" size="22" placeholder="12036...@g.us"></label></p><p><span class="small">Purposes</span> <label class="small"><input type="checkbox" id="client-purpose-index" checked> index</label> <label class="small"><input type="checkbox" id="client-purpose-details" checked> details</label> <label class="small"><input type="checkbox" id="client-purpose-status" checked> status</label> <label class="small">Filter expression <input id="client-filters" size="30" placeholder="salud + insumos, -construccion"></label> <button onclick="addClientProfile()">Add to profiles</button></p></div><div class="subsection"><h3>Profiles (JSON)</h3><p class="small">Full list, editable by hand. Purposes: index, details, status, or all.</p><textarea id="waha-clients" rows="10" placeholder='[{{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion","enabled":true}}]'></textarea><p><button onclick="saveWahaClients()">Save client profiles</button></p></div></div><div class="card" data-tab="whatsapp"><h2>WAHA Directory Search</h2><p class="small">Search the complete WAHA directory by one or more words from a name or chat ID. Results filter live from a short-lived local cache, so typing does not repeatedly download contacts, groups, communities and channels.</p><p><label class="small">Name or ID <input id="waha-search-q" size="40" placeholder="e.g. Chiriquí contratistas, 12036, @g.us" oninput="scheduleWahaSearch()" onkeydown="if (event.key === 'Enter') {{ event.preventDefault(); wahaSearch(); }}"></label> <button onclick="wahaSearch()">Search</button> <button onclick="wahaSearch(true)">Refresh directory</button> <span id="waha-search-state" class="small"></span></p><div id="waha-search-results" class="small"></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option><option value="system">System / health</option><option value="summary">Final summary</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div>
 <div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><h3>Access &amp; sign-in</h3><p class="xs">The front page (/) is a login for everyone except this PC itself (127.0.0.1 always gets straight in). <b>Manager</b>: local username/password below — grants this admin monitor. <b>Clients</b>: Firebase email/Google sign-in — they land on the calendar-only dashboard at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a>. An email listed in "Admin emails" also gets the admin monitor when signing in via Firebase. The API token lets the Android admin app call the protected APIs (X-PC-Admin-Token header or ?admin_token=).</p><div class="settings-grid"><label class="small">Manager username <input id="set-PC_ADMIN_USERNAME" size="18" autocomplete="off"></label> <label class="small">Manager password <input id="set-PC_ADMIN_PASSWORD" size="18" type="password" autocomplete="new-password"></label> <label class="small">Admin emails (comma separated) <input id="set-PC_ADMIN_EMAILS" size="34" placeholder="you@gmail.com, other@x.com"></label> <label class="small">Admin API token (Android admin app) <input id="set-PC_ADMIN_API_TOKEN" size="26" placeholder="blank = off"></label></div><h4 class="small" style="margin:10px 0 4px">Client sign-in (Firebase web app)</h4><p class="xs">Same Firebase project as the Android app: in Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = client sign-in disabled (manager login and ?uid= links keep working).</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
+<div class="card" data-tab="settings"><h2>Monitor users &amp; tab access</h2><p class="small">Users you add here sign in with the same front-page <b>Manager</b> form, but only see — and can only drive — the tabs you grant them. Full admin stays with the manager account and PC_ADMIN_EMAILS. Server-side, their sessions get read access plus the actions belonging to their tabs; secret settings values are never sent to them.</p><div class="subsection"><h3>Add / update a user</h3><p><label class="small">Username <input id="mu-username" size="14" autocomplete="off"></label> <label class="small">Password <input id="mu-password" size="14" type="password" autocomplete="new-password"></label></p><p><span class="small">Tabs:</span> <label class="small"><input type="checkbox" id="mu-tab-overview" checked> Overview</label> <label class="small"><input type="checkbox" id="mu-tab-calendar" checked> Calendar</label> <label class="small"><input type="checkbox" id="mu-tab-decision"> KPIs</label> <label class="small"><input type="checkbox" id="mu-tab-records"> Opportunities</label> <label class="small"><input type="checkbox" id="mu-tab-operations"> Operations</label> <label class="small"><input type="checkbox" id="mu-tab-whatsapp"> WhatsApp</label> <label class="small"><input type="checkbox" id="mu-tab-scheduler"> Scheduler</label> <label class="small"><input type="checkbox" id="mu-tab-integrations"> Integrations</label> <label class="small"><input type="checkbox" id="mu-tab-settings"> Settings</label> <button class="primary" onclick="addMonitorUser()">Add / update user</button></p></div><div class="subsection"><h3>Users (JSON)</h3><p class="small">Full list, editable by hand. Remove a line to delete the user; set "enabled": false to suspend without deleting.</p><textarea id="monitor-users" rows="6" placeholder='[{{"username":"maria","password":"secret","tabs":["overview","calendar"],"enabled":true}}]'></textarea><p><button onclick="saveMonitorUsers()">Save users</button> <button onclick="loadMonitorUsers()">Reload</button> <span id="mu-state" class="small"></span></p></div></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="settings"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
@@ -2055,6 +2153,7 @@ function render(data) {{
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
   ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_ADMIN_USERNAME','PC_ADMIN_PASSWORD','PC_ADMIN_EMAILS','PC_ADMIN_API_TOKEN','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  monitorSettingsLoaded = true;
   updateAutorunSourceIndicators(settings);
   moveWebhookAutoRunControlToScheduler();
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_NOTIFY_DETAILS_INLINE','1'],['PC_INDEX_FROM_SNAPSHOT','1'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1'],['PC_WEBHOOK_AUTO_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
@@ -2437,14 +2536,94 @@ function togglePane(id, btn) {{
   el.hidden = !el.hidden;
   if (btn) btn.textContent = el.hidden ? 'Show' : 'Hide';
 }}
+// Staff sessions (manager-created users) only see the tabs the manager
+// granted; tab buttons for everything else are hidden and showTab refuses
+// them. Cards stay in the DOM (display:none) so the refresh JS keeps working.
+async function applyTabAccess() {{
+  let info;
+  try {{
+    info = await (await fetch('/api/session-info', {{cache: 'no-store'}})).json();
+  }} catch (err) {{ return; }}
+  if (!info || info.role !== 'staff') return;
+  const allowed = new Set(info.tabs || []);
+  staffAllowedTabs = allowed;
+  let first = null;
+  document.querySelectorAll('[data-tab-button]').forEach(btn => {{
+    const tab = btn.dataset.tabButton;
+    if (!allowed.has(tab)) {{ btn.style.display = 'none'; }}
+    else if (!first) {{ first = tab; }}
+  }});
+  if (first) showTab(first);
+  const userBox = document.getElementById('progress-toggle');
+  if (info.user && userBox) userBox.insertAdjacentHTML('beforebegin', `<span class="small" style="color:var(--concrete-300)">${{esc(info.user)}}</span>`);
+}}
+// Calendar sub-tabs: the visual calendar, the ASCII text summary and the
+// day-by-day opportunities list are three views of the same range — shown
+// one at a time instead of stacked.
+function showCalPane(name) {{
+  ['visual', 'text', 'list'].forEach(pane => {{
+    const el = document.getElementById('calpane-' + pane);
+    if (el) el.hidden = pane !== name;
+  }});
+  document.querySelectorAll('[data-calpane]').forEach(btn => btn.classList.toggle('active', btn.dataset.calpane === name));
+}}
 async function adminSignOut() {{
   try {{ await fetch('/api/session-logout', {{method: 'POST'}}); }} catch (err) {{ /* cookie clear is best-effort */ }}
   location.href = siteUrl(ARL_HOME_PORT);  // leave the monitor for the ARL-89 home site
 }}
+// ---- Monitor users & tab access (manager only) ----
+const MONITOR_TAB_IDS = ['overview', 'calendar', 'decision', 'records', 'operations', 'whatsapp', 'scheduler', 'integrations', 'settings'];
+async function loadMonitorUsers() {{
+  const box = document.getElementById('monitor-users');
+  if (!box) return;
+  try {{
+    const resp = await fetch('/api/monitor-users', {{cache: 'no-store'}});
+    if (!resp.ok) {{ if (resp.status === 403) {{ box.value = '(manager only)'; box.disabled = true; }} return; }}
+    if (document.activeElement !== box) box.value = JSON.stringify(await resp.json(), null, 2);
+  }} catch (err) {{ /* leave as is */ }}
+}}
+async function saveMonitorUsers() {{
+  const box = document.getElementById('monitor-users');
+  const state = document.getElementById('mu-state');
+  try {{
+    const resp = await fetch('/api/monitor-users', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+      body: 'users=' + encodeURIComponent(box.value || '[]'),
+    }});
+    const text = await resp.text();
+    if (!resp.ok) {{ state.textContent = text.trim(); return; }}
+    box.value = JSON.stringify(JSON.parse(text), null, 2);
+    state.textContent = 'Users saved.';
+  }} catch (err) {{ state.textContent = 'Save failed: ' + err; }}
+}}
+function addMonitorUser() {{
+  const state = document.getElementById('mu-state');
+  const username = document.getElementById('mu-username').value.trim();
+  const password = document.getElementById('mu-password').value;
+  if (!username || !password) {{ state.textContent = 'Username and password are required.'; return; }}
+  const tabs = MONITOR_TAB_IDS.filter(tab => (document.getElementById('mu-tab-' + tab) || {{}}).checked);
+  const box = document.getElementById('monitor-users');
+  let users = [];
+  try {{ users = JSON.parse(box.value || '[]'); }} catch (err) {{ users = []; }}
+  if (!Array.isArray(users)) users = [];
+  const existing = users.findIndex(u => u && u.username === username);
+  const entry = {{username, password, tabs, enabled: true}};
+  if (existing >= 0) users[existing] = Object.assign({{}}, users[existing], entry);
+  else users.push(entry);
+  box.value = JSON.stringify(users, null, 2);
+  saveMonitorUsers();
+  document.getElementById('mu-password').value = '';
+}}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
+let monitorSettingsLoaded = false;
 function saveAdvancedSettings() {{
+  // Guard against the blank-wipe foot-gun: saving before the first
+  // /api/status refresh would write '' into every advanced setting
+  // (this once cleared WAHA_API_KEY and broke the directory search).
+  if (!monitorSettingsLoaded) {{ alert('Settings are still loading — try again in a moment.'); return; }}
   ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_ADMIN_USERNAME','PC_ADMIN_PASSWORD','PC_ADMIN_EMAILS','PC_ADMIN_API_TOKEN'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 function updateAutorunSourceIndicators(settings) {{
@@ -2799,7 +2978,9 @@ function importSelectedCalendars() {{
   postForm('/api/selected-record-action', 'action=calendar&' + numeros.map(n => 'numero=' + encodeURIComponent(n)).join('&'));
 }}
 
+let staffAllowedTabs = null;  // null = full admin (all tabs); Set for staff sessions
 function showTab(tab) {{
+  if (staffAllowedTabs && !staffAllowedTabs.has(tab)) return;
   document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
   document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
   if (tab === 'decision') refreshDecisionDashboard();
@@ -3155,6 +3336,8 @@ showTab('overview');
 initCollapsibleSections();
 initHeaderLinks();
 initProgressCard();
+applyTabAccess();
+loadMonitorUsers();
 initCalendarDisplayControls();
 refreshRecordIndex();
 loadTemplates();
@@ -3201,18 +3384,26 @@ class MonitorHandler(BaseHTTPRequestHandler):
         return None
 
     def _has_admin_access(self) -> bool:
+        return self._access_level()[0] == "admin"
+
+    def _access_level(self) -> tuple[str | None, list[str]]:
+        """("admin", all tabs) for full access, ("staff", granted tabs) for a
+        manager-created user, (None, []) for no valid session."""
         if self._is_local_request():
-            return True
+            return "admin", list(VALID_MONITOR_TABS)
         session = self._session()
         if session and session.get("role") == "admin":
-            return True
+            return "admin", list(VALID_MONITOR_TABS)
+        if session and session.get("role") == "staff":
+            tabs = [t for t in (session.get("tabs") or []) if t in VALID_MONITOR_TABS]
+            return "staff", tabs
         expected = load_monitor_settings().get("PC_ADMIN_API_TOKEN", "").strip()
         if expected:
             supplied = (self.headers.get("X-PC-Admin-Token", "")
                         or parse_qs(urlparse(self.path).query).get("admin_token", [""])[0]).strip()
             if supplied and hmac.compare_digest(supplied, expected):
-                return True
-        return False
+                return "admin", list(VALID_MONITOR_TABS)
+        return None, []
 
     def _session_cookie_header(self, token: str, max_age: int) -> dict[str, str]:
         return {"Set-Cookie": f"{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"}
@@ -3229,19 +3420,28 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 settings = load_monitor_settings()
                 expected_user = settings.get("PC_ADMIN_USERNAME", "").strip()
                 expected_password = settings.get("PC_ADMIN_PASSWORD", "")
+                if expected_user and expected_password \
+                        and hmac.compare_digest(username, expected_user) \
+                        and hmac.compare_digest(password, expected_password):
+                    token = make_session_token("local-admin", username, "admin")
+                    self.send_text(200, json.dumps({"role": "admin", "user": username}),
+                                   "application/json; charset=utf-8",
+                                   self._session_cookie_header(token, SESSION_TTL_SECONDS))
+                    return
+                # Manager-created users (monitor_users.json): same form, but
+                # the session only carries the tabs the manager granted.
+                staff = find_monitor_user(username, password)
+                if staff is not None:
+                    token = make_session_token("staff:" + staff["username"], staff["username"], "staff", tabs=staff["tabs"])
+                    self.send_text(200, json.dumps({"role": "staff", "user": staff["username"], "tabs": staff["tabs"]}),
+                                   "application/json; charset=utf-8",
+                                   self._session_cookie_header(token, SESSION_TTL_SECONDS))
+                    return
                 if not expected_user or not expected_password:
                     self.send_text(503, "Manager login is not configured (PC_ADMIN_USERNAME / PC_ADMIN_PASSWORD).\n", "text/plain; charset=utf-8")
                     return
-                user_ok = hmac.compare_digest(username, expected_user)
-                password_ok = hmac.compare_digest(password, expected_password)
-                if not (user_ok and password_ok):
-                    time.sleep(0.8)  # slow down brute force
-                    self.send_text(403, "Invalid username or password.\n", "text/plain; charset=utf-8")
-                    return
-                token = make_session_token("local-admin", username, "admin")
-                self.send_text(200, json.dumps({"role": "admin", "user": username}),
-                               "application/json; charset=utf-8",
-                               self._session_cookie_header(token, SESSION_TTL_SECONDS))
+                time.sleep(0.8)  # slow down brute force
+                self.send_text(403, "Invalid username or password.\n", "text/plain; charset=utf-8")
                 return
             # Firebase path: clients (and any PC_ADMIN_EMAILS admin) send the
             # signed-in user's ID token, verified server-side with Google.
@@ -3263,9 +3463,28 @@ class MonitorHandler(BaseHTTPRequestHandler):
             self.send_text(200, json.dumps({"ok": True}), "application/json; charset=utf-8",
                            self._session_cookie_header("", 0))
             return
-        if path not in OPEN_POST_PATHS and not self._has_admin_access():
-            self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
+        if path == "/api/monitor-users":
+            # Full admin only: create/replace the manager-defined users list.
+            if self._access_level()[0] != "admin":
+                self.send_text(403, "manager access required\n", "text/plain; charset=utf-8")
+                return
+            try:
+                saved = save_monitor_users_text(form.get("users", ["[]"])[0])
+            except ValueError as exc:
+                self.send_text(400, f"{exc}\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, json.dumps(saved, ensure_ascii=False), "application/json; charset=utf-8")
             return
+        if path not in OPEN_POST_PATHS:
+            access, tabs = self._access_level()
+            if access is None:
+                self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
+                return
+            if access == "staff":
+                required_tab = STAFF_POST_TAB_MAP.get(path)
+                if required_tab is None or required_tab not in tabs:
+                    self.send_text(403, "your account does not have access to this action\n", "text/plain; charset=utf-8")
+                    return
         if path == "/api/request-run":
             raw_detail = form.get("detail_limit", ["0"])[0].strip()
             raw_index = form.get("index_limit", ["0"])[0].strip()
@@ -3500,17 +3719,41 @@ class MonitorHandler(BaseHTTPRequestHandler):
             self.send_text(200, "ok\n", "text/plain; charset=utf-8")
             return
         if path in ("/", "/index.html"):
-            # Front page: admin dashboard when authorized, login otherwise.
-            if self._has_admin_access():
+            # Front page: dashboard for admin AND staff sessions (staff see
+            # only their granted tabs, applied by /api/session-info), login
+            # page otherwise.
+            if self._access_level()[0] is not None:
                 self.send_text(200, HTML, "text/html; charset=utf-8")
             else:
                 self.send_text(200, LOGIN_HTML, "text/html; charset=utf-8")
             return
-        if path not in OPEN_GET_PATHS and not self._has_admin_access():
+        access, access_tabs = (self._access_level() if path not in OPEN_GET_PATHS else ("open", []))
+        if access is None:
             self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
             return
+        if path == "/api/session-info":
+            session = self._session() or {}
+            payload = {
+                "role": access if access != "open" else None,
+                "user": session.get("email", "local" if self._is_local_request() else ""),
+                "tabs": access_tabs if access == "staff" else list(VALID_MONITOR_TABS),
+            }
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/monitor-users":
+            if access != "admin":
+                self.send_text(403, "manager access required\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, json.dumps(read_monitor_users(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
         if path == "/api/status":
-            self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            payload = status_payload()
+            if access == "staff":
+                # Staff sessions never receive secret settings values.
+                settings_map = payload.get("settings")
+                if isinstance(settings_map, dict):
+                    payload["settings"] = {k: v for k, v in settings_map.items() if k not in SENSITIVE_SETTING_KEYS}
+            self.send_text(200, json.dumps(payload, ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
         if path == "/api/web-timer":
             self.send_text(200, json.dumps(web_timer_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
@@ -3710,8 +3953,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
             session_name = setting("PC_WAHA_SESSION", "default")
             try:
                 import urllib.request
-                base_url = os.environ.get("PC_WAHA_BASE_URL", "http://127.0.0.1:3000").rstrip("/")
-                api_key = (os.environ.get("PC_WAHA_API_KEY") or os.environ.get("WAHA_API_KEY", "")).strip()
+                base_url = (os.environ.get("PC_WAHA_BASE_URL") or setting("PC_WAHA_BASE_URL", "http://127.0.0.1:3000")).rstrip("/")
+                api_key = waha_api_key()
                 headers = {"Accept": "image/png"}
                 if api_key:
                     headers["X-Api-Key"] = api_key

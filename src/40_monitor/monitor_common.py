@@ -38,11 +38,27 @@ import common as pc_common
 WAHA_DEFAULT_BASE_URL = "http://127.0.0.1:3000"
 
 
+def waha_api_key() -> str:
+    """The WAHA API key with a repo-.env fallback.
+
+    Resolution: PC_WAHA_API_KEY / WAHA_API_KEY (env var, then monitor
+    settings file), then the WAHA_API_KEY the docker stack was started with
+    (repo .env). The fallback exists because the monitor settings UI can save
+    WAHA_API_KEY='' (e.g. a Save click before the first status refresh
+    populated the fields), which silently 401s every directory search while
+    the sender — which reads the env — keeps working. The container's key
+    comes from .env, so .env is always a correct last resort."""
+    key = (setting("PC_WAHA_API_KEY") or setting("WAHA_API_KEY")).strip()
+    if key:
+        return key
+    return _read_env_style_file(pc_common.APP_ROOT / ".env").get("WAHA_API_KEY", "").strip()
+
+
 def _waha_api_get(path: str, timeout: float = 8.0):
     """GET a WAHA REST endpoint. Returns parsed JSON or raises."""
     import urllib.request
     base_url = setting("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL).rstrip("/")
-    api_key = (setting("PC_WAHA_API_KEY") or setting("WAHA_API_KEY")).strip()
+    api_key = waha_api_key()
     headers = {"Accept": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -152,7 +168,7 @@ def waha_fetch_all(query: str = "", *,
         base_url = setting("PC_WAHA_BASE_URL", WAHA_DEFAULT_BASE_URL)
     base_url = base_url.rstrip("/")
     if not api_key:
-        api_key = (setting("PC_WAHA_API_KEY") or setting("WAHA_API_KEY")).strip()
+        api_key = waha_api_key()
 
     headers = {"Accept": "application/json"}
     if api_key:
