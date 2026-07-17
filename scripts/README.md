@@ -28,6 +28,7 @@ Examples:
 - `scripts/tasks/001b-install-update-monitor-launcher.sh` — alternate/conditional first-time desktop step.
 - `src/20_pipeline/010-collect-index.py` — STEP 1 of the run-all worker sequence.
 - `src/40_monitor/001a-monitor-tk.py` / `001b-monitor-web.py` / `001c-monitor-terminal.sh` — mutually exclusive monitor UI choices. Manual launches use `PC_MONITOR_MODE` (default `tk`); changedetection-triggered runs pass `PC_CHANGEDETECTION_MONITOR_MODE` (default `terminal`) as a one-run override.
+- `src/40_monitor/030-install-web-service.sh` — installs the web monitor as a persistent `systemd --user` service, so port 8766 remains supervised without a background terminal.
 
 Rules:
 

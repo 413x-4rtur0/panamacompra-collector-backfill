@@ -64,6 +64,20 @@ ensure_web_monitor() {
   if "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('$(monitor_local_url)health', timeout=1).read()" >/dev/null 2>&1; then
     return 0
   fi
+  if command -v systemctl >/dev/null 2>&1 \
+     && systemctl --user is-enabled --quiet panamacompra-monitor-web.service 2>/dev/null; then
+    note "Starting persistent user service: panamacompra-monitor-web.service"
+    if ! systemctl --user restart panamacompra-monitor-web.service; then
+      note "Could not start panamacompra-monitor-web.service. Check: journalctl --user -u panamacompra-monitor-web.service -n 80 --no-pager"
+      return 1
+    fi
+    sleep 1
+    if "$PYTHON_BIN" -c "from urllib.request import urlopen; urlopen('$(monitor_local_url)health', timeout=2).read()" >/dev/null 2>&1; then
+      return 0
+    fi
+    note "Web monitor service started but its health check failed."
+    return 1
+  fi
   note "Starting the web monitor server at http://${MONITOR_HOST}:${MONITOR_PORT}/ (log: $PC_LOG_DIR/monitor_server.log)"
   mkdir -p "$PC_LOG_DIR"
   PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" \

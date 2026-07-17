@@ -325,7 +325,8 @@ SH
 set -uo pipefail
 APP_ROOT_VALUE="__APP_ROOT__"
 cd "$APP_ROOT_VALUE"
-echo "PanamaCompra: STOP ALL (workers, test zone, calendar builder, monitors, webhook listener, updaters)"
+echo "PanamaCompra: STOP ALL (workers, test zone, calendar builder, webhook listener, updaters)"
+echo "Monitors stay open so you can see the stopped state and resume from there."
 echo "Docker integration containers (changedetection/WAHA) are left running by design."
 echo ""
 ./src/20_pipeline/120a-stop-everything.sh || true
@@ -489,7 +490,7 @@ install_integration_launchers() {
     "$app_dir/panamacompra-stop-all.desktop" \
     "$desktop_dir/panamacompra-stop-all.desktop" \
     "PanamaCompra Stop All" \
-    "Stop every PanamaCompra runner, monitor and webhook listener on this host" \
+    "Stop PanamaCompra runners and webhook listener; leave monitors open" \
     "$(quote_desktop_value "$helper_dir/stop-all.sh")" \
     "true" "Utility;Monitor;System;"
   write_desktop_entry \

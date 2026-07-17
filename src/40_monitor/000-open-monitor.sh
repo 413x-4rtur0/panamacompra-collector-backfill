@@ -33,6 +33,8 @@ saved_monitor_setting() {
 }
 
 SAVED_MONITOR_MODE="$(saved_monitor_setting PC_MONITOR_MODE)"
+SAVED_MONITOR_HOST="$(saved_monitor_setting PC_MONITOR_HOST)"
+SAVED_MONITOR_PORT="$(saved_monitor_setting PC_MONITOR_PORT)"
 SAVED_NEXT_RUN_TIMER="$(saved_monitor_setting PC_NEXT_RUN_TIMER)"
 SAVED_TIMER_MODE="$(saved_monitor_setting PC_NEXT_RUN_TIMER_MODE)"
 SAVED_AUTORUN_SOURCE="$(saved_monitor_setting PC_AUTORUN_SOURCE)"
@@ -63,8 +65,8 @@ if [ "${PC_MONITOR_RESOLVE_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
-MONITOR_HOST="${PC_MONITOR_HOST:-127.0.0.1}"
-MONITOR_PORT="${PC_MONITOR_PORT:-8766}"
+MONITOR_HOST="${PC_MONITOR_HOST:-${SAVED_MONITOR_HOST:-127.0.0.1}}"
+MONITOR_PORT="${PC_MONITOR_PORT:-${SAVED_MONITOR_PORT:-8766}}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
 CMD="cd $(printf '%q' "$SCRIPT_DIR") && PC_NEXT_RUN_TIMER=$(printf '%q' "$NEXT_RUN_TIMER") PC_NEXT_RUN_TIMER_MODE=$(printf '%q' "$NEXT_RUN_TIMER_MODE") ./001c-monitor-terminal.sh"
 
@@ -181,6 +183,22 @@ monitor_server_running() {
 start_web_monitor() {
   if monitor_server_running; then
     log "Web monitor already running at $MONITOR_URL."
+  elif command -v systemctl >/dev/null 2>&1 \
+       && systemctl --user is-enabled --quiet panamacompra-monitor-web.service 2>/dev/null; then
+    log "Starting persistent user service: panamacompra-monitor-web.service."
+    if systemctl --user restart panamacompra-monitor-web.service; then
+      sleep 1
+      refresh_monitor_url
+      if monitor_server_running; then
+        log "Web monitor service is healthy at $MONITOR_URL."
+      else
+        log "Web monitor service started but health check failed. Check journalctl --user -u panamacompra-monitor-web.service."
+        return 1
+      fi
+    else
+      log "Could not start panamacompra-monitor-web.service. Check journalctl --user -u panamacompra-monitor-web.service."
+      return 1
+    fi
   else
     PC_MONITOR_HOST="$MONITOR_HOST" PC_MONITOR_PORT="$MONITOR_PORT" nohup "$PYTHON_BIN" "$SCRIPT_DIR/001b-monitor-web.py" >> "$WEB_LOG" 2>&1 &
     sleep 1

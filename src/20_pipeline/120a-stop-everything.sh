@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/../../lib/env.sh"
 source "$APP_ROOT/src/10_webhook/015-listener-process.sh"
 cd "$APP_ROOT"
 
-echo "Stopping all PanamaCompra runners and background processes..."
+echo "Stopping all PanamaCompra runners and background processes (monitors stay open)..."
 
 # Clear request flags first to prevent restarts
 touch "$PC_QUEUE_DIR/run_all_stop_no_resume.flag"
@@ -48,15 +48,11 @@ pkill -TERM -f "[u]pdate-loader.py" 2>/dev/null || true
 pkill -TERM -f "[0]00-update-before-run.sh" 2>/dev/null || true
 
 # ============================================================================
-# STEP 5: Stop monitor processes (GUI and web interfaces)
+# STEP 5: Keep monitor processes open
 # ============================================================================
-echo "5) Stopping monitor processes..."
-pkill -TERM -f "[p]ython3? -u .*001a-monitor-tk.py" 2>/dev/null || true
-pkill -TERM -f "[0]01a-monitor-tk.py" 2>/dev/null || true
-pkill -TERM -f "[p]ython3? -u .*001b-monitor-web.py" 2>/dev/null || true
-pkill -TERM -f "[0]01b-monitor-web.py" 2>/dev/null || true
-pkill -TERM -f "[n]ext-run-timer.py" 2>/dev/null || true
-pkill -TERM -f "[1]30c-follow-run.sh" 2>/dev/null || true
+echo "5) Keeping monitors open (native, web, terminal and next-run timer)..."
+# Stop All deliberately leaves every monitor alive so the operator can see the
+# stopped state and request Start/Resume without reopening the dashboard.
 
 # ============================================================================
 # STEP 6: Stop webhook listener (background HTTP receiver)
@@ -87,7 +83,6 @@ pkill -9 -f "[p]ython3? -u .*030-collect-details.py" 2>/dev/null || true
 pkill -9 -f "[0]70-test-zone.py" 2>/dev/null || true
 pkill -9 -f "[b]uild_calendar.py" 2>/dev/null || true
 pkill -9 -f "[u]pdate-local-copy.sh" 2>/dev/null || true
-pkill -9 -f "[0]01a-monitor-tk.py" 2>/dev/null || true
 pc_webhook_kill_host_processes KILL
 
 sleep 1
@@ -100,10 +95,12 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') | All runners stopped manually." >> "$PC_LOG_
 
 echo ""
 echo "============================================================"
-echo "All PanamaCompra processes stopped."
+echo "PanamaCompra collectors and infrastructure stopped; monitors remain open."
 echo "============================================================"
-echo "Remaining related processes (should be empty):"
-pgrep -af "100-run-worker.sh|050-watch-queue-flag.sh|070-test-zone.py|060-build-calendar.py|monitor-tk.py|monitor-web.py|src/10_webhook/010-webhook-listener.py|update-local-copy.sh" || echo "  None found - all stopped successfully."
+echo "Remaining collector/infrastructure processes (should be empty):"
+pgrep -af "100-run-worker.sh|050-watch-queue-flag.sh|070-test-zone.py|060-build-calendar.py|src/10_webhook/010-webhook-listener.py|update-local-copy.sh" || echo "  None found - all stopped successfully."
+echo "Monitors intentionally preserved:"
+pgrep -af "001a-monitor-tk.py|001b-monitor-web.py|001c-monitor-terminal.sh|002-next-run-timer.py|002b-next-run-timer-cli.py" || echo "  No monitor process detected."
 
 # This script only manages what belongs to THIS checkout. Docker integration
 # containers (changedetection, sockpuppetbrowser, WAHA, webhook) are a

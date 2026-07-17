@@ -3,8 +3,9 @@
 # the monitor, the next-run timer, or the webhook listener. This is the "Stop"
 # button in the monitor Run controls: it halts the current run immediately and
 # prevents an automatic resume, but leaves the monitor open so the operator can
-# see the stopped state and start a new run. For a full teardown that also closes
-# the monitors and webhook, use src/20_pipeline/120a-stop-everything.sh instead.
+# see the stopped state and start a new run. For a full teardown that also stops
+# the webhook listener and updater/infrastructure processes, use
+# src/20_pipeline/120a-stop-everything.sh instead; monitors remain open there too.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

@@ -1,0 +1,23 @@
+[Unit]
+Description=PanamaCompra Web Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The repository installer writes the absolute checkout path into the active
+# user unit. This checked-in template documents the service shape for the
+# standard installed checkout under ~/.local/share/panamacompra.
+Type=simple
+WorkingDirectory=%h/.local/share/panamacompra
+Environment=PYTHONUNBUFFERED=1
+# Keep the persistent dashboard page available after a completed run.
+Environment=PC_MONITOR_WEB_AUTO_CLOSE_SECONDS=0
+ExecStart=%h/.local/share/panamacompra/.venv/bin/python %h/.local/share/panamacompra/src/40_monitor/001b-monitor-web.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=panamacompra-monitor-web
+
+[Install]
+WantedBy=default.target

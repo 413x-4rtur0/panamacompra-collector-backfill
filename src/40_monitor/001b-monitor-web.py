@@ -6,16 +6,22 @@ browser reloads every few seconds while preserving the same dashboard UI.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 from collections import Counter
 import os
 import re
+import secrets
 import shlex
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -324,6 +330,17 @@ def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=N
         }
         for offset in range((end - start).days + 1)
     ]
+    weeks = []
+    if view == "month":
+        week_start = start - timedelta(days=start.weekday())
+        while week_start <= end:
+            iso = week_start.isocalendar()
+            weeks.append({
+                "start": week_start.isoformat(),
+                "number": iso.week,
+                "year": iso.year,
+            })
+            week_start += timedelta(days=7)
     months = [
         {"value": f"{anchor.year}-{month:02d}", "label": date(anchor.year, month, 1).strftime("%b %Y")}
         for month in range(1, 13)
@@ -338,6 +355,7 @@ def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=N
         "first_weekday": start.weekday(),
         "today": time.strftime("%Y-%m-%d"),
         "days": days,
+        "weeks": weeks,
         "events": grouped_events,
         "total": sum(len(rows) for rows in grouped_events.values()),
         "months": months,
@@ -514,6 +532,21 @@ VALUE_SETTING_DEFAULTS = {
     "PC_FIREBASE_WEB_AUTH_DOMAIN": "",
     "PC_FIREBASE_WEB_PROJECT_ID": "",
     "PC_FIREBASE_WEB_APP_ID": "",
+    # Local manager login for the admin monitor (front-page "Manager" form).
+    # Works with no Firebase/internet at all. Blank = manager login disabled.
+    # Like WAHA_DASHBOARD_PASSWORD above, the value lives in
+    # var/data/config/monitor_settings.env on this PC only — never commit it.
+    "PC_ADMIN_USERNAME": "",
+    "PC_ADMIN_PASSWORD": "",
+    # Emails allowed into the ADMIN monitor after Firebase sign-in (comma or
+    # space separated, case-insensitive). Everyone else who signs in is a
+    # client and lands on /client-calendar. Requests from this PC itself
+    # (127.0.0.1) always get admin access, so you can never lock yourself out.
+    "PC_ADMIN_EMAILS": "",
+    # Optional shared token for non-browser admin clients (the Android admin
+    # app): requests carrying it as an X-PC-Admin-Token header or
+    # ?admin_token= query parameter bypass the session cookie. Blank = off.
+    "PC_ADMIN_API_TOKEN": "",
 }
 BOOLEAN_SETTING_DEFAULTS = {
     "PC_NOTIFY_WHATSAPP": "1",
@@ -547,7 +580,7 @@ MANUAL_ACTIONS = [
     ManualAction("Runners", "Run full collector", ("./src/20_pipeline/110a-request-run.sh", "0", "RESTART", "0"), "Queues a manual restart run for all available index pages and opens/reuses this monitor."),
     ManualAction("Runners", "Run collector now", ("./src/20_pipeline/110b-run-now.sh", "0", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and unlimited detail pages."),
     ManualAction("Runners", "Stop active run", ("./src/20_pipeline/120b-stop-collectors.sh",), "Stops the active collection (worker/index/detail/test/calendar) and prevents auto-resume. The monitor, next-run timer and webhook stay running."),
-    ManualAction("Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops workers, test zone, calendar builder, webhook listener and updaters. All monitors stay open so you can resume from here."),
     ManualAction("Runners", "START all infrastructure", ("./src/20_pipeline/120c-start-everything.sh",), "Counterpart to STOP all runners: brings Docker integrations (changedetection/WAHA/sockpuppetbrowser) and the webhook listener back up, and opens the monitor. Does not queue a collector run by itself."),
     ManualAction("Runners", "Pause for development", ("./src/20_pipeline/121-dev-mode.sh", "pause"), "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe. Docker integrations and the monitors stay running."),
     ManualAction("Runners", "Resume automatic collection", ("./src/20_pipeline/121-dev-mode.sh", "resume"), "Restores every setting 'Pause for development' changed, to its exact previous value. Does not queue a run by itself."),
@@ -929,6 +962,117 @@ def changedetection_schedule_payload() -> dict[str, object]:
     watch_status["dev_mode_active"] = dev_mode_active
     return watch_status
 
+
+# ---- Admin sign-in sessions -------------------------------------------------
+# The front page (/) is a Firebase login; the admin dashboard and every
+# admin API require one of: a request from this PC itself (127.0.0.1), a
+# valid signed session cookie whose email is in PC_ADMIN_EMAILS, or the
+# PC_ADMIN_API_TOKEN shared token (non-browser clients). Client-facing
+# endpoints (the uid-scoped /api/client-* family) stay open as before.
+SESSION_COOKIE_NAME = "pc_admin_session"
+SESSION_TTL_SECONDS = 7 * 24 * 3600
+SESSION_SECRET_PATH = pc_common.DATA_CONFIG_DIR / "monitor_web_secret.txt"
+_SESSION_SECRET_LOCK = threading.Lock()
+_SESSION_SECRET: bytes | None = None
+
+
+def _session_secret() -> bytes:
+    """Persistent HMAC key for session cookies (so restarts keep sessions)."""
+    global _SESSION_SECRET
+    with _SESSION_SECRET_LOCK:
+        if _SESSION_SECRET is None:
+            try:
+                text = SESSION_SECRET_PATH.read_text(encoding="utf-8").strip()
+            except OSError:
+                text = ""
+            if len(text) < 32:
+                text = secrets.token_hex(32)
+                SESSION_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+                SESSION_SECRET_PATH.write_text(text + "\n", encoding="utf-8")
+                try:
+                    SESSION_SECRET_PATH.chmod(0o600)
+                except OSError:
+                    pass
+            _SESSION_SECRET = text.encode("utf-8")
+        return _SESSION_SECRET
+
+
+def _sign_session(payload_b64: str) -> str:
+    return hmac.new(_session_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def make_session_token(uid: str, email: str, role: str) -> str:
+    payload = json.dumps({"uid": uid, "email": email, "role": role, "exp": int(time.time()) + SESSION_TTL_SECONDS})
+    payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return payload_b64 + "." + _sign_session(payload_b64)
+
+
+def parse_session_token(token: str) -> dict | None:
+    """The session dict if the token is genuine and unexpired, else None."""
+    if not token or "." not in token:
+        return None
+    payload_b64, _, signature = token.rpartition(".")
+    if not hmac.compare_digest(signature, _sign_session(payload_b64)):
+        return None
+    try:
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        session = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(session, dict) or int(session.get("exp", 0)) < time.time():
+        return None
+    return session
+
+
+def admin_emails() -> set[str]:
+    raw = load_monitor_settings().get("PC_ADMIN_EMAILS", "")
+    return {part.strip().lower() for part in re.split(r"[\s,;]+", raw) if part.strip()}
+
+
+def verify_firebase_id_token(id_token: str) -> dict | None:
+    """Server-side check of a Firebase ID token via the identitytoolkit
+    accounts:lookup REST endpoint (needs internet, login-time only). Returns
+    {"uid": ..., "email": ...} when Google confirms the token, else None.
+    Chosen over local JWT verification so the monitor needs no extra
+    dependencies (stdlib has no RS256)."""
+    api_key = load_monitor_settings().get("PC_FIREBASE_WEB_API_KEY", "").strip()
+    if not api_key or not id_token:
+        return None
+    request = urllib.request.Request(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={api_key}",
+        data=json.dumps({"idToken": id_token}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed Google endpoint
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, ValueError, OSError):
+        return None
+    users = data.get("users") or []
+    if not users or not isinstance(users[0], dict):
+        return None
+    return {"uid": str(users[0].get("localId") or ""), "email": str(users[0].get("email") or "").strip().lower()}
+
+
+# Paths a request may hit WITHOUT admin access: the client dashboard, the
+# uid-scoped client APIs the Android client app already relies on, and the
+# session login/logout handshake itself. Everything else is admin-only.
+OPEN_GET_PATHS = {
+    "/health",
+    "/client-calendar",
+    "/client",
+    "/api/client-auth-config",
+    "/api/client-calendar-grid",
+    "/api/client-notifications",
+    "/api/client-profile",
+    "/api/opportunity-location",
+    "/api/filter-suggestions",
+}
+OPEN_POST_PATHS = {
+    "/api/client-profile",
+    "/api/session-login",
+    "/api/session-logout",
+}
 
 ACTIONS_JSON = json.dumps([
     {"zone": action.zone, "label": action.label, "comment": action.comment}
@@ -1363,6 +1507,147 @@ boot();
 </html>
 """
 
+# Front-page login (/) shown to any non-localhost visitor without an admin
+# session. One Firebase sign-in for everyone: emails in PC_ADMIN_EMAILS get
+# the admin dashboard, anyone else is sent to /client-calendar. Requests from
+# 127.0.0.1 never see this page (they go straight to the admin dashboard).
+LOGIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PanamaCompra Monitor — Sign in</title>
+<style>
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 10px; background: #0f172a; color: #e5e7eb; }
+.small { color: #94a3b8; font-size: .85rem; }
+.err { color: #fca5a5; font-size: .85rem; min-height: 1.2em; }
+input, button { border-radius: 8px; border: 1px solid #475569; background: #020617; color: #e5e7eb; padding: 8px 10px; font-size: .95rem; }
+button { cursor: pointer; }
+button.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 700; }
+.auth-card { max-width: 380px; margin: 10vh auto 0; background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+.auth-card h1 { margin: 0 0 4px; font-size: 1.2rem; color: #bfdbfe; }
+.auth-card input { width: 100%; box-sizing: border-box; }
+.auth-sep { text-align: center; color: #64748b; font-size: .8rem; }
+</style>
+</head>
+<body>
+<div id="login-card" class="auth-card">
+  <h1>PanamaCompra Monitor</h1>
+  <p class="small" id="login-note">Sign in to continue. Managers open the admin monitor; clients open their opportunity calendar.</p>
+  <div id="manager-form">
+    <div class="auth-sep" style="margin-bottom:8px">Manager</div>
+    <input id="admin-user" placeholder="Username" autocomplete="username" style="margin-bottom:10px" onkeydown="if (event.key === 'Enter') managerSignIn()">
+    <input id="admin-password" type="password" placeholder="Password" autocomplete="current-password" style="margin-bottom:10px" onkeydown="if (event.key === 'Enter') managerSignIn()">
+    <div class="err" id="admin-error"></div>
+    <button class="primary" style="width:100%" onclick="managerSignIn()">Manager sign in</button>
+  </div>
+  <div id="login-form" hidden>
+    <div class="auth-sep" style="margin:8px 0">Client</div>
+    <input id="auth-email" type="email" placeholder="Email" autocomplete="email" style="margin-bottom:10px">
+    <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password" style="margin-bottom:10px">
+    <div class="err" id="auth-error"></div>
+    <button class="primary" style="width:100%;margin-bottom:8px" onclick="emailSignIn()">Sign in</button>
+    <button style="width:100%;margin-bottom:8px" onclick="emailSignUp()">Create account</button>
+    <div class="auth-sep" style="margin-bottom:8px">&mdash; or &mdash;</div>
+    <button style="width:100%" onclick="googleSignIn()">Sign in with Google</button>
+  </div>
+</div>
+<script>
+function note(text) { document.getElementById('login-note').textContent = text; }
+function authError(e) { document.getElementById('auth-error').textContent = (e && e.message) || String(e); }
+async function managerSignIn() {
+  const errBox = document.getElementById('admin-error');
+  const user = document.getElementById('admin-user').value.trim();
+  const password = document.getElementById('admin-password').value;
+  if (!user || !password) { errBox.textContent = 'Enter the manager username and password.'; return; }
+  let resp;
+  try {
+    resp = await fetch('/api/session-login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'user=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(password),
+    });
+  } catch (e) { errBox.textContent = String(e); return; }
+  if (!resp.ok) { errBox.textContent = (await resp.text()).trim(); return; }
+  location.replace('/');
+}
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+async function submitToken(user) {
+  // Cookie-refused loop guard: don't auto-retry the handshake forever.
+  const attempts = Number(sessionStorage.getItem('pc_login_attempts') || '0');
+  if (attempts > 2) { note('Signed in, but the session cookie is not being kept. Enable cookies for this site and reload.'); return; }
+  sessionStorage.setItem('pc_login_attempts', String(attempts + 1));
+  let idToken;
+  try { idToken = await user.getIdToken(); } catch (e) { authError(e); return; }
+  let resp;
+  try {
+    resp = await fetch('/api/session-login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'idToken=' + encodeURIComponent(idToken),
+    });
+  } catch (e) { authError(e); return; }
+  if (!resp.ok) { authError(await resp.text()); return; }
+  const data = await resp.json();
+  if (data.role === 'admin') { location.replace('/'); return; }
+  sessionStorage.removeItem('pc_login_attempts');
+  location.replace('/client-calendar');
+}
+function emailSignIn() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { authError('Enter your email and password.'); return; }
+  sessionStorage.removeItem('pc_login_attempts');
+  firebase.auth().signInWithEmailAndPassword(email, password).catch(authError);
+}
+function emailSignUp() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { authError('Enter an email and a password (6+ characters).'); return; }
+  sessionStorage.removeItem('pc_login_attempts');
+  firebase.auth().createUserWithEmailAndPassword(email, password).catch(authError);
+}
+function googleSignIn() {
+  sessionStorage.removeItem('pc_login_attempts');
+  firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(authError);
+}
+async function boot() {
+  const signedOut = new URLSearchParams(location.search).get('signedout') === '1';
+  let cfg;
+  try {
+    cfg = await (await fetch('/api/client-auth-config', {cache: 'no-store'})).json();
+  } catch (e) { note('Server unavailable: ' + e); return; }
+  if (!cfg.configured) {
+    note('Client sign-in is not configured yet (Firebase web app settings are blank) — managers can still sign in above.');
+    return;
+  }
+  try {
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js');
+  } catch (e) { note('Could not load the sign-in library — internet access is needed to log in.'); return; }
+  firebase.initializeApp({apiKey: cfg.apiKey, authDomain: cfg.authDomain, projectId: cfg.projectId, appId: cfg.appId});
+  document.getElementById('login-form').hidden = false;
+  if (signedOut) {
+    history.replaceState(null, '', '/');
+    sessionStorage.removeItem('pc_login_attempts');
+    try { await firebase.auth().signOut(); } catch (e) { /* already signed out */ }
+  }
+  firebase.auth().onAuthStateChanged(user => { if (user) submitToken(user); });
+}
+boot();
+</script>
+</body>
+</html>
+"""
+
 HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1445,7 +1730,13 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calendar-board {{ background: #020617; border: 1px solid #334155; border-radius: 10px; overflow: hidden; }}
 .calendar-title {{ display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 12px; background: #0b1220; border-bottom: 1px solid #334155; }}
 .calendar-title h3 {{ margin: 0; color: #bfdbfe; }}
-.calgrid {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
+.cal-controls-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 4px; }}
+.cal-controls-row label {{ white-space: nowrap; }}
+.cal-controls-row input#cal-date {{ width: 118px; box-sizing: border-box; }}
+.calgrid {{ display: grid; grid-template-columns: 48px repeat(7, minmax(0, 1fr)); }}
+.week-number-header {{ color: #93c5fd; font-size: .78rem; font-weight: 700; padding: 7px 4px; text-align: center; border-bottom: 1px solid #1e293b; background: #0f172a; }}
+.week-number {{ min-height: 142px; border: 0; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 6px 3px; background: #0f172a; color: #93c5fd; font-size: .78rem; font-weight: 700; cursor: pointer; }}
+.week-number:hover {{ background: #172554; color: #dbeafe; box-shadow: inset 0 0 0 1px #38bdf8; }}
 .calgrid .dow {{ text-align: center; color: #93c5fd; font-weight: 700; font-size: .88rem; padding: 7px 4px; border-bottom: 1px solid #1e293b; background: #0f172a; }}
 .calcell {{ min-height: 142px; border-right: 1px solid #1e293b; border-bottom: 1px solid #1e293b; padding: 6px; cursor: pointer; background: #020617; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; overflow: hidden; }}
 .calcell:hover {{ background: #0b1220; box-shadow: inset 0 0 0 1px #38bdf8; }}
@@ -1453,7 +1744,7 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .calcell.today {{ box-shadow: inset 0 0 0 2px #facc15; }}
 .calcell .num {{ color: #cbd5e1; font-size: .95rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }}
 .calcell .count {{ color: #94a3b8; font-size: .82rem; font-weight: 400; }}
-.calevent {{ display: block; margin: 4px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .85rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.calevent {{ display: -webkit-box; margin: 4px 0; padding: 4px 6px; border-radius: 6px; border-left: 3px solid #38bdf8; background: #172554; color: #dbeafe; font-size: .85rem; line-height: 1.25; white-space: normal; overflow: hidden; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; max-height: 2.5em; }}
 a.calevent {{ text-decoration: none; cursor: pointer; }}
 a.calevent:hover {{ filter: brightness(1.25); }}
 .loc-tooltip {{ position: fixed; z-index: 9999; max-width: 340px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px; font-size: .8rem; line-height: 1.35; box-shadow: 0 8px 24px rgba(0,0,0,.55); pointer-events: none; display: none; }}
@@ -1478,8 +1769,13 @@ a.calevent:hover {{ filter: brightness(1.25); }}
 /* Keyword filter gets its own full row under the calendar controls so the
    active filter is always visible at a glance. */
 .cal-filter-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; padding: 8px 10px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
-.cal-filter-row input {{ background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; }}
+.cal-filter-row > label {{ display: flex; flex: 1 1 320px; min-width: 0; align-items: center; gap: 6px; }}
+.cal-filter-row > label b {{ flex: 0 0 auto; }}
+.cal-filter-row input {{ flex: 1 1 180px; min-width: 0; width: auto; max-width: 280px; box-sizing: border-box; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; }}
 .cal-filter-row button {{ margin: 0; padding: 6px 12px; }}
+.cal-filter-row .xs {{ flex: 1 1 220px; min-width: 0; }}
+.cal-display-row {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 6px 0 2px; padding: 6px 10px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
+.cal-display-row label {{ white-space: nowrap; }}
 .wk-corner {{ background: #0f172a; border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 1; }}
 .agenda-empty {{ padding: 16px; }}
 .year-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; }}
@@ -1520,7 +1816,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
   .settings-grid, .destination-grid, .record-grid {{ grid-template-columns: 1fr; }}
   select#record-index {{ min-width: 100%; min-height: 10rem; }}
   .bar-row {{ grid-template-columns: 1fr; gap: 2px; }}
-  .calcell {{ min-height: 84px; }}
+  .calcell, .week-number {{ min-height: 84px; }}
+  .calgrid {{ grid-template-columns: 34px repeat(7, minmax(0, 1fr)); }}
   .calevent {{ font-size: .72rem; }}
   .timeline {{ grid-template-columns: 44px 1fr; }}
   .week-timeline {{ grid-template-columns: 40px repeat(7, minmax(0, 1fr)); }}
@@ -1547,7 +1844,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
     <p class="small">Open WhatsApp on your phone → Linked Devices → Link a Device, and scan. The code refreshes automatically while shown.</p>
   </div>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="operations" onclick="showTab('operations')">Operations</button><button data-tab-button="records" onclick="showTab('records')">Opportunities</button><button data-tab-button="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" onclick="showTab('decision')">KPIs</button><button data-tab-button="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><button data-tab-button="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="settings" onclick="showTab('settings')">Settings</button><button style="margin-left:auto" title="End the admin session on this browser" onclick="adminSignOut()">Sign out</button></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
@@ -1557,7 +1854,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="overview"><h2>Last run stages</h2><p class="small" id="overview-last-run">No completed run recorded yet.</p><div id="overview-stages" class="chart"></div></div>
 <div class="card" data-tab="overview"><h2>Services</h2><div id="overview-services" class="small">Loading services…</div><p class="small">Webhook access details and the changedetection script live in the Integrations tab.</p></div>
 <div class="card" data-tab="operations"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
-<div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="0" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button class="primary" onclick="startAll()" title="Brings Docker integrations and the webhook listener back up, and opens the monitor">▶ Start All</button><button class="danger" onclick="stopAll()" title="DANGER: stops ALL processes, including this monitor">⛔ Stop All</button><button onclick="devPause()" title="Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe">⏸ Dev Pause</button><button onclick="devResume()" title="Restores everything Dev Pause changed">▶ Dev Resume</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records (0 = unlimited: download until no pending entries remain).</p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
+<div class="card" data-tab="operations"><h2>Monitor buttons</h2><div class="subsection"><h3>Run controls</h3><p><span class="small" style="margin-right:8px">Mode</span><span class="mode-group" id="run-mode"><label><input type="radio" name="run-mode" value="auto" disabled><span>automatic</span></label><label><input type="radio" name="run-mode" value="restart" checked><span>run pending only</span></label><label><input type="radio" name="run-mode" value="manual"><span>manual run</span></label><label><input type="radio" name="run-mode" value="test"><span>test run</span></label></span> <label class="small">Index page cap <input id="index-limit" value="0" size="4"></label> <label class="small">Detail limit <input id="detail-limit" value="0" size="4"></label> <button id="run-button" class="primary" onclick="requestRun()">Request selected run</button><button class="danger" onclick="stopRun()">Stop active run</button><button class="primary" onclick="startAll()" title="Brings Docker integrations and the webhook listener back up, and opens the monitor">▶ Start All</button><button class="danger" onclick="stopAll()" title="DANGER: stops collectors and infrastructure; monitors stay open">⛔ Stop All</button><button onclick="devPause()" title="Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe">⏸ Dev Pause</button><button onclick="devResume()" title="Restores everything Dev Pause changed">▶ Dev Resume</button><span id="button-status" class="small"></span></p><p class="small">Integrations: <a href="{CHANGEDETECTION_URL}" target="_blank">Open changedetection UI</a> · <a href="{WAHA_DASHBOARD_URL}" target="_blank">Open WAHA dashboard (pair by QR)</a> · container data lives in var/integrations; manage the stack from the Integrations buttons below. Container settings apply on the next stack restart.</p><p class="small" id="run-hint"><strong>Mode:</strong> automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records (0 = unlimited: download until no pending entries remain).</p></div><div class="subsection"><h3>Action buttons</h3><div id="action-zones"></div></div></div>
 <div class="card" data-tab="operations"><h2>Diagnostics</h2><table id="diagnostics"></table></div>
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
@@ -1569,7 +1866,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
 <div class="card" data-tab="whatsapp"><h2>WhatsApp settings</h2><p class="small">All WhatsApp options in one place: destinations, delivery settings, WAHA server connection, toggles and per-destination content filters.</p><div class="subsection"><h3>Destinations & toggles</h3><div class="destination-grid"><label>Default / one group</label><textarea id="waha-message-wa" rows="2" placeholder="12036...@g.us (used when a purpose-specific group is blank)"></textarea><label>Index alerts</label><input id="waha-index-wa" size="32" placeholder="blank = default group"><label>Item details</label><input id="waha-details-wa" size="32" placeholder="blank = default group"><label>Status changes</label><input id="waha-status-wa" size="32" placeholder="blank = default group"><label>Open Now Opportunities</label><input id="waha-open-now-wa" size="32" placeholder="blank = Index alerts / default group"><label>System health</label><input id="waha-system-wa" size="32" placeholder="blank = default group"><label>Final summary per round</label><input id="waha-summary-wa" size="32" placeholder="blank = default group"></div><p><label class="small"><input type="checkbox" id="notify-whatsapp-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_WHATSAPP', this.checked ? '1' : '0')"> Notify by WhatsApp (index alerts)</label><br><label class="small"><input type="checkbox" id="notify-details-wa" onchange="syncWhatsappMirror('wa'); saveMonitorSetting('PC_NOTIFY_DETAILS', this.checked ? '1' : '0')"> Detail follow-up WhatsApp</label></p><p><button onclick="saveWahaFrom('wa')">Save WhatsApp destinations</button> <button onclick="sendTestWhatsapp()">Send test WhatsApp</button></p></div><div class="subsection"><h3>Delivery & server settings</h3><div class="settings-grid"><label class="small">WhatsApp source <input id="set-PC_WAHA_SOURCE" size="16"></label> <label class="small">WhatsApp within N days <input id="set-PC_NOTIFY_WITHIN_DAYS" size="5" placeholder="all"></label> <label class="small">WAHA retries <input id="set-PC_WAHA_RETRIES" size="5"></label> <label class="small">Delay between sends (s) <input id="set-PC_WAHA_SEND_DELAY_SECONDS" size="5"></label> <label class="small">Digest above N new records <input id="set-PC_NOTIFY_INDEX_DIGEST_THRESHOLD" size="5"></label> <label class="small">Idle status every N hours <input id="set-PC_NOTIFY_IDLE_EVERY_HOURS" size="5"></label> <label class="small">WAHA base URL <input id="set-PC_WAHA_BASE_URL" size="24"></label> <label class="small">WAHA session <input id="set-PC_WAHA_SESSION" size="12"></label> <label class="small">WAHA events <input id="set-PC_WAHA_NOTIFY_EVENTS" size="40"></label> <label class="small">WAHA server port <input id="set-WAHA_PORT" size="6"></label> <label class="small">WAHA server API key <input id="set-WAHA_API_KEY" size="20"></label> <label class="small">WAHA dashboard user <input id="set-WAHA_DASHBOARD_USERNAME" size="12"></label> <label class="small">WAHA dashboard password (generated by setup) <input id="set-WAHA_DASHBOARD_PASSWORD" size="14"></label></div><p><button onclick="saveAdvancedSettings()">Save WhatsApp advanced settings</button></p><p class="xs">The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.</p><p><label class="small"><input type="checkbox" id="set-PC_WAHA_ENABLED" onchange="saveMonitorSetting('PC_WAHA_ENABLED', this.checked ? '1' : '0')"> Enable WAHA WhatsApp sending</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_SKIP_EXPIRED" onchange="saveMonitorSetting('PC_NOTIFY_SKIP_EXPIRED', this.checked ? '1' : '0')"> Skip already-expired opportunities</label> <label class="small"><input type="checkbox" id="set-PC_NOTIFY_DETAILS_INLINE" onchange="saveMonitorSetting('PC_NOTIFY_DETAILS_INLINE', this.checked ? '1' : '0')"> Send each detail message right after its download</label> <label class="small"><input type="checkbox" id="set-PC_INDEX_FROM_SNAPSHOT" onchange="saveMonitorSetting('PC_INDEX_FROM_SNAPSHOT', this.checked ? '1' : '0')"> AUTO runs import index from changedetection snapshot</label></p></div><div class="subsection"><h3>Content filters</h3><p><label class="small">Shared <input id="flt-global" size="30"></label> <label class="small">Index alerts <input id="flt-index" size="30"></label> <label class="small">Item details <input id="flt-details" size="30"></label> <label class="small">Status changes <input id="flt-status" size="30"></label> <label class="small">Open Now Opportunities <input id="flt-open-now" size="30"></label> <button onclick="saveWahaFilters()">Save filters</button></p></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp client profiles</h2><div class="subsection"><h3>Add / update a client</h3><p class="small">Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').</p><p><label class="small">Client name <input id="client-name" size="18"></label> <label class="small">Destination <select id="client-group-select"><option value="">— search first —</option></select></label> <label class="small">or custom chat ID <input id="client-chat-custom" size="22" placeholder="12036...@g.us"></label></p><p><span class="small">Purposes</span> <label class="small"><input type="checkbox" id="client-purpose-index" checked> index</label> <label class="small"><input type="checkbox" id="client-purpose-details" checked> details</label> <label class="small"><input type="checkbox" id="client-purpose-status" checked> status</label> <label class="small">Filter expression <input id="client-filters" size="30" placeholder="salud + insumos, -construccion"></label> <button onclick="addClientProfile()">Add to profiles</button></p></div><div class="subsection"><h3>Profiles (JSON)</h3><p class="small">Full list, editable by hand. Purposes: index, details, status, or all.</p><textarea id="waha-clients" rows="10" placeholder='[{{"name":"Client A","chat_id":"12036...@g.us","purposes":["index","details"],"filters":"salud + insumos, -construccion","enabled":true}}]'></textarea><p><button onclick="saveWahaClients()">Save client profiles</button></p></div></div><div class="card" data-tab="whatsapp"><h2>WAHA Directory Search</h2><p class="small">Search the complete WAHA directory by one or more words from a name or chat ID. Results filter live from a short-lived local cache, so typing does not repeatedly download contacts, groups, communities and channels.</p><p><label class="small">Name or ID <input id="waha-search-q" size="40" placeholder="e.g. Chiriquí contratistas, 12036, @g.us" oninput="scheduleWahaSearch()" onkeydown="if (event.key === 'Enter') {{ event.preventDefault(); wahaSearch(); }}"></label> <button onclick="wahaSearch()">Search</button> <button onclick="wahaSearch(true)">Refresh directory</button> <span id="waha-search-state" class="small"></span></p><div id="waha-search-results" class="small"></div></div>
 <div class="card" data-tab="whatsapp"><h2>WhatsApp message formats</h2><p class="small">Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal). <label class="small">Format <select id="fmt-kind" onchange="loadWahaFormat()"><option value="index" selected>Index alert</option><option value="details">Detail follow-up</option><option value="status">Status change</option><option value="system">System / health</option><option value="summary">Final summary</option></select></label> <button onclick="previewWahaFormat()">Preview</button> <button onclick="saveWahaFormat()">Save format</button> <button onclick="resetWahaFormat()">Reset to default</button> <span id="fmt-state" class="small"></span></p><textarea id="fmt-template" rows="8" style="width:100%; box-sizing:border-box"></textarea><p class="small" id="fmt-placeholders"></p><pre id="fmt-preview" style="max-height: 300px"></pre></div>
-<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><h3>Client dashboard sign-in (Firebase web app)</h3><p class="xs">Powers the login screen at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a> (email/password + Google, same Firebase project as the Android app). In Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config values here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = the client dashboard keeps working only with ?uid= links.</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
+<div class="card" data-tab="settings"><h2>Settings</h2><details class="adv-settings" open><summary class="small">Collector, timer &amp; storage settings (apply on the next run/launch)</summary><h3>Storage paths</h3><div class="settings-grid"><label class="small">Records folder <input id="records-dir" size="42"></label> <label class="small">Calendar packages <input id="calendar-dir" size="42"></label> <label class="small">Test sandbox <input id="records-test-dir" size="42"></label> <button onclick="savePathSettings()">Save paths</button></div><h3>Run cadence</h3><div class="settings-grid"><label class="small">Auto-run source <select id="set-PC_AUTORUN_SOURCE"><option value="changedetection">changedetection webhook</option><option value="cron">manual cron</option></select></label><label class="small">Next-run interval (min) <input id="set-PC_NEXT_RUN_INTERVAL_MINUTES" size="5"></label> <label class="small">Cron index page cap <input id="set-PC_CRON_INDEX_LIMIT" size="5"></label> <label class="small">Cron detail limit (0 = all) <input id="set-PC_CRON_DETAIL_LIMIT" size="5"></label> <label class="small">Webhook index page cap <input id="set-PC_WEBHOOK_INDEX_LIMIT" size="5"></label> <label class="small">Webhook detail limit (0 = all) <input id="set-PC_WEBHOOK_DETAIL_LIMIT" size="5"></label> <label class="small">Test-zone records <input id="set-PC_TEST_ZONE_LIMIT" size="5"></label> <label class="small">Monitor stale sec <input id="set-PC_MONITOR_STALE_SECONDS" size="5"></label> <label class="small">Deadline 'soon' days <input id="set-PC_MONITOR_DEADLINE_SOON_DAYS" size="5"></label></div><p class="small"><label><input type="checkbox" id="source-changedetection-active" disabled> changedetection/webhook active</label> <label><input type="checkbox" id="source-cron-active" disabled> cron active</label> <span id="autorun-source-note"></span></p><h3>Timer window</h3><div class="settings-grid"><label class="small">Timer width <input id="set-PC_NEXT_RUN_TIMER_WIDTH" size="5"></label> <label class="small">Timer height <input id="set-PC_NEXT_RUN_TIMER_HEIGHT" size="5"></label> <label class="small">Timer top <input id="set-PC_NEXT_RUN_TIMER_TOP" size="5"></label> <label class="small">Timer latest records <input id="set-PC_NEXT_RUN_TIMER_RECORDS" size="5"></label> <label class="small">Timer data refresh sec <input id="set-PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS" size="5"></label></div><h3>Integrations</h3><div class="settings-grid"><label class="small">Monitor bind host <input id="set-PC_MONITOR_HOST" size="16" placeholder="127.0.0.1 or 0.0.0.0"></label><label class="small">changedetection URL <input id="set-CHANGEDETECTION_BASE_URL" size="24"></label> <label class="small">Webhook listener port <input id="set-PC_WEBHOOK_PORT" size="6"></label> <label class="small">Webhook public host <input id="set-PC_WEBHOOK_PUBLIC_HOST" size="22"></label><button onclick="saveAdvancedSettings()">Save settings</button></div><h3>Access &amp; sign-in</h3><p class="xs">The front page (/) is a login for everyone except this PC itself (127.0.0.1 always gets straight in). <b>Manager</b>: local username/password below — grants this admin monitor. <b>Clients</b>: Firebase email/Google sign-in — they land on the calendar-only dashboard at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a>. An email listed in "Admin emails" also gets the admin monitor when signing in via Firebase. The API token lets the Android admin app call the protected APIs (X-PC-Admin-Token header or ?admin_token=).</p><div class="settings-grid"><label class="small">Manager username <input id="set-PC_ADMIN_USERNAME" size="18" autocomplete="off"></label> <label class="small">Manager password <input id="set-PC_ADMIN_PASSWORD" size="18" type="password" autocomplete="new-password"></label> <label class="small">Admin emails (comma separated) <input id="set-PC_ADMIN_EMAILS" size="34" placeholder="you@gmail.com, other@x.com"></label> <label class="small">Admin API token (Android admin app) <input id="set-PC_ADMIN_API_TOKEN" size="26" placeholder="blank = off"></label></div><h4 class="small" style="margin:10px 0 4px">Client sign-in (Firebase web app)</h4><p class="xs">Same Firebase project as the Android app: in Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = client sign-in disabled (manager login and ?uid= links keep working).</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div><p class="xs">Auto-run source is exclusive: cron active disables webhook collection; changedetection active disables cron collection. Use <code>src/20_pipeline/115-cron-run.sh</code> from crontab.</p><p><label class="small"><input type="checkbox" id="set-PC_TEST_ZONE_AUTORUN" onchange="saveMonitorSetting('PC_TEST_ZONE_AUTORUN', this.checked ? '1' : '0')"> Auto-run test zone when no new records</label> <label class="small"><input type="checkbox" id="set-PC_RUN_UPDATE_BEFORE_RUN" onchange="saveMonitorSetting('PC_RUN_UPDATE_BEFORE_RUN', this.checked ? '1' : '0')"> Update local copy before each run</label> <label class="small" title="OFF = manual mode: the webhook listener keeps running but ignores incoming changedetection triggers instead of starting a run."><input type="checkbox" id="set-PC_WEBHOOK_AUTO_RUN" onchange="saveMonitorSetting('PC_WEBHOOK_AUTO_RUN', this.checked ? '1' : '0')"> Automatic runs from changedetection (webhook)</label></p></details></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="settings"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
@@ -1635,8 +1932,9 @@ function render(data) {{
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = settings[key] || '';
   }});
-  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
+  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_ADMIN_USERNAME','PC_ADMIN_PASSWORD','PC_ADMIN_EMAILS','PC_ADMIN_API_TOKEN','PC_TEMPLATES_SRC_DIR'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el && settings[key] !== undefined) el.value = settings[key]; }});
   updateAutorunSourceIndicators(settings);
+  moveWebhookAutoRunControlToScheduler();
   [['PC_WAHA_ENABLED','0'],['PC_NOTIFY_SKIP_EXPIRED','0'],['PC_NOTIFY_DETAILS_INLINE','1'],['PC_INDEX_FROM_SNAPSHOT','1'],['PC_TEST_ZONE_AUTORUN','0'],['PC_RUN_UPDATE_BEFORE_RUN','1'],['PC_WEBHOOK_AUTO_RUN','1']].forEach(([key, dflt]) => {{ const el = document.getElementById('set-' + key); if (el && document.activeElement !== el) el.checked = String(settings[key] ?? dflt) === '1'; }});
   const cronEnabledEl = document.getElementById('cron-enabled');
   if (cronEnabledEl && document.activeElement !== cronEnabledEl) cronEnabledEl.checked = String(settings.PC_AUTORUN_SOURCE ?? 'changedetection') === 'cron';
@@ -1711,7 +2009,7 @@ function requestRun() {{
 function importCalendars() {{ postForm('/api/import-calendars', ''); }}
 function stopRun() {{ postForm('/api/manual-action', 'label=' + encodeURIComponent('Stop active run')); }}
 function stopAll() {{
-  if (!window.confirm('This stops EVERYTHING: workers, test zone, calendar builder, monitors, webhook listener and updaters. This monitor closes too. Continue?')) return;
+  if (!window.confirm('This stops workers, test zone, calendar builder, webhook listener and updaters. Monitors stay open so you can resume from here. Continue?')) return;
   postForm('/api/manual-action', 'label=' + encodeURIComponent('STOP all runners'));
 }}
 function startAll() {{ postForm('/api/manual-action', 'label=' + encodeURIComponent('START all infrastructure')); }}
@@ -1899,6 +2197,33 @@ function resetWahaFormat() {{
   setTimeout(loadWahaFormat, 400);
 }}
 let calendarAnchor = '';
+// Keep event chips compact by default. The display checkboxes below let users
+// reveal the source hour and opportunity number when those details are useful.
+let calendarShowHours = false;
+let calendarShowNumbers = false;
+function initCalendarDisplayControls() {{
+  const filter = document.getElementById('cal-filter');
+  const filterRow = filter && filter.closest('.cal-filter-row');
+  if (!filterRow || filterRow.dataset.calendarLayoutReady === '1') return;
+  const controlsRow = filterRow.previousElementSibling;
+  if (controlsRow) controlsRow.classList.add('cal-controls-row');
+  filter.size = 28;
+  filterRow.dataset.calendarLayoutReady = '1';
+  const row = document.createElement('p');
+  row.className = 'cal-display-row';
+  row.innerHTML = '<b>Event display</b>'
+    + ' <label class="small"><input type="checkbox" id="cal-show-hours"> Show hours</label>'
+    + ' <label class="small"><input type="checkbox" id="cal-show-numbers"> Show numbers</label>';
+  filterRow.parentNode.insertBefore(row, filterRow.nextSibling);
+  document.getElementById('cal-show-hours').addEventListener('change', event => {{
+    calendarShowHours = event.target.checked;
+    renderCalendarVisual();
+  }});
+  document.getElementById('cal-show-numbers').addEventListener('change', event => {{
+    calendarShowNumbers = event.target.checked;
+    renderCalendarVisual();
+  }});
+}}
 async function loadCalendar(shift) {{
   const view = document.getElementById('cal-view').value;
   const field = document.getElementById('cal-field').value;
@@ -1924,12 +2249,33 @@ function saveTemplatesSelection() {{
   postForm('/api/templates-select', files.join('&'));
   setTimeout(loadTemplates, 400);
 }}
+function moveWebhookAutoRunControlToScheduler() {{
+  const toggle = document.getElementById('set-PC_WEBHOOK_AUTO_RUN');
+  const banner = document.getElementById('cd-schedule-banner');
+  if (!toggle || !banner || toggle.dataset.schedulerMoved === '1') return;
+  const label = toggle.closest('label');
+  if (!label) return;
+  const row = document.createElement('p');
+  row.className = 'small';
+  row.style.cssText = 'margin:8px 0;padding:8px 10px;background:#0b1220;border:1px solid #334155;border-radius:8px';
+  row.appendChild(document.createTextNode('Trigger control: '));
+  row.appendChild(label);
+  banner.parentNode.insertBefore(row, banner.nextSibling);
+  toggle.dataset.schedulerMoved = '1';
+  const intro = banner.parentElement.querySelector('p.small');
+  if (intro) intro.textContent = intro.textContent.replace('toggle in Settings', 'toggle below');
+}}
+moveWebhookAutoRunControlToScheduler();
 function saveMonitorSetting(key, value) {{ postForm('/api/monitor-setting', 'key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value)); }}
+async function adminSignOut() {{
+  try {{ await fetch('/api/session-logout', {{method: 'POST'}}); }} catch (err) {{ /* cookie clear is best-effort */ }}
+  location.href = '/?signedout=1';  // ?signedout=1 tells the login page not to auto-resume the Firebase session
+}}
 function savePathSettings() {{
   [['PC_RECORDS_DIR', 'records-dir'], ['PC_CALENDAR_DIR', 'calendar-dir'], ['PC_RECORDS_TEST_DIR', 'records-test-dir']].forEach(([key, id]) => saveMonitorSetting(key, document.getElementById(id).value));
 }}
 function saveAdvancedSettings() {{
-  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
+  ['PC_WAHA_SOURCE','PC_AUTORUN_SOURCE','PC_CRON_INDEX_LIMIT','PC_CRON_DETAIL_LIMIT','PC_MONITOR_HOST','PC_NEXT_RUN_INTERVAL_MINUTES','PC_MONITOR_DEADLINE_SOON_DAYS','PC_WEBHOOK_INDEX_LIMIT','PC_WEBHOOK_DETAIL_LIMIT','PC_NOTIFY_WITHIN_DAYS','PC_WAHA_RETRIES','PC_WAHA_SEND_DELAY_SECONDS','PC_NOTIFY_INDEX_DIGEST_THRESHOLD','PC_NOTIFY_IDLE_EVERY_HOURS','PC_WAHA_BASE_URL','PC_WAHA_SESSION','PC_WAHA_NOTIFY_EVENTS','PC_TEST_ZONE_LIMIT','PC_MONITOR_STALE_SECONDS','PC_NEXT_RUN_TIMER_WIDTH','PC_NEXT_RUN_TIMER_HEIGHT','PC_NEXT_RUN_TIMER_TOP','PC_NEXT_RUN_TIMER_RECORDS','PC_NEXT_RUN_TIMER_DATA_REFRESH_SECONDS','CHANGEDETECTION_BASE_URL','PC_WEBHOOK_PORT','PC_WEBHOOK_PUBLIC_HOST','WAHA_PORT','WAHA_API_KEY','WAHA_DASHBOARD_USERNAME','WAHA_DASHBOARD_PASSWORD','PC_FIREBASE_WEB_API_KEY','PC_FIREBASE_WEB_AUTH_DOMAIN','PC_FIREBASE_WEB_PROJECT_ID','PC_FIREBASE_WEB_APP_ID','PC_ADMIN_USERNAME','PC_ADMIN_PASSWORD','PC_ADMIN_EMAILS','PC_ADMIN_API_TOKEN'].forEach(key => {{ const el = document.getElementById('set-' + key); if (el) saveMonitorSetting(key, el.value); }});
 }}
 function updateAutorunSourceIndicators(settings) {{
   const source = String((settings || {{}}).PC_AUTORUN_SOURCE || 'changedetection').toLowerCase();
@@ -2078,6 +2424,19 @@ function applyRecordFilter() {{
   renderRecordDetail();
 }}
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function calendarIsoWeekNumber(date) {{
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - day + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  return 1 + Math.round((d - firstThursday) / 604800000);
+}}
+function calendarMonthWeekStart(grid, row) {{
+  const parts = String(grid.start || '').slice(0, 10).split('-').map(Number);
+  const first = new Date(Date.UTC(parts[0] || 1970, (parts[1] || 1) - 1, parts[2] || 1));
+  first.setUTCDate(first.getUTCDate() - Number(grid.first_weekday || 0) + row * 7);
+  return first;
+}}
 function calendarEventClass(ev) {{
   const st = String(ev.status || '').toLowerCase();
   if (st.includes('venc') || st.includes('expired')) return 'expired';
@@ -2099,8 +2458,9 @@ function calendarZoomTo(iso, view) {{
   loadCalendar();
 }}
 function renderCalendarEvent(ev) {{
-  const title = (ev.numero ? ev.numero + ' · ' : '') + (ev.description || '(sin descripcion)');
-  const clock = ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
+  const number = calendarShowNumbers && ev.numero ? ev.numero + ' · ' : '';
+  const clock = calendarShowHours && ev.clock && ev.clock !== '--:--' ? ev.clock + ' ' : '';
+  const title = number + (ev.description || '(sin descripcion)');
   const cls = calendarEventClass(ev);
   const label = esc(clock + title);
   if (!calendarEventsInteractive) {{
@@ -2118,7 +2478,7 @@ function renderCalendarDayCell(day, events, blank, maxShown) {{
   const more = (events || []).length > limit ? `<span class="calevent more">+${{events.length - limit}} more</span>` : '';
   const classes = ['calcell'];
   if (day.iso === day.today) classes.push('today');
-  return `<div class="${{classes.join(' ')}}" onclick="calendarZoomTo('${{day.iso}}', 'week')"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
+  return `<div class="${{classes.join(' ')}}" onclick="calendarZoomTo('${{day.iso}}', 'day')"><div class="num"><span>${{day.label}}</span><span class="count">${{events.length || ''}}</span></div>${{shown}}${{more}}</div>`;
 }}
 async function renderCalendarVisual() {{
   const node = document.getElementById('calendar-visual');
@@ -2184,10 +2544,24 @@ async function renderCalendarVisual() {{
       node.innerHTML = `<div class="calendar-board week-agenda"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day header to zoom to that day.</span></div><div class="timeline-scroll"><div class="week-timeline">${{head}}${{notimeRow}}${{hourRows}}</div></div></div>`;
       return;
     }}
-    let cells = WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
-    for (let i = 0; i < (g.first_weekday || 0); i++) cells += renderCalendarDayCell(null, [], true);
-    cells += days.map(day => renderCalendarDayCell(day, grouped[day.iso] || [], false)).join('');
-    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to zoom to its week.</span></div><div class="calgrid">${{cells}}</div></div>`;
+    const leading = Number(g.first_weekday || 0);
+    const rowCount = Math.ceil((leading + days.length) / 7);
+    const weeks = g.weeks || [];
+    let cells = '<div class="week-number-header">Wk</div>' + WEEKDAY_LABELS.map(d => `<div class="dow">${{d}}</div>`).join('');
+    for (let row = 0; row < rowCount; row++) {{
+      const weekInfo = weeks[row] || {{}};
+      const weekStart = weekInfo.start ? new Date(weekInfo.start + 'T12:00:00Z') : calendarMonthWeekStart(g, row);
+      const weekIso = weekInfo.start || weekStart.toISOString().slice(0, 10);
+      const weekNumber = weekInfo.number || calendarIsoWeekNumber(weekStart);
+      cells += `<button class="week-number" type="button" title="Open week ${{weekNumber}}" onclick="calendarZoomTo('${{weekIso}}', 'week')">${{weekNumber}}</button>`;
+      for (let col = 0; col < 7; col++) {{
+        const index = row * 7 + col - leading;
+        cells += index < 0 || index >= days.length
+          ? renderCalendarDayCell(null, [], true)
+          : renderCalendarDayCell(days[index], grouped[days[index].iso] || [], false);
+      }}
+    }}
+    node.innerHTML = `<div class="calendar-board"><div class="calendar-title"><h3>${{esc(title)}}</h3><span class="small">Click a day to open its day view; click Wk to open the week.</span></div><div class="calgrid">${{cells}}</div></div>`;
   }} catch (err) {{ node.textContent = 'Graphical calendar unavailable: ' + err; }}
 }}
 async function refreshRecordIndex() {{
@@ -2579,6 +2953,7 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
 assignDedicatedTabs();
 showTab('overview');
 initCollapsibleSections();
+initCalendarDisplayControls();
 refreshRecordIndex();
 loadTemplates();
 loadCalendar();
@@ -2599,19 +2974,96 @@ class MonitorHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         return
 
-    def send_text(self, status: int, body: str, content_type: str) -> None:
+    def send_text(self, status: int, body: str, content_type: str, extra_headers: dict[str, str] | None = None) -> None:
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
+
+    # ---- Admin access checks ----
+    def _is_local_request(self) -> bool:
+        """True when the request comes from this PC itself (never locked out)."""
+        return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+    def _session(self) -> dict | None:
+        cookies = self.headers.get("Cookie", "")
+        for part in cookies.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE_NAME and value:
+                return parse_session_token(value)
+        return None
+
+    def _has_admin_access(self) -> bool:
+        if self._is_local_request():
+            return True
+        session = self._session()
+        if session and session.get("role") == "admin":
+            return True
+        expected = load_monitor_settings().get("PC_ADMIN_API_TOKEN", "").strip()
+        if expected:
+            supplied = (self.headers.get("X-PC-Admin-Token", "")
+                        or parse_qs(urlparse(self.path).query).get("admin_token", [""])[0]).strip()
+            if supplied and hmac.compare_digest(supplied, expected):
+                return True
+        return False
+
+    def _session_cookie_header(self, token: str, max_age: int) -> dict[str, str]:
+        return {"Set-Cookie": f"{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"}
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", "0") or "0")
         form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
+        if path == "/api/session-login":
+            # Manager path: local username/password from monitor settings.
+            username = form.get("user", [""])[0].strip()
+            password = form.get("password", [""])[0]
+            if username or password:
+                settings = load_monitor_settings()
+                expected_user = settings.get("PC_ADMIN_USERNAME", "").strip()
+                expected_password = settings.get("PC_ADMIN_PASSWORD", "")
+                if not expected_user or not expected_password:
+                    self.send_text(503, "Manager login is not configured (PC_ADMIN_USERNAME / PC_ADMIN_PASSWORD).\n", "text/plain; charset=utf-8")
+                    return
+                user_ok = hmac.compare_digest(username, expected_user)
+                password_ok = hmac.compare_digest(password, expected_password)
+                if not (user_ok and password_ok):
+                    time.sleep(0.8)  # slow down brute force
+                    self.send_text(403, "Invalid username or password.\n", "text/plain; charset=utf-8")
+                    return
+                token = make_session_token("local-admin", username, "admin")
+                self.send_text(200, json.dumps({"role": "admin", "user": username}),
+                               "application/json; charset=utf-8",
+                               self._session_cookie_header(token, SESSION_TTL_SECONDS))
+                return
+            # Firebase path: clients (and any PC_ADMIN_EMAILS admin) send the
+            # signed-in user's ID token, verified server-side with Google.
+            id_token = form.get("idToken", [""])[0].strip()
+            if not id_token:
+                self.send_text(400, "missing credentials\n", "text/plain; charset=utf-8")
+                return
+            verified = verify_firebase_id_token(id_token)
+            if verified is None:
+                self.send_text(403, "Sign-in could not be verified. Try again.\n", "text/plain; charset=utf-8")
+                return
+            role = "admin" if verified["email"] and verified["email"] in admin_emails() else "client"
+            token = make_session_token(verified["uid"], verified["email"], role)
+            self.send_text(200, json.dumps({"role": role, "email": verified["email"]}),
+                           "application/json; charset=utf-8",
+                           self._session_cookie_header(token, SESSION_TTL_SECONDS))
+            return
+        if path == "/api/session-logout":
+            self.send_text(200, json.dumps({"ok": True}), "application/json; charset=utf-8",
+                           self._session_cookie_header("", 0))
+            return
+        if path not in OPEN_POST_PATHS and not self._has_admin_access():
+            self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
+            return
         if path == "/api/request-run":
             raw_detail = form.get("detail_limit", ["0"])[0].strip()
             raw_index = form.get("index_limit", ["0"])[0].strip()
@@ -2844,6 +3296,16 @@ class MonitorHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self.send_text(200, "ok\n", "text/plain; charset=utf-8")
+            return
+        if path in ("/", "/index.html"):
+            # Front page: admin dashboard when authorized, login otherwise.
+            if self._has_admin_access():
+                self.send_text(200, HTML, "text/html; charset=utf-8")
+            else:
+                self.send_text(200, LOGIN_HTML, "text/html; charset=utf-8")
+            return
+        if path not in OPEN_GET_PATHS and not self._has_admin_access():
+            self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
             return
         if path == "/api/status":
             self.send_text(200, json.dumps(status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
@@ -3181,9 +3643,6 @@ class MonitorHandler(BaseHTTPRequestHandler):
             except sqlite3.Error:
                 pass
             self.send_text(200, json.dumps(suggestions, ensure_ascii=False), "application/json; charset=utf-8")
-            return
-        if path in ("/", "/index.html"):
-            self.send_text(200, HTML, "text/html; charset=utf-8")
             return
         self.send_text(404, "not found\n", "text/plain; charset=utf-8")
 

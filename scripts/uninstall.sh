@@ -74,6 +74,7 @@ stop_user_services() {
   local services=(
     panamacompra.service
     panamacompra-webhook.service
+    panamacompra-monitor-web.service
   )
   for svc in "${services[@]}"; do
     run systemctl --user stop "$svc" 2>/dev/null || true

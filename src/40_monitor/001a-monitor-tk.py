@@ -186,7 +186,7 @@ MANUAL_ACTIONS = [
     ManualAction("Collector Runners", "Request full collection", ("./src/20_pipeline/110a-request-run.sh", "0", "RESTART", "0"), "Queues a manual restart run (all available index pages and unlimited detail pages) for the background worker. Safe default action."),
     ManualAction("Collector Runners", "Run collection now", ("./src/20_pipeline/110b-run-now.sh", "0", "0", "MANUAL"), "Starts the run-all worker immediately for all available index pages and unlimited detail pages (does not wait for the queue)."),
     ManualAction("Collector Runners", "Show run status", ("./src/20_pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
-    ManualAction("Collector Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters (this monitor closes too)."),
+    ManualAction("Collector Runners", "STOP all runners", ("./src/20_pipeline/120a-stop-everything.sh",), "DANGER: stops workers, test zone, calendar builder, webhook listener and updaters; all monitors stay open so you can resume from here."),
 
     # --- 2. Updater & Migration: keep code fresh, migrate old data -----------
     ManualAction("Updater & Migration", "Update local copy", ("./src/40_monitor/003-update-loader.py", "--open-monitor-after"), "Opens the centered updater window, refreshes the checkout/dependencies (auto-picks latest branch vs main), then reopens the monitor."),
@@ -1033,14 +1033,13 @@ def run_tk() -> int:
         # it is destructive enough to warrant one-click, hard-to-miss access.
         if not messagebox.askyesno(
             "Confirm Stop All",
-            "This stops EVERYTHING: workers, test zone, calendar builder, "
-            "monitors, webhook listener and updaters. This monitor window will "
-            "close too. Continue?",
+            "This stops workers, test zone, calendar builder, webhook listener "
+            "and updaters. Monitors stay open so you can resume from here. Continue?",
             icon="warning", default="no",
         ):
             return
         subprocess.Popen([str(BASE_DIR / "src/20_pipeline/120a-stop-everything.sh")], cwd=BASE_DIR, env=monitor_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        button_status_var.set("Stop All requested: halting every PanamaCompra process, including this monitor.")
+        button_status_var.set("Stop All requested: halting collectors and infrastructure. Monitors stay open.")
 
     def start_all_now() -> None:
         # Counterpart to Stop All: brings the Docker integrations and the
@@ -1104,7 +1103,7 @@ def run_tk() -> int:
     add_tooltip(run_button, "Queue the selected run with the chosen mode and limit (disabled while a run is active).")
     add_tooltip(stop_button, "Stop the active collection now (worker + index/detail/test/calendar) and prevent auto-resume. The monitor, next-run timer and webhook keep running. Stays enabled during a run, unlike the rest of this row.")
     add_tooltip(start_all_button, "Brings background infrastructure back up after Stop All: Docker integrations (changedetection/WAHA/sockpuppetbrowser), the webhook listener, and opens the monitor. Does not queue a collector run by itself.")
-    add_tooltip(stop_all_button, "DANGER: stops ALL processes — workers, test zone, calendar builder, monitors, webhook listener and updaters. This monitor closes too. Asks for confirmation first.")
+    add_tooltip(stop_all_button, "DANGER: stops workers, test zone, calendar builder, webhook listener and updaters. Monitors stay open. Asks for confirmation first.")
     add_tooltip(dev_pause_button, "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe. Docker integrations, monitors and the webhook listener stay running.")
     add_tooltip(dev_resume_button, "Restores every setting Dev Pause changed, to its exact previous value. Does not queue a run by itself.")
     add_section_toggle(controls, button_column=5)
