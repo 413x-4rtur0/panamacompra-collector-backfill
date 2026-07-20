@@ -1519,7 +1519,7 @@ def run_tk() -> int:
 
     group_title(whatsapp_settings, 40, "Readability & index source")
     field(whatsapp_settings, 41, 0, "Delay between sends (s):", send_delay_var, 8, "Seconds to pause between consecutive WhatsApp sends so a batch arrives as separate readable messages instead of one burst. 0 disables pacing. Env: PC_WAHA_SEND_DELAY_SECONDS.")
-    field(whatsapp_settings, 41, 2, "Digest above N new:", digest_threshold_var, 8, "When one run finds more new records than this, the index alerts collapse into compact digest message(s) (20 records per message); each record still gets its own detail follow-up. 0 = always one message per record. Env: PC_NOTIFY_INDEX_DIGEST_THRESHOLD.")
+    field(whatsapp_settings, 41, 2, "Digest above N new:", digest_threshold_var, 8, "When one run finds more new records than this, the index alerts collapse into compact digest message(s) (PC_NOTIFY_INDEX_DIGEST_MAX_RECORDS per message, default 100); each record still gets its own detail follow-up. 0 = always one message per record. A client profile scoped to the 'index' purpose forces digest off regardless of this setting. Env: PC_NOTIFY_INDEX_DIGEST_THRESHOLD.")
     field(whatsapp_settings, 42, 0, "Idle status every N hours:", idle_hours_var, 8, "Minimum hours between '⚪ Sin nuevas entradas' idle messages so frequent webhook runs do not repeat it. 0 = send on every idle run. Env: PC_NOTIFY_IDLE_EVERY_HOURS.")
     inline_details_check = ttk.Checkbutton(whatsapp_settings, text="Send each detail message right after its download", variable=notify_details_inline_var, style="Card.TCheckbutton")
     inline_details_check.grid(row=42, column=2, columnspan=2, sticky="w", pady=3)

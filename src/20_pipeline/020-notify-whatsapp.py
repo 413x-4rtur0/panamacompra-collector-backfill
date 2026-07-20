@@ -1044,8 +1044,13 @@ def pace_after_send(index: int, total: int) -> None:
 def index_digest_threshold() -> int:
     """New-record count above which the index alerts collapse into digest
     messages. PC_NOTIFY_INDEX_DIGEST_THRESHOLD, default 1; 0 disables the
-    digest so every new record keeps its own message."""
-    if load_client_profiles():
+    digest so every new record keeps its own message.
+
+    Only a client profile scoped to the "index" purpose forces digest off —
+    a profile that only wants "details" or "status" follow-ups has no need
+    for per-record index granularity and should not block grouping for
+    everyone else."""
+    if any("index" in profile["purposes"] for profile in load_client_profiles()):
         return 0
     value = cfg_int("PC_NOTIFY_INDEX_DIGEST_THRESHOLD")
     return 1 if value is None else max(0, value)

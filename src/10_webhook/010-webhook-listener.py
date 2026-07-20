@@ -102,7 +102,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
-    def trigger_async(self, body_length: int) -> None:
+    def caller_tag(self) -> str:
+        """Source IP + User-Agent, so webhook_listener.log/collector_triggered.log
+        show who/what actually hit the trigger URL (changedetection, curl, a stray
+        script) instead of just "a request arrived"."""
+        ip = self.client_address[0] if self.client_address else "unknown"
+        agent = self.headers.get("User-Agent", "-")
+        return f"{ip} | {agent}"
+
+    def trigger_async(self, body_length: int, caller: str) -> None:
         try:
             if not automatic_runs_enabled():
                 # Manual mode: acknowledge the webhook (already done in
@@ -110,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
                 # do not start a collector run. Toggle back on from the monitor
                 # Settings tab, or restart the listener with
                 # PC_WEBHOOK_AUTO_RUN=1 to force it regardless of the setting.
-                self.log_line(f"Webhook trigger ignored ({body_length} byte body): automatic runs are disabled (manual mode)")
+                self.log_line(f"Webhook trigger ignored ({body_length} byte body) from {caller}: automatic runs are disabled (manual mode)")
                 return
 
             if ENQUEUE_ONLY:
@@ -118,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
                 # picks it up and performs the actual collection.
                 REQUEST_FLAG.parent.mkdir(parents=True, exist_ok=True)
                 REQUEST_FLAG.touch()
-                self.log_line(f"Run request enqueued by webhook ({body_length} byte body); waiting for host runner")
+                self.log_line(f"Run request enqueued by webhook ({body_length} byte body) from {caller}; waiting for host runner")
                 return
 
             subprocess.Popen(
@@ -127,21 +135,22 @@ class Handler(BaseHTTPRequestHandler):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            self.log_line(f"Collector triggered by webhook ({body_length} byte body)")
+            self.log_line(f"Collector triggered by webhook ({body_length} byte body) from {caller}")
         except Exception as exc:  # noqa: BLE001 - response was already sent; log failure
-            self.log_line(f"ERROR: failed to process accepted webhook: {exc}")
+            self.log_line(f"ERROR: failed to process accepted webhook from {caller}: {exc}")
 
     def handle_trigger(self, body_length):
         expected_path = f"/panamacompra/{TOKEN}"
 
         if not hmac.compare_digest(self.path.split("?")[0], expected_path):
             self.send_plain(403, b"Forbidden\n")
-            self.log_line(f"Rejected path: {self.path}")
+            self.log_line(f"Rejected path from {self.caller_tag()}: {self.path}")
             return
 
         body = b"Collector run request enqueued\n" if ENQUEUE_ONLY else b"Collector trigger accepted\n"
         self.send_plain(202, body)
-        threading.Thread(target=self.trigger_async, args=(body_length,), daemon=True).start()
+        caller = self.caller_tag()
+        threading.Thread(target=self.trigger_async, args=(body_length, caller), daemon=True).start()
 
     def log_message(self, format, *args):
         return
