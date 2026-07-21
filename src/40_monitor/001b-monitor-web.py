@@ -3264,7 +3264,12 @@ async function applyTabAccess() {{
     if (!allowed.has(tab)) {{ btn.style.display = 'none'; }}
     else if (!first) {{ first = tab; }}
   }});
-  if (first) showTab(first);
+  if (first) {{
+    const hashTab = location.hash ? location.hash.slice(1) : '';
+    const target = allowed.has(hashTab) ? hashTab : first;
+    showTab(target, {{skipHistory: true}});
+    history.replaceState({{tab: target}}, '', '#' + target);
+  }}
   const userBox = document.getElementById('progress-toggle');
   if (info.user && userBox) userBox.insertAdjacentHTML('beforebegin', `<span class="small" style="color:var(--concrete-300)">${{esc(info.user)}}</span>`);
 }}
@@ -4034,10 +4039,15 @@ function setUiLanguage(lang) {{
   try {{ localStorage.setItem('panamacompra-ui-language', selected); }} catch (err) {{ /* storage optional */ }}
   if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
 }}
-function showTab(tab) {{
+function showTab(tab, opts) {{
+  opts = opts || {{}};
   if (staffAllowedTabs && !staffAllowedTabs.has(tab)) return;
   document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
   document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
+  if (!opts.skipHistory) {{
+    const hash = '#' + tab;
+    if (location.hash !== hash) history.pushState({{tab: tab}}, '', hash);
+  }}
   if (tab === 'decision') refreshDecisionDashboard();
   if (tab === 'overview') refreshOverview();
   if (tab === 'records') refreshRecordIndex();
@@ -4045,6 +4055,10 @@ function showTab(tab) {{
   if (tab === 'scheduler') {{ refreshCronScheduleStatus(); refreshChangedetectionSchedule(); }}
   if (tab === 'system') refreshSystemStatus();
 }}
+window.addEventListener('popstate', (e) => {{
+  const tab = (e.state && e.state.tab) || (location.hash ? location.hash.slice(1) : 'overview');
+  if (document.querySelector(`[data-tab-button="${{tab}}"]`)) showTab(tab, {{skipHistory: true}});
+}});
 
 async function refreshOverview() {{
   try {{
@@ -4403,7 +4417,11 @@ try {{ initialUiLanguage = localStorage.getItem('panamacompra-ui-language') || '
 try {{ initialUiTheme = localStorage.getItem('panamacompra-ui-theme') || 'light'; }} catch (err) {{ /* storage optional */ }}
 setUiTheme(initialUiTheme);
 setUiLanguage(initialUiLanguage);
-showTab('overview');
+const validInitialTabs = Array.from(document.querySelectorAll('[data-tab-button]')).map(btn => btn.dataset.tabButton);
+const hashTab = location.hash ? location.hash.slice(1) : '';
+const initialTab = validInitialTabs.includes(hashTab) ? hashTab : 'overview';
+history.replaceState({{tab: initialTab}}, '', '#' + initialTab);
+showTab(initialTab, {{skipHistory: true}});
 setInterval(() => {{
   if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
 }}, 10000);
