@@ -46,6 +46,7 @@ from monitor_common import (  # noqa: E402
     monitor_connectivity_status,
     read_last_summary,
     setting,
+    soon_days_setting,
     stats_to_csv,
     summarize_items_for_kpi,
     waha_api_key,
@@ -5261,16 +5262,62 @@ class MonitorHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 days = 45
             if kind == "kpis":
-                stats = db_review_stats(days=days)
-                payload = {
-                    "total": stats.get("total", 0),
-                    "abiertas": stats.get("abiertas", 0),
-                    "closing_soon": stats.get("closing_soon", 0),
-                    "new_today": stats.get("new_today", 0),
-                    "soon_days": stats.get("soon_days", 0),
-                    "days": days,
-                    "generated_at": time.strftime("%Y-%m-%d %H:%M"),
-                }
+                text_filter = (params.get("filter", [""])[0] or "").strip()
+                if text_filter:
+                    # db_review_stats only supports exact grupo/entidad
+                    # matches, not the free-text include/exclude rules a
+                    # client types into their own filter box — so for a
+                    # filtered KPI view, scan with the same keyword predicate
+                    # the calendar list uses and total the same four numbers
+                    # by hand instead, mirroring db_review_stats' own SQL
+                    # predicates for each so the two stay consistent.
+                    keyword_filter = calendar_keyword_filter_fn(text_filter)
+                    soon_days = soon_days_setting()
+                    today_str = time.strftime("%Y-%m-%d")
+                    soon_end = (date.today() + timedelta(days=soon_days)).isoformat()
+                    total = abiertas = closing_soon = new_today = 0
+                    try:
+                        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                        conn.row_factory = sqlite3.Row
+                        try:
+                            rows = conn.execute(
+                                "SELECT numero, descripcion, short_description, estado, grupo, entidad, "
+                                "dependencia, modalidad, detail_json_path, finish_date_guess, "
+                                "COALESCE(NULLIF(first_seen, ''), detail_saved_at, '') AS first_seen_norm "
+                                "FROM opportunities"
+                            ).fetchall()
+                        finally:
+                            conn.close()
+                        for row in rows:
+                            if not keyword_filter(row):
+                                continue
+                            total += 1
+                            if str(row["grupo"] or "") == "Abiertas":
+                                abiertas += 1
+                            finish = str(row["finish_date_guess"] or "")[:10]
+                            if finish and today_str <= finish <= soon_end:
+                                closing_soon += 1
+                            first_seen_day = str(row["first_seen_norm"] or "").replace("_", "-")[:10]
+                            if first_seen_day == today_str:
+                                new_today += 1
+                    except sqlite3.Error:
+                        total = abiertas = closing_soon = new_today = 0
+                    payload = {
+                        "total": total, "abiertas": abiertas, "closing_soon": closing_soon,
+                        "new_today": new_today, "soon_days": soon_days, "days": days,
+                        "generated_at": time.strftime("%Y-%m-%d %H:%M"),
+                    }
+                else:
+                    stats = db_review_stats(days=days)
+                    payload = {
+                        "total": stats.get("total", 0),
+                        "abiertas": stats.get("abiertas", 0),
+                        "closing_soon": stats.get("closing_soon", 0),
+                        "new_today": stats.get("new_today", 0),
+                        "soon_days": stats.get("soon_days", 0),
+                        "days": days,
+                        "generated_at": time.strftime("%Y-%m-%d %H:%M"),
+                    }
                 self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
                 return
             # kind == "calendar": a flat, date-sorted list (not the admin
