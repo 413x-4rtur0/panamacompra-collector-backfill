@@ -2442,6 +2442,10 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .tab-nav .tab-divider {{ width: 1px; min-height: 28px; margin: 0 2px; background: var(--ink-300); align-self: center; }}
 .ui-language {{ margin-left: auto; font-size: .82rem; }}
 .ui-theme {{ margin-left: 0; }}
+.icon-toggle-btn {{ display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: var(--radius-md); border: 1px solid var(--concrete-300); background: transparent; color: var(--ink-700); cursor: pointer; }}
+.icon-toggle-btn:hover {{ background: rgba(0,0,0,.06); }}
+body.theme-dark .icon-toggle-btn {{ color: var(--concrete-200); border-color: var(--ink-600); }}
+body.theme-dark .icon-toggle-btn:hover {{ background: rgba(255,255,255,.08); }}
 .card[data-tab] {{ display: none; }}
 .card[data-tab].tab-active {{ display: block; }}
 .subsection {{ border: 1px solid var(--concrete-200); border-radius: var(--radius-lg); padding: 12px; margin: 10px 0; background: var(--concrete-50); }}
@@ -2557,8 +2561,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .header-actions button:hover {{ background: var(--brand-bar-hover-bg); }}
 .header-actions button.signout {{ background: var(--amber-500); color: var(--brand-bar-bg); border-color: var(--amber-600); font-weight: 700; }}
 .header-actions button.signout:hover {{ background: var(--amber-600); }}
-.header-actions .ui-language {{ margin-left: 0; display: inline-flex; align-items: center; gap: 5px; color: var(--brand-bar-text); font-size: .82rem; white-space: nowrap; }}
-.header-actions .ui-language select {{ padding: 5px 7px; font-size: .82rem; }}
+.header-actions .ui-language {{ margin-left: 0; color: var(--brand-bar-text); border-color: var(--brand-bar-border); }}
+.header-actions .ui-language:hover {{ background: var(--brand-bar-hover-bg); }}
 /* Calendar controls: selector cluster left, Prev|Today|Next as one segmented
    group center, Show on the right. */
 .cal-controls-row {{ justify-content: space-between; }}
@@ -2663,7 +2667,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
     <p class="small">Open WhatsApp on your phone → Linked Devices → Link a Device, and scan. The code refreshes automatically while shown.</p>
   </div>
 </div>
-<div class="tab-nav"><button class="active" data-tab-button="overview" data-i18n="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="calendar" data-i18n="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" data-i18n="kpis" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" data-i18n="opportunities" onclick="showTab('records')">Opportunities</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="integrations" data-i18n="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="scheduler" data-i18n="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="whatsapp" data-i18n="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="settings" data-i18n="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="operations" data-i18n="operations" onclick="showTab('operations')">Operations</button><label class="ui-language"><span data-i18n="language">Language</span> <select id="ui-language" onchange="setUiLanguage(this.value)"><option value="en">English</option><option value="es">Español</option></select></label><label class="ui-language ui-theme"><span data-i18n="theme">Theme</span> <select id="ui-theme" onchange="setUiTheme(this.value)"><option value="light" data-i18n="theme_light">Light</option><option value="dark" data-i18n="theme_dark">Dark</option></select></label></div>
+<div class="tab-nav"><button class="active" data-tab-button="overview" data-i18n="overview" onclick="showTab('overview')">Overview</button><button data-tab-button="calendar" data-i18n="calendar" onclick="showTab('calendar')">Calendar</button><button data-tab-button="decision" data-i18n="kpis" onclick="showTab('decision')">KPIs</button><button data-tab-button="records" data-i18n="opportunities" onclick="showTab('records')">Opportunities</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="integrations" data-i18n="integrations" onclick="showTab('integrations')">Integrations</button><button data-tab-button="scheduler" data-i18n="scheduler" onclick="showTab('scheduler')">Scheduler</button><button data-tab-button="whatsapp" data-i18n="whatsapp" onclick="showTab('whatsapp')">WhatsApp</button><span class="tab-divider" aria-hidden="true"></span><button data-tab-button="settings" data-i18n="settings" onclick="showTab('settings')">Settings</button><button data-tab-button="operations" data-i18n="operations" onclick="showTab('operations')">Operations</button><button type="button" class="ui-language icon-toggle-btn" id="ui-language" onclick="setUiLanguage(currentUiLanguage === 'es' ? 'en' : 'es')" aria-label="Switch language" title="Switch language"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"></path></svg></button><button type="button" class="ui-language ui-theme icon-toggle-btn" id="ui-theme" onclick="setUiTheme(document.body.classList.contains('theme-dark') ? 'light' : 'dark')" aria-label="Switch theme" title="Switch theme"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"></path></svg></button></div>
 <div class="card" data-tab="records"><h2>Record selector and filters</h2><p class="small">Collected records as “[downloaded timestamp | DTEND status] NUMERO — description”; choose newest-first or oldest-first ordering. Use filters first, then Ctrl/Shift-select one or more records to notify or import calendars.</p><p><label class="small">Deadline <select id="record-status"><option value="all">All</option><option value="soon">Next to expire</option><option value="expired">Expired</option><option value="upcoming">Upcoming</option><option value="unknown">No date / needs repair</option></select></label> <label class="small">Detail status <select id="record-detail-status"><option value="all">All</option><option value="pending">Pending records</option><option value="saved">Completed records</option><option value="failed">Failed records</option></select></label> <label class="small">Order by <select id="record-order-field"><option value="downloaded">Downloaded date</option><option value="end">End date</option><option value="start">Start date</option></select></label> <label class="small"><select id="record-order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label> <label class="small">DTEND on/after <input type="text" id="record-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">DTSTART on/after <input type="text" id="record-start-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-start-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">Downloaded on/after <input type="text" id="record-downloaded-mindate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <label class="small">on/before <input type="text" id="record-downloaded-maxdate" placeholder="YYYY-MM-DD [HH:MM]" size="16"></label> <span class="small">Legend: <span style="color:#247A47;font-weight:700">upcoming</span> · <span style="color:#B06E00;font-weight:700">next to expire</span> · <span style="color:#AE2D1C;font-weight:700">expired</span></span></p><p><select id="record-index" multiple size="10"></select> <button onclick="refreshRecordIndex()">Refresh list</button> <button onclick="openRecordFolder()">Open record folder</button> <button onclick="openRecordPortal()">Open in portal</button> <button onclick="notifySelectedRecords()">Notify selected WhatsApp</button> <button onclick="importSelectedCalendars()">Import selected calendars</button> <button onclick="templatesSelectedRecords()">Copy templates to selected</button></p><p id="record-detail" class="small">Loading record index…</p></div>
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
@@ -3873,8 +3877,14 @@ function setUiTheme(theme) {{
   const selected = theme === 'dark' ? 'dark' : 'light';
   document.body.classList.toggle('theme-dark', selected === 'dark');
   document.documentElement.dataset.theme = selected;
-  const selector = document.getElementById('ui-theme');
-  if (selector) selector.value = selected;
+  const btn = document.getElementById('ui-theme');
+  if (btn) {{
+    btn.innerHTML = selected === 'dark'
+      ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>'
+      : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"></path></svg>';
+    btn.title = selected === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    btn.setAttribute('aria-label', btn.title);
+  }}
   try {{ localStorage.setItem('panamacompra-ui-theme', selected); }} catch (err) {{ /* storage optional */ }}
 }}
 function moveUiControlsToHeader() {{
@@ -4034,8 +4044,11 @@ function setUiLanguage(lang) {{
     if (labels[key]) el.textContent = labels[key];
   }});
   translateStaticUi(selected);
-  const selector = document.getElementById('ui-language');
-  if (selector) selector.value = selected;
+  const btn = document.getElementById('ui-language');
+  if (btn) {{
+    btn.title = selected === 'es' ? 'Cambiar a inglés' : 'Switch to Spanish';
+    btn.setAttribute('aria-label', btn.title);
+  }}
   try {{ localStorage.setItem('panamacompra-ui-language', selected); }} catch (err) {{ /* storage optional */ }}
   if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
 }}
