@@ -5263,19 +5263,27 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 days = 45
             if kind == "kpis":
                 text_filter = (params.get("filter", [""])[0] or "").strip()
+                # Previous-period window (same length as `days`, immediately
+                # before it) for the trend arrow — same first_seen extraction
+                # SQL db_review_stats() itself uses, so the two never drift
+                # out of sync on what "recent" means.
+                first_seen_day_expr = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
+                window_start = (date.today() - timedelta(days=days)).isoformat()
+                prev_start = (date.today() - timedelta(days=2 * days)).isoformat()
                 if text_filter:
                     # db_review_stats only supports exact grupo/entidad
                     # matches, not the free-text include/exclude rules a
                     # client types into their own filter box — so for a
                     # filtered KPI view, scan with the same keyword predicate
-                    # the calendar list uses and total the same four numbers
-                    # by hand instead, mirroring db_review_stats' own SQL
+                    # the calendar list uses and total the same numbers by
+                    # hand instead, mirroring db_review_stats' own SQL
                     # predicates for each so the two stay consistent.
                     keyword_filter = calendar_keyword_filter_fn(text_filter)
                     soon_days = soon_days_setting()
                     today_str = time.strftime("%Y-%m-%d")
                     soon_end = (date.today() + timedelta(days=soon_days)).isoformat()
-                    total = abiertas = closing_soon = new_today = 0
+                    total = abiertas = programadas = closing_soon = new_today = previous_total = 0
+                    entity_counts: dict[str, int] = {}
                     try:
                         conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                         conn.row_factory = sqlite3.Row
@@ -5291,31 +5299,61 @@ class MonitorHandler(BaseHTTPRequestHandler):
                         for row in rows:
                             if not keyword_filter(row):
                                 continue
+                            first_seen_day = str(row["first_seen_norm"] or "").replace("_", "-")[:10]
+                            if first_seen_day and prev_start <= first_seen_day < window_start:
+                                previous_total += 1
+                                continue
+                            if first_seen_day and first_seen_day < window_start:
+                                continue  # older than either window
                             total += 1
-                            if str(row["grupo"] or "") == "Abiertas":
+                            grupo_val = str(row["grupo"] or "")
+                            if grupo_val == "Abiertas":
                                 abiertas += 1
+                            elif grupo_val == "Programadas":
+                                programadas += 1
                             finish = str(row["finish_date_guess"] or "")[:10]
                             if finish and today_str <= finish <= soon_end:
                                 closing_soon += 1
-                            first_seen_day = str(row["first_seen_norm"] or "").replace("_", "-")[:10]
                             if first_seen_day == today_str:
                                 new_today += 1
+                            entidad_val = str(row["entidad"] or "").strip()
+                            if entidad_val:
+                                entity_counts[entidad_val] = entity_counts.get(entidad_val, 0) + 1
                     except sqlite3.Error:
-                        total = abiertas = closing_soon = new_today = 0
+                        total = abiertas = programadas = closing_soon = new_today = previous_total = 0
+                        entity_counts = {}
+                    top_entities = sorted(entity_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
                     payload = {
-                        "total": total, "abiertas": abiertas, "closing_soon": closing_soon,
-                        "new_today": new_today, "soon_days": soon_days, "days": days,
+                        "total": total, "abiertas": abiertas, "programadas": programadas,
+                        "closing_soon": closing_soon, "new_today": new_today, "soon_days": soon_days,
+                        "days": days, "previous_total": previous_total,
+                        "top_entities": [{"label": k, "count": v} for k, v in top_entities],
                         "generated_at": time.strftime("%Y-%m-%d %H:%M"),
                     }
                 else:
                     stats = db_review_stats(days=days)
+                    previous_total = 0
+                    try:
+                        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+                        conn.row_factory = sqlite3.Row
+                        row = conn.execute(
+                            f"SELECT COUNT(*) AS c FROM opportunities WHERE {first_seen_day_expr} >= ? AND {first_seen_day_expr} < ?",
+                            (prev_start, window_start),
+                        ).fetchone()
+                        previous_total = int(row["c"]) if row else 0
+                        conn.close()
+                    except sqlite3.Error:
+                        previous_total = 0
                     payload = {
                         "total": stats.get("total", 0),
                         "abiertas": stats.get("abiertas", 0),
+                        "programadas": stats.get("programadas", 0),
                         "closing_soon": stats.get("closing_soon", 0),
                         "new_today": stats.get("new_today", 0),
                         "soon_days": stats.get("soon_days", 0),
                         "days": days,
+                        "previous_total": previous_total,
+                        "top_entities": (stats.get("entities") or [])[:3],
                         "generated_at": time.strftime("%Y-%m-%d %H:%M"),
                     }
                 self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")

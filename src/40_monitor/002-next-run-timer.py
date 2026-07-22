@@ -234,6 +234,7 @@ def _duration_seconds(parts: object) -> int:
 
 _CHANGEDETECTION_CACHE: tuple[float, datetime | None, str] = (0.0, None, "")
 _CHANGEDETECTION_SCHEDULE_CACHE: tuple[float, dict[str, object], str] = (0.0, {}, "")
+_CHANGEDETECTION_WATCH_STATUS_CACHE: tuple[float, dict[str, object]] = (0.0, {})
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
