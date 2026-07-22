@@ -5358,6 +5358,22 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     }
                 self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
                 return
+            if kind == "calendar-grid":
+                # A visual month/week/day/year grid for the same add-on,
+                # built on the shared calendar_grid_payload() the admin
+                # monitor and /api/client-calendar-grid already use — same
+                # sanitized per-event shape (numero/description/status/date/
+                # clock/url) as the flat list below, just grouped by day for
+                # a real calendar widget instead of a table.
+                keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
+                try:
+                    shift = int(params.get("shift", ["0"])[0])
+                except ValueError:
+                    shift = 0
+                view = (params.get("view", ["month"])[0] or "month").lower()
+                payload = calendar_grid_payload(view, "end", params.get("date", [""])[0], filter_fn=keyword_filter, shift=shift)
+                self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+                return
             # kind == "calendar": a flat, date-sorted list (not the admin
             # day/week/month/year grid — a simple table is all a client add-on
             # needs) of upcoming deadlines, optionally text-filtered, capped so
