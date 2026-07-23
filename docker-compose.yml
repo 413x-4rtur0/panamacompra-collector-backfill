@@ -79,10 +79,13 @@ services:
       - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-WEBJS}
       # Dashboard login asked after every install/reinstall. setup.sh /
       # src/50_tools/010-docker-stack.sh generate a RANDOM password into .env and
-      # data/config/integration-access.txt; the compose-only fallback below
-      # applies just when the stack is started bypassing those scripts.
+      # data/config/integration-access.txt. This used to silently fall back to
+      # a hardcoded, version-controlled password (12345678) if .env didn't set
+      # one — replaced with a hard requirement instead: `docker compose up`
+      # now fails fast with a clear message rather than ever starting WAHA
+      # with a known-weak default.
       - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
-      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-12345678}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:?Set WAHA_DASHBOARD_PASSWORD in .env (see setup.sh / src/50_tools/010-docker-stack.sh) - no insecure default is provided.}
     volumes:
       - ${PC_INTEGRATIONS_DIR:-./var/integrations}/waha:/app/.sessions
     networks:
