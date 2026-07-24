@@ -298,12 +298,27 @@ def client_filter_fn(profile: dict):
     return _matches
 
 
+def _rule_words_present(rule: list[str], haystack: str) -> bool:
+    """A rule matches when every word of every term in it appears somewhere in
+    the haystack — not necessarily adjacent or in the same order — instead of
+    requiring each term as one exact contiguous substring. So "bocas toro" (or
+    "toro bocas") still finds "Bocas del Toro" instead of matching nothing
+    just because "del" isn't typed or the words are reordered. Scoped to the
+    calendar/location filters only — deliberately NOT applied to
+    notify_formats.evaluate_filter, which real WhatsApp client profile
+    filters already rely on for exact-phrase matching; changing that shared
+    behavior could silently change who gets notified."""
+    return all(word in haystack for term in rule for word in term.split())
+
+
 def calendar_keyword_filter_fn(query: str):
     """Row predicate for the operator-facing calendar's free-text filter box.
 
     Case- and accent-insensitive partial match (e.g. "construccion" matches
     "Construcción"), against numero/descripcion/entidad/dependencia/modalidad/
-    grupo. Same operator syntax as everywhere else in the app
+    grupo. A multi-word term matches by word (see _rule_words_present), not
+    as one exact phrase — "bocas toro" still finds "Bocas del Toro". Same
+    operator syntax as everywhere else in the app
     (parse_filter_rules): comma = OR between rules, '+' = AND within a rule,
     leading '-' = NOT — e.g. "salud, educacion" or "obra + calle" or
     "-cancelada". Returns None when the query is blank so callers can skip
@@ -323,11 +338,11 @@ def calendar_keyword_filter_fn(query: str):
             )
             if row[col]
         )).lower()
-        if any(all(term in haystack for term in rule) for rule in excludes_n):
+        if any(_rule_words_present(rule, haystack) for rule in excludes_n):
             return False
         if not includes_n:
             return True
-        return any(all(term in haystack for term in rule) for rule in includes_n)
+        return any(_rule_words_present(rule, haystack) for rule in includes_n)
 
     return _matches
 
@@ -372,8 +387,10 @@ def location_keyword_filter_fn(query: str):
     reachable — just from the general Keyword filter box, which already
     covers descripcion; the two filters compose with AND via combine_filters.
 
-    Same operator syntax as everywhere else in the app (parse_filter_rules):
-    comma = OR between rules, '+' = AND within a rule, leading '-' = NOT, so
+    A multi-word term matches by word (see _rule_words_present), not as one
+    exact phrase, so "bocas toro" still finds "Bocas del Toro". Same operator
+    syntax as everywhere else in the app (parse_filter_rules): comma = OR
+    between rules, '+' = AND within a rule, leading '-' = NOT, so
     "Chiriqui, Bocas del Toro" or "David + construccion" work the same way a
     client profile filter does. Returns None when the query is blank so
     callers can skip filtering entirely."""
@@ -385,11 +402,11 @@ def location_keyword_filter_fn(query: str):
 
     def _matches(row) -> bool:
         haystack = _location_haystack_cached(row)
-        if any(all(term in haystack for term in rule) for rule in excludes_n):
+        if any(_rule_words_present(rule, haystack) for rule in excludes_n):
             return False
         if not includes_n:
             return True
-        return any(all(term in haystack for term in rule) for rule in includes_n)
+        return any(_rule_words_present(rule, haystack) for rule in includes_n)
 
     return _matches
 
