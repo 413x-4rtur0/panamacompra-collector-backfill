@@ -2476,6 +2476,8 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .tab-nav .tab-divider {{ width: 1px; min-height: 28px; margin: 0 2px; background: var(--ink-300); align-self: center; }}
 .ui-language {{ margin-left: auto; font-size: .82rem; }}
 .ui-theme {{ margin-left: 0; }}
+.chrome-toggle-dock {{ position: fixed; right: 14px; bottom: 14px; z-index: 999999; display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--concrete-0, #fff); border: 1px solid var(--concrete-300); box-shadow: 0 4px 14px rgba(0,0,0,.16); margin: 0; }}
+body.theme-dark .chrome-toggle-dock {{ background: var(--ink-800, #1A1D21); border-color: var(--ink-600); }}
 .icon-toggle-btn {{ display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: var(--radius-md); border: 1px solid var(--concrete-300); background: transparent; color: var(--ink-700); cursor: pointer; }}
 .icon-toggle-btn:hover {{ background: rgba(0,0,0,.06); }}
 body.theme-dark .icon-toggle-btn {{ color: var(--concrete-200); border-color: var(--ink-600); }}
@@ -2595,8 +2597,6 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 .header-actions button:hover {{ background: var(--brand-bar-hover-bg); }}
 .header-actions button.signout {{ background: var(--amber-500); color: var(--brand-bar-bg); border-color: var(--amber-600); font-weight: 700; }}
 .header-actions button.signout:hover {{ background: var(--amber-600); }}
-.header-actions .ui-language {{ margin-left: 0; color: var(--brand-bar-text); border-color: var(--brand-bar-border); }}
-.header-actions .ui-language:hover {{ background: var(--brand-bar-hover-bg); }}
 /* Calendar controls: selector cluster left, Prev|Today|Next as one segmented
    group center, Show on the right. */
 .cal-controls-row {{ justify-content: space-between; }}
@@ -3922,16 +3922,6 @@ function setUiTheme(theme) {{
   }}
   try {{ localStorage.setItem('panamacompra-ui-theme', selected); }} catch (err) {{ /* storage optional */ }}
 }}
-function moveUiControlsToHeader() {{
-  const header = document.querySelector('.header-actions');
-  const signout = header && header.querySelector('.signout');
-  if (!header || !signout) return;
-  ['ui-language', 'ui-theme'].forEach(id => {{
-    const selector = document.getElementById(id);
-    const control = selector && selector.closest('.ui-language');
-    if (control) header.insertBefore(control, signout);
-  }});
-}}
 function moveIntegrationSettingsToTab() {{
   const settingsCard = [...document.querySelectorAll('.card[data-tab="settings"]')].find(card =>
     [...card.querySelectorAll('h3')].some(heading => heading.textContent.trim() === 'Integrations'));
@@ -4451,7 +4441,6 @@ document.getElementById('record-order-field').addEventListener('change', applyRe
   if (el) {{ el.addEventListener('change', applyRecordFilter); el.addEventListener('input', applyRecordFilter); }}
 }});
 assignDedicatedTabs();
-moveUiControlsToHeader();
 moveIntegrationSettingsToTab();
 moveAutomaticRunFlagsToOperations();
 ensureSystemStatusTab();
