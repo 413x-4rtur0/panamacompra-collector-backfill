@@ -1063,6 +1063,21 @@ def index_digest_records_per_message() -> int:
     return 100 if value is None else max(1, value)
 
 
+def status_digest_threshold() -> int:
+    """Same idea as index_digest_threshold(), for status/open_now bursts (many
+    Abiertas transitions in one run, or many detected status/item changes).
+    PC_NOTIFY_STATUS_DIGEST_THRESHOLD, default 1; 0 disables the digest so
+    every transition keeps its own message.
+
+    A client profile scoped to "status" or "open_now" wants its own
+    per-record follow-ups for that purpose, same tradeoff as the index
+    digest, so it forces this digest off for everyone."""
+    if any(p in profile["purposes"] for profile in load_client_profiles() for p in ("status", "open_now")):
+        return 0
+    value = cfg_int("PC_NOTIFY_STATUS_DIGEST_THRESHOLD")
+    return 1 if value is None else max(0, value)
+
+
 def idle_every_hours() -> float:
     """Minimum hours between "Sin nuevas entradas" idle messages.
     PC_NOTIFY_IDLE_EVERY_HOURS, default 6; 0 restores one message per run."""
@@ -1606,6 +1621,98 @@ def announce_index_digest(conn, rows) -> tuple[int, int]:
     return sent_messages, announced
 
 
+def build_status_digest_messages(entries, heading_prefix: str) -> list[tuple[list, str]]:
+    """Compose digest message(s) for a burst of status/open_now transitions.
+
+    ``entries`` are (numero, row, label) tuples, same chunking/records-per-message
+    cap as build_index_digest_messages so a big burst still reads as a few
+    manageable messages instead of one huge one."""
+    records_per_message = index_digest_records_per_message()
+    chunks = [
+        entries[i:i + records_per_message]
+        for i in range(0, len(entries), records_per_message)
+    ]
+    out = []
+    for part, chunk in enumerate(chunks, start=1):
+        heading = f"{heading_prefix} ({len(entries)}) - {SOURCE_NAME}*"
+        if len(chunks) > 1:
+            heading += f" — parte {part}/{len(chunks)}"
+        lines = [heading, ""]
+        for offset, (numero, row, label) in enumerate(chunk, start=1):
+            if offset > 1:
+                lines.append("")
+            position = (part - 1) * records_per_message + offset
+            fecha = fmt_dt(row["finish_date_guess"] or row["fecha"])
+            lines.append(f"{position}. *{clean_field(numero)}* — {label}")
+            lines.append(f"    🏛 {_digest_trim(row['entidad'], 60)} · 📅 {fecha}")
+            link = clean_field(row["link"])
+            if link != DASH:
+                lines.append(f"    🔗 {link}")
+        lines += ["", f"🕒 {fmt_dt(now_str())}"]
+        out.append((chunk, "\n".join(lines)))
+    return out
+
+
+def announce_open_now_digest(conn, rows) -> tuple[int, int]:
+    """Send a burst of Abiertas transitions as digest message(s), mirroring
+    announce_index_digest. Marking matches what notify_status_change does for
+    an individual "abierta" transition: calendar export, snapshot, and
+    clearing the pending flag — only after the message is accepted."""
+    sent_messages = 0
+    announced = 0
+    entries = [(row["numero"], row, "🟢 Ahora Abierta") for row in rows]
+    chunks = build_status_digest_messages(entries, "🟢 *Oportunidades Abiertas Ahora")
+    for index, (chunk, text) in enumerate(chunks, start=1):
+        if not send_text("update", text, purpose="open_now"):
+            for numero, _row, _label in chunk:
+                record_send_outcome(conn, numero, False, _last_send_error or "open_now digest send failed")
+            break  # leave the remaining chunks unmarked; the next run retries
+        sent_messages += 1
+        for numero, row, _label in chunk:
+            try:
+                record_send_outcome(conn, numero, True)
+                export_record_calendar(conn, row)
+                mark_snapshot(conn, numero)
+                clear_status_change(conn, numero)
+                announced += 1
+            except Exception as exc:  # noqa: BLE001 - keep marking the rest
+                print(f"WAHA open_now digest mark error for {numero}: {exc}", file=sys.stderr)
+        pace_after_send(index, len(chunks))
+    return sent_messages, announced
+
+
+def announce_status_digest(conn, entries) -> tuple[int, int]:
+    """Send a burst of status/item-change transitions as digest message(s).
+
+    ``entries`` are (kind, row, label) tuples covering the same three kinds
+    the per-record loop below handles individually ("update" for non-abierta
+    status changes, "status" for detected changes, "items" for item-list
+    changes) — all three route to the "status" WAHA destination already."""
+    sent_messages = 0
+    announced = 0
+    digest_entries = [(row["numero"], row, label) for kind, row, label in entries]
+    kind_by_numero = {row["numero"]: kind for kind, row, _label in entries}
+    chunks = build_status_digest_messages(digest_entries, "🟡 *Actualizaciones de Oportunidades")
+    for index, (chunk, text) in enumerate(chunks, start=1):
+        if not send_text("update", text, purpose="status"):
+            for numero, _row, _label in chunk:
+                record_send_outcome(conn, numero, False, _last_send_error or "status digest send failed")
+            break  # leave the remaining chunks unmarked; the next run retries
+        sent_messages += 1
+        for numero, row, _label in chunk:
+            try:
+                record_send_outcome(conn, numero, True)
+                export_record_calendar(conn, row)
+                mark_snapshot(conn, numero)
+                if kind_by_numero.get(numero) == "update":
+                    clear_status_change(conn, numero)
+                announced += 1
+            except Exception as exc:  # noqa: BLE001 - keep marking the rest
+                print(f"WAHA status digest mark error for {numero}: {exc}", file=sys.stderr)
+        pace_after_send(index, len(chunks))
+    return sent_messages, announced
+
+
 def announce_with_progress(conn) -> int:
     """Visible MESSAGING step. Right after the index step (before detail
     downloads), send — one by one with per-message monitor progress — a message
@@ -1672,6 +1779,86 @@ def announce_with_progress(conn) -> int:
             detected_status_rows.append(row)
         elif full["last_notified_items_hash"] != items_hash:
             changed_rows.append(row)
+
+    # Status/open_now digest mode: mirrors the digest above, but for bursts of
+    # status transitions (e.g. many Programadas opening together) instead of
+    # bursts of brand-new records. Abiertas transitions (which route to the
+    # separate "open_now" destination) are digested on their own; every other
+    # status/item change (all routed to the "status" destination) shares a
+    # second digest. Carving these out of update_rows/detected_status_rows/
+    # changed_rows here — before "queue" below is built — keeps the rest of
+    # this function (progress math, per-record loop) unchanged. Records that
+    # the destination's keyword filter excludes are settled silently, exactly
+    # as notify_status_change / notify_detected_status_change / notify_items_change
+    # already do for an individual excluded record — they must never be
+    # smuggled into a digest just because their neighbors matched.
+    open_now_digest_rows: list = []
+    status_digest_entries: list = []
+    status_threshold = status_digest_threshold()
+    if status_threshold:
+        abierta_full, other_update_rows = [], []
+        for r in update_rows:
+            full = fetch_row(conn, r["numero"])
+            if full is None:
+                continue
+            if full["pending_status_change"] != "abierta":
+                other_update_rows.append(r)
+                continue
+            summary = load_detail_summary(full["detail_json_path"])
+            if allowed_match_line_for(full, summary, "open_now") is None:
+                clear_status_change(conn, full["numero"])
+                continue
+            abierta_full.append(full)
+        if len(abierta_full) > status_threshold:
+            open_now_digest_rows = abierta_full
+            update_rows = other_update_rows
+
+        status_candidates: list = []
+        for r in update_rows:
+            full = fetch_row(conn, r["numero"])
+            if full is None:
+                continue
+            summary = load_detail_summary(full["detail_json_path"])
+            if allowed_match_line_for(full, summary, "status") is None:
+                clear_status_change(conn, full["numero"])
+                continue
+            change = full["pending_status_change"] or ""
+            label = STATUS_CHANGE_LABELS.get(change, change or "Actualización")
+            status_candidates.append(("update", full, f"🔄 {label}"))
+        for r in detected_status_rows:
+            full = fetch_row(conn, r["numero"])
+            if full is None:
+                continue
+            summary = load_detail_summary(full["detail_json_path"])
+            if allowed_match_line_for(full, summary, "status") is None:
+                mark_snapshot(conn, full["numero"])
+                continue
+            status_candidates.append(("status", full, "🟡 Estado actualizado"))
+        for r in changed_rows:
+            full = fetch_row(conn, r["numero"])
+            if full is None:
+                continue
+            summary = load_detail_summary(full["detail_json_path"])
+            if allowed_match_line_for(full, summary, "status") is None:
+                mark_snapshot(conn, full["numero"])
+                continue
+            status_candidates.append(("items", full, "🔵 Items modificados"))
+        if len(status_candidates) > status_threshold:
+            status_digest_entries = status_candidates
+            update_rows = []
+            detected_status_rows = []
+            changed_rows = []
+        else:
+            # Not enough survived filtering to bother grouping: those that
+            # were filtered out above are already settled; the rest keep
+            # going through the normal per-record loop below.
+            kept_update_numbers = {row["numero"] for _kind, row, _label in status_candidates if _kind == "update"}
+            kept_status_numbers = {row["numero"] for _kind, row, _label in status_candidates if _kind == "status"}
+            kept_items_numbers = {row["numero"] for _kind, row, _label in status_candidates if _kind == "items"}
+            update_rows = [r for r in update_rows if r["numero"] in kept_update_numbers]
+            detected_status_rows = [r for r in detected_status_rows if r["numero"] in kept_status_numbers]
+            changed_rows = [r for r in changed_rows if r["numero"] in kept_items_numbers]
+
     queue = (
         [("new", numero) for numero in new_numbers]
         + [("update", r["numero"]) for r in update_rows]
@@ -1680,7 +1867,7 @@ def announce_with_progress(conn) -> int:
     )
     total = len(queue)
 
-    if total == 0 and not digest_rows:
+    if total == 0 and not digest_rows and not open_now_digest_rows and not status_digest_entries:
         send_idle_message(conn)
         pc_common.write_run_progress(
             "MESSAGING", "RUNNING", percent_done - 1,
@@ -1706,6 +1893,32 @@ def announce_with_progress(conn) -> int:
         print(f"WAHA digest: {digest_announced} new record(s) announced in {digest_messages} message(s).")
         if digest_messages and total:
             pace_after_send(0, 1)  # pause before the per-record messages below
+
+    if open_now_digest_rows:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", percent_base,
+            f"Step {step_current}/{step_total}: sending WhatsApp digest for {len(open_now_digest_rows)} Abiertas transitions...",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=total or 1,
+        )
+        open_now_messages, open_now_announced = announce_open_now_digest(conn, open_now_digest_rows)
+        sent += open_now_messages
+        print(f"WAHA open_now digest: {open_now_announced} transition(s) announced in {open_now_messages} message(s).")
+        if open_now_messages and total:
+            pace_after_send(0, 1)
+
+    if status_digest_entries:
+        pc_common.write_run_progress(
+            "MESSAGING", "RUNNING", percent_base,
+            f"Step {step_current}/{step_total}: sending WhatsApp digest for {len(status_digest_entries)} status/item changes...",
+            step_current=step_current, step_total=step_total,
+            item_current=0, item_total=total or 1,
+        )
+        status_messages, status_announced = announce_status_digest(conn, status_digest_entries)
+        sent += status_messages
+        print(f"WAHA status digest: {status_announced} change(s) announced in {status_messages} message(s).")
+        if status_messages and total:
+            pace_after_send(0, 1)
     for index, (kind, numero) in enumerate(queue, start=1):
         full_row = fetch_row(conn, numero)
         label = _short_label(full_row) if full_row is not None else numero
@@ -1752,6 +1965,10 @@ def announce_with_progress(conn) -> int:
             skipped += 1
 
     digest_note = f", {len(digest_rows)} new in digest" if digest_rows else ""
+    if open_now_digest_rows:
+        digest_note += f", {len(open_now_digest_rows)} Abiertas in digest"
+    if status_digest_entries:
+        digest_note += f", {len(status_digest_entries)} status/items in digest"
     pc_common.write_run_progress(
         "MESSAGING", "RUNNING", percent_done,
         f"Step {step_current}/{step_total}: WhatsApp done — {sent} sent, {skipped} skipped of {total}{digest_note} ({len(new_numbers)} new, {len(update_rows) + len(detected_status_rows)} status updates, {len(changed_rows)} item changes).",
