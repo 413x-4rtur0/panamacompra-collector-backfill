@@ -482,6 +482,34 @@ def record_location(summary: dict, row=None) -> str:
     return ", ".join(parts) if parts else "Panamá (sin dirección específica)"
 
 
+def location_haystack(row, summary: dict) -> str:
+    """Every location-only fact for the record, concatenated (not the
+    "first non-empty tier wins" logic record_location() uses for display).
+
+    For a location FILTER every fact should be searchable at once — a client
+    typing "Chiriquí" should match whether it landed in provincia or in
+    unidad de compra — so this collects all of them: every provincia/lugar/
+    dirección value in the detail summary, unidad de compra, and the index-
+    level dependencia/entidad fallback. Never includes descripcion/modalidad/
+    other non-location fields — that's what the general keyword filter is for."""
+    parts: list[str] = []
+
+    def add(value) -> None:
+        value = clean_field(value)
+        if value != DASH and value not in parts:
+            parts.append(value)
+
+    for needle in ("provincia", "lugar", "direccion"):
+        for key, value in (summary or {}).items():
+            if isinstance(value, str) and needle in pc_common.strip_accents(str(key)).lower():
+                add(value)
+    add((summary or {}).get("unidad_de_compra"))
+    if row is not None:
+        add(row["dependencia"])
+        add(row["entidad"])
+    return " ".join(parts)
+
+
 def date_range(row, summary: dict) -> str:
     start = fmt_dt(row["fecha"] or summary.get("fecha_de_publicacion"))
     end = fmt_dt(row["finish_date_guess"] or summary.get("fecha_y_hora_limite_de_recepcion"))

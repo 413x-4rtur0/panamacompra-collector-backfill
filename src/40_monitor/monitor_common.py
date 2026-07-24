@@ -600,7 +600,7 @@ def summarize_items_for_kpi(conn: sqlite3.Connection, limit: int = 300,
     }
 
 
-def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[str, object]:
+def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "", location: str = "") -> dict[str, object]:
     """Aggregate counts for the monitors' KPI dashboards and DB-review panels.
 
     Superset payload consumed by the Tk monitor, the web monitor's
@@ -609,7 +609,12 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
 
     ``days``/``grupo``/``entidad`` are the KPI dashboard filters: 0/blank means
     no filter; otherwise every aggregate is restricted to records first seen in
-    the window and/or matching the group/entity."""
+    the window and/or matching the group/entity. ``location`` is a separate,
+    location-only partial match (SQL LIKE, case- but not accent-insensitive)
+    against dependencia/entidad — the only location-ish facts available at
+    index time without opening every record's detail JSON (unidad de compra/
+    provincia/lugar/dirección live there; see notify_formats.location_haystack
+    for the richer per-record version the calendar/ARL-89 feed use)."""
     soon_days = soon_days_setting()
     empty = {
         "db_exists": ARCHIVE_DB.exists(), "total": 0, "saved": 0, "pending": 0,
@@ -618,7 +623,7 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
         "alerts_failed": 0, "new_records": 0, "existing_records": 0,
         "with_detail_json": 0, "item_analysis": {}, "groups": [], "entities": [], "dependencias": [],
         "recent": [], "completed_recent": [], "columns": [], "status_breakdown": [], "monthly_trend": [],
-        "daily_intake": [], "filters": {"days": days, "grupo": grupo, "entidad": entidad},
+        "daily_intake": [], "filters": {"days": days, "grupo": grupo, "entidad": entidad, "location": location},
     }
     if not ARCHIVE_DB.exists():
         return empty
@@ -645,6 +650,18 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
         if entidad and "entidad" in columns:
             flt_conditions.append("COALESCE(entidad, '') = ?")
             flt_params.append(entidad)
+        if location and "dependencia" in columns:
+            # Escape LIKE wildcards in the user's own text so a literal '%'
+            # or '_' in a location name is not misread as a SQL wildcard.
+            escaped = location.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            location_like = f"%{escaped}%"
+            location_conditions = ["COALESCE(dependencia, '') LIKE ? ESCAPE '\\'"]
+            location_params = [location_like]
+            if "entidad" in columns:
+                location_conditions.append("COALESCE(entidad, '') LIKE ? ESCAPE '\\'")
+                location_params.append(location_like)
+            flt_conditions.append("(" + " OR ".join(location_conditions) + ")")
+            flt_params.extend(location_params)
         flt = " AND ".join(flt_conditions)
         flt_where = f" WHERE {flt}" if flt else ""
         flt_and = f" AND {flt}" if flt else ""
@@ -774,7 +791,7 @@ def db_review_stats(days: int = 0, grupo: str = "", entidad: str = "") -> dict[s
                     flt_params,
                 ).fetchall()
             ] if "dependencia" in columns else [],
-            "filters": {"days": int(days or 0), "grupo": grupo, "entidad": entidad},
+            "filters": {"days": int(days or 0), "grupo": grupo, "entidad": entidad, "location": location},
         }
     except sqlite3.Error:
         return empty

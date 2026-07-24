@@ -323,6 +323,72 @@ def calendar_keyword_filter_fn(query: str):
     return _matches
 
 
+_LOCATION_HAYSTACK_CACHE: dict[str, tuple[float, str]] = {}
+_LOCATION_HAYSTACK_CACHE_MAX = 30000
+
+
+def _location_haystack_cached(row) -> str:
+    """The record's ALREADY-NORMALIZED location-only haystack (provincia,
+    lugar, dirección, unidad de compra, dependencia, entidad — never
+    descripcion/modalidad/other general fields), cached per numero and
+    invalidated by the detail file's mtime. Mirrors _row_haystack_cached but
+    scoped to notify_formats.location_haystack() instead of the general one,
+    so a location filter never accidentally matches on unrelated text."""
+    numero = str(row["numero"] or "")
+    detail_path = row["detail_json_path"] or ""
+    mtime = 0.0
+    if detail_path:
+        try:
+            mtime = os.stat(detail_path).st_mtime
+        except OSError:
+            mtime = 0.0
+    cached = _LOCATION_HAYSTACK_CACHE.get(numero)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    summary = notify_formats.load_detail_summary(detail_path) if detail_path else {}
+    haystack = pc_common.strip_accents(notify_formats.location_haystack(row, summary)).lower()
+    if len(_LOCATION_HAYSTACK_CACHE) >= _LOCATION_HAYSTACK_CACHE_MAX:
+        _LOCATION_HAYSTACK_CACHE.clear()
+    _LOCATION_HAYSTACK_CACHE[numero] = (mtime, haystack)
+    return haystack
+
+
+def location_keyword_filter_fn(query: str):
+    """Row predicate for a location-only free-text filter box: matches only
+    against provincia/lugar/dirección/unidad de compra/dependencia/entidad
+    (see notify_formats.location_haystack), never descripcion/modalidad/other
+    general fields — so "Chiriquí" finds opportunities located there instead
+    of ones that merely mention it in passing. Same case/accent-insensitive
+    partial match as calendar_keyword_filter_fn. Returns None when the query
+    is blank so callers can skip filtering entirely."""
+    needle = pc_common.strip_accents(query).strip().lower()
+    if not needle:
+        return None
+
+    def _matches(row) -> bool:
+        return needle in _location_haystack_cached(row)
+
+    return _matches
+
+
+def combine_filters(*filter_fns):
+    """AND-compose any number of row predicates (None entries are skipped),
+    so a calendar/KPI view can apply a general keyword filter and a
+    location-only filter at once. Returns None only when every filter is
+    None, matching the "no filter" convention filter_fn callers already
+    expect."""
+    active = [fn for fn in filter_fns if fn is not None]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+
+    def _matches(row) -> bool:
+        return all(fn(row) for fn in active)
+
+    return _matches
+
+
 def calendar_grid_payload(view: str, field: str, date_param: str, *, filter_fn=None, shift: int = 0) -> dict:
     """Shared JSON payload builder behind /api/calendar-grid and
     /api/client-calendar-grid (the client version passes filter_fn so it only
@@ -2716,8 +2782,8 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="operations"><h2>Queue process</h2><p id="queue-summary" class="small">Loading queue…</p><pre id="queue-log"></pre></div>
 <div class="card" data-tab="operations"><h2>Recent worker log</h2><pre id="worker-log" class="log-pane"></pre></div>
 <div class="card" data-tab="operations"><h2>Current action log</h2><pre id="current-log" class="log-pane"></pre></div>
-<div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
-<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><div class="cal-subtabs"><button type="button" class="active" data-calpane="visual" onclick="showCalPane('visual')">Visual calendar</button><button type="button" data-calpane="text" onclick="showCalPane('text')">Text summary</button><button type="button" data-calpane="list" onclick="showCalPane('list')">Opportunities list</button></div><div id="calpane-visual"><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div></div><div id="calpane-text" hidden><div id="calendar-text" class="cal-summary-wrap" style="max-height: 520px; overflow: auto">Loading calendar…</div></div><div id="calpane-list" hidden><div id="calendar-list" class="cal-summary-wrap" style="max-height: 560px; overflow: auto">Loading…</div></div></div>
+<div class="card" data-tab="decision"><h2>KPI Dashboard <span class="kpi-live" id="kpi-live-stamp">LIVE</span></h2><p class="small">All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.</p><div class="kpi-filter-bar"><label class="small">Window <select id="kpi-days" onchange="refreshDecisionDashboard()"><option value="0" selected>All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label> <label class="small">Group <input id="kpi-grupo" list="kpi-grupo-list" size="14" placeholder="all groups"></label><datalist id="kpi-grupo-list"></datalist> <label class="small">Entity <input id="kpi-entidad" list="kpi-entidad-list" size="26" placeholder="all entities"></label><datalist id="kpi-entidad-list"></datalist> <label class="small">Location <input id="kpi-location" size="20" placeholder="e.g. Chiriquí, David" title="Matches only location facts: unidad de compra, dependencia, entidad (index-level; provincia/lugar/dirección need a downloaded detail page)"></label> <button class="primary" onclick="refreshDecisionDashboard()">Apply filters</button> <button onclick="resetKpiFilters()">Reset</button> <button onclick="window.location = '/api/kpi-export?' + kpiFilterParams()">Export CSV</button> <span id="kpi-filter-state" class="small"></span></div><div id="decision-kpis" class="kpi-grid"></div><div class="diagram-grid"><div class="chart"><h3>Detail status mix</h3><div id="decision-status"></div></div><div class="chart"><h3>Index groups</h3><div id="decision-groups"></div></div><div class="chart"><h3>Daily intake (last 14 days)</h3><div id="decision-daily"></div></div><div class="chart"><h3>Monthly intake trend</h3><div id="decision-trend"></div></div><div class="chart"><h3>Top contracting entities</h3><div id="decision-entities"></div></div><div class="chart"><h3>Locations / buying units (from details)</h3><div id="decision-locations"></div></div><div class="chart"><h3>Most frequent items</h3><div id="decision-top-items"></div></div><div class="chart"><h3>Latest parsed items</h3><div id="decision-latest-items"></div></div><div class="chart"><h3>Detail queue pressure</h3><div id="decision-deadlines"></div></div><div class="chart"><h3>Items analysis</h3><div id="decision-items"></div></div><div class="chart"><h3>Item keywords</h3><div id="decision-item-keywords" class="keyword-cloud"></div></div></div><pre id="decision-recommendations">Loading decision signals…</pre><p><button onclick="refreshDecisionDashboard()">Refresh KPIs</button></p></div>
+<div class="card" data-tab="calendar"><h2>Opportunity calendar</h2><p class="small">Collected opportunities by day, week, month or year. Click a month to open it, a day to zoom to its week, a week-day header to zoom to that day.</p><div class="cal-controls-row"><div class="cal-cluster"><label class="small">View <select id="cal-view" onchange="loadCalendar()"><option value="day">Day</option><option value="week">Week</option><option value="month" selected>Month</option><option value="year">Year</option></select></label> <label class="small">Date field <select id="cal-field" onchange="loadCalendar()"><option value="end" selected>Deadline (end)</option><option value="start">Start</option><option value="downloaded">Downloaded</option></select></label> <label class="small">Anchor <input id="cal-date" size="10" placeholder="YYYY-MM-DD"></label></div><div class="cal-nav"><button onclick="loadCalendar(-1)" title="Previous period">◀ Prev</button><button class="today" onclick="loadCalendar(0)" title="Jump to today">Today</button><button onclick="loadCalendar(1)" title="Next period">Next ▶</button></div><button class="primary" style="margin:0" onclick="loadCalendar()">Show</button></div><p class="cal-filter-row"><label class="small"><b>Keyword filter</b> <input id="cal-filter" size="48" placeholder="e.g. construccion, salud — partial match, accents ignored" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-filter').value=''; loadCalendar()">Clear</button> <span class="xs">Filters numero, descripcion, entidad, dependencia, modalidad and grupo.</span></p><p class="cal-filter-row"><label class="small"><b>Location filter</b> <input id="cal-location" size="48" placeholder="e.g. Chiriquí, David — provincia, unidad de compra, dependencia" onchange="loadCalendar()"></label> <button onclick="loadCalendar()">Apply</button> <button onclick="document.getElementById('cal-location').value=''; loadCalendar()">Clear</button> <span class="xs">Filters only location facts: provincia, lugar, dirección, unidad de compra, dependencia, entidad.</span></p><div class="cal-subtabs"><button type="button" class="active" data-calpane="visual" onclick="showCalPane('visual')">Visual calendar</button><button type="button" data-calpane="text" onclick="showCalPane('text')">Text summary</button><button type="button" data-calpane="list" onclick="showCalPane('list')">Opportunities list</button></div><div id="calpane-visual"><div id="calendar-visual" class="chart" style="min-height:120px;margin:8px 0">Calendar visual loading…</div></div><div id="calpane-text" hidden><div id="calendar-text" class="cal-summary-wrap" style="max-height: 520px; overflow: auto">Loading calendar…</div></div><div id="calpane-list" hidden><div id="calendar-list" class="cal-summary-wrap" style="max-height: 560px; overflow: auto">Loading…</div></div></div>
 <div class="card" data-tab="scheduler"><h2>changedetection schedule <span class="small">(read-only)</span></h2><p class="small">What changedetection itself has active and scheduled right now — this panel only reads changedetection's API/datastore, it never changes anything there. Control which trigger actually starts a run below (webhook vs cron) and the "Automatic runs from changedetection" toggle in Settings.</p><div id="cd-schedule-banner" class="small"></div><div id="cd-schedule-summary" class="small">Loading changedetection schedule…</div><table id="cd-schedule-table" class="small" style="width:100%;border-collapse:collapse"></table><p><button onclick="refreshChangedetectionSchedule()">Refresh changedetection schedule</button></p></div>
 <div class="card" data-tab="scheduler"><h2>Automatic scheduler (cron)</h2><p class="small">Runs the collector on a repeating schedule instead of the changedetection webhook trigger. Enabling this sets Auto-run source to cron and installs a crontab entry (via <code>src/50_tools/160-manage-cron-schedule.py</code>, no manual <code>crontab -e</code> needed); disabling it removes that entry and switches Auto-run source back to changedetection.</p><p><label class="small"><input type="checkbox" id="cron-enabled"> Enable scheduled automatic runs</label></p><p class="xs">Days <label><input type="radio" name="cron-days" value="daily" checked> Daily</label> <label><input type="radio" name="cron-days" value="weekdays"> Weekdays (Mon-Fri)</label> <label><input type="radio" name="cron-days" value="weekends"> Weekends (Sat-Sun)</label> <label><input type="radio" name="cron-days" value="custom"> Custom</label></p><p><label class="small">Custom days (0=Sun..6=Sat) <input id="cron-custom-days" size="20" placeholder="e.g. 1,3,5"></label></p><p><label class="small">Start time (HH:MM) <input id="cron-start" size="8" value="08:00"></label> <label class="small">End time (HH:MM) <input id="cron-end" size="8" value="18:00"></label> <label class="small">Repeat every (minutes) <input id="cron-interval" size="6" value="30"></label></p><p><button class="primary" onclick="applyCronSchedule()">Save &amp; Apply schedule</button> <button onclick="refreshCronScheduleStatus()">Refresh status</button></p><p class="small" id="cron-schedule-status"></p></div>
 <div class="card" data-tab="integrations"><h2>changedetection Browser Steps JS</h2><p class="small">Paste this into <strong>ChangeDetection → Watch → Browser Steps → Execute JS</strong>. Keep CSS filter <code>#pc-monitor-output</code>, and leave Visual Filter, Remove elements and Triggers empty/disabled. It crawls all Programadas pages first, then all Abiertas pages.</p><p><button onclick="loadChangedetectionScript()">Load script</button> <button onclick="copyChangedetectionScript()">Copy script</button> <span id="cd-script-state" class="small"></span></p><textarea id="changedetection-script" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
@@ -3186,6 +3252,9 @@ function initCalendarDisplayControls() {{
   const controlsRow = filterRow.previousElementSibling;
   if (controlsRow) controlsRow.classList.add('cal-controls-row');
   filter.size = 28;
+  const locationFilter = document.getElementById('cal-location');
+  if (locationFilter) locationFilter.size = 28;
+  const locationRow = locationFilter && locationFilter.closest('.cal-filter-row');
   filterRow.dataset.calendarLayoutReady = '1';
   const row = document.createElement('p');
   row.className = 'cal-display-row';
@@ -3194,7 +3263,8 @@ function initCalendarDisplayControls() {{
     + ' <label class="small"><input type="checkbox" id="cal-show-numbers"> Show numbers</label>'
     + ' <label class="small"><input type="checkbox" id="cal-show-early-hours"> Show 00–06 rows</label>'
     + ' <label class="small"><input type="checkbox" id="cal-show-weekend"> Show Sat/Sun</label>';
-  filterRow.parentNode.insertBefore(row, filterRow.nextSibling);
+  const insertAfter = (locationRow && locationRow.nextSibling) || filterRow.nextSibling;
+  filterRow.parentNode.insertBefore(row, insertAfter);
   document.getElementById('cal-show-hours').addEventListener('change', event => {{
     calendarShowHours = event.target.checked;
     renderCalendarVisual();
@@ -3219,10 +3289,12 @@ async function loadCalendar(shift) {{
   if (shift === 0) {{ calendarAnchor = ''; dateBox.value = ''; }}
   const anchor = (dateBox.value || calendarAnchor).trim();
   const keyword = (document.getElementById('cal-filter') || {{}}).value || '';
+  const location = (document.getElementById('cal-location') || {{}}).value || '';
   let params = 'view=' + view + '&field=' + field;
   if (anchor) params += '&date=' + encodeURIComponent(anchor);
   if (shift) params += '&shift=' + shift;
   if (keyword.trim()) params += '&filter=' + encodeURIComponent(keyword.trim());
+  if (location.trim()) params += '&location=' + encodeURIComponent(location.trim());
   try {{
     const response = await fetch('/api/calendar?' + params, {{cache: 'no-store'}});
     const data = await response.json();
@@ -3685,9 +3757,11 @@ async function renderCalendarVisual() {{
   calendarEventsInteractive = view === 'day';
   const anchor = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
   const keyword = ((document.getElementById('cal-filter') || {{}}).value || '').trim();
+  const location = ((document.getElementById('cal-location') || {{}}).value || '').trim();
   let params = 'field=' + encodeURIComponent(field) + '&view=' + encodeURIComponent(view);
   if (anchor) params += '&date=' + encodeURIComponent(anchor);
   if (keyword) params += '&filter=' + encodeURIComponent(keyword);
+  if (location) params += '&location=' + encodeURIComponent(location);
   try {{
     const g = await (await fetch('/api/calendar-grid?' + params, {{cache: 'no-store'}})).json();
     const grouped = g.events || {{}};
@@ -4155,11 +4229,12 @@ function kpiFilterParams() {{
   const days = (document.getElementById('kpi-days') || {{}}).value || '0';
   const grupo = ((document.getElementById('kpi-grupo') || {{}}).value || '').trim();
   const entidad = ((document.getElementById('kpi-entidad') || {{}}).value || '').trim();
-  return 'days=' + encodeURIComponent(days) + '&grupo=' + encodeURIComponent(grupo) + '&entidad=' + encodeURIComponent(entidad);
+  const location = ((document.getElementById('kpi-location') || {{}}).value || '').trim();
+  return 'days=' + encodeURIComponent(days) + '&grupo=' + encodeURIComponent(grupo) + '&entidad=' + encodeURIComponent(entidad) + '&location=' + encodeURIComponent(location);
 }}
 function resetKpiFilters() {{
   const days = document.getElementById('kpi-days'); if (days) days.value = '0';
-  ['kpi-grupo', 'kpi-entidad'].forEach(id => {{ const el = document.getElementById(id); if (el) el.value = ''; }});
+  ['kpi-grupo', 'kpi-entidad', 'kpi-location'].forEach(id => {{ const el = document.getElementById(id); if (el) el.value = ''; }});
   refreshDecisionDashboard();
 }}
 
@@ -5024,11 +5099,13 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if shift:
                 anchor = opportunity_calendar.shift_anchor(view, anchor, shift)
             keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
+            location_filter = location_keyword_filter_fn(params.get("location", [""])[0])
+            combined_filter = combine_filters(keyword_filter, location_filter)
             try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
-                    text = opportunity_calendar.render_view(conn, view, anchor, field, filter_fn=keyword_filter)
+                    text = opportunity_calendar.render_view(conn, view, anchor, field, filter_fn=combined_filter)
                 finally:
                     conn.close()
             except sqlite3.Error:
@@ -5056,7 +5133,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 days = 0
             grupo = params.get("grupo", [""])[0].strip()
             entidad = params.get("entidad", [""])[0].strip()
-            self.send_text(200, json.dumps(db_review_stats(days=days, grupo=grupo, entidad=entidad), ensure_ascii=False), "application/json; charset=utf-8")
+            location = params.get("location", [""])[0].strip()
+            self.send_text(200, json.dumps(db_review_stats(days=days, grupo=grupo, entidad=entidad, location=location), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/kpi-export":
             # CSV of the current filtered KPI slice (audit Phase 3) — same
@@ -5068,7 +5146,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 days = 0
             grupo = params.get("grupo", [""])[0].strip()
             entidad = params.get("entidad", [""])[0].strip()
-            csv_text = stats_to_csv(db_review_stats(days=days, grupo=grupo, entidad=entidad))
+            location = params.get("location", [""])[0].strip()
+            csv_text = stats_to_csv(db_review_stats(days=days, grupo=grupo, entidad=entidad, location=location))
             encoded = csv_text.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
@@ -5129,11 +5208,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
             except ValueError:
                 shift = 0
             keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
+            location_filter = location_keyword_filter_fn(params.get("location", [""])[0])
             payload = calendar_grid_payload(
                 (params.get("view", ["month"])[0] or "month").lower(),
                 (params.get("field", ["end"])[0] or "end").lower(),
                 params.get("date", [""])[0],
-                filter_fn=keyword_filter,
+                filter_fn=combine_filters(keyword_filter, location_filter),
                 shift=shift,
             )
             self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
@@ -5252,6 +5332,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 days = 45
             if kind == "kpis":
                 text_filter = (params.get("filter", [""])[0] or "").strip()
+                location_text = (params.get("location", [""])[0] or "").strip()
                 # Previous-period window (same length as `days`, immediately
                 # before it) for the trend arrow — same first_seen extraction
                 # SQL db_review_stats() itself uses, so the two never drift
@@ -5259,15 +5340,17 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 first_seen_day_expr = "REPLACE(REPLACE(substr(COALESCE(NULLIF(first_seen, ''), detail_saved_at, ''), 1, 10), '_', '-'), 'T', '')"
                 window_start = (date.today() - timedelta(days=days)).isoformat()
                 prev_start = (date.today() - timedelta(days=2 * days)).isoformat()
-                if text_filter:
+                if text_filter or location_text:
                     # db_review_stats only supports exact grupo/entidad
                     # matches, not the free-text include/exclude rules a
-                    # client types into their own filter box — so for a
-                    # filtered KPI view, scan with the same keyword predicate
-                    # the calendar list uses and total the same numbers by
-                    # hand instead, mirroring db_review_stats' own SQL
-                    # predicates for each so the two stay consistent.
-                    keyword_filter = calendar_keyword_filter_fn(text_filter)
+                    # client types into their own filter box (or a
+                    # location-only filter) — so for a filtered KPI view,
+                    # scan with the same keyword/location predicates the
+                    # calendar list uses and total the same numbers by hand
+                    # instead, mirroring db_review_stats' own SQL predicates
+                    # for each so the two stay consistent.
+                    keyword_filter = combine_filters(
+                        calendar_keyword_filter_fn(text_filter), location_keyword_filter_fn(location_text))
                     soon_days = soon_days_setting()
                     today_str = time.strftime("%Y-%m-%d")
                     soon_end = (date.today() + timedelta(days=soon_days)).isoformat()
@@ -5355,12 +5438,15 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 # clock/url) as the flat list below, just grouped by day for
                 # a real calendar widget instead of a table.
                 keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
+                location_filter = location_keyword_filter_fn(params.get("location", [""])[0])
                 try:
                     shift = int(params.get("shift", ["0"])[0])
                 except ValueError:
                     shift = 0
                 view = (params.get("view", ["month"])[0] or "month").lower()
-                payload = calendar_grid_payload(view, "end", params.get("date", [""])[0], filter_fn=keyword_filter, shift=shift)
+                payload = calendar_grid_payload(
+                    view, "end", params.get("date", [""])[0],
+                    filter_fn=combine_filters(keyword_filter, location_filter), shift=shift)
                 self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
                 return
             # kind == "calendar": a flat, date-sorted list (not the admin
@@ -5368,6 +5454,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
             # needs) of upcoming deadlines, optionally text-filtered, capped so
             # one request can never dump the whole archive.
             keyword_filter = calendar_keyword_filter_fn(params.get("filter", [""])[0])
+            location_filter = location_keyword_filter_fn(params.get("location", [""])[0])
             rows: list[dict[str, str]] = []
             try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
@@ -5375,7 +5462,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 try:
                     today = date.today()
                     events = opportunity_calendar.fetch_events(
-                        conn, "end", today, today + timedelta(days=days), filter_fn=keyword_filter)
+                        conn, "end", today, today + timedelta(days=days),
+                        filter_fn=combine_filters(keyword_filter, location_filter))
                     for day_key in sorted(events.keys()):
                         for row in events[day_key]:
                             value = opportunity_calendar.normalize_value(row["event_date"])
