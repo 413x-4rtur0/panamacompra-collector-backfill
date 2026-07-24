@@ -2478,9 +2478,9 @@ select#record-index {{ min-width: 80%; max-width: 100%; min-height: 14rem; font-
 .ui-theme {{ margin-left: 0; }}
 .chrome-toggle-dock {{ position: fixed; right: 14px; bottom: 14px; z-index: 999999; display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--concrete-0, #fff); border: 1px solid var(--concrete-300); box-shadow: 0 4px 14px rgba(0,0,0,.16); margin: 0; }}
 body.theme-dark .chrome-toggle-dock {{ background: var(--ink-800, #1A1D21); border-color: var(--ink-600); }}
-.icon-toggle-btn {{ display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: var(--radius-md); border: 1px solid var(--concrete-300); background: transparent; color: var(--ink-700); cursor: pointer; }}
+.icon-toggle-btn {{ display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: 999px; border: none; background: transparent; color: var(--concrete-600); cursor: pointer; }}
 .icon-toggle-btn:hover {{ background: rgba(0,0,0,.06); }}
-body.theme-dark .icon-toggle-btn {{ color: var(--concrete-200); border-color: var(--ink-600); }}
+body.theme-dark .icon-toggle-btn {{ color: var(--concrete-200); }}
 body.theme-dark .icon-toggle-btn:hover {{ background: rgba(255,255,255,.08); }}
 .card[data-tab] {{ display: none; }}
 .card[data-tab].tab-active {{ display: block; }}

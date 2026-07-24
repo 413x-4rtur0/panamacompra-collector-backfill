@@ -431,6 +431,21 @@ command_menu() {
   esac
 }
 
+minimize_window_if_auto() {
+  # Unattended changedetection-triggered runs should not keep popping this
+  # window to the front. 000-open-monitor.sh already minimizes it once when
+  # it first opens, but that state isn't guaranteed to still hold by the time
+  # a (possibly much later) run finishes and hands off here, so re-apply it
+  # at the handoff instead of assuming it stuck. gnome-terminal never changes
+  # the window title after launch, so the same title search still finds it.
+  [ "${PC_RUN_MODE:-}" = "AUTO" ] && [ "${PC_AUTORUN_SOURCE:-}" = "changedetection" ] || return 0
+  command -v xdotool >/dev/null 2>&1 || return 0
+  local win_id
+  win_id="$(xdotool search --name '^PanamaCompra Progress$' 2>/dev/null | head -n1)"
+  [ -n "$win_id" ] && xdotool windowminimize "$win_id" 2>/dev/null
+  return 0
+}
+
 start_cli_timer_handoff() {
   # After a watched run finishes, this terminal window becomes the CLI
   # countdown until the next run ('q' inside the timer closes it). Only the
@@ -443,6 +458,7 @@ start_cli_timer_handoff() {
   local py_bin="$APP_ROOT/.venv/bin/python"
   [ -x "$py_bin" ] || py_bin="python3"
   restore_screen
+  minimize_window_if_auto
   exec 9>&-  # release the monitor window lock before this process is replaced
   exec "$py_bin" "$SCRIPT_DIR/002b-next-run-timer-cli.py"
 }

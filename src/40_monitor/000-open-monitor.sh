@@ -68,7 +68,12 @@ fi
 MONITOR_HOST="${PC_MONITOR_HOST:-${SAVED_MONITOR_HOST:-127.0.0.1}}"
 MONITOR_PORT="${PC_MONITOR_PORT:-${SAVED_MONITOR_PORT:-8766}}"
 MONITOR_URL="http://${MONITOR_HOST}:${MONITOR_PORT}/"
-CMD="cd $(printf '%q' "$SCRIPT_DIR") && PC_NEXT_RUN_TIMER=$(printf '%q' "$NEXT_RUN_TIMER") PC_NEXT_RUN_TIMER_MODE=$(printf '%q' "$NEXT_RUN_TIMER_MODE") ./001c-monitor-terminal.sh"
+# gnome-terminal is client/server: the new window's shell inherits the
+# *server* process's environment, not this script's, so PC_RUN_MODE /
+# PC_AUTORUN_SOURCE would otherwise silently vanish inside the terminal
+# (001c-monitor-terminal.sh needs them to know whether to minimize itself
+# when it hands off to the CLI timer). Pass them through explicitly instead.
+CMD="cd $(printf '%q' "$SCRIPT_DIR") && PC_NEXT_RUN_TIMER=$(printf '%q' "$NEXT_RUN_TIMER") PC_NEXT_RUN_TIMER_MODE=$(printf '%q' "$NEXT_RUN_TIMER_MODE") PC_RUN_MODE=$(printf '%q' "${PC_RUN_MODE:-}") PC_AUTORUN_SOURCE=$(printf '%q' "$AUTORUN_SOURCE") ./001c-monitor-terminal.sh"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" >> "$OPEN_LOG"
