@@ -249,6 +249,77 @@ start_log_follower_fallback() {
   log "Open a terminal and run: $APP_ROOT/src/20_pipeline/130c-follow-run.sh"
 }
 
+close_stale_cli_timer() {
+  # 001c-monitor-terminal.sh execs into 002b-next-run-timer-cli.py when a
+  # watched run finishes, so its process name stops matching the
+  # "already running" pgrep above and this function opens a brand-new
+  # window every cycle. The old CLI timer never notices the new run and
+  # keeps sitting there holding the "terminal" instance's flock forever,
+  # so every later handoff attempt fails to acquire that lock and the new
+  # window's timer never appears (see 002b-next-run-timer-cli.py
+  # acquire_lock). Only the "terminal" instance is closed here — a manual
+  # `pcc timer cli --instance desktop` window is left alone.
+  local stale_pid
+  stale_pid="$(pgrep -af '[0]02b-next-run-timer-cli\.py' | grep -v -- '--instance desktop' | awk '{print $1}')"
+  if [ -n "$stale_pid" ]; then
+    kill $stale_pid 2>/dev/null || true
+    log "Closed leftover CLI timer window (pid $stale_pid) before opening a fresh monitor."
+  fi
+}
+
+open_progress_terminal() {
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    nohup gnome-terminal --title="PanamaCompra Progress" -- bash -lc "$CMD" >/dev/null 2>&1 &
+    log "Opened monitor with gnome-terminal on DISPLAY=$DISPLAY."
+    return 0
+  fi
+
+  if command -v mate-terminal >/dev/null 2>&1; then
+    nohup mate-terminal --title="PanamaCompra Progress" -- bash -lc "$CMD" >/dev/null 2>&1 &
+    log "Opened monitor with mate-terminal on DISPLAY=$DISPLAY."
+    return 0
+  fi
+
+  if command -v xfce4-terminal >/dev/null 2>&1; then
+    nohup xfce4-terminal --title="PanamaCompra Progress" --command="bash -lc \"$CMD\"" >/dev/null 2>&1 &
+    log "Opened monitor with xfce4-terminal on DISPLAY=$DISPLAY."
+    return 0
+  fi
+
+  if command -v x-terminal-emulator >/dev/null 2>&1; then
+    nohup x-terminal-emulator -T "PanamaCompra Progress" -e bash -lc "$CMD" >/dev/null 2>&1 &
+    log "Opened monitor with x-terminal-emulator on DISPLAY=$DISPLAY."
+    return 0
+  fi
+
+  if command -v xterm >/dev/null 2>&1; then
+    nohup xterm -T "PanamaCompra Progress" -e bash -lc "$CMD" >/dev/null 2>&1 &
+    log "Opened monitor with xterm on DISPLAY=$DISPLAY."
+    return 0
+  fi
+
+  return 1
+}
+
+minimize_progress_window_if_auto() {
+  # Unattended changedetection-triggered runs should not steal focus or pop
+  # a window over whatever the operator is doing. Manual runs (MONITOR_MODE
+  # picked by hand, PC_RUN_MODE != AUTO) keep popping up normally.
+  [ "${PC_RUN_MODE:-}" = "AUTO" ] && [ "$AUTORUN_SOURCE" = "changedetection" ] || return 0
+  command -v xdotool >/dev/null 2>&1 || return 0
+  (
+    for _ in $(seq 1 20); do
+      win_id="$(xdotool search --name '^PanamaCompra Progress$' 2>/dev/null | head -n1)"
+      if [ -n "$win_id" ]; then
+        xdotool windowminimize "$win_id" 2>/dev/null || true
+        log "Minimized automatic monitor window (id $win_id)."
+        break
+      fi
+      sleep 0.25
+    done
+  ) &
+}
+
 prepare_gui_environment
 
 if [ "$MONITOR_MODE" = "tk" ]; then
@@ -279,39 +350,16 @@ if pgrep -f "[0]01c-monitor-terminal.sh" >/dev/null 2>&1; then
   exit 0
 fi
 
+close_stale_cli_timer
+
 if [ -z "${DISPLAY:-}" ]; then
   log "DISPLAY is empty and no local X display was detected; cannot open GUI terminal."
   start_log_follower_fallback
   exit 0
 fi
 
-if command -v gnome-terminal >/dev/null 2>&1; then
-  nohup gnome-terminal --title="PanamaCompra Progress" -- bash -lc "$CMD" >/dev/null 2>&1 &
-  log "Opened monitor with gnome-terminal on DISPLAY=$DISPLAY."
-  exit 0
-fi
-
-if command -v mate-terminal >/dev/null 2>&1; then
-  nohup mate-terminal --title="PanamaCompra Progress" -- bash -lc "$CMD" >/dev/null 2>&1 &
-  log "Opened monitor with mate-terminal on DISPLAY=$DISPLAY."
-  exit 0
-fi
-
-if command -v xfce4-terminal >/dev/null 2>&1; then
-  nohup xfce4-terminal --title="PanamaCompra Progress" --command="bash -lc \"$CMD\"" >/dev/null 2>&1 &
-  log "Opened monitor with xfce4-terminal on DISPLAY=$DISPLAY."
-  exit 0
-fi
-
-if command -v x-terminal-emulator >/dev/null 2>&1; then
-  nohup x-terminal-emulator -T "PanamaCompra Progress" -e bash -lc "$CMD" >/dev/null 2>&1 &
-  log "Opened monitor with x-terminal-emulator on DISPLAY=$DISPLAY."
-  exit 0
-fi
-
-if command -v xterm >/dev/null 2>&1; then
-  nohup xterm -T "PanamaCompra Progress" -e bash -lc "$CMD" >/dev/null 2>&1 &
-  log "Opened monitor with xterm on DISPLAY=$DISPLAY."
+if open_progress_terminal; then
+  minimize_progress_window_if_auto
   exit 0
 fi
 
