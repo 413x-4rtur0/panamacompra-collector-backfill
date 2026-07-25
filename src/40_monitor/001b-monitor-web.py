@@ -277,59 +277,26 @@ def _row_haystack_cached(row) -> str:
 def client_filter_fn(profile: dict):
     """Row predicate for a client's own filters, for opportunity_calendar.fetch_events().
 
-    Same rules and semantics as notify_whatsapp (parse_filter_rules + the
-    accent/case-insensitive substring match of evaluate_filter; operators:
-    comma = OR, '+' = AND, leading '-' = NOT), evaluated over pre-normalized
-    cached haystacks so a filtered month view answers in well under a second
-    instead of ~15s. If evaluate_filter's semantics ever change, mirror the
-    change here.
+    Same operator syntax as everywhere else in the app (parse_filter_rules:
+    comma = OR, '+' = AND, leading '-' = NOT) and the same word-order/plural-
+    tolerant, accent/case-insensitive matching as the staff calendar/KPI/
+    location filters and the WhatsApp notification filter
+    (notify_formats.rule_words_present) — one shared matching engine across
+    every portal, so the same query behaves identically everywhere. Evaluated
+    over pre-normalized cached haystacks so a filtered month view answers in
+    well under a second instead of ~15s.
     """
     includes, excludes = notify_formats.parse_filter_rules(profile.get("filters", ""))
-    includes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in includes]
-    excludes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in excludes]
 
     def _matches(row) -> bool:
         normalized = _row_haystack_cached(row)
-        if any(all(term in normalized for term in rule) for rule in excludes_n):
+        if any(notify_formats.rule_words_present(rule, normalized) for rule in excludes):
             return False
-        if not includes_n:
+        if not includes:
             return True
-        return any(all(term in normalized for term in rule) for rule in includes_n)
+        return any(notify_formats.rule_words_present(rule, normalized) for rule in includes)
 
     return _matches
-
-
-def _word_plural_variants(word: str) -> list[str]:
-    """Trailing-suffix variants of a search word so a plural query still finds
-    a singular target ("escuelas" finds "escuela", "cotizaciones" finds
-    "cotizacion") — the reverse direction already works for free, since the
-    shorter singular form is naturally a substring of the longer plural one.
-    Guarded by a minimum stem length so short words ("mas", "dos") never get
-    stripped into meaningless fragments that would over-match."""
-    variants = [word]
-    if len(word) > 5 and word.endswith("es"):
-        variants.append(word[:-2])
-    if len(word) > 4 and word.endswith("s"):
-        variants.append(word[:-1])
-    return variants
-
-
-def _rule_words_present(rule: list[str], haystack: str) -> bool:
-    """A rule matches when every word of every term in it appears somewhere in
-    the haystack — not necessarily adjacent or in the same order — instead of
-    requiring each term as one exact contiguous substring. So "bocas toro" (or
-    "toro bocas") still finds "Bocas del Toro" instead of matching nothing
-    just because "del" isn't typed or the words are reordered. Each word also
-    tolerates singular/plural either way via _word_plural_variants. Scoped to
-    the calendar/location filters only — deliberately NOT applied to
-    notify_formats.evaluate_filter, which real WhatsApp client profile
-    filters already rely on for exact-phrase matching; changing that shared
-    behavior could silently change who gets notified."""
-    return all(
-        any(variant in haystack for variant in _word_plural_variants(word))
-        for term in rule
-        for word in term.split()
-    )
 
 
 def calendar_keyword_filter_fn(query: str):
@@ -337,19 +304,17 @@ def calendar_keyword_filter_fn(query: str):
 
     Case- and accent-insensitive partial match (e.g. "construccion" matches
     "Construcción"), against numero/descripcion/entidad/dependencia/modalidad/
-    grupo. A multi-word term matches by word (see _rule_words_present), not
-    as one exact phrase — "bocas toro" still finds "Bocas del Toro". Same
-    operator syntax as everywhere else in the app
-    (parse_filter_rules): comma = OR between rules, '+' = AND within a rule,
-    leading '-' = NOT — e.g. "salud, educacion" or "obra + calle" or
-    "-cancelada". Returns None when the query is blank so callers can skip
-    filtering entirely.
+    grupo. A multi-word term matches by word (see
+    notify_formats.rule_words_present), not as one exact phrase — "bocas
+    toro" still finds "Bocas del Toro". Same operator syntax as everywhere
+    else in the app (parse_filter_rules): comma = OR between rules, '+' = AND
+    within a rule, leading '-' = NOT — e.g. "salud, educacion" or "obra +
+    calle" or "-cancelada". Returns None when the query is blank so callers
+    can skip filtering entirely.
     """
     includes, excludes = notify_formats.parse_filter_rules(query)
     if not includes and not excludes:
         return None
-    includes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in includes]
-    excludes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in excludes]
 
     def _matches(row) -> bool:
         haystack = pc_common.strip_accents(" ".join(
@@ -359,11 +324,11 @@ def calendar_keyword_filter_fn(query: str):
             )
             if row[col]
         )).lower()
-        if any(_rule_words_present(rule, haystack) for rule in excludes_n):
+        if any(notify_formats.rule_words_present(rule, haystack) for rule in excludes):
             return False
-        if not includes_n:
+        if not includes:
             return True
-        return any(_rule_words_present(rule, haystack) for rule in includes_n)
+        return any(notify_formats.rule_words_present(rule, haystack) for rule in includes)
 
     return _matches
 
@@ -408,26 +373,24 @@ def location_keyword_filter_fn(query: str):
     reachable — just from the general Keyword filter box, which already
     covers descripcion; the two filters compose with AND via combine_filters.
 
-    A multi-word term matches by word (see _rule_words_present), not as one
-    exact phrase, so "bocas toro" still finds "Bocas del Toro". Same operator
-    syntax as everywhere else in the app (parse_filter_rules): comma = OR
-    between rules, '+' = AND within a rule, leading '-' = NOT, so
+    A multi-word term matches by word (see notify_formats.rule_words_present),
+    not as one exact phrase, so "bocas toro" still finds "Bocas del Toro".
+    Same operator syntax as everywhere else in the app (parse_filter_rules):
+    comma = OR between rules, '+' = AND within a rule, leading '-' = NOT, so
     "Chiriqui, Bocas del Toro" or "David + construccion" work the same way a
     client profile filter does. Returns None when the query is blank so
     callers can skip filtering entirely."""
     includes, excludes = notify_formats.parse_filter_rules(query)
     if not includes and not excludes:
         return None
-    includes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in includes]
-    excludes_n = [[pc_common.strip_accents(t).lower() for t in rule] for rule in excludes]
 
     def _matches(row) -> bool:
         haystack = _location_haystack_cached(row)
-        if any(_rule_words_present(rule, haystack) for rule in excludes_n):
+        if any(notify_formats.rule_words_present(rule, haystack) for rule in excludes):
             return False
-        if not includes_n:
+        if not includes:
             return True
-        return any(_rule_words_present(rule, haystack) for rule in includes_n)
+        return any(notify_formats.rule_words_present(rule, haystack) for rule in includes)
 
     return _matches
 

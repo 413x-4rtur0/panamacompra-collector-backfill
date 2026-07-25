@@ -302,12 +302,44 @@ def load_client_profiles() -> list[dict]:
     return profiles
 
 
+def word_plural_variants(word: str) -> list[str]:
+    """Trailing-suffix variants of a search word so a plural query still finds
+    a singular target ("escuelas" finds "escuela", "cotizaciones" finds
+    "cotizacion") — the reverse direction already works for free, since the
+    shorter singular form is naturally a substring of the longer plural one.
+    Guarded by a minimum stem length so short words ("mas", "dos") never get
+    stripped into meaningless fragments that would over-match."""
+    variants = [word]
+    if len(word) > 5 and word.endswith("es"):
+        variants.append(word[:-2])
+    if len(word) > 4 and word.endswith("s"):
+        variants.append(word[:-1])
+    return variants
+
+
+def rule_words_present(terms: list[str], normalized_haystack: str) -> bool:
+    """A rule matches when every word of every term in it appears somewhere in
+    the (already accent/case-normalized) haystack — not necessarily adjacent
+    or in the same order — instead of requiring each term as one exact
+    contiguous substring. So "bocas toro" (or "toro bocas") still finds
+    "Bocas del Toro" instead of matching nothing just because "del" isn't
+    typed or the words are reordered. Each word also tolerates singular/
+    plural either way via word_plural_variants. Shared by the WhatsApp
+    notification filter and the staff/client calendar, KPI and location
+    filters, so the same query behaves identically everywhere in the app."""
+    return all(
+        any(variant in normalized_haystack for variant in word_plural_variants(word))
+        for term in terms
+        for word in pc_common.strip_accents(term).lower().split()
+    )
+
+
 def evaluate_filter(haystack: str, includes: list[list[str]], excludes: list[list[str]]) -> str | None:
     """The '🔎 Coincidencia' line, or None when the record must not be sent."""
     normalized = pc_common.strip_accents(haystack).lower()
 
     def rule_matches(terms: list[str]) -> bool:
-        return all(pc_common.strip_accents(term).lower() in normalized for term in terms)
+        return rule_words_present(terms, normalized)
 
     if any(rule_matches(rule) for rule in excludes):
         return None
