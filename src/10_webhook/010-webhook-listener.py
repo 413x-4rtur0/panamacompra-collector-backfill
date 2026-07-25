@@ -13,10 +13,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import common as pc_common
 
 BASE = pc_common.APP_ROOT
-RUNNER = str(Path(__file__).resolve().parent / "060-run-collector.sh")
 LOG = pc_common.LOG_DIR / "webhook_listener.log"
 REQUEST_FLAG = pc_common.QUEUE_DIR / "run_all_requested.flag"
 SETTINGS_FILE = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
+
+# Two independent routes, one per changedetection.io watch: the original
+# Abiertas/Programadas watch (priority 1, full pipeline) and a second watch
+# scoped to the Cerradas tab (priority 2, new-closures only — see
+# 070-run-collector-cerradas-new.sh). Different path, different token file,
+# different runner script, so the two can be toggled/rotated independently
+# and neither trigger chain can affect the other.
+ROUTES = {
+    "panamacompra": {
+        "token_file": BASE / ".webhook_token",
+        "runner": str(Path(__file__).resolve().parent / "060-run-collector.sh"),
+        "auto_run_setting": "PC_WEBHOOK_AUTO_RUN",
+    },
+    "panamacompra-cerradas": {
+        "token_file": BASE / ".webhook_token_cerradas",
+        "runner": str(Path(__file__).resolve().parent / "070-run-collector-cerradas-new.sh"),
+        "auto_run_setting": "PC_CERRADAS_WEBHOOK_AUTO_RUN",
+    },
+}
 
 # Bind address is configurable. The default 0.0.0.0 is required when
 # changedetection.io runs in Docker and reaches the host via
@@ -32,12 +50,12 @@ PORT = int(os.environ.get("PC_WEBHOOK_PORT", "8765"))
 ENQUEUE_ONLY = os.environ.get("PC_WEBHOOK_ENQUEUE_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def automatic_runs_enabled() -> bool:
-    """Read PC_WEBHOOK_AUTO_RUN fresh on every request (not cached at startup),
-    so toggling the monitor's "Automatic runs from changedetection" checkbox
-    takes effect immediately without restarting this listener. Defaults to
+def automatic_runs_enabled(setting_name: str) -> bool:
+    """Read the given monitor-settings flag fresh on every request (not
+    cached at startup), so toggling it in the monitor Settings tab takes
+    effect immediately without restarting this listener. Defaults to
     enabled, matching the previous (always-trigger) behavior."""
-    env_override = os.environ.get("PC_WEBHOOK_AUTO_RUN")
+    env_override = os.environ.get(setting_name)
     if env_override is not None:
         return env_override.strip().lower() not in {"0", "false", "no", "off"}
     if not SETTINGS_FILE.exists():
@@ -48,7 +66,7 @@ def automatic_runs_enabled() -> bool:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, raw_value = line.partition("=")
-            if key.strip() != "PC_WEBHOOK_AUTO_RUN":
+            if key.strip() != setting_name:
                 continue
             parts = shlex.split(raw_value)
             value = parts[0] if parts else ""
@@ -58,8 +76,7 @@ def automatic_runs_enabled() -> bool:
     return True
 
 
-def load_token():
-    token_path = BASE / ".webhook_token"
+def load_required_token(token_path: Path) -> str:
     try:
         token = token_path.read_text().strip()
     except FileNotFoundError:
@@ -72,8 +89,20 @@ def load_token():
     return token
 
 
-# Populated in __main__ before the server starts.
-TOKEN = ""
+def load_optional_token(token_path: Path) -> str:
+    """Same as load_required_token, but a missing/empty file just disables
+    this route instead of taking down the whole listener — the primary
+    Abiertas/Programadas route must keep working even if the Cerradas watch
+    was never set up (or its token was deleted)."""
+    try:
+        token = token_path.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    return token
+
+
+# Populated in __main__ before the server starts: {route_name: token or ""}.
+TOKENS: dict = {}
 
 class Handler(BaseHTTPRequestHandler):
     def log_line(self, message):
@@ -110,39 +139,53 @@ class Handler(BaseHTTPRequestHandler):
         agent = self.headers.get("User-Agent", "-")
         return f"{ip} | {agent}"
 
-    def trigger_async(self, body_length: int, caller: str) -> None:
+    def trigger_async(self, route_name: str, body_length: int, caller: str) -> None:
+        route = ROUTES[route_name]
         try:
-            if not automatic_runs_enabled():
+            if not automatic_runs_enabled(route["auto_run_setting"]):
                 # Manual mode: acknowledge the webhook (already done in
                 # handle_trigger, so changedetection does not retry-storm) but
                 # do not start a collector run. Toggle back on from the monitor
-                # Settings tab, or restart the listener with
-                # PC_WEBHOOK_AUTO_RUN=1 to force it regardless of the setting.
-                self.log_line(f"Webhook trigger ignored ({body_length} byte body) from {caller}: automatic runs are disabled (manual mode)")
+                # Settings tab, or restart the listener with the route's
+                # auto-run env var set to force it regardless of the setting.
+                self.log_line(f"[{route_name}] Webhook trigger ignored ({body_length} byte body) from {caller}: automatic runs are disabled (manual mode)")
                 return
 
             if ENQUEUE_ONLY:
-                # Record the request into the shared queue volume; the host runner
-                # picks it up and performs the actual collection.
-                REQUEST_FLAG.parent.mkdir(parents=True, exist_ok=True)
-                REQUEST_FLAG.touch()
-                self.log_line(f"Run request enqueued by webhook ({body_length} byte body) from {caller}; waiting for host runner")
+                if route_name == "panamacompra":
+                    # Record the request into the shared queue volume; the host
+                    # runner picks it up and performs the actual collection.
+                    REQUEST_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                    REQUEST_FLAG.touch()
+                    self.log_line(f"[{route_name}] Run request enqueued by webhook ({body_length} byte body) from {caller}; waiting for host runner")
+                else:
+                    # No enqueue-only path exists yet for the Cerradas route
+                    # (it only runs where this listener also has host access).
+                    self.log_line(f"[{route_name}] Webhook trigger ignored ({body_length} byte body) from {caller}: enqueue-only mode is not supported for this route")
                 return
 
             subprocess.Popen(
-                ["bash", RUNNER],
+                ["bash", route["runner"]],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            self.log_line(f"Collector triggered by webhook ({body_length} byte body) from {caller}")
+            self.log_line(f"[{route_name}] Collector triggered by webhook ({body_length} byte body) from {caller}")
         except Exception as exc:  # noqa: BLE001 - response was already sent; log failure
-            self.log_line(f"ERROR: failed to process accepted webhook from {caller}: {exc}")
+            self.log_line(f"[{route_name}] ERROR: failed to process accepted webhook from {caller}: {exc}")
 
     def handle_trigger(self, body_length):
-        expected_path = f"/panamacompra/{TOKEN}"
+        request_path = self.path.split("?")[0]
+        matched_route = None
+        for route_name, route in ROUTES.items():
+            token = TOKENS.get(route_name, "")
+            if not token:
+                continue  # route not configured (no token file) — never matches
+            if hmac.compare_digest(request_path, f"/{route_name}/{token}"):
+                matched_route = route_name
+                break
 
-        if not hmac.compare_digest(self.path.split("?")[0], expected_path):
+        if matched_route is None:
             self.send_plain(403, b"Forbidden\n")
             self.log_line(f"Rejected path from {self.caller_tag()}: {self.path}")
             return
@@ -150,13 +193,17 @@ class Handler(BaseHTTPRequestHandler):
         body = b"Collector run request enqueued\n" if ENQUEUE_ONLY else b"Collector trigger accepted\n"
         self.send_plain(202, body)
         caller = self.caller_tag()
-        threading.Thread(target=self.trigger_async, args=(body_length, caller), daemon=True).start()
+        threading.Thread(target=self.trigger_async, args=(matched_route, body_length, caller), daemon=True).start()
 
     def log_message(self, format, *args):
         return
 
 if __name__ == "__main__":
-    TOKEN = load_token()
+    TOKENS["panamacompra"] = load_required_token(ROUTES["panamacompra"]["token_file"])
+    TOKENS["panamacompra-cerradas"] = load_optional_token(ROUTES["panamacompra-cerradas"]["token_file"])
+    if not TOKENS["panamacompra-cerradas"]:
+        print("NOTE: no .webhook_token_cerradas found — the Cerradas new-closures "
+              "webhook route is disabled until one is created.")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"PanamaCompra webhook listener running on {HOST}:{PORT}")
     server.serve_forever()
