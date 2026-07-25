@@ -1205,11 +1205,81 @@ def ensure_db_schema(conn):
         "detail_sections_count": "ALTER TABLE opportunities ADD COLUMN detail_sections_count INTEGER DEFAULT 0",
         "tables_count": "ALTER TABLE opportunities ADD COLUMN tables_count INTEGER DEFAULT 0",
         "db_reviewed_at": "ALTER TABLE opportunities ADD COLUMN db_reviewed_at TEXT",
+        # Cerradas + cuadro de cotizacion background crawl (037/038-collect-*):
+        # mirrors detail_status/detail_attempts/detail_saved_at/detail_json_path
+        # exactly, but for the separate low-frequency background pipeline that
+        # fetches the price-comparison table once a record closes. NULL means
+        # "not a Cerrada (or not processed by that pipeline yet)"; 'no_bids'
+        # covers a closed opportunity whose cuadro shows zero proponentes
+        # (nothing to store, but never worth re-attempting).
+        "cotizacion_status": "ALTER TABLE opportunities ADD COLUMN cotizacion_status TEXT",
+        "cotizacion_attempts": "ALTER TABLE opportunities ADD COLUMN cotizacion_attempts INTEGER DEFAULT 0",
+        "cotizacion_saved_at": "ALTER TABLE opportunities ADD COLUMN cotizacion_saved_at TEXT",
+        "cotizacion_json_path": "ALTER TABLE opportunities ADD COLUMN cotizacion_json_path TEXT",
+        # The "Ver documento" -> cuadro-de-cotizaciones URL discovered on the
+        # solicitud-de-cotizacion detail page, cached so a retry never needs to
+        # re-fetch that page just to rediscover the same link.
+        "cuadro_link": "ALTER TABLE opportunities ADD COLUMN cuadro_link TEXT",
     }
 
     for column, statement in migrations.items():
         if column not in existing_columns:
             conn.execute(statement)
+
+    # One row per (numero, item_index, proponente): a single provider's bid on
+    # a single line item within one closed opportunity's cuadro de
+    # cotizaciones. Deliberately denormalized (item_descripcion repeated per
+    # bidder row) rather than split into a separate items table — every query
+    # this feeds (per-item min/avg/max price across bidders) groups by
+    # numero+item_index anyway, so a join back to a separate items table would
+    # only add cost, not save any.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS cotizacion_bids (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero TEXT NOT NULL,
+        item_index INTEGER NOT NULL,
+        item_descripcion TEXT,
+        especificaciones_comprador TEXT,
+        cantidad_solicitada TEXT,
+        unidad_medida TEXT,
+        proponente TEXT NOT NULL,
+        especificaciones_proponente TEXT,
+        cantidad_cotizada TEXT,
+        precio_unitario REAL,
+        monto_neto REAL,
+        impuestos TEXT,
+        collected_at TEXT NOT NULL,
+        UNIQUE(numero, item_index, proponente)
+    )
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_cotizacion_bids_numero
+    ON cotizacion_bids(numero)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_cotizacion_bids_item
+    ON cotizacion_bids(item_descripcion)
+    """)
+
+    # Single-row resumable cursor for the historical Cerradas backfill (037-
+    # collect-cerradas-index.py --mode backfill): which index page it last
+    # finished, so each low-resource background run can pick up a few more
+    # pages deeper into the archive instead of re-scanning from page 1 or
+    # needing to hold state anywhere but the one archive DB every other part
+    # of the pipeline already reads/writes.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS cerradas_crawl_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        backfill_page INTEGER NOT NULL DEFAULT 1,
+        backfill_complete INTEGER NOT NULL DEFAULT 0,
+        last_forward_run_at TEXT,
+        last_backfill_run_at TEXT
+    )
+    """)
+    conn.execute("""
+    INSERT OR IGNORE INTO cerradas_crawl_state (id, backfill_page, backfill_complete)
+    VALUES (1, 1, 0)
+    """)
 
     # Local mirror of every outbound WAHA/WhatsApp send (see
     # log_app_notification below), so a client with no phone number — e.g.
@@ -1292,6 +1362,107 @@ def init_db(db_path=None):
             csv.writer(f).writerow(INDEX_HEADER)
 
     return conn
+
+
+def get_cerradas_crawl_state(conn) -> dict:
+    """The single-row resumable backfill cursor (see ensure_db_schema).
+    Always returns a row — ensure_db_schema seeds id=1 on every DB open."""
+    row = conn.execute("SELECT * FROM cerradas_crawl_state WHERE id = 1").fetchone()
+    if row is None:
+        conn.execute("INSERT OR IGNORE INTO cerradas_crawl_state (id) VALUES (1)")
+        conn.commit()
+        row = conn.execute("SELECT * FROM cerradas_crawl_state WHERE id = 1").fetchone()
+    return dict(row)
+
+
+def update_cerradas_crawl_state(conn, **fields) -> None:
+    """Partial update of the backfill cursor row. Keys must be real columns
+    (backfill_page, backfill_complete, last_forward_run_at,
+    last_backfill_run_at) — this is an internal helper, not user input."""
+    if not fields:
+        return
+    set_clause = ", ".join(f"{key} = ?" for key in fields)
+    conn.execute(f"UPDATE cerradas_crawl_state SET {set_clause} WHERE id = 1", list(fields.values()))
+    conn.commit()
+
+
+def _parse_money(value) -> float | None:
+    """'B/. 1,021.25' / '---' / '' -> 1021.25 / None / None."""
+    if value is None:
+        return None
+    text = str(value).replace("B/.", "").replace(",", "").strip()
+    if not text or text == "---":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def save_cotizacion_bids(conn, numero: str, bids: list[dict]) -> int:
+    """Replace every stored bid for ``numero`` with ``bids`` (list of dicts
+    with the cotizacion_bids columns minus id/collected_at) — a closed
+    opportunity's cuadro never legitimately shrinks, but re-running the
+    collector on it (retry, manual refresh) should reflect the page's
+    current content exactly rather than accumulate stale rows alongside
+    fresh ones. Returns the number of rows written."""
+    now = now_iso()
+    conn.execute("DELETE FROM cotizacion_bids WHERE numero = ?", (numero,))
+    for bid in bids:
+        conn.execute(
+            "INSERT INTO cotizacion_bids "
+            "(numero, item_index, item_descripcion, especificaciones_comprador, "
+            "cantidad_solicitada, unidad_medida, proponente, especificaciones_proponente, "
+            "cantidad_cotizada, precio_unitario, monto_neto, impuestos, collected_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                numero, bid.get("item_index"), bid.get("item_descripcion"),
+                bid.get("especificaciones_comprador"), bid.get("cantidad_solicitada"),
+                bid.get("unidad_medida"), bid.get("proponente"), bid.get("especificaciones_proponente"),
+                bid.get("cantidad_cotizada"), bid.get("precio_unitario"), bid.get("monto_neto"),
+                bid.get("impuestos"), now,
+            ),
+        )
+    conn.commit()
+    return len(bids)
+
+
+def cotizacion_price_stats(conn, *, numero: str = "", item_query: str = "", limit: int = 200) -> list[dict]:
+    """Per-item (numero, item_index) price stats across every bidder: min/avg/
+    max precio_unitario, bidder count, and the winning (lowest-price)
+    proponente. Powers the monitor's cotizaciones tab — filter by exact
+    numero and/or a partial, case/accent-insensitive item_descripcion match."""
+    where = ["precio_unitario IS NOT NULL"]
+    params: list = []
+    if numero:
+        where.append("numero = ?")
+        params.append(numero)
+    if item_query:
+        where.append("LOWER(item_descripcion) LIKE ? ESCAPE '\\'")
+        escaped = item_query.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params.append(f"%{escaped}%")
+    sql = f"""
+        SELECT numero, item_index, item_descripcion,
+               COUNT(*) AS bidder_count,
+               MIN(precio_unitario) AS min_price,
+               AVG(precio_unitario) AS avg_price,
+               MAX(precio_unitario) AS max_price
+        FROM cotizacion_bids
+        WHERE {" AND ".join(where)}
+        GROUP BY numero, item_index
+        ORDER BY numero DESC, item_index ASC
+        LIMIT ?
+    """
+    params.append(max(1, min(1000, limit)))
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        winner = conn.execute(
+            "SELECT proponente FROM cotizacion_bids WHERE numero = ? AND item_index = ? "
+            "AND precio_unitario = ? ORDER BY proponente LIMIT 1",
+            (row["numero"], row["item_index"], row["min_price"]),
+        ).fetchone()
+        row["best_proponente"] = winner["proponente"] if winner else None
+    return rows
 
 
 def log_app_notification(purpose: str, text: str, chat_id: str = "") -> None:
