@@ -4112,6 +4112,12 @@ const STATIC_TRANSLATIONS = {{
     'RUNNING': 'EJECUTANDO', 'off': 'apagado', 'idle': 'inactivo',
     'Normal run': 'Ejecución normal', 'Test run': 'Ejecución de prueba', 'Worker': 'Worker', 'Index': 'Índice', 'Detail': 'Detalle', 'Calendar': 'Calendario', 'Messaging': 'Mensajería', 'Webhook': 'Webhook', 'Request': 'Solicitud', 'Cerradas: new closures': 'Cerradas: nuevos cierres', 'Cerradas: backfill': 'Cerradas: relleno histórico',
     'New-closures (priority 2)': 'Nuevos cierres (prioridad 2)', 'Backfill (priority 3)': 'Relleno histórico (prioridad 3)',
+    'Cerradas monitor': 'Monitor de Cerradas', '(second, independent process)': '(segundo proceso, independiente)',
+    'Cerradas webhook trigger access': 'Acceso al disparador webhook de Cerradas', '(priority 2 — new closures)': '(prioridad 2 — nuevos cierres)',
+    'Cerradas changedetection Browser Steps JS': 'JS de Browser Steps de changedetection para Cerradas',
+    'Refresh Cerradas status': 'Actualizar estado de Cerradas', 'Refresh Cerradas webhook access': 'Actualizar acceso webhook de Cerradas',
+    'Backfill date range (optional)': 'Rango de fechas del relleno histórico (opcional)', 'Start date': 'Fecha de inicio', 'End date': 'Fecha final',
+    'Save date range': 'Guardar rango de fechas',
   }}
 }};
 let currentUiLanguage = 'en';
