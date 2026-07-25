@@ -298,17 +298,37 @@ def client_filter_fn(profile: dict):
     return _matches
 
 
+def _word_plural_variants(word: str) -> list[str]:
+    """Trailing-suffix variants of a search word so a plural query still finds
+    a singular target ("escuelas" finds "escuela", "cotizaciones" finds
+    "cotizacion") — the reverse direction already works for free, since the
+    shorter singular form is naturally a substring of the longer plural one.
+    Guarded by a minimum stem length so short words ("mas", "dos") never get
+    stripped into meaningless fragments that would over-match."""
+    variants = [word]
+    if len(word) > 5 and word.endswith("es"):
+        variants.append(word[:-2])
+    if len(word) > 4 and word.endswith("s"):
+        variants.append(word[:-1])
+    return variants
+
+
 def _rule_words_present(rule: list[str], haystack: str) -> bool:
     """A rule matches when every word of every term in it appears somewhere in
     the haystack — not necessarily adjacent or in the same order — instead of
     requiring each term as one exact contiguous substring. So "bocas toro" (or
     "toro bocas") still finds "Bocas del Toro" instead of matching nothing
-    just because "del" isn't typed or the words are reordered. Scoped to the
-    calendar/location filters only — deliberately NOT applied to
+    just because "del" isn't typed or the words are reordered. Each word also
+    tolerates singular/plural either way via _word_plural_variants. Scoped to
+    the calendar/location filters only — deliberately NOT applied to
     notify_formats.evaluate_filter, which real WhatsApp client profile
     filters already rely on for exact-phrase matching; changing that shared
     behavior could silently change who gets notified."""
-    return all(word in haystack for term in rule for word in term.split())
+    return all(
+        any(variant in haystack for variant in _word_plural_variants(word))
+        for term in rule
+        for word in term.split()
+    )
 
 
 def calendar_keyword_filter_fn(query: str):
