@@ -67,6 +67,7 @@ PRIORITY_STATE_FILE = pc_common.QUEUE_DIR / "priority-run.state"
 PRIORITY_PENDING_DIR = pc_common.QUEUE_DIR / "priority-pending"
 PRIORITY_LOG = pc_common.LOG_DIR / "priority-run.log"
 CHANGEDETECTION_BROWSER_STEPS_JS = pc_common.APP_ROOT / "config" / "changedetection-browser-steps.js"
+CHANGEDETECTION_BROWSER_STEPS_CERRADAS_JS = pc_common.APP_ROOT / "config" / "changedetection-browser-steps-cerradas.js"
 # Work-templates helper imported as a module so the web monitor lists/saves the
 # same source folder and selection the CLI and native monitor use.
 import importlib.util as _importlib_util
@@ -976,6 +977,81 @@ def webhook_access_payload() -> dict[str, object]:
     }
 
 
+def cerradas_webhook_access_payload() -> dict[str, object]:
+    """Same shape as webhook_access_payload(), for the independent Cerradas
+    new-closures route (arl89/v1-style separate token) — its own
+    changedetection watch, its own trigger chain
+    (src/10_webhook/070-run-collector-cerradas-new.sh), never the full
+    pipeline. Read fresh on every call for the same reason."""
+    token_path = BASE_DIR / ".webhook_token_cerradas"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip() if token_path.exists() else ""
+    except OSError:
+        token = ""
+    settings_file = parse_settings_file()
+    port = str(os.environ.get("PC_WEBHOOK_PORT") or settings_file.get("PC_WEBHOOK_PORT") or "8765")
+    public_host = str(os.environ.get("PC_WEBHOOK_PUBLIC_HOST") or settings_file.get("PC_WEBHOOK_PUBLIC_HOST") or "host.docker.internal")
+    shown = token or "YOUR_TOKEN"
+    query = "?method=POST&format=text&overflow=truncate&rto=15&cto=10"
+    return {
+        "token": token,
+        "token_exists": bool(token),
+        "token_file": str(token_path),
+        "port": port,
+        "changedetection_url": f"json://{public_host}:{port}/panamacompra-cerradas/{shown}{query}",
+        "compose_url": f"json://webhook:8765/panamacompra-cerradas/{shown}{query}",
+        "docker_to_host_url": f"http://{public_host}:{port}/panamacompra-cerradas/{shown}",
+        "local_url": f"http://127.0.0.1:{port}/panamacompra-cerradas/{shown}",
+        "generated_by": "one-time: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\" > .webhook_token_cerradas (then restart panamacompra-webhook.service)",
+    }
+
+
+def cerradas_status_payload() -> dict[str, object]:
+    """Live status for the two independent Cerradas jobs (priority 2:
+    new-closures, priority 3: historical backfill) — DB totals, cotizacion
+    queue breakdown, and each job's crawl-state timestamps/cursor, so this
+    second monitor process is visible in the same dashboard as
+    Abiertas/Programadas instead of only in log files."""
+    payload: dict[str, object] = {
+        "total": 0,
+        "cotizacion_by_status": {},
+        "bids_total": 0,
+        "backfill_page": 1,
+        "backfill_complete": False,
+        "backfill_days_target": pc_common.env_int("PC_CERRADAS_BACKFILL_DAYS", "365", minimum=1),
+        "last_forward_run_at": "",
+        "last_backfill_run_at": "",
+    }
+    try:
+        conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
+        conn.row_factory = sqlite3.Row
+        try:
+            payload["total"] = conn.execute(
+                "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = 'Cerradas'"
+            ).fetchone()["c"]
+            by_status: dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT COALESCE(NULLIF(cotizacion_status, ''), 'pending') AS status, COUNT(*) AS c "
+                "FROM opportunities WHERE grupo = 'Cerradas' GROUP BY status"
+            ):
+                by_status[row["status"]] = row["c"]
+            payload["cotizacion_by_status"] = by_status
+            payload["bids_total"] = conn.execute(
+                "SELECT COUNT(*) AS c FROM cotizacion_bids"
+            ).fetchone()["c"]
+            state = conn.execute("SELECT * FROM cerradas_crawl_state WHERE id = 1").fetchone()
+            if state:
+                payload["backfill_page"] = state["backfill_page"]
+                payload["backfill_complete"] = bool(state["backfill_complete"])
+                payload["last_forward_run_at"] = state["last_forward_run_at"] or ""
+                payload["last_backfill_run_at"] = state["last_backfill_run_at"] or ""
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    return payload
+
+
 def process_snapshot() -> dict[str, bool]:
     worker = running("[r]un-worker.sh")
     test = running("[p]ython(3)? -u .*070-test-zone.py")
@@ -990,6 +1066,11 @@ def process_snapshot() -> dict[str, bool]:
         "messaging": running("[0]20-notify-whatsapp.py"),
         "webhook": webhook,
         "request": REQUEST_FLAG.exists(),
+        # Independent of the keys above on purpose (see WORK_PROCESS_KEYS
+        # below) — Cerradas activity must never factor into the main
+        # worker's "is real work running" / auto-close checks.
+        "cerradas_new": running("070-run-collector-cerradas-new.sh") or running("[P]C_CERRADAS_MODE=forward"),
+        "cerradas_backfill": running("039-run-cerradas-backfill.sh") or running("[P]C_CERRADAS_MODE=backfill"),
     }
 
 
@@ -2854,6 +2935,9 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="settings"><h2>Monitor users &amp; tab access</h2><p class="small">Users you add here sign in with the same front-page <b>Manager</b> form, but only see — and can only drive — the tabs you grant them. Full admin stays with the manager account and PC_ADMIN_EMAILS. Server-side, their sessions get read access plus the actions belonging to their tabs; secret settings values are never sent to them.</p><div class="subsection"><h3>Add / update a user</h3><p><label class="small">Username <input id="mu-username" size="14" autocomplete="off"></label> <label class="small">Password <input id="mu-password" size="14" type="password" autocomplete="new-password"></label></p><p><span class="small">Tabs:</span> <label class="small"><input type="checkbox" id="mu-tab-overview" checked> Overview</label> <label class="small"><input type="checkbox" id="mu-tab-calendar" checked> Calendar</label> <label class="small"><input type="checkbox" id="mu-tab-decision"> KPIs</label> <label class="small"><input type="checkbox" id="mu-tab-records"> Opportunities</label> <label class="small"><input type="checkbox" id="mu-tab-operations"> Operations</label> <label class="small"><input type="checkbox" id="mu-tab-whatsapp"> WhatsApp</label> <label class="small"><input type="checkbox" id="mu-tab-scheduler"> Scheduler</label> <label class="small"><input type="checkbox" id="mu-tab-integrations"> Integrations</label> <label class="small"><input type="checkbox" id="mu-tab-settings"> Settings</label> <button class="primary" onclick="addMonitorUser()">Add / update user</button></p></div><div class="subsection"><h3>Users (JSON)</h3><p class="small">Full list, editable by hand. Remove a line to delete the user; set "enabled": false to suspend without deleting.</p><textarea id="monitor-users" rows="6" placeholder='[{{"username":"maria","password":"secret","tabs":["overview","calendar"],"enabled":true}}]'></textarea><p><button onclick="saveMonitorUsers()">Save users</button> <button onclick="loadMonitorUsers()">Reload</button> <span id="mu-state" class="small"></span></p></div></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="integrations"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
+<div class="card" data-tab="integrations"><h2>Cerradas monitor <span class="small">(second, independent process)</span></h2><p class="small">Closed-opportunity crawl runs completely separately from the Abiertas/Programadas pipeline above — its own changedetection watch, its own webhook token, its own systemd timer for the historical backfill — so nothing here can block or crash that one. Priority 2 (new closures) reacts to its changedetection watch; priority 3 (backfill) ticks on a timer and defers to both priority 1 and 2. Neither sends WhatsApp; both only download and insert into the database.</p><div id="cerradas-process-pills" class="small">Loading…</div><pre id="cerradas-status">Loading Cerradas status…</pre><p><button onclick="loadCerradasStatus()">Refresh Cerradas status</button></p></div>
+<div class="card" data-tab="integrations"><h2>Cerradas webhook trigger access <span class="small">(priority 2 — new closures)</span></h2><p class="small">Separate token from the main webhook above — create it once with <code>python3 -c "import secrets; print(secrets.token_urlsafe(32))" &gt; .webhook_token_cerradas</code> then restart the webhook listener service. Points changedetection at <code>070-run-collector-cerradas-new.sh</code> instead of the full pipeline.</p><pre id="cerradas-webhook-access">Loading Cerradas webhook access…</pre><p><button onclick="loadCerradasWebhookAccess()">Refresh Cerradas webhook access</button></p></div>
+<div class="card" data-tab="integrations"><h2>Cerradas changedetection Browser Steps JS <span class="small">(priority 2 — new closures)</span></h2><p class="small">Paste this into a <strong>second, separate</strong> ChangeDetection watch on the same portal URL — <strong>Browser Steps → Execute JS</strong>, CSS filter <code>#pc-monitor-output-cerradas</code>, notification URL from the Cerradas webhook access panel above. It only samples the first few Cerradas pages (enough to notice new closures); the full historical archive is crawled separately by the backfill timer, not by this watch.</p><p><button onclick="loadChangedetectionScriptCerradas()">Load script</button> <button onclick="copyChangedetectionScriptCerradas()">Copy script</button> <span id="cd-script-cerradas-state" class="small"></span></p><textarea id="changedetection-script-cerradas" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
 <script>
 let doneSince = null;
@@ -4343,6 +4427,87 @@ async function loadWebhookAccess() {{
       `Full access note (incl. WAHA login/API key): ${{w.access_note}}`;
   }} catch (err) {{ node.textContent = 'Webhook access unavailable: ' + err; }}
 }}
+async function loadCerradasWebhookAccess() {{
+  const node = document.getElementById('cerradas-webhook-access');
+  if (!node) return;
+  try {{
+    const w = await (await fetch('/api/cerradas-webhook-access', {{cache: 'no-store'}})).json();
+    node.textContent =
+      `Webhook token: ${{w.token_exists ? w.token : '(not generated yet — see the note above)'}}\n` +
+      `Token file:    ${{w.token_file}}\n\n` +
+      `changedetection notification URL (Docker → host, recommended):\n  ${{w.changedetection_url}}\n` +
+      `Compose-only URL (use only if changedetection can resolve host 'webhook'):\n  ${{w.compose_url}}\n` +
+      `Docker container → host listener URL (plain HTTP test):\n  ${{w.docker_to_host_url}}\n` +
+      `Local test from this machine:\n  ${{w.local_url}}\n\n` +
+      `Generated by: ${{w.generated_by}}`;
+  }} catch (err) {{ node.textContent = 'Cerradas webhook access unavailable: ' + err; }}
+}}
+async function loadChangedetectionScriptCerradas() {{
+  const box = document.getElementById('changedetection-script-cerradas');
+  const state = document.getElementById('cd-script-cerradas-state');
+  if (!box || (box.value && box.dataset.loaded === '1')) return;
+  try {{
+    const data = await (await fetch('/api/changedetection-script-cerradas', {{cache: 'no-store'}})).text();
+    box.value = data;
+    box.dataset.loaded = '1';
+    if (state) state.textContent = 'Loaded from config/changedetection-browser-steps-cerradas.js';
+  }} catch (err) {{
+    if (state) state.textContent = 'Could not load script: ' + err;
+  }}
+}}
+async function copyChangedetectionScriptCerradas() {{
+  await loadChangedetectionScriptCerradas();
+  const box = document.getElementById('changedetection-script-cerradas');
+  const state = document.getElementById('cd-script-cerradas-state');
+  if (!box) return;
+  box.select();
+  try {{
+    await navigator.clipboard.writeText(box.value);
+    if (state) state.textContent = 'Copied script to clipboard.';
+  }} catch (err) {{
+    document.execCommand('copy');
+    if (state) state.textContent = 'Selected script; press Ctrl+C if it did not copy automatically.';
+  }}
+}}
+function fmtRelativeTimestamp(iso) {{
+  if (!iso) return 'never';
+  try {{
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.round(mins / 60) + 'h ago';
+    return Math.round(mins / 1440) + 'd ago';
+  }} catch (err) {{ return iso; }}
+}}
+async function loadCerradasStatus() {{
+  const pills = document.getElementById('cerradas-process-pills');
+  const node = document.getElementById('cerradas-status');
+  if (!node) return;
+  try {{
+    const [s, p] = await Promise.all([
+      (await fetch('/api/cerradas-status', {{cache: 'no-store'}})).json(),
+      (await fetch('/api/status', {{cache: 'no-store'}})).json(),
+    ]);
+    if (pills) {{
+      const procs = (p && p.processes) || {{}};
+      const chip = (ok, label) => `<span style="color:${{ok ? '#247A47' : 'var(--concrete-500, #888)'}};font-weight:${{ok ? 700 : 400}}">${{label}}: ${{ok ? 'RUNNING' : 'idle'}}</span>`;
+      pills.innerHTML = chip(procs.cerradas_new, 'New-closures (priority 2)') + ' &nbsp;·&nbsp; ' + chip(procs.cerradas_backfill, 'Backfill (priority 3)');
+    }}
+    const byStatus = s.cotizacion_by_status || {{}};
+    const statusLine = Object.keys(byStatus).length
+      ? Object.entries(byStatus).map(([k, v]) => `${{k}}=${{v}}`).join('  ')
+      : '(none yet)';
+    node.textContent =
+      `Cerradas records in DB: ${{s.total}}\n` +
+      `Cotización bid rows:    ${{s.bids_total}}\n` +
+      `Cotización status:      ${{statusLine}}\n\n` +
+      `New-closures last run:  ${{fmtRelativeTimestamp(s.last_forward_run_at)}}${{s.last_forward_run_at ? ' (' + s.last_forward_run_at + ')' : ''}}\n` +
+      `Backfill last run:      ${{fmtRelativeTimestamp(s.last_backfill_run_at)}}${{s.last_backfill_run_at ? ' (' + s.last_backfill_run_at + ')' : ''}}\n` +
+      `Backfill cursor:        page ${{s.backfill_page}}${{s.backfill_complete ? ` — reached its ${{s.backfill_days_target}}-day target, complete` : ' — still in progress'}}`;
+  }} catch (err) {{ node.textContent = 'Cerradas status unavailable: ' + err; }}
+}}
 async function refreshDecisionDashboard() {{
   const s = await (await fetch('/api/db-stats?' + kpiFilterParams(), {{cache: 'no-store'}})).json();
   const stamp = document.getElementById('kpi-live-stamp');
@@ -4611,6 +4776,9 @@ loadWahaFilters();
 refreshDbReview();
 refreshDecisionDashboard();
 loadWebhookAccess();
+loadCerradasWebhookAccess();
+loadCerradasStatus();
+setInterval(loadCerradasStatus, 20000);
 refreshWebTimer();
 poll();
 {_LOC_TOOLTIP_JS}
@@ -5227,6 +5395,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(404, f"changedetection script not found: {exc}\n", "text/plain; charset=utf-8")
                 return
             self.send_text(200, script_text, "text/javascript; charset=utf-8")
+            return
+        if path == "/api/cerradas-webhook-access":
+            self.send_text(200, json.dumps(cerradas_webhook_access_payload(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/changedetection-script-cerradas":
+            try:
+                script_text = CHANGEDETECTION_BROWSER_STEPS_CERRADAS_JS.read_text(encoding="utf-8")
+            except OSError as exc:
+                self.send_text(404, f"Cerradas changedetection script not found: {exc}\n", "text/plain; charset=utf-8")
+                return
+            self.send_text(200, script_text, "text/javascript; charset=utf-8")
+            return
+        if path == "/api/cerradas-status":
+            self.send_text(200, json.dumps(cerradas_status_payload(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/waha-session-status":
             self.send_text(200, json.dumps(monitor_connectivity_status(), ensure_ascii=False), "application/json; charset=utf-8")
