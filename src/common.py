@@ -1386,7 +1386,7 @@ def update_cerradas_crawl_state(conn, **fields) -> None:
     conn.commit()
 
 
-def _parse_money(value) -> float | None:
+def parse_money(value) -> float | None:
     """'B/. 1,021.25' / '---' / '' -> 1021.25 / None / None."""
     if value is None:
         return None
