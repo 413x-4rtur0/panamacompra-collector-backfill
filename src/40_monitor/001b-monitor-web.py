@@ -3002,7 +3002,7 @@ function render(data) {{
   }}).join('');
   document.getElementById('diagnostics').innerHTML = rows;
   document.getElementById('processes').innerHTML = Object.entries(data.processes || {{}}).map(([name, value]) =>
-    `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(name)}}: ${{value ? 'RUNNING' : 'off'}}</span>`
+    `<span class="pill ${{value ? 'on' : 'off'}}">${{esc(t(PROCESS_PILL_LABELS[name] || name))}}: ${{esc(value ? t('RUNNING') : t('off'))}}</span>`
   ).join('');
   updateRunControls(data);
   renderQueue(data);
@@ -4092,9 +4092,23 @@ const STATIC_TRANSLATIONS = {{
     'Loading...': 'Cargando...', 'Loading…': 'Cargando…', 'LIVE': 'EN VIVO', '— search first —': '— busca primero —',
     's while running · JSON:': 's mientras se ejecuta · JSON:', '· Low-power polling every': '· Sondeo de bajo consumo cada', '· Next run in': '· Próxima ejecución en',
     '⏸ Dev Pause': '⏸ Pausa de desarrollo', '▶ Dev Resume': '▶ Reanudar desarrollo', '▶ Start All': '▶ Iniciar todo', '⛔ Stop All': '⛔ Detener todo',
+    'RUNNING': 'EJECUTANDO', 'off': 'apagado', 'idle': 'inactivo',
+    'Normal run': 'Ejecución normal', 'Test run': 'Ejecución de prueba', 'Worker': 'Worker', 'Index': 'Índice', 'Detail': 'Detalle', 'Calendar': 'Calendario', 'Messaging': 'Mensajería', 'Webhook': 'Webhook', 'Request': 'Solicitud', 'Cerradas: new closures': 'Cerradas: nuevos cierres', 'Cerradas: backfill': 'Cerradas: relleno histórico',
+    'New-closures (priority 2)': 'Nuevos cierres (prioridad 2)', 'Backfill (priority 3)': 'Relleno histórico (prioridad 3)',
   }}
 }};
 let currentUiLanguage = 'en';
+// Small dynamic-content translator: STATIC_TRANSLATIONS + the MutationObserver
+// below cover text already sitting in the DOM, but content built at render
+// time (process pills, status chips) needs the lookup applied before the
+// string is assembled, not after — same dictionary, used directly instead of
+// via the passive textNode walk.
+function t(text) {{ return (STATIC_TRANSLATIONS[currentUiLanguage] || {{}})[text] || text; }}
+const PROCESS_PILL_LABELS = {{
+  normal_run: 'Normal run', test_run: 'Test run', worker: 'Worker', index: 'Index',
+  detail: 'Detail', calendar: 'Calendar', messaging: 'Messaging', webhook: 'Webhook',
+  request: 'Request', cerradas_new: 'Cerradas: new closures', cerradas_backfill: 'Cerradas: backfill',
+}};
 let translatingStaticUi = false;
 const translationOriginals = new WeakMap();
 const attributeOriginals = new WeakMap();
@@ -4508,7 +4522,7 @@ async function loadCerradasStatus() {{
     ]);
     if (pills) {{
       const procs = (p && p.processes) || {{}};
-      const chip = (ok, label) => `<span style="color:${{ok ? '#247A47' : 'var(--concrete-500, #888)'}};font-weight:${{ok ? 700 : 400}}">${{label}}: ${{ok ? 'RUNNING' : 'idle'}}</span>`;
+      const chip = (ok, label) => `<span style="color:${{ok ? '#247A47' : 'var(--concrete-500, #888)'}};font-weight:${{ok ? 700 : 400}}">${{esc(t(label))}}: ${{esc(ok ? t('RUNNING') : t('idle'))}}</span>`;
       pills.innerHTML = chip(procs.cerradas_new, 'New-closures (priority 2)') + ' &nbsp;·&nbsp; ' + chip(procs.cerradas_backfill, 'Backfill (priority 3)');
     }}
     const byStatus = s.cotizacion_by_status || {{}};
