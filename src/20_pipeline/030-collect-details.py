@@ -369,10 +369,22 @@ def detail_pending_rows(conn, limit, max_attempts):
     # attempts are processed first. Also include rows marked saved in SQLite but
     # missing the current archive files/views on disk, which can happen after
     # migrating older records or when an earlier run only wrote the index JSON.
+    #
+    # Cerradas-only rows (grupo = 'Cerradas', discovered by the separate
+    # 037-collect-cerradas-index.py background crawl, never by this pipeline's
+    # own Abiertas/Programadas index step) are excluded here on purpose: a
+    # closed opportunity newly found by that low-resource background job gets
+    # ONLY its cuadro de cotizaciones (038-collect-cotizaciones.py), not the
+    # full solicitud-de-cotizacion detail scrape this queue does for
+    # everything else — pulling potentially thousands of historical Cerradas
+    # rows through the heavy detail pipeline would defeat the point of that
+    # feature being deliberately low-resource. A record that was ALREADY
+    # detail-saved while it was still Abierta/Programada keeps that data
+    # regardless of what grupo it's since been updated to.
     candidates = conn.execute("""
     SELECT *
     FROM opportunities
-    WHERE detail_attempts < ?
+    WHERE detail_attempts < ? AND COALESCE(grupo, '') != 'Cerradas'
     ORDER BY
       CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END,
       detail_attempts ASC,
