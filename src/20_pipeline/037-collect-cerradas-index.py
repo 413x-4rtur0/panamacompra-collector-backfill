@@ -15,6 +15,13 @@ Two modes (PC_CERRADAS_MODE):
            density varies. Staff can reset the cursor from the monitor, or
            raise PC_CERRADAS_BACKFILL_DAYS to go deeper.
 
+           Alternatively, PC_CERRADAS_BACKFILL_START_DATE/END_DATE (YYYY-MM-DD)
+           target a specific date range instead of the day count: START_DATE
+           replaces the cutoff outright (crawl stops once it reaches that
+           date), END_DATE makes the crawl skip-without-inserting any row
+           newer than it until paging naturally reaches the range. Reset the
+           cursor from the monitor before starting a new range.
+
 Only writes to `opportunities` (grupo='Cerradas', detail_status='pending' —
 kept out of 030-collect-details.py's queue by that script's own grupo check,
 see its detail_pending_rows()). The separate 038-collect-cotizaciones.py
@@ -60,6 +67,27 @@ def backfill_target_days() -> int:
 
 def backfill_cutoff_date():
     return (datetime.now() - timedelta(days=backfill_target_days())).date()
+
+
+def backfill_range_bound(env_name: str):
+    """A staff-supplied YYYY-MM-DD bound (start or end) for a targeted date-
+    range backfill, or None when unset/unparseable — falls back to the
+    day-count cutoff (backfill_cutoff_date) rather than erroring."""
+    raw = str(os.environ.get(env_name, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def backfill_start_date():
+    return backfill_range_bound("PC_CERRADAS_BACKFILL_START_DATE")
+
+
+def backfill_end_date():
+    return backfill_range_bound("PC_CERRADAS_BACKFILL_END_DATE")
 
 
 def parse_dmy_date(text):
@@ -297,16 +325,25 @@ def main():
     run_started = now_iso()
 
     cutoff_date = None
+    range_end_date = None
     if mode == "backfill":
         state = get_cerradas_crawl_state(conn)
         if state["backfill_complete"]:
-            print("Backfill already reached the last Cerradas page (or its 1-year "
-                  "target date); nothing to do. Reset the cursor from the monitor "
-                  "to re-run it, or raise PC_CERRADAS_BACKFILL_DAYS to go deeper.")
+            print("Backfill already reached the last Cerradas page (or its target "
+                  "date); nothing to do. Reset the cursor from the monitor to "
+                  "re-run it, raise PC_CERRADAS_BACKFILL_DAYS to go deeper, or set "
+                  "PC_CERRADAS_BACKFILL_START_DATE/END_DATE for a fresh date range.")
             return
         start_page = max(1, int(state["backfill_page"]))
         page_cap = backfill_page_cap()
-        cutoff_date = backfill_cutoff_date()
+        range_start_date = backfill_start_date()
+        range_end_date = backfill_end_date()
+        # A staff-supplied start date replaces the day-count cutoff outright —
+        # the two are alternative ways to say "how far back to go", not
+        # additive. The listing sorts newest-closed-first, so an end date
+        # just means "skip rows newer than this" until paging naturally
+        # reaches it; it does not change where the crawl stops.
+        cutoff_date = range_start_date or backfill_cutoff_date()
     else:
         start_page = 1
         page_cap = forward_page_cap()
@@ -376,6 +413,14 @@ def main():
                     if numero in seen:
                         continue
                     seen.add(numero)
+
+                    if range_end_date is not None:
+                        row_date = parse_dmy_date(r["fecha"])
+                        if row_date and row_date > range_end_date:
+                            # Newer than the requested range — keep paging
+                            # past it without inserting; the crawl only stops
+                            # once it reaches the start-date cutoff above.
+                            continue
 
                     existing = find_existing_opportunity(conn, numero)
                     existing_on_disk = False
@@ -477,6 +522,10 @@ def main():
         f"CERRADAS INDEX RUN finished: {now_iso()}",
         f"Start page: {start_page}  Page cap this run: {page_cap}",
         f"Stop reason: {stop_reason or '(page cap reached)'}",
+    ] + ([
+        f"Date range: start={cutoff_date.isoformat() if cutoff_date else '(365-day default)'}"
+        f" end={range_end_date.isoformat() if range_end_date else '(none, forward from most-recent)'}",
+    ] if mode == "backfill" else []) + [
         "",
         f"Rows extracted total from site: {extracted_total}",
         f"Unique NUMERO values in this run: {len(seen)}",
