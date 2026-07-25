@@ -3448,6 +3448,7 @@ async function loadCalendar(shift) {{
     // text panes are now HTML tables built from the calendar-grid JSON by
     // renderCalendarTextTable() / renderCalendarListTable() below.
     renderCalendarVisual();
+    syncCalendarHash();
   }} catch (err) {{ document.getElementById('calendar-text').textContent = 'Calendar unavailable: ' + err; }}
 }}
 function saveTemplatesSelection() {{
@@ -3528,6 +3529,46 @@ async function applyTabAccess() {{
   const userBox = document.getElementById('progress-toggle');
   if (info.user && userBox) userBox.insertAdjacentHTML('beforebegin', `<span class="small" style="color:var(--concrete-300)">${{esc(info.user)}}</span>`);
 }}
+// Calendar view/date/filters/pane are reflected into the URL hash so browser
+// Back/Forward (and reload/shared links) restore the same calendar state
+// instead of always resetting to the default anchor and view.
+let calendarRestoring = false;
+function calendarHashParams() {{
+  const view = (document.getElementById('cal-view') || {{}}).value || 'month';
+  const field = (document.getElementById('cal-field') || {{}}).value || 'end';
+  const date = ((document.getElementById('cal-date') || {{}}).value || calendarAnchor || '').trim();
+  const filter = ((document.getElementById('cal-filter') || {{}}).value || '').trim();
+  const locationFilter = ((document.getElementById('cal-location') || {{}}).value || '').trim();
+  const paneBtn = document.querySelector('[data-calpane].active');
+  const pane = paneBtn ? paneBtn.dataset.calpane : 'visual';
+  const params = new URLSearchParams();
+  params.set('view', view);
+  if (field && field !== 'end') params.set('field', field);
+  if (date) params.set('date', date);
+  if (filter) params.set('filter', filter);
+  if (locationFilter) params.set('location', locationFilter);
+  if (pane && pane !== 'visual') params.set('pane', pane);
+  return params;
+}}
+function syncCalendarHash() {{
+  if (calendarRestoring) return;
+  const hash = '#calendar?' + calendarHashParams().toString();
+  if (location.hash !== hash) history.pushState({{tab: 'calendar'}}, '', hash);
+}}
+function restoreCalendarParamsFromHash(query) {{
+  const params = new URLSearchParams(query);
+  const viewEl = document.getElementById('cal-view');
+  const fieldEl = document.getElementById('cal-field');
+  const dateEl = document.getElementById('cal-date');
+  const filterEl = document.getElementById('cal-filter');
+  const locationEl = document.getElementById('cal-location');
+  if (viewEl) viewEl.value = params.get('view') || 'month';
+  if (fieldEl) fieldEl.value = params.get('field') || 'end';
+  if (dateEl) dateEl.value = params.get('date') || '';
+  if (filterEl) filterEl.value = params.get('filter') || '';
+  if (locationEl) locationEl.value = params.get('location') || '';
+  return params.get('pane') || 'visual';
+}}
 // Calendar sub-tabs: the visual calendar, the ASCII text summary and the
 // day-by-day opportunities list are three views of the same range — shown
 // one at a time instead of stacked.
@@ -3537,6 +3578,7 @@ function showCalPane(name) {{
     if (el) el.hidden = pane !== name;
   }});
   document.querySelectorAll('[data-calpane]').forEach(btn => btn.classList.toggle('active', btn.dataset.calpane === name));
+  syncCalendarHash();
 }}
 async function adminSignOut() {{
   try {{ await fetch('/api/session-logout', {{method: 'POST'}}); }} catch (err) {{ /* cookie clear is best-effort */ }}
@@ -4300,7 +4342,7 @@ function showTab(tab, opts) {{
   if (staffAllowedTabs && !staffAllowedTabs.has(tab)) return;
   document.querySelectorAll('[data-tab-button]').forEach(btn => btn.classList.toggle('active', btn.dataset.tabButton === tab));
   document.querySelectorAll('.card[data-tab]').forEach(card => card.classList.toggle('tab-active', card.dataset.tab === tab));
-  if (!opts.skipHistory) {{
+  if (!opts.skipHistory && tab !== 'calendar') {{
     const hash = '#' + tab;
     if (location.hash !== hash) history.pushState({{tab: tab}}, '', hash);
   }}
@@ -4312,8 +4354,19 @@ function showTab(tab, opts) {{
   if (tab === 'system') refreshSystemStatus();
 }}
 window.addEventListener('popstate', (e) => {{
-  const tab = (e.state && e.state.tab) || (location.hash ? location.hash.slice(1) : 'overview');
-  if (document.querySelector(`[data-tab-button="${{tab}}"]`)) showTab(tab, {{skipHistory: true}});
+  const rawHash = location.hash ? location.hash.slice(1) : '';
+  const qIndex = rawHash.indexOf('?');
+  const tab = (e.state && e.state.tab) || (qIndex >= 0 ? rawHash.slice(0, qIndex) : (rawHash || 'overview'));
+  if (!document.querySelector(`[data-tab-button="${{tab}}"]`)) return;
+  if (tab === 'calendar' && qIndex >= 0) {{
+    calendarRestoring = true;
+    const pane = restoreCalendarParamsFromHash(rawHash.slice(qIndex + 1));
+    showTab(tab, {{skipHistory: true}});
+    showCalPane(pane);
+    calendarRestoring = false;
+  }} else {{
+    showTab(tab, {{skipHistory: true}});
+  }}
 }});
 
 async function refreshOverview() {{
@@ -4755,10 +4808,20 @@ try {{ initialUiTheme = localStorage.getItem('panamacompra-ui-theme') || 'light'
 setUiTheme(initialUiTheme);
 setUiLanguage(initialUiLanguage);
 const validInitialTabs = Array.from(document.querySelectorAll('[data-tab-button]')).map(btn => btn.dataset.tabButton);
-const hashTab = location.hash ? location.hash.slice(1) : '';
+const rawInitialHash = location.hash ? location.hash.slice(1) : '';
+const initialQIndex = rawInitialHash.indexOf('?');
+const hashTab = initialQIndex >= 0 ? rawInitialHash.slice(0, initialQIndex) : rawInitialHash;
 const initialTab = validInitialTabs.includes(hashTab) ? hashTab : 'overview';
-history.replaceState({{tab: initialTab}}, '', '#' + initialTab);
-showTab(initialTab, {{skipHistory: true}});
+history.replaceState({{tab: initialTab}}, '', initialTab === hashTab ? location.hash : ('#' + initialTab));
+if (initialTab === 'calendar' && initialQIndex >= 0) {{
+  calendarRestoring = true;
+  const initialPane = restoreCalendarParamsFromHash(rawInitialHash.slice(initialQIndex + 1));
+  showTab(initialTab, {{skipHistory: true}});
+  showCalPane(initialPane);
+  calendarRestoring = false;
+}} else {{
+  showTab(initialTab, {{skipHistory: true}});
+}}
 setInterval(() => {{
   if (document.querySelector('.card[data-tab="system"].tab-active')) refreshSystemStatus();
 }}, 10000);
