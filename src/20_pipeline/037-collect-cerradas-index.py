@@ -8,8 +8,12 @@ Two modes (PC_CERRADAS_MODE):
   forward  (default) — page 1 onward, catches newly-closed opportunities.
            Run daily; cheap because new closures are always near the front.
   backfill — resumes from the single-row cerradas_crawl_state cursor,
-           working backward through the historical archive a few pages at a
-           time across many runs. Staff can reset the cursor from the monitor.
+           working backward through the historical archive a bounded chunk of
+           pages at a time (PC_CERRADAS_BACKFILL_PAGES), stopping and marking
+           itself complete as soon as it reaches PC_CERRADAS_BACKFILL_DAYS
+           (default 365) of history — not a fixed page count, since page
+           density varies. Staff can reset the cursor from the monitor, or
+           raise PC_CERRADAS_BACKFILL_DAYS to go deeper.
 
 Only writes to `opportunities` (grupo='Cerradas', detail_status='pending' —
 kept out of 030-collect-details.py's queue by that script's own grupo check,
@@ -17,8 +21,10 @@ see its detail_pending_rows()). The separate 038-collect-cotizaciones.py
 picks up the actual price/provider data from there.
 """
 import os
+import re
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -40,7 +46,34 @@ def forward_page_cap() -> int:
 
 
 def backfill_page_cap() -> int:
-    return env_int("PC_CERRADAS_BACKFILL_PAGES", "5", minimum=1)
+    # Raised from the original 5: the backfill loop now stops itself as soon
+    # as it reaches backfill_target_days() of history (see
+    # backfill_cutoff_date()), so a higher per-run ceiling just lets a
+    # scheduled run make real progress toward that date instead of needing
+    # dozens of runs to get there a handful of pages at a time.
+    return env_int("PC_CERRADAS_BACKFILL_PAGES", "40", minimum=1)
+
+
+def backfill_target_days() -> int:
+    return env_int("PC_CERRADAS_BACKFILL_DAYS", "365", minimum=1)
+
+
+def backfill_cutoff_date():
+    return (datetime.now() - timedelta(days=backfill_target_days())).date()
+
+
+def parse_dmy_date(text):
+    """Parse the Cerradas listing's own FECHA cell ('DD/MM/YYYY', optionally
+    with a trailing time) into a date, or None if it doesn't match — same
+    date format every other PanamaCompra field in this codebase uses."""
+    m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", (text or "").strip())
+    if not m:
+        return None
+    day, month, year = (int(g) for g in m.groups())
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
 
 
 def close_popup(page):
@@ -263,14 +296,17 @@ def main():
     mode = cerradas_mode()
     run_started = now_iso()
 
+    cutoff_date = None
     if mode == "backfill":
         state = get_cerradas_crawl_state(conn)
         if state["backfill_complete"]:
-            print("Backfill already reached the last Cerradas page; nothing to do. "
-                  "Reset the cursor from the monitor to re-run it.")
+            print("Backfill already reached the last Cerradas page (or its 1-year "
+                  "target date); nothing to do. Reset the cursor from the monitor "
+                  "to re-run it, or raise PC_CERRADAS_BACKFILL_DAYS to go deeper.")
             return
         start_page = max(1, int(state["backfill_page"]))
         page_cap = backfill_page_cap()
+        cutoff_date = backfill_cutoff_date()
     else:
         start_page = 1
         page_cap = forward_page_cap()
@@ -284,6 +320,7 @@ def main():
     page_counts = []
     stop_reason = ""
     reached_last_page = False
+    reached_cutoff_date = False
 
     with sync_playwright() as p:
         browser = p.firefox.launch(
@@ -324,6 +361,15 @@ def main():
                 extracted_total += len(rows)
                 page_counts.append((page_number, len(rows)))
                 pages_crawled_this_run += 1
+
+                if cutoff_date is not None:
+                    page_dates = [d for d in (parse_dmy_date(r["fecha"]) for r in rows) if d]
+                    # The listing sorts newest-closed-first, so once every
+                    # parseable date on a page is already past the cutoff we
+                    # have gone back far enough — no need to keep paging
+                    # through the (much larger) remainder of the archive.
+                    if page_dates and max(page_dates) < cutoff_date:
+                        reached_cutoff_date = True
 
                 for r in rows:
                     numero = r["numero"]
@@ -395,6 +441,10 @@ def main():
 
                 print(f"Cerradas page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
 
+                if reached_cutoff_date:
+                    stop_reason = f"reached backfill target date ({cutoff_date.isoformat()})"
+                    break
+
                 moved, reason = click_next(page)
                 if not moved:
                     stop_reason = reason
@@ -409,6 +459,9 @@ def main():
         if reached_last_page:
             update_kwargs["backfill_complete"] = 1
             print("Backfill reached the last Cerradas page — marking complete.")
+        elif reached_cutoff_date:
+            update_kwargs["backfill_complete"] = 1
+            print(f"Backfill reached its {backfill_target_days()}-day target date — marking complete.")
         else:
             update_kwargs["backfill_page"] = page_number
         update_cerradas_crawl_state(conn, **update_kwargs)
