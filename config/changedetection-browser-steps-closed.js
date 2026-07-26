@@ -3,22 +3,22 @@
     // Own output element/title so this watch's snapshot is a distinct diff
     // target from the Abiertas/Programadas watch (changedetection-browser-
     // steps.js) — the two run as separate changedetection.io watches with
-    // separate webhook notification URLs (see 070-run-collector-cerradas-new.sh
-    // / src/10_webhook/010-webhook-listener.py's "panamacompra-cerradas"
+    // separate webhook notification URLs (see 070-run-collector-closed-new.sh
+    // / src/10_webhook/010-webhook-listener.py's "panamacompra-closed"
     // route), so a change here can never trigger the other pipeline.
-    outputSelector: "#pc-monitor-output-cerradas",
+    outputSelector: "#pc-monitor-output-closed",
 
-    monitorTitle: "PANAMACOMPRA_MONITOR_CERRADAS",
+    monitorTitle: "PANAMACOMPRA_MONITOR_CLOSED",
     urlLabel: "cotizaciones-en-linea",
 
     rowsPerPage: "50",
     // Small on purpose: this watch only needs to notice that NEW closures
     // appeared (they always show up near the front, same assumption
-    // forward_page_cap() makes in 037-collect-cerradas-index.py) — it is not
-    // the data source for Cerradas the way the Abiertas/Programadas watch is
+    // forward_page_cap() makes in 037-collect-closed-index.py) — it is not
+    // the data source for Closed the way the Abiertas/Programadas watch is
     // for those groups. The full historical archive is crawled separately
-    // and incrementally by 039-run-cerradas-backfill.sh, not by this watch.
-    maxPagesSafety: 6,
+    // and incrementally by 039-run-closed-backfill.sh, not by this watch.
+    maxPagesSafety: 5,
     switchAttempts: 3,
     retryBackoffMs: 4000,
 
@@ -30,11 +30,11 @@
 
     statuses: [
       {
-        group: "Cerradas",
+        group: "Closed",
         radioId: "btnradio3",
-        labelText: "Cerradas",
+        labelText: "Cerradas", // site's own Spanish tab label — do not translate
         expectedEstado: "Cerrada",
-        totalLabel: "Cerradas collected"
+        totalLabel: "Closed collected"
       }
     ],
 
@@ -526,7 +526,7 @@
 
     // Note: expectedRows.length < rowsPerPage is NOT treated as "bad page"
     // here — unlike the Abiertas/Programadas watch, this one deliberately
-    // stops at maxPagesSafety long before the real last page (Cerradas has
+    // stops at maxPagesSafety long before the real last page (Closed has
     // far more history than this watch needs to see), so a short-looking
     // page is expected, not a sign of dropped rows.
     for (let page = 1; page <= CONFIG.maxPagesSafety; page++) {

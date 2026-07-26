@@ -19,8 +19,8 @@ SETTINGS_FILE = pc_common.DATA_CONFIG_DIR / "monitor_settings.env"
 
 # Two independent routes, one per changedetection.io watch: the original
 # Abiertas/Programadas watch (priority 1, full pipeline) and a second watch
-# scoped to the Cerradas tab (priority 2, new-closures only — see
-# 070-run-collector-cerradas-new.sh). Different path, different token file,
+# scoped to the Closed tab (priority 2, new-closures only — see
+# 070-run-collector-closed-new.sh). Different path, different token file,
 # different runner script, so the two can be toggled/rotated independently
 # and neither trigger chain can affect the other.
 ROUTES = {
@@ -29,10 +29,10 @@ ROUTES = {
         "runner": str(Path(__file__).resolve().parent / "060-run-collector.sh"),
         "auto_run_setting": "PC_WEBHOOK_AUTO_RUN",
     },
-    "panamacompra-cerradas": {
-        "token_file": BASE / ".webhook_token_cerradas",
-        "runner": str(Path(__file__).resolve().parent / "070-run-collector-cerradas-new.sh"),
-        "auto_run_setting": "PC_CERRADAS_WEBHOOK_AUTO_RUN",
+    "panamacompra-closed": {
+        "token_file": BASE / ".webhook_token_closed",
+        "runner": str(Path(__file__).resolve().parent / "070-run-collector-closed-new.sh"),
+        "auto_run_setting": "PC_CLOSED_WEBHOOK_AUTO_RUN",
     },
 }
 
@@ -92,7 +92,7 @@ def load_required_token(token_path: Path) -> str:
 def load_optional_token(token_path: Path) -> str:
     """Same as load_required_token, but a missing/empty file just disables
     this route instead of taking down the whole listener — the primary
-    Abiertas/Programadas route must keep working even if the Cerradas watch
+    Abiertas/Programadas route must keep working even if the Closed watch
     was never set up (or its token was deleted)."""
     try:
         token = token_path.read_text().strip()
@@ -159,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                     REQUEST_FLAG.touch()
                     self.log_line(f"[{route_name}] Run request enqueued by webhook ({body_length} byte body) from {caller}; waiting for host runner")
                 else:
-                    # No enqueue-only path exists yet for the Cerradas route
+                    # No enqueue-only path exists yet for the Closed route
                     # (it only runs where this listener also has host access).
                     self.log_line(f"[{route_name}] Webhook trigger ignored ({body_length} byte body) from {caller}: enqueue-only mode is not supported for this route")
                 return
@@ -200,9 +200,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     TOKENS["panamacompra"] = load_required_token(ROUTES["panamacompra"]["token_file"])
-    TOKENS["panamacompra-cerradas"] = load_optional_token(ROUTES["panamacompra-cerradas"]["token_file"])
-    if not TOKENS["panamacompra-cerradas"]:
-        print("NOTE: no .webhook_token_cerradas found — the Cerradas new-closures "
+    TOKENS["panamacompra-closed"] = load_optional_token(ROUTES["panamacompra-closed"]["token_file"])
+    if not TOKENS["panamacompra-closed"]:
+        print("NOTE: no .webhook_token_closed found — the Closed new-closures "
               "webhook route is disabled until one is created.")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"PanamaCompra webhook listener running on {HOST}:{PORT}")

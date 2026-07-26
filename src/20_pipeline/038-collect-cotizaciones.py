@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Low-resource background collector for the 'cuadro de cotizaciones' price/
 provider comparison page a closed (Cerrada) opportunity links to — the actual
-value of the Cerradas feature: for each item bid on, who quoted what price,
+value of the Closed feature: for each item bid on, who quoted what price,
 so cotizacion_price_stats() (common.py) can report min/avg/max per item.
 
-Queue: opportunities where grupo='Cerradas' and cotizacion_status is not yet
+Queue: opportunities where grupo='Closed' and cotizacion_status is not yet
 a terminal state ('saved', 'no_bids', 'no_link'), capped by
-PC_CERRADAS_DETAIL_LIMIT per run (default small — this opens two pages per
+PC_CLOSED_DETAIL_LIMIT per run (default small — this opens two pages per
 record: the solicitud-de-cotizacion detail page, only when cuadro_link isn't
 already cached, then the cuadro page itself).
 
@@ -34,11 +34,11 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import *
 
-MAX_COTIZACION_ATTEMPTS = env_int("PC_CERRADAS_DETAIL_MAX_ATTEMPTS", "3", minimum=1)
+MAX_COTIZACION_ATTEMPTS = env_int("PC_CLOSED_DETAIL_MAX_ATTEMPTS", "3", minimum=1)
 
 
 def cotizacion_detail_limit() -> int:
-    return env_int("PC_CERRADAS_DETAIL_LIMIT", "10", minimum=1)
+    return env_int("PC_CLOSED_DETAIL_LIMIT", "10", minimum=1)
 
 
 def close_popup(page):
@@ -60,7 +60,7 @@ def close_popup(page):
 def cotizacion_pending_rows(conn, limit: int, max_attempts: int):
     rows = conn.execute("""
     SELECT * FROM opportunities
-    WHERE grupo = 'Cerradas'
+    WHERE grupo = 'Closed'
       AND COALESCE(cotizacion_status, '') NOT IN ('saved', 'no_bids', 'no_link')
       AND cotizacion_attempts < ?
     ORDER BY cotizacion_attempts ASC, first_seen ASC
@@ -177,7 +177,7 @@ def main():
     failed = 0
 
     if not rows:
-        print("No Cerradas records pending a cotizacion fetch.")
+        print("No Closed records pending a cotizacion fetch.")
         return
 
     with sync_playwright() as p:
@@ -283,12 +283,12 @@ def main():
         browser.close()
 
     summary = (
-        f"CERRADAS COTIZACION RUN started: {run_started}\n"
-        f"CERRADAS COTIZACION RUN finished: {now_iso()}\n"
+        f"CLOSED COTIZACION RUN started: {run_started}\n"
+        f"CLOSED COTIZACION RUN finished: {now_iso()}\n"
         f"Queue size this run: {len(rows)} (limit={limit})\n"
         f"Saved: {saved}  No bids: {no_bids}  No cuadro link: {no_link}  Failed: {failed}\n"
     )
-    log_path = LOG_DIR / f"cerradas_cotizacion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_path = LOG_DIR / f"closed_cotizacion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     log_path.write_text(summary, encoding="utf-8")
     print(summary)
 

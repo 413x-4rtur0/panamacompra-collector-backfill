@@ -2,34 +2,36 @@
 """Low-resource background index crawl for the PanamaCompra 'Cerradas'
 (closed) tab — deliberately separate from 010-collect-index.py (which only
 ever crawls Abiertas/Programadas) so the main every-~30-minute pipeline never
-has to pay for Cerradas' much larger page count.
+has to pay for the closed archive's much larger page count.
 
-Two modes (PC_CERRADAS_MODE):
+Two modes (PC_CLOSED_MODE):
   forward  (default) — page 1 onward, catches newly-closed opportunities.
            Same stop condition as backfill (paginate until every row on a
            page is older than the cutoff date), not a fixed page count — see
-           forward_target_days()/PC_CERRADAS_FORWARD_DAYS (default 7).
-           PC_CERRADAS_FORWARD_PAGES is only a runaway-safety ceiling now,
+           forward_target_days()/PC_CLOSED_FORWARD_DAYS (default 7).
+           PC_CLOSED_FORWARD_PAGES is only a runaway-safety ceiling now,
            raised well above what a normal run should ever need.
-  backfill — resumes from the single-row cerradas_crawl_state cursor,
+  backfill — resumes from the single-row closed_crawl_state cursor,
            working backward through the historical archive a bounded chunk of
-           pages at a time (PC_CERRADAS_BACKFILL_PAGES), stopping and marking
-           itself complete as soon as it reaches PC_CERRADAS_BACKFILL_DAYS
+           pages at a time (PC_CLOSED_BACKFILL_PAGES), stopping and marking
+           itself complete as soon as it reaches PC_CLOSED_BACKFILL_DAYS
            (default 365) of history — not a fixed page count, since page
            density varies. Staff can reset the cursor from the monitor, or
-           raise PC_CERRADAS_BACKFILL_DAYS to go deeper.
+           raise PC_CLOSED_BACKFILL_DAYS to go deeper.
 
-           Alternatively, PC_CERRADAS_BACKFILL_START_DATE/END_DATE (YYYY-MM-DD)
+           Alternatively, PC_CLOSED_BACKFILL_START_DATE/END_DATE (YYYY-MM-DD)
            target a specific date range instead of the day count: START_DATE
            replaces the cutoff outright (crawl stops once it reaches that
            date), END_DATE makes the crawl skip-without-inserting any row
            newer than it until paging naturally reaches the range. Reset the
            cursor from the monitor before starting a new range.
 
-Only writes to `opportunities` (grupo='Cerradas', detail_status='pending' —
-kept out of 030-collect-details.py's queue by that script's own grupo check,
-see its detail_pending_rows()). The separate 038-collect-cotizaciones.py
-picks up the actual price/provider data from there.
+Only writes to `opportunities` (grupo='Closed', detail_status='pending' —
+kept out of 030-collect-details.py's own-pipeline queue by that script's
+grupo check, see its detail_pending_rows(); picked up instead by
+037b-collect-closed-details.py on this feature's own low-resource schedule).
+The separate 038-collect-cotizaciones.py picks up the actual price/provider
+data from there.
 """
 import os
 import re
@@ -43,12 +45,15 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import *
 
-GROUP = {"name": "Cerradas", "radio_id": "btnradio3", "estado_prefix": "cerrad"}
+# estado_prefix stays "cerrad" on purpose — it matches the government site's
+# own Spanish ESTADO text ("Cerrada"/"Cerradas"), which never changes no
+# matter what this codebase calls the concept internally.
+GROUP = {"name": "Closed", "radio_id": "btnradio3", "estado_prefix": "cerrad"}
 GROUP_SWITCH_ATTEMPTS = env_int("PC_INDEX_GROUP_SWITCH_ATTEMPTS", "3", minimum=1)
 
 
-def cerradas_mode() -> str:
-    value = str(os.environ.get("PC_CERRADAS_MODE", "forward") or "forward").strip().lower()
+def closed_mode() -> str:
+    value = str(os.environ.get("PC_CLOSED_MODE", "forward") or "forward").strip().lower()
     return value if value in ("forward", "backfill") else "forward"
 
 
@@ -56,11 +61,11 @@ def forward_page_cap() -> int:
     # Safety ceiling only — forward_target_days()/reached_cutoff_date is the
     # real stop condition now (see main()), same relationship backfill has
     # between backfill_page_cap() and backfill_cutoff_date().
-    return env_int("PC_CERRADAS_FORWARD_PAGES", "20", minimum=1)
+    return env_int("PC_CLOSED_FORWARD_PAGES", "20", minimum=1)
 
 
 def forward_target_days() -> int:
-    return env_int("PC_CERRADAS_FORWARD_DAYS", "7", minimum=1)
+    return env_int("PC_CLOSED_FORWARD_DAYS", "7", minimum=1)
 
 
 def forward_cutoff_date():
@@ -73,11 +78,11 @@ def backfill_page_cap() -> int:
     # backfill_cutoff_date()), so a higher per-run ceiling just lets a
     # scheduled run make real progress toward that date instead of needing
     # dozens of runs to get there a handful of pages at a time.
-    return env_int("PC_CERRADAS_BACKFILL_PAGES", "40", minimum=1)
+    return env_int("PC_CLOSED_BACKFILL_PAGES", "40", minimum=1)
 
 
 def backfill_target_days() -> int:
-    return env_int("PC_CERRADAS_BACKFILL_DAYS", "365", minimum=1)
+    return env_int("PC_CLOSED_BACKFILL_DAYS", "365", minimum=1)
 
 
 def backfill_cutoff_date():
@@ -98,15 +103,15 @@ def backfill_range_bound(env_name: str):
 
 
 def backfill_start_date():
-    return backfill_range_bound("PC_CERRADAS_BACKFILL_START_DATE")
+    return backfill_range_bound("PC_CLOSED_BACKFILL_START_DATE")
 
 
 def backfill_end_date():
-    return backfill_range_bound("PC_CERRADAS_BACKFILL_END_DATE")
+    return backfill_range_bound("PC_CLOSED_BACKFILL_END_DATE")
 
 
 def parse_dmy_date(text):
-    """Parse the Cerradas listing's own FECHA cell ('DD/MM/YYYY', optionally
+    """Parse the Closed listing's own FECHA cell ('DD/MM/YYYY', optionally
     with a trailing time) into a date, or None if it doesn't match — same
     date format every other PanamaCompra field in this codebase uses."""
     m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", (text or "").strip())
@@ -148,7 +153,7 @@ def page_signature(page):
       const active = document.querySelector('ngb-pagination li.page-item.active a.page-link')?.innerText?.trim() || '';
       const first = document.querySelector('tabla-busqueda-avanzada-v3 tbody tr td a[href*="solicitud-de-cotizacion"], tabla-busqueda-avanzada-v3 tbody tr td a[href*="pliego-de-cargos"]')?.innerText?.trim() || '';
       const footer = document.querySelector('tabla-busqueda-avanzada-v3 .card')?.innerText?.trim() || '';
-      const checked = document.querySelector('#btnradio3')?.checked ? 'Cerradas' : 'Unknown';
+      const checked = document.querySelector('#btnradio3')?.checked ? 'Closed' : 'Unknown';
       return checked + '|' + active + '|' + first + '|' + footer;
     })();
     """)
@@ -165,7 +170,7 @@ def prepare_base_page(page):
 def group_is_active(page):
     """True once #btnradio3 is checked AND the table already shows at least
     one row whose ESTADO starts with 'cerrad', so we never scrape a stale
-    Abiertas/Programadas table under the Cerradas label."""
+    Abiertas/Programadas table under the Closed label."""
     return page.evaluate("""
     () => {
       const norm = t => (t || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
@@ -179,13 +184,13 @@ def group_is_active(page):
     """)
 
 
-def click_cerradas(page) -> bool:
-    """Switch to the Cerradas tab and confirm it landed. Same retry-then-
-    reload pattern as 010-collect-index.py's click_status() — the Angular
-    re-render regularly races a plain radio click."""
+def click_closed(page) -> bool:
+    """Switch to the Closed (Cerradas) tab and confirm it landed. Same
+    retry-then-reload pattern as 010-collect-index.py's click_status() — the
+    Angular re-render regularly races a plain radio click."""
     for attempt in range(1, GROUP_SWITCH_ATTEMPTS + 1):
         if attempt == GROUP_SWITCH_ATTEMPTS and attempt > 1:
-            print(f"Cerradas: reloading page for final switch attempt")
+            print(f"Closed: reloading page for final switch attempt")
             prepare_base_page(page)
         close_popup(page)
         page.evaluate("""
@@ -206,7 +211,7 @@ def click_cerradas(page) -> bool:
                 close_popup(page)
                 wait_for_table(page)
                 return True
-        print(f"Cerradas: switch attempt {attempt}/{GROUP_SWITCH_ATTEMPTS} failed (rows never showed 'cerrad*')")
+        print(f"Closed: switch attempt {attempt}/{GROUP_SWITCH_ATTEMPTS} failed (rows never showed 'cerrad*')")
     return False
 
 
@@ -336,18 +341,18 @@ def skip_to_page(page, target_page: int) -> tuple[int, str]:
 
 def main():
     conn = init_db()
-    mode = cerradas_mode()
+    mode = closed_mode()
     run_started = now_iso()
 
     cutoff_date = None
     range_end_date = None
     if mode == "backfill":
-        state = get_cerradas_crawl_state(conn)
+        state = get_closed_crawl_state(conn)
         if state["backfill_complete"]:
-            print("Backfill already reached the last Cerradas page (or its target "
+            print("Backfill already reached the last Closed page (or its target "
                   "date); nothing to do. Reset the cursor from the monitor to "
-                  "re-run it, raise PC_CERRADAS_BACKFILL_DAYS to go deeper, or set "
-                  "PC_CERRADAS_BACKFILL_START_DATE/END_DATE for a fresh date range.")
+                  "re-run it, raise PC_CLOSED_BACKFILL_DAYS to go deeper, or set "
+                  "PC_CLOSED_BACKFILL_START_DATE/END_DATE for a fresh date range.")
             return
         start_page = max(1, int(state["backfill_page"]))
         page_cap = backfill_page_cap()
@@ -383,8 +388,8 @@ def main():
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         prepare_base_page(page)
 
-        if not click_cerradas(page):
-            print(f"Cerradas: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
+        if not click_closed(page):
+            print(f"Closed: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
             browser.close()
             return
 
@@ -475,10 +480,12 @@ def main():
                         "date_folder": date_folder,
                         "record_folder": str(record_folder),
                         "index_json_path": str(index_json_path),
-                        # Deliberately NOT queued for the normal detail pipeline
-                        # (030-collect-details.py excludes grupo='Cerradas') —
-                        # a record already 'saved' from when it was still
-                        # Abierta/Programada keeps that status untouched here.
+                        # Full-detail archiving is picked up separately by
+                        # 037b-collect-closed-details.py on this feature's own
+                        # low-resource schedule (030-collect-details.py's own
+                        # queue excludes grupo='Closed') — a record already
+                        # 'saved' from when it was still Abierta/Programada
+                        # keeps that status untouched here.
                         "detail_status": (
                             existing["detail_status"] if existing
                             else "saved" if existing_on_disk and archive_complete(record_folder, numero)
@@ -500,7 +507,7 @@ def main():
                     else:
                         json_skipped += 1
 
-                print(f"Cerradas page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
+                print(f"Closed page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
 
                 if reached_cutoff_date:
                     stop_reason = f"reached {mode} target date ({cutoff_date.isoformat()})"
@@ -519,23 +526,23 @@ def main():
         update_kwargs = {"last_backfill_run_at": now_iso()}
         if reached_last_page:
             update_kwargs["backfill_complete"] = 1
-            print("Backfill reached the last Cerradas page — marking complete.")
+            print("Backfill reached the last Closed page — marking complete.")
         elif reached_cutoff_date:
             update_kwargs["backfill_complete"] = 1
             print(f"Backfill reached its {backfill_target_days()}-day target date — marking complete.")
         else:
             update_kwargs["backfill_page"] = page_number
-        update_cerradas_crawl_state(conn, **update_kwargs)
+        update_closed_crawl_state(conn, **update_kwargs)
     else:
-        update_cerradas_crawl_state(conn, last_forward_run_at=now_iso())
+        update_closed_crawl_state(conn, last_forward_run_at=now_iso())
 
-    db_cerradas_total = conn.execute(
-        "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = 'Cerradas'"
+    db_closed_total = conn.execute(
+        "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = 'Closed'"
     ).fetchone()["c"]
 
     summary_lines = [
-        f"CERRADAS INDEX RUN ({mode}) started: {run_started}",
-        f"CERRADAS INDEX RUN finished: {now_iso()}",
+        f"CLOSED INDEX RUN ({mode}) started: {run_started}",
+        f"CLOSED INDEX RUN finished: {now_iso()}",
         f"Start page: {start_page}  Page cap this run: {page_cap}",
         f"Stop reason: {stop_reason or '(page cap reached)'}",
     ] + ([
@@ -552,7 +559,7 @@ def main():
         f"Index JSON written: {json_written}",
         f"Index JSON skipped existing: {json_skipped}",
         "",
-        f"DB total Cerradas records: {db_cerradas_total}",
+        f"DB total Closed records: {db_closed_total}",
         "",
         "Page counts:",
     ]
@@ -560,7 +567,7 @@ def main():
         summary_lines.append(f"  page {page_num}: {qty} rows")
     summary = "\n".join(summary_lines) + "\n"
 
-    log_path = LOG_DIR / f"cerradas_index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_path = LOG_DIR / f"closed_index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     log_path.write_text(summary, encoding="utf-8")
     print(summary)
 

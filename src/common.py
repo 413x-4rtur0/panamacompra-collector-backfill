@@ -1205,7 +1205,7 @@ def ensure_db_schema(conn):
         "detail_sections_count": "ALTER TABLE opportunities ADD COLUMN detail_sections_count INTEGER DEFAULT 0",
         "tables_count": "ALTER TABLE opportunities ADD COLUMN tables_count INTEGER DEFAULT 0",
         "db_reviewed_at": "ALTER TABLE opportunities ADD COLUMN db_reviewed_at TEXT",
-        # Cerradas + cuadro de cotizacion background crawl (037/038-collect-*):
+        # Closed + cuadro de cotizacion background crawl (037/038-collect-*):
         # mirrors detail_status/detail_attempts/detail_saved_at/detail_json_path
         # exactly, but for the separate low-frequency background pipeline that
         # fetches the price-comparison table once a record closes. NULL means
@@ -1261,14 +1261,14 @@ def ensure_db_schema(conn):
     ON cotizacion_bids(item_descripcion)
     """)
 
-    # Single-row resumable cursor for the historical Cerradas backfill (037-
-    # collect-cerradas-index.py --mode backfill): which index page it last
-    # finished, so each low-resource background run can pick up a few more
-    # pages deeper into the archive instead of re-scanning from page 1 or
-    # needing to hold state anywhere but the one archive DB every other part
-    # of the pipeline already reads/writes.
+    # Single-row resumable cursor for the historical Closed-opportunities
+    # backfill (037-collect-closed-index.py --mode backfill): which index
+    # page it last finished, so each low-resource background run can pick up
+    # a few more pages deeper into the archive instead of re-scanning from
+    # page 1 or needing to hold state anywhere but the one archive DB every
+    # other part of the pipeline already reads/writes.
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS cerradas_crawl_state (
+    CREATE TABLE IF NOT EXISTS closed_crawl_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         backfill_page INTEGER NOT NULL DEFAULT 1,
         backfill_complete INTEGER NOT NULL DEFAULT 0,
@@ -1277,7 +1277,7 @@ def ensure_db_schema(conn):
     )
     """)
     conn.execute("""
-    INSERT OR IGNORE INTO cerradas_crawl_state (id, backfill_page, backfill_complete)
+    INSERT OR IGNORE INTO closed_crawl_state (id, backfill_page, backfill_complete)
     VALUES (1, 1, 0)
     """)
 
@@ -1364,25 +1364,25 @@ def init_db(db_path=None):
     return conn
 
 
-def get_cerradas_crawl_state(conn) -> dict:
+def get_closed_crawl_state(conn) -> dict:
     """The single-row resumable backfill cursor (see ensure_db_schema).
     Always returns a row — ensure_db_schema seeds id=1 on every DB open."""
-    row = conn.execute("SELECT * FROM cerradas_crawl_state WHERE id = 1").fetchone()
+    row = conn.execute("SELECT * FROM closed_crawl_state WHERE id = 1").fetchone()
     if row is None:
-        conn.execute("INSERT OR IGNORE INTO cerradas_crawl_state (id) VALUES (1)")
+        conn.execute("INSERT OR IGNORE INTO closed_crawl_state (id) VALUES (1)")
         conn.commit()
-        row = conn.execute("SELECT * FROM cerradas_crawl_state WHERE id = 1").fetchone()
+        row = conn.execute("SELECT * FROM closed_crawl_state WHERE id = 1").fetchone()
     return dict(row)
 
 
-def update_cerradas_crawl_state(conn, **fields) -> None:
+def update_closed_crawl_state(conn, **fields) -> None:
     """Partial update of the backfill cursor row. Keys must be real columns
     (backfill_page, backfill_complete, last_forward_run_at,
     last_backfill_run_at) — this is an internal helper, not user input."""
     if not fields:
         return
     set_clause = ", ".join(f"{key} = ?" for key in fields)
-    conn.execute(f"UPDATE cerradas_crawl_state SET {set_clause} WHERE id = 1", list(fields.values()))
+    conn.execute(f"UPDATE closed_crawl_state SET {set_clause} WHERE id = 1", list(fields.values()))
     conn.commit()
 
 
