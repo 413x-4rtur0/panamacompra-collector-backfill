@@ -1478,7 +1478,7 @@ def cotizacion_kpis(conn, limit: int = 10) -> dict:
     total_bids = conn.execute("SELECT COUNT(*) AS c FROM cotizacion_bids").fetchone()["c"]
     empty = {
         "total_bids": 0, "total_items": 0, "opportunities_with_prices": 0,
-        "total_best_value": 0.0, "total_avg_value": 0.0, "potential_savings": 0.0,
+        "total_best_value": 0.0, "total_avg_value": 0.0, "total_max_value": 0.0, "potential_savings": 0.0,
         "avg_price_spread_pct": 0.0, "top_items_by_value": [], "top_providers": [],
     }
     if not total_bids:
@@ -1491,7 +1491,7 @@ def cotizacion_kpis(conn, limit: int = 10) -> dict:
     per_item = conn.execute("""
         SELECT numero, item_index,
                MIN(precio_unitario) AS min_price, AVG(precio_unitario) AS avg_price,
-               MIN(monto_neto) AS min_value, AVG(monto_neto) AS avg_value
+               MIN(monto_neto) AS min_value, AVG(monto_neto) AS avg_value, MAX(monto_neto) AS max_value
         FROM cotizacion_bids
         WHERE precio_unitario IS NOT NULL AND precio_unitario > 0
         GROUP BY numero, item_index
@@ -1500,6 +1500,7 @@ def cotizacion_kpis(conn, limit: int = 10) -> dict:
     avg_price_spread_pct = sum(spreads) / len(spreads) if spreads else 0.0
     total_best_value = sum((r["min_value"] or 0) for r in per_item)
     total_avg_value = sum((r["avg_value"] or 0) for r in per_item)
+    total_max_value = sum((r["max_value"] or 0) for r in per_item)
 
     top_items = conn.execute("""
         SELECT numero, item_index, item_descripcion, MAX(monto_neto) AS max_value, COUNT(*) AS bidder_count
@@ -1523,6 +1524,7 @@ def cotizacion_kpis(conn, limit: int = 10) -> dict:
         "opportunities_with_prices": opportunities_with_prices,
         "total_best_value": round(total_best_value, 2),
         "total_avg_value": round(total_avg_value, 2),
+        "total_max_value": round(total_max_value, 2),
         "potential_savings": round(total_avg_value - total_best_value, 2),
         "avg_price_spread_pct": round(avg_price_spread_pct, 1),
         "top_items_by_value": [dict(r) for r in top_items],
