@@ -47,6 +47,8 @@ node_modules/
 *.tar.gz
 
 # Local run outputs / editor backups
+/var/backups/
+/var/calendar/
 nohup.out
 *.save
 *.bak
