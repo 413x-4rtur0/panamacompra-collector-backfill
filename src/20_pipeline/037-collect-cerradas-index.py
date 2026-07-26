@@ -6,7 +6,11 @@ has to pay for Cerradas' much larger page count.
 
 Two modes (PC_CERRADAS_MODE):
   forward  (default) — page 1 onward, catches newly-closed opportunities.
-           Run daily; cheap because new closures are always near the front.
+           Same stop condition as backfill (paginate until every row on a
+           page is older than the cutoff date), not a fixed page count — see
+           forward_target_days()/PC_CERRADAS_FORWARD_DAYS (default 7).
+           PC_CERRADAS_FORWARD_PAGES is only a runaway-safety ceiling now,
+           raised well above what a normal run should ever need.
   backfill — resumes from the single-row cerradas_crawl_state cursor,
            working backward through the historical archive a bounded chunk of
            pages at a time (PC_CERRADAS_BACKFILL_PAGES), stopping and marking
@@ -49,7 +53,18 @@ def cerradas_mode() -> str:
 
 
 def forward_page_cap() -> int:
-    return env_int("PC_CERRADAS_FORWARD_PAGES", "3", minimum=1)
+    # Safety ceiling only — forward_target_days()/reached_cutoff_date is the
+    # real stop condition now (see main()), same relationship backfill has
+    # between backfill_page_cap() and backfill_cutoff_date().
+    return env_int("PC_CERRADAS_FORWARD_PAGES", "20", minimum=1)
+
+
+def forward_target_days() -> int:
+    return env_int("PC_CERRADAS_FORWARD_DAYS", "7", minimum=1)
+
+
+def forward_cutoff_date():
+    return (datetime.now() - timedelta(days=forward_target_days())).date()
 
 
 def backfill_page_cap() -> int:
@@ -347,6 +362,7 @@ def main():
     else:
         start_page = 1
         page_cap = forward_page_cap()
+        cutoff_date = forward_cutoff_date()
 
     extracted_total = 0
     new_records = 0
@@ -487,7 +503,7 @@ def main():
                 print(f"Cerradas page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
 
                 if reached_cutoff_date:
-                    stop_reason = f"reached backfill target date ({cutoff_date.isoformat()})"
+                    stop_reason = f"reached {mode} target date ({cutoff_date.isoformat()})"
                     break
 
                 moved, reason = click_next(page)
@@ -525,7 +541,9 @@ def main():
     ] + ([
         f"Date range: start={cutoff_date.isoformat() if cutoff_date else '(365-day default)'}"
         f" end={range_end_date.isoformat() if range_end_date else '(none, forward from most-recent)'}",
-    ] if mode == "backfill" else []) + [
+    ] if mode == "backfill" else [
+        f"Date cutoff: {cutoff_date.isoformat()} ({forward_target_days()}-day window)",
+    ]) + [
         "",
         f"Rows extracted total from site: {extracted_total}",
         f"Unique NUMERO values in this run: {len(seen)}",
