@@ -4620,7 +4620,7 @@ async function refreshDecisionDashboard() {{
         [t('Avg price spread'), (cq.avg_price_spread_pct || 0) + '%'],
       ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
     }}
-    bars('decision-cotizacion-top-items', (cq.top_items_by_value || []).map(r => ({{label: (r.item_descripcion || r.numero || '').slice(0, 60), count: Math.round(r.max_value || 0)}})));
+    renderTopItemPrices(cq.top_items_by_value || []);
     bars('decision-cotizacion-providers', (cq.top_providers || []).map(r => ({{label: r.proponente, count: r.bid_count}})));
   }} catch (err) {{ /* Cotizaciones pricing is optional, never block the rest of the KPI dashboard */ }}
   document.getElementById('decision-recommendations').textContent = `Index/detail/items decision signals\n• If Details failed > 0, repair collector/detail issues before expanding index page caps.\n• If Details pending grows, prioritize detail download capacity over more index scans.\n• Item lines parsed: ${{items.total_items || 0}} across ${{items.records_with_items || 0}} records; largest record: ${{biggest.numero || '-'}} with ${{biggest.count || 0}} items.\n• Most active entity: ${{topEntity.label || '-'}} (${{topEntity.count || 0}} records)${{topLocation.label ? ' · most frequent location/unit: ' + topLocation.label + ' (' + (topLocation.count || 0) + ')' : ''}} — focus review capacity where the volume is.\n• If item keywords cluster around a buyer/product family, prioritize those folders for review and WhatsApp detail follow-up.\n• If Deadline repairs > 0, repair missing DTEND before calendar/export decisions.\n• If Notify backlog grows, verify WAHA destinations/settings before running more scans.\nRecent parsed items:\n${{sampleLines || '  - no item rows parsed yet'}}`;
@@ -4778,6 +4778,21 @@ function renderCotizacionDetail(numero, opportunity, rows) {{
       `<table class="data-table"><thead><tr><th>${{esc(t('Provider'))}}</th><th>${{esc(t('Unit price'))}}</th><th>${{esc(t('Quoted qty.'))}}</th><th>${{esc(t('Net amount'))}}</th></tr></thead><tbody>${{bidRows}}</tbody></table>`;
   }}).join('');
   node.innerHTML = `<div class="card"><h3>${{esc(t('Full cuadro'))}} — <code>${{esc(numero)}}</code></h3>${{header}}${{sections}}</div>`;
+}}
+
+function renderTopItemPrices(rows) {{
+  const node = document.getElementById('decision-cotizacion-top-items');
+  if (!node) return;
+  if (!rows.length) {{ node.innerHTML = `<p class="small">${{esc(t('No quotations matched — try a different opportunity number or item keyword.'))}}</p>`; return; }}
+  const head = ['Item', 'Bidders', 'Min price', 'Avg price', 'Max price'].map(h => `<th>${{esc(t(h))}}</th>`).join('');
+  const body = rows.map(r => `<tr>` +
+    `<td>${{esc((r.item_descripcion || r.numero || '').slice(0, 70))}}</td>` +
+    `<td>${{r.bidder_count}}</td>` +
+    `<td>${{fmtMoney(r.min_price)}}</td>` +
+    `<td>${{fmtMoney(r.avg_price)}}</td>` +
+    `<td>${{fmtMoney(r.max_price)}}</td>` +
+    `</tr>`).join('');
+  node.innerHTML = `<table class="data-table"><thead><tr>${{head}}</tr></thead><tbody>${{body}}</tbody></table>`;
 }}
 
 const RESET_CONFIRM = {{

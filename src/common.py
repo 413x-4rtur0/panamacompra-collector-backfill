@@ -1503,8 +1503,11 @@ def cotizacion_kpis(conn, limit: int = 10) -> dict:
     total_max_value = sum((r["max_value"] or 0) for r in per_item)
 
     top_items = conn.execute("""
-        SELECT numero, item_index, item_descripcion, MAX(monto_neto) AS max_value, COUNT(*) AS bidder_count
+        SELECT numero, item_index, item_descripcion,
+               MIN(precio_unitario) AS min_price, AVG(precio_unitario) AS avg_price, MAX(precio_unitario) AS max_price,
+               MAX(monto_neto) AS max_value, COUNT(*) AS bidder_count
         FROM cotizacion_bids
+        WHERE precio_unitario IS NOT NULL
         GROUP BY numero, item_index
         ORDER BY max_value DESC
         LIMIT ?
