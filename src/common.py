@@ -1465,6 +1465,23 @@ def cotizacion_price_stats(conn, *, numero: str = "", item_query: str = "", limi
     return rows
 
 
+def cotizacion_bids_for_numero(conn, numero: str) -> list[dict]:
+    """Every stored bid row for one closed opportunity, flat and ordered by
+    item then price (cheapest first) — the full 'cuadro de cotizaciones'
+    behind one row of cotizacion_price_stats(), for a monitor drill-down
+    into exactly who quoted what on a specific item."""
+    rows = conn.execute("""
+        SELECT item_index, item_descripcion, especificaciones_comprador,
+               cantidad_solicitada, unidad_medida, proponente,
+               especificaciones_proponente, cantidad_cotizada,
+               precio_unitario, monto_neto, impuestos
+        FROM cotizacion_bids
+        WHERE numero = ?
+        ORDER BY item_index ASC, precio_unitario ASC
+    """, (numero,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def log_app_notification(purpose: str, text: str, chat_id: str = "") -> None:
     """Best-effort local record of an outbound WAHA message.
 
