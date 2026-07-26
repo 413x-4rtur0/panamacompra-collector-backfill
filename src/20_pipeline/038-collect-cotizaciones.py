@@ -165,6 +165,54 @@ def extract_cuadro(page) -> dict:
     """)
 
 
+def write_provider_files(record_folder: Path, numero: str, cuadro_url: str, providers: list[dict]) -> None:
+    """One JSON per bidder under record_folder/providers/, same per-file
+    convention as the detail archive's tables/ folder
+    (NUMERO-PROVIDER-NNN-SLUG.json) — each file is that provider's full item
+    list (description, quantities, unit/net price) plus enough context
+    (numero, cuadro_link) to stand alone without the parent record.json.
+    Cleared and rewritten on every successful (re-)collection, matching
+    save_cotizacion_bids()' replace-wholesale semantics below: a retry with
+    fewer/renamed bidders should not leave stale files from a prior attempt."""
+    providers_dir = record_folder / "providers"
+    providers_dir.mkdir(parents=True, exist_ok=True)
+
+    prefix = f"{safe_name(numero)}-PROVIDER-"
+    for stale in providers_dir.glob(f"{prefix}*.json"):
+        stale.unlink(missing_ok=True)
+
+    collected_at = now_iso()
+    for idx, provider in enumerate(providers, start=1):
+        items = provider.get("items") or []
+        payload = {
+            "numero": numero,
+            "cuadro_link": cuadro_url,
+            "proponente": provider.get("name", ""),
+            "items_count": len(items),
+            "items": [
+                {
+                    "item_index": item.get("item_index"),
+                    "item_descripcion": item.get("item_descripcion"),
+                    "especificaciones_comprador": item.get("especificaciones_comprador"),
+                    "cantidad_solicitada": item.get("cantidad_solicitada"),
+                    "unidad_medida": item.get("unidad_medida"),
+                    "especificaciones_proponente": item.get("especificaciones_proponente"),
+                    "cantidad_cotizada": item.get("cantidad_cotizada"),
+                    "precio_unitario": parse_money(item.get("precio_unitario")),
+                    "monto_neto": parse_money(item.get("monto_neto")),
+                    "impuestos": item.get("impuestos"),
+                }
+                for item in items
+            ],
+            "collected_at": collected_at,
+        }
+        slug = safe_name(provider.get("name", "") or "unknown")
+        file_path = providers_dir / f"{prefix}{idx:03d}-{slug}.json"
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(file_path)
+
+
 def main():
     conn = init_db()
     run_started = now_iso()
@@ -248,6 +296,7 @@ def main():
                         })
 
                 save_cotizacion_bids(conn, numero, bids)
+                write_provider_files(Path(row["record_folder"]), numero, cuadro_url, providers)
 
                 json_path = Path(row["record_folder"]) / f"{safe_name(numero)}.cotizacion.json"
                 json_payload = {
