@@ -755,6 +755,9 @@ MANUAL_ACTIONS = [
     ManualAction("Runners", "Pause for development", ("./src/20_pipeline/121-dev-mode.sh", "pause"), "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe. Docker integrations and the monitors stay running."),
     ManualAction("Runners", "Resume automatic collection", ("./src/20_pipeline/121-dev-mode.sh", "resume"), "Restores every setting 'Pause for development' changed, to its exact previous value. Does not queue a run by itself."),
     ManualAction("Runners", "Show run status", ("./src/20_pipeline/130b-run-status.sh",), "Writes a process/log status snapshot to the manual action log."),
+    ManualAction("Cerradas", "Run Cerradas backfill now", ("./src/20_pipeline/039-run-cerradas-backfill.sh",), "Runs one historical-backfill segment immediately instead of waiting for the 20-minute timer. Safe to click anytime: it skips cleanly (logs why, does nothing else) if the main worker or the Cerradas new-closures run is already active."),
+    ManualAction("Cerradas", "Pause Cerradas backfill timer", ("systemctl", "--user", "stop", "panamacompra-cerradas-backfill.timer"), "Stops the recurring 20-minute backfill timer until resumed below. New-closures detection (the separate priority-2 webhook route) and the main pipeline are unaffected — this only pauses the historical backfill segments."),
+    ManualAction("Cerradas", "Resume Cerradas backfill timer", ("systemctl", "--user", "start", "panamacompra-cerradas-backfill.timer"), "Restarts the 20-minute backfill timer after a pause. The cursor resumes from wherever it left off; no progress is lost by pausing."),
     ManualAction("Tests", "Test zone", ("./src/20_pipeline/125-run-priority.sh", "test", "80", "test", "--", "./src/20_pipeline/070-test-zone.py", "--limit", "5", "--apply"), "Queues the isolated test behind active work, then opens that sandbox folder.", RECORDS_TEST_PARENT),
     ManualAction("Tests", "Review system", ("./review-system.sh",), "Runs the repository health review and troubleshooting summary; on completion WAHA sends a System health message to the system destination (override with pcc health --chat-id/--purpose)."),
     ManualAction("Tests", "Full diagnostic report", ("./bin/pcc", "full-report"), "Creates a complete Markdown diagnostic report covering paths, settings, tools, integrations, queues, database counters, processes and recent logs."),
@@ -3194,6 +3197,7 @@ const ZONE_DESCRIPTIONS = {{
   'Integrations': 'Docker stack, changedetection and WAHA dashboards.',
   'Tests': 'Diagnostics, reports and sandbox runs.',
   'Settings': 'Maintenance, repair and configuration helpers.',
+  'Cerradas': 'Manual control over the historical price/provider backfill (runs automatically every 20 min otherwise).',
 }};
 function renderActionZones() {{
   const root = document.getElementById('action-zones');
