@@ -6,8 +6,10 @@ set -uo pipefail
 # 037-collect-cerradas-index.py) by its own systemd --user timer, not by
 # changedetection — old closures do not "change", so a snapshot diff has
 # nothing to trigger on; the segmented cursor already handles chunking a
-# large archive over many runs. No WhatsApp: only downloads and inserts
-# cuadro-de-cotizaciones data (037 backfill mode + 038).
+# large archive over many runs. No WhatsApp: downloads and inserts each
+# record's full detail archive (037b) and cuadro-de-cotizaciones price/
+# provider data (038), same as the priority-2 new-closures path (037
+# backfill mode + 037b + 038).
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
@@ -57,5 +59,6 @@ fi
 
 log "===== Cerradas backfill segment started ====="
 PC_CERRADAS_MODE=backfill "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-cerradas-index.py" >> "$LOG" 2>&1
+"$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-cerradas-details.py" >> "$LOG" 2>&1
 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" >> "$LOG" 2>&1
 log "===== Cerradas backfill segment finished ====="

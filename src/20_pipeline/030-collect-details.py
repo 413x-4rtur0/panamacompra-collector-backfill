@@ -659,8 +659,23 @@ def process_detail(browser, conn, row, force=False):
         return "saved"
 
     except Exception as e:
-        err_path = record_folder / f"{n}.error.txt"
+        # record_folder can have been renamed out from under this path by
+        # maybe_rename_folder() moments earlier in this same try block --
+        # meaning the save itself already succeeded and committed 'saved'
+        # before this later, unrelated exception hit. Detect that case from
+        # the DB (its own record_folder column already points at the new
+        # path once renamed) and only report failure when the row was NOT
+        # already saved; otherwise this handler would silently downgrade a
+        # genuine success back to 'failed', and the old-path error-file
+        # write would itself crash with an unrelated FileNotFoundError,
+        # masking whatever the real exception was.
+        current_row = conn.execute("SELECT record_folder, detail_status FROM opportunities WHERE numero = ?", (numero,)).fetchone()
+        current_folder = Path(current_row["record_folder"]) if current_row and current_row["record_folder"] else record_folder
+        current_folder.mkdir(parents=True, exist_ok=True)
+        err_path = current_folder / f"{n}.error.txt"
         write_text_once(err_path, str(e))
+        if current_row and current_row["detail_status"] == "saved":
+            return "saved"
         update_detail_status(conn, numero, "failed")
         return "failed"
 

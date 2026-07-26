@@ -5,8 +5,11 @@ set -uo pipefail
 # the main Abiertas/Programadas trigger), fired by its own changedetection.io
 # watch + webhook token — completely separate from 060-run-collector.sh so a
 # problem here can never touch the priority-1 pipeline. No WhatsApp: this
-# only downloads the closed opportunity's cuadro-de-cotizaciones data and
-# inserts it into the database (037 forward mode + 038).
+# downloads the closed opportunity's full detail archive (folder rename,
+# tables, calendar — same per-record processing 030-collect-details.py does
+# for Abiertas/Programadas, see 037b's own docstring for why that's a
+# separate script) and its cuadro-de-cotizaciones price/provider data, then
+# inserts everything into the database (037 forward mode + 037b + 038).
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
@@ -50,5 +53,6 @@ fi
 
 log "===== Cerradas new-closures run started ====="
 PC_CERRADAS_MODE=forward "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-cerradas-index.py" >> "$LOG" 2>&1
+"$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-cerradas-details.py" >> "$LOG" 2>&1
 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" >> "$LOG" 2>&1
 log "===== Cerradas new-closures run finished ====="
