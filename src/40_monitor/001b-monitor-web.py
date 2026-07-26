@@ -395,6 +395,27 @@ def location_keyword_filter_fn(query: str):
     return _matches
 
 
+def cotizacion_item_filter_fn(query: str):
+    """Item-description predicate for the cotizaciones search box -- same
+    operator syntax and word/plural/accent tolerance as the calendar's
+    keyword filter (parse_filter_rules): comma = OR between rules, '+' = AND
+    within a rule, leading '-' = NOT. Returns None when the query is blank
+    so callers can skip filtering entirely."""
+    includes, excludes = notify_formats.parse_filter_rules(query)
+    if not includes and not excludes:
+        return None
+
+    def _matches(item_descripcion: str) -> bool:
+        haystack = pc_common.strip_accents(item_descripcion or "").lower()
+        if any(notify_formats.rule_words_present(rule, haystack) for rule in excludes):
+            return False
+        if not includes:
+            return True
+        return any(notify_formats.rule_words_present(rule, haystack) for rule in includes)
+
+    return _matches
+
+
 def combine_filters(*filter_fns):
     """AND-compose any number of row predicates (None entries are skipped),
     so a calendar/KPI view can apply a general keyword filter and a
@@ -2884,7 +2905,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="records"><h2>Records Pendings</h2><div id="records-pending" class="record-card record-pending">Records Pendings: —</div><p class="small">Use Record selector and filters → Detail status = Pending records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Records Completed</h2><div id="records-completed" class="record-card record-completed">Records Completed: —</div><p class="small">Use Record selector and filters → Detail status = Completed records for full selectors/open actions.</p></div>
 <div class="card" data-tab="records"><h2>Database summary</h2><p class="small">Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.</p><pre id="records-db-summary">Database summary loading…</pre><p><button onclick="refreshDbReview('records-db-summary')">Refresh DB summary</button></p></div>
-<div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div><div class="card" data-tab="records"><h2>Cerradas quotations (cuadro de cotizaciones)</h2><p class="small">Item prices and providers collected from the quotation comparison table of each closed opportunity. Search by opportunity number and/or an item keyword; each result row is one item across every bidder, with the winning (lowest) price highlighted.</p><p><label class="small">Opportunity number <input type="text" id="cot-numero" placeholder="2026-0-07-..." size="28"></label> <label class="small">Item search <input type="text" id="cot-item" placeholder="e.g. tinta, cemento" size="22"></label> <button onclick="searchCotizaciones()">Search</button> <button onclick="clearCotizaciones()">Clear</button></p><div id="cotizaciones-results" class="small">Search by opportunity number or item to see prices per provider.</div><div id="cotizaciones-detail"></div></div>
+<div class="card" data-tab="records"><h2>Database review</h2><p class="small">Same database details in a collapsible review panel. Refresh after a run or a reset.</p><pre id="db-review">Loading database snapshot…</pre><p><button onclick="refreshDbReview()">Refresh DB snapshot</button></p></div><div class="card" data-tab="records"><h2>Cerradas quotations (cuadro de cotizaciones)</h2><p class="small">Item prices and providers collected from the quotation comparison table of each closed opportunity. Search by opportunity number and/or an item keyword; each result row is one item across every bidder, with the winning (lowest) price highlighted.</p><p><label class="small">Opportunity number <input type="text" id="cot-numero" placeholder="2026-0-07-..." size="28"></label> <label class="small">Item search <input type="text" id="cot-item" placeholder="e.g. tinta, cemento" size="22"></label> <button onclick="searchCotizaciones()">Search</button> <button onclick="clearCotizaciones()">Clear</button></p><div id="cotizaciones-kpi-summary" class="kpi-grid"></div><div id="cotizaciones-keywords" class="keyword-cloud"></div><div id="cotizaciones-results" class="small">Search by opportunity number or item to see prices per provider.</div><div id="cotizaciones-detail"></div></div>
 <div class="card" data-tab="overview"><h2>System health <span class="kpi-live" id="overview-live-stamp">LIVE</span></h2><p class="small">Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.</p><div id="overview-kpis" class="kpi-grid">Loading overview…</div></div>
 <div class="card" data-tab="overview"><h2>Last run stages</h2><p class="small" id="overview-last-run">No completed run recorded yet.</p><div id="overview-stages" class="chart"></div></div>
 <div class="card" data-tab="overview"><h2>Services</h2><div id="overview-services" class="small">Loading services…</div><p class="small">Webhook access details and the changedetection script live in the Integrations tab.</p></div>
@@ -4085,7 +4106,7 @@ const STATIC_TRANSLATIONS = {{
     'All WhatsApp options in one place: destinations, delivery settings, WAHA server connection, toggles and per-destination content filters.': 'Todas las opciones de WhatsApp en un solo lugar: destinos, configuración de entrega, conexión al servidor WAHA, activadores y filtros de contenido por destino.', 'Default / one group': 'Predeterminado / un solo grupo', 'Index alerts': 'Alertas de índice', 'Item details': 'Detalles de ítems', 'Status changes': 'Cambios de estado', 'Open Now Opportunities': 'Oportunidades Abiertas Ahora', 'Final summary per round': 'Resumen final por ronda', '12036...@g.us (used when a purpose-specific group is blank)': '12036...@g.us (se usa cuando un grupo específico está vacío)', 'blank = default group': 'vacío = grupo predeterminado', 'blank = Index alerts / default group': 'vacío = Alertas de índice / grupo predeterminado', 'Notify by WhatsApp (index alerts)': 'Notificar por WhatsApp (alertas de índice)', 'Detail follow-up WhatsApp': 'Seguimiento de detalles por WhatsApp', 'Save WhatsApp destinations': 'Guardar destinos de WhatsApp', 'WhatsApp source': 'Origen de WhatsApp', 'WhatsApp within N days': 'WhatsApp dentro de N días', 'WAHA retries': 'Reintentos de WAHA', 'Delay between sends (s)': 'Retraso entre envíos (s)', 'Digest above N new records': 'Resumen a partir de N registros nuevos', 'Idle status every N hours': 'Estado inactivo cada N horas', 'WAHA base URL': 'URL base de WAHA', 'WAHA session': 'Sesión de WAHA', 'WAHA events': 'Eventos de WAHA', 'WAHA server port': 'Puerto del servidor WAHA', 'WAHA server API key': 'Clave API del servidor WAHA', 'WAHA dashboard user': 'Usuario del panel de WAHA', 'WAHA dashboard password (generated by setup)': 'Contraseña del panel de WAHA (generada por la instalación)', 'Save WhatsApp advanced settings': 'Guardar configuración avanzada de WhatsApp', 'The WAHA dashboard login is user admin with a RANDOM password generated by setup — see data/config/integration-access.txt. Change it here whenever you like — it applies on the next docker stack restart.': 'El inicio de sesión del panel de WAHA es el usuario admin con una contraseña ALEATORIA generada por la instalación — ver data/config/integration-access.txt. Cámbiala aquí cuando quieras — se aplica en el próximo reinicio de la pila Docker.', 'Enable WAHA WhatsApp sending': 'Activar el envío de WhatsApp por WAHA', 'Skip already-expired opportunities': 'Omitir oportunidades ya vencidas', 'Send each detail message right after its download': 'Enviar cada mensaje de detalle justo después de su descarga', 'AUTO runs import index from changedetection snapshot': 'Las ejecuciones AUTO importan el índice desde la instantánea de changedetection', 'Shared': 'Compartido', 'Save filters': 'Guardar filtros',
     'WhatsApp client profiles': 'Perfiles de clientes de WhatsApp', 'Add / update a client': 'Agregar / actualizar un cliente', "Pick any destination returned by WAHA or type a custom chat ID; the filter accepts custom expressions (OR with commas, AND with '+', NOT with '-').": "Elige cualquier destino devuelto por WAHA o escribe un ID de chat personalizado; el filtro acepta expresiones personalizadas (OR con comas, AND con '+', NOT con '-').", 'Client name': 'Nombre del cliente', 'Destination': 'Destino', 'or custom chat ID': 'o ID de chat personalizado', 'Purposes': 'Propósitos', 'Filter expression': 'Expresión de filtro', 'Add to profiles': 'Agregar a perfiles', 'Clients': 'Clientes', 'Every saved client at a glance. Edit loads the client into the form above (press "Add to profiles" to save the changes); Disable pauses deliveries and calendar access without deleting.': 'Todos los clientes guardados de un vistazo. Editar carga el cliente en el formulario de arriba (presiona "Agregar a perfiles" para guardar los cambios); Deshabilitar pausa los envíos y el acceso al calendario sin eliminarlo.', 'Profiles (JSON)': 'Perfiles (JSON)', 'Full list, editable by hand. Purposes: index, details, status, or all.': 'Lista completa, editable a mano. Propósitos: index, details, status, o all.', 'Save client profiles': 'Guardar perfiles de clientes', 'WAHA Directory Search': 'Búsqueda en el directorio de WAHA', 'Search the complete WAHA directory by one or more words from a name or chat ID. Results filter live from a short-lived local cache, so typing does not repeatedly download contacts, groups, communities and channels.': 'Busca en todo el directorio de WAHA con una o más palabras de un nombre o ID de chat. Los resultados se filtran en vivo desde una caché local de corta duración, para que escribir no descargue repetidamente contactos, grupos, comunidades y canales.', 'Name or ID': 'Nombre o ID', 'Search': 'Buscar', 'Refresh directory': 'Actualizar directorio',
     'WhatsApp message formats': 'Formatos de mensajes de WhatsApp', 'Customize the text of each message family, including system health / worker messages with {{{{placeholder}}}} fields (unknown placeholders stay literal).': 'Personaliza el texto de cada familia de mensajes, incluidos los mensajes de salud del sistema / worker con campos {{{{placeholder}}}} (los marcadores desconocidos quedan tal cual).', 'Format': 'Formato', 'Index alert': 'Alerta de índice', 'Detail follow-up': 'Seguimiento de detalle', 'Status change': 'Cambio de estado', 'System / health': 'Sistema / salud', 'Final summary': 'Resumen final', 'Preview': 'Vista previa', 'Save format': 'Guardar formato', 'Reset to default': 'Restablecer a predeterminado',
-    '(read-only)': '(solo lectura)', 'Record selector and filters': 'Selector y filtros de registros', 'Legend:': 'Leyenda:', 'upcoming': 'próximos', 'next to expire': 'próximos a vencer', 'expired': 'vencidos', 'Records Pendings': 'Registros pendientes', 'Records Pendings: —': 'Registros pendientes: —', 'Records Completed': 'Registros completados', 'Records Completed: —': 'Registros completados: —', 'Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.': 'Resumen de la base de datos de archivo, solo lectura, con contadores, desglose de estado, registros recientes y elementos/columnas de la BD.', 'Refresh DB summary': 'Actualizar resumen de la BD', 'Same database details in a collapsible review panel. Refresh after a run or a reset.': 'Los mismos detalles de la base de datos en un panel de revisión colapsable. Actualiza después de una ejecución o un reinicio.', 'Refresh DB snapshot': 'Actualizar instantánea de la BD', 'Database review': 'Revisión de la base de datos', 'Database summary': 'Resumen de la base de datos', 'Use Record selector and filters → Detail status = Pending records for full selectors/open actions.': 'Usa Selector y filtros de registros → Estado del detalle = Registros pendientes para selectores/acciones completos.', 'Use Record selector and filters → Detail status = Completed records for full selectors/open actions.': 'Usa Selector y filtros de registros → Estado del detalle = Registros completados para selectores/acciones completos.', 'Cerradas quotations (cuadro de cotizaciones)': 'Cotizaciones de Cerradas (cuadro de cotizaciones)', 'Item prices and providers collected from the quotation comparison table of each closed opportunity. Search by opportunity number and/or an item keyword; each result row is one item across every bidder, with the winning (lowest) price highlighted.': 'Precios de ítems y proveedores recolectados del cuadro de cotizaciones de cada oportunidad cerrada. Busca por número de oportunidad y/o palabra clave de ítem; cada fila de resultado es un ítem entre todos los proponentes, con el precio ganador (más bajo) resaltado.', 'Opportunity number': 'Número de oportunidad', 'Item search': 'Búsqueda de ítem', 'Search by opportunity number or item to see prices per provider.': 'Busca por número de oportunidad o ítem para ver precios por proveedor.', 'Searching…': 'Buscando…', 'Could not load quotations: ': 'No se pudieron cargar las cotizaciones: ', 'No quotations matched — try a different opportunity number or item keyword.': 'No hay cotizaciones que coincidan — prueba otro número de oportunidad o palabra clave de ítem.', 'Opportunity': 'Oportunidad', 'Item': 'Ítem', 'Bidders': 'Proponentes', 'Min price': 'Precio mín.', 'Avg price': 'Precio prom.', 'Max price': 'Precio máx.', 'Best provider': 'Mejor proveedor', 'View full cuadro': 'Ver cuadro completo', 'Loading full cuadro…': 'Cargando cuadro completo…', 'Could not load the full cuadro: ': 'No se pudo cargar el cuadro completo: ', 'No bid detail stored for this opportunity.': 'No hay detalle de cotizaciones guardado para esta oportunidad.', 'Provider': 'Proveedor', 'Unit price': 'Precio unitario', 'Quoted qty.': 'Cant. cotizada', 'Net amount': 'Monto neto', 'Full cuadro': 'Cuadro completo', 'Cotizaciones pricing': 'Precios de cotizaciones', 'Top items by quoted value': 'Ítems principales por valor cotizado', 'Most active providers': 'Proveedores más activos', 'Bids collected': 'Cotizaciones recolectadas', 'Items priced': 'Ítems con precio', 'Opportunities priced': 'Oportunidades con precio', 'Best-price total': 'Total al mejor precio', 'Avg-price total': 'Total a precio promedio', 'Max-price total': 'Total al precio máximo', 'Potential savings': 'Ahorro potencial', 'Avg price spread': 'Dispersión de precio promedio',
+    '(read-only)': '(solo lectura)', 'Record selector and filters': 'Selector y filtros de registros', 'Legend:': 'Leyenda:', 'upcoming': 'próximos', 'next to expire': 'próximos a vencer', 'expired': 'vencidos', 'Records Pendings': 'Registros pendientes', 'Records Pendings: —': 'Registros pendientes: —', 'Records Completed': 'Registros completados', 'Records Completed: —': 'Registros completados: —', 'Read-only archive database summary with counters, status breakdown, recent records and DB elements/columns.': 'Resumen de la base de datos de archivo, solo lectura, con contadores, desglose de estado, registros recientes y elementos/columnas de la BD.', 'Refresh DB summary': 'Actualizar resumen de la BD', 'Same database details in a collapsible review panel. Refresh after a run or a reset.': 'Los mismos detalles de la base de datos en un panel de revisión colapsable. Actualiza después de una ejecución o un reinicio.', 'Refresh DB snapshot': 'Actualizar instantánea de la BD', 'Database review': 'Revisión de la base de datos', 'Database summary': 'Resumen de la base de datos', 'Use Record selector and filters → Detail status = Pending records for full selectors/open actions.': 'Usa Selector y filtros de registros → Estado del detalle = Registros pendientes para selectores/acciones completos.', 'Use Record selector and filters → Detail status = Completed records for full selectors/open actions.': 'Usa Selector y filtros de registros → Estado del detalle = Registros completados para selectores/acciones completos.', 'Cerradas quotations (cuadro de cotizaciones)': 'Cotizaciones de Cerradas (cuadro de cotizaciones)', 'Item prices and providers collected from the quotation comparison table of each closed opportunity. Search by opportunity number and/or an item keyword; each result row is one item across every bidder, with the winning (lowest) price highlighted.': 'Precios de ítems y proveedores recolectados del cuadro de cotizaciones de cada oportunidad cerrada. Busca por número de oportunidad y/o palabra clave de ítem; cada fila de resultado es un ítem entre todos los proponentes, con el precio ganador (más bajo) resaltado.', 'Opportunity number': 'Número de oportunidad', 'Item search': 'Búsqueda de ítem', 'Search by opportunity number or item to see prices per provider.': 'Busca por número de oportunidad o ítem para ver precios por proveedor.', 'Searching…': 'Buscando…', 'Could not load quotations: ': 'No se pudieron cargar las cotizaciones: ', 'No quotations matched — try a different opportunity number or item keyword.': 'No hay cotizaciones que coincidan — prueba otro número de oportunidad o palabra clave de ítem.', 'Opportunity': 'Oportunidad', 'Item': 'Ítem', 'Bidders': 'Proponentes', 'Min price': 'Precio mín.', 'Avg price': 'Precio prom.', 'Max price': 'Precio máx.', 'Best provider': 'Mejor proveedor', 'View full cuadro': 'Ver cuadro completo', 'Loading full cuadro…': 'Cargando cuadro completo…', 'Could not load the full cuadro: ': 'No se pudo cargar el cuadro completo: ', 'No bid detail stored for this opportunity.': 'No hay detalle de cotizaciones guardado para esta oportunidad.', 'Provider': 'Proveedor', 'Unit price': 'Precio unitario', 'Quoted qty.': 'Cant. cotizada', 'Net amount': 'Monto neto', 'Full cuadro': 'Cuadro completo', 'Items matched': 'Ítems encontrados', 'Cotizaciones pricing': 'Precios de cotizaciones', 'Top items by quoted value': 'Ítems principales por valor cotizado', 'Most active providers': 'Proveedores más activos', 'Bids collected': 'Cotizaciones recolectadas', 'Items priced': 'Ítems con precio', 'Opportunities priced': 'Oportunidades con precio', 'Best-price total': 'Total al mejor precio', 'Avg-price total': 'Total a precio promedio', 'Max-price total': 'Total al precio máximo', 'Potential savings': 'Ahorro potencial', 'Avg price spread': 'Dispersión de precio promedio',
     'Snapshot of the last completed run, current intake and service reachability. Full analysis lives in the KPIs tab; run controls in Operations.': 'Instantánea de la última ejecución completada, la captura actual y la accesibilidad de los servicios. El análisis completo está en la pestaña KPIs; los controles de ejecución están en Operaciones.', 'No completed run recorded yet.': 'Aún no se registró ninguna ejecución completada.', 'Webhook access details and the changedetection script live in the Integrations tab.': 'Los detalles de acceso al webhook y el script de changedetection están en la pestaña Integraciones.',
     'DANGER: stops collectors and infrastructure; monitors stay open': 'PELIGRO: detiene los recolectores y la infraestructura; los monitores permanecen abiertos', 'Brings Docker integrations and the webhook listener back up, and opens the monitor': 'Vuelve a levantar las integraciones de Docker y el listener de webhook, y abre el monitor', "Stops any active run and pauses webhook/cron auto-triggers plus the updater's autostash, so editing this repo is safe": 'Detiene cualquier ejecución activa y pausa los disparadores automáticos de webhook/cron además del autostash del actualizador, para que editar este repositorio sea seguro', 'Restores everything Dev Pause changed': 'Restaura todo lo que cambió la Pausa de desarrollo', 'Open changedetection UI': 'Abrir la interfaz de changedetection', 'Open WAHA dashboard (pair by QR)': 'Abrir el panel de WAHA (vincular por QR)', 'automatic is shown for changedetection/webhook runs only; run pending only queues the normal collector; manual run starts the worker now; test run uses the isolated test zone. Index page cap is optional: 0 means crawl all pages until the portal has no Next page; detail limit controls detail/test records (0 = unlimited: download until no pending entries remain).': 'automático se muestra solo para ejecuciones de changedetection/webhook; ejecutar solo pendientes encola el recolector normal; ejecución manual inicia el worker ahora; ejecución de prueba usa la zona de prueba aislada. El límite de páginas del índice es opcional: 0 significa recorrer todas las páginas hasta que el portal no tenga página siguiente; el límite de detalles controla los registros de detalle/prueba (0 = ilimitado: descarga hasta que no queden pendientes).', 'Mode:': 'Modo:', 'Integrations:': 'Integraciones:',
     'All KPIs in one tab: index scan intake, detail download throughput, WAHA delivery, deadline repair, plus diagrams about the collected items, contracting entities and locations so the numbers point at a decision. Use the filters to slice every card and diagram to a time window, a group or an entity.': 'Todos los KPIs en una pestaña: captura del escaneo del índice, rendimiento de descarga de detalles, entrega por WAHA, reparación de fechas límite, además de diagramas sobre los ítems recolectados, entidades contratantes y ubicaciones para que los números apunten a una decisión. Usa los filtros para recortar cada tarjeta y diagrama a una ventana de tiempo, un grupo o una entidad.', 'Window': 'Ventana', 'Group': 'Grupo', 'Entity': 'Entidad', 'Refresh KPIs': 'Actualizar KPIs',
@@ -4707,8 +4728,9 @@ function fmtMoney(v) {{
   return v == null ? '—' : '$' + Number(v).toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}});
 }}
 
-async function searchCotizaciones() {{
+async function searchCotizaciones(itemOverride) {{
   const numero = (document.getElementById('cot-numero').value || '').trim();
+  if (itemOverride != null) document.getElementById('cot-item').value = itemOverride;
   const itemQuery = (document.getElementById('cot-item').value || '').trim();
   const node = document.getElementById('cotizaciones-results');
   node.textContent = t('Searching…');
@@ -4718,6 +4740,8 @@ async function searchCotizaciones() {{
     if (numero) qs.set('numero', numero);
     if (itemQuery) qs.set('item_query', itemQuery);
     const data = await (await fetch('/api/cotizaciones?' + qs.toString(), {{cache: 'no-store'}})).json();
+    renderCotizacionesKpiSummary(data.kpi || {{}});
+    renderCotizacionesKeywords(data.keywords || []);
     renderCotizacionesResults(data.rows || []);
   }} catch (err) {{ node.textContent = t('Could not load quotations: ') + err; }}
 }}
@@ -4727,6 +4751,27 @@ function clearCotizaciones() {{
   document.getElementById('cot-item').value = '';
   document.getElementById('cotizaciones-results').textContent = t('Search by opportunity number or item to see prices per provider.');
   document.getElementById('cotizaciones-detail').innerHTML = '';
+  document.getElementById('cotizaciones-kpi-summary').innerHTML = '';
+  document.getElementById('cotizaciones-keywords').innerHTML = '';
+}}
+
+function renderCotizacionesKpiSummary(kpi) {{
+  const node = document.getElementById('cotizaciones-kpi-summary');
+  if (!kpi || !kpi.matched_items) {{ node.innerHTML = ''; return; }}
+  node.innerHTML = [
+    [t('Items matched'), kpi.matched_items],
+    [t('Bidders'), kpi.total_bidders],
+    [t('Min price'), fmtMoney(kpi.avg_min_price)],
+    [t('Avg price'), fmtMoney(kpi.avg_avg_price)],
+    [t('Max price'), fmtMoney(kpi.avg_max_price)],
+  ].map(x => `<div class="kpi"><span>${{x[0]}}</span><b>${{x[1]}}</b></div>`).join('');
+}}
+
+function renderCotizacionesKeywords(keywords) {{
+  const node = document.getElementById('cotizaciones-keywords');
+  if (!keywords.length) {{ node.innerHTML = ''; return; }}
+  const peak = Math.max(1, ...keywords.map(k => k.count));
+  node.innerHTML = keywords.map(k => `<span style="font-size:${{0.85 + k.count / peak / 2}}rem;cursor:pointer" title="${{k.count}}" onclick="searchCotizaciones('${{esc(k.label)}}')">${{esc(k.label)}}</span>`).join('');
 }}
 
 function renderCotizacionesResults(rows) {{
@@ -5530,6 +5575,11 @@ class MonitorHandler(BaseHTTPRequestHandler):
             # Per-item price/provider comparison across every closed (Cerradas)
             # opportunity's cuadro de cotizaciones — admin/staff-only browse of
             # what 038-collect-cotizaciones.py has collected into cotizacion_bids.
+            # item_query uses the SAME rich keyword filter as the calendar
+            # (comma=OR, +=AND, leading -=NOT, accent/plural tolerant) rather
+            # than a plain SQL substring match — fetched broad, filtered in
+            # Python, so the KPI summary and keyword cloud below reflect the
+            # WHOLE matched set, not just the page truncated to `limit`.
             params = parse_qs(urlparse(self.path).query)
             numero = params.get("numero", [""])[0].strip()
             item_query = params.get("item_query", [""])[0].strip()
@@ -5541,12 +5591,32 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
-                    rows = pc_common.cotizacion_price_stats(conn, numero=numero, item_query=item_query, limit=limit)
+                    all_rows = pc_common.cotizacion_price_stats(conn, numero=numero, item_query="", limit=5000)
                 finally:
                     conn.close()
             except sqlite3.Error:
-                rows = []
-            self.send_text(200, json.dumps({"rows": rows}, ensure_ascii=False), "application/json; charset=utf-8")
+                all_rows = []
+
+            item_filter = cotizacion_item_filter_fn(item_query)
+            matched = [r for r in all_rows if item_filter(r.get("item_descripcion"))] if item_filter else all_rows
+
+            kpi_summary = {
+                "matched_items": len(matched),
+                "total_bidders": sum(r.get("bidder_count") or 0 for r in matched),
+                "avg_min_price": round(sum(r.get("min_price") or 0 for r in matched) / len(matched), 2) if matched else 0,
+                "avg_avg_price": round(sum(r.get("avg_price") or 0 for r in matched) / len(matched), 2) if matched else 0,
+                "avg_max_price": round(sum(r.get("max_price") or 0 for r in matched) / len(matched), 2) if matched else 0,
+            }
+            keyword_counts = Counter()
+            for r in matched:
+                text = str(r.get("item_descripcion") or "")
+                for word in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", text.lower()):
+                    if not word.isdigit():
+                        keyword_counts[word] += 1
+            keywords = [{"label": k, "count": v} for k, v in keyword_counts.most_common(15)]
+
+            payload = {"rows": matched[:limit], "kpi": kpi_summary, "keywords": keywords}
+            self.send_text(200, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/cotizacion-kpis":
             # Aggregate price/provider KPIs across every collected cuadro de

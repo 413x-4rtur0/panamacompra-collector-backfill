@@ -1453,7 +1453,7 @@ def cotizacion_price_stats(conn, *, numero: str = "", item_query: str = "", limi
         ORDER BY numero DESC, item_index ASC
         LIMIT ?
     """
-    params.append(max(1, min(1000, limit)))
+    params.append(max(1, min(5000, limit)))
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     for row in rows:
         winner = conn.execute(
