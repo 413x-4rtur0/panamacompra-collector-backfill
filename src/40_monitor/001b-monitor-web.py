@@ -4627,7 +4627,7 @@ async function refreshDecisionDashboard() {{
   const topLocation = ((items.top_locations || [])[0]) || {{}};
   const sampleLines = (items.sample_items || []).slice(0, 5).map(it => `  - ${{it.numero || 'record'}}: ${{it.descripcion || '(item without description)'}}${{it.cantidad ? ' · qty ' + it.cantidad : ''}}`).join('\\n');
   try {{
-    const cq = await (await fetch('/api/cotizacion-kpis', {{cache: 'no-store'}})).json();
+    const cq = await (await fetch('/api/cotizacion-kpis?' + kpiFilterParams() + '&limit=10', {{cache: 'no-store'}})).json();
     const cqNode = document.getElementById('decision-cotizacion-kpis');
     if (cqNode) {{
       cqNode.innerHTML = [
@@ -5622,16 +5622,26 @@ class MonitorHandler(BaseHTTPRequestHandler):
             # Aggregate price/provider KPIs across every collected cuadro de
             # cotizaciones -- feeds the KPI dashboard's "Cotizaciones pricing"
             # card, separate from the per-item /api/cotizaciones browse view.
+            # Takes the SAME days/grupo/entidad/location filters as every
+            # other card on this dashboard (kpiFilterParams() on the JS
+            # side), so this card answers for the same filtered slice.
             params = parse_qs(urlparse(self.path).query)
             try:
                 limit = max(1, min(50, int(params.get("limit", ["10"])[0] or 10)))
             except (TypeError, ValueError):
                 limit = 10
             try:
+                days = max(0, int(params.get("days", ["0"])[0] or 0))
+            except (TypeError, ValueError):
+                days = 0
+            grupo = params.get("grupo", [""])[0].strip()
+            entidad = params.get("entidad", [""])[0].strip()
+            location = params.get("location", [""])[0].strip()
+            try:
                 conn = sqlite3.connect(f"file:{ARCHIVE_DB}?mode=ro", uri=True, timeout=2)
                 conn.row_factory = sqlite3.Row
                 try:
-                    payload = pc_common.cotizacion_kpis(conn, limit=limit)
+                    payload = pc_common.cotizacion_kpis(conn, limit=limit, days=days, grupo=grupo, entidad=entidad, location=location)
                 finally:
                     conn.close()
             except sqlite3.Error:

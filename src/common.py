@@ -1465,61 +1465,92 @@ def cotizacion_price_stats(conn, *, numero: str = "", item_query: str = "", limi
     return rows
 
 
-def cotizacion_kpis(conn, limit: int = 10) -> dict:
+def cotizacion_kpis(conn, limit: int = 10, *, days: int = 0, grupo: str = "",
+                     entidad: str = "", location: str = "") -> dict:
     """Aggregate price/provider KPIs across every collected cuadro de
     cotizaciones -- powers the monitor KPI dashboard's 'Cotizaciones
     pricing' card. Never raises; an empty table yields zeros so the card
     renders fine before the first cuadro has ever been collected.
 
+    days/grupo/entidad/location are the SAME dashboard filters
+    db_review_stats() applies to every other KPI card, joined here through
+    opportunities.numero since cotizacion_bids itself carries no date/
+    grupo/entidad columns -- so this card answers for the same filtered
+    slice as the rest of the dashboard instead of always showing the
+    whole archive's totals.
+
     total_best_value/total_avg_value sum, per item, the cheapest bid and
     the average bid respectively -- their difference (potential_savings)
     is what always picking the lowest bidder saves versus an average
     choice, a genuine procurement signal rather than a vanity total."""
-    total_bids = conn.execute("SELECT COUNT(*) AS c FROM cotizacion_bids").fetchone()["c"]
     empty = {
         "total_bids": 0, "total_items": 0, "opportunities_with_prices": 0,
         "total_best_value": 0.0, "total_avg_value": 0.0, "total_max_value": 0.0, "potential_savings": 0.0,
         "avg_price_spread_pct": 0.0, "top_items_by_value": [], "top_providers": [],
     }
+
+    flt_conditions: list[str] = []
+    flt_params: list = []
+    if days and int(days) > 0:
+        flt_conditions.append(
+            "REPLACE(REPLACE(substr(COALESCE(NULLIF(o.first_seen, ''), o.detail_saved_at, ''), 1, 10), '_', '-'), 'T', '') >= date('now', ?)")
+        flt_params.append(f"-{int(days)} day")
+    if grupo:
+        flt_conditions.append("COALESCE(o.grupo, '') = ?")
+        flt_params.append(grupo)
+    if entidad:
+        flt_conditions.append("COALESCE(o.entidad, '') = ?")
+        flt_params.append(entidad)
+    if location:
+        escaped = location.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        location_like = f"%{escaped}%"
+        flt_conditions.append("(COALESCE(o.dependencia, '') LIKE ? ESCAPE '\\' OR COALESCE(o.entidad, '') LIKE ? ESCAPE '\\')")
+        flt_params.extend([location_like, location_like])
+    flt_join = "JOIN opportunities o ON o.numero = cb.numero"
+    flt_where = (" WHERE " + " AND ".join(flt_conditions)) if flt_conditions else ""
+
+    total_bids = conn.execute(
+        f"SELECT COUNT(*) AS c FROM cotizacion_bids cb {flt_join}{flt_where}", flt_params
+    ).fetchone()["c"]
     if not total_bids:
         return empty
 
     opportunities_with_prices = conn.execute(
-        "SELECT COUNT(DISTINCT numero) AS c FROM cotizacion_bids"
+        f"SELECT COUNT(DISTINCT cb.numero) AS c FROM cotizacion_bids cb {flt_join}{flt_where}", flt_params
     ).fetchone()["c"]
 
-    per_item = conn.execute("""
-        SELECT numero, item_index,
-               MIN(precio_unitario) AS min_price, AVG(precio_unitario) AS avg_price,
-               MIN(monto_neto) AS min_value, AVG(monto_neto) AS avg_value, MAX(monto_neto) AS max_value
-        FROM cotizacion_bids
-        WHERE precio_unitario IS NOT NULL AND precio_unitario > 0
-        GROUP BY numero, item_index
-    """).fetchall()
+    per_item = conn.execute(f"""
+        SELECT cb.numero, cb.item_index,
+               MIN(cb.precio_unitario) AS min_price, AVG(cb.precio_unitario) AS avg_price,
+               MIN(cb.monto_neto) AS min_value, AVG(cb.monto_neto) AS avg_value, MAX(cb.monto_neto) AS max_value
+        FROM cotizacion_bids cb {flt_join}
+        {flt_where}{" AND " if flt_where else " WHERE "}cb.precio_unitario IS NOT NULL AND cb.precio_unitario > 0
+        GROUP BY cb.numero, cb.item_index
+    """, flt_params).fetchall()
     spreads = [(r["avg_price"] - r["min_price"]) / r["min_price"] * 100 for r in per_item if r["min_price"]]
     avg_price_spread_pct = sum(spreads) / len(spreads) if spreads else 0.0
     total_best_value = sum((r["min_value"] or 0) for r in per_item)
     total_avg_value = sum((r["avg_value"] or 0) for r in per_item)
     total_max_value = sum((r["max_value"] or 0) for r in per_item)
 
-    top_items = conn.execute("""
-        SELECT numero, item_index, item_descripcion,
-               MIN(precio_unitario) AS min_price, AVG(precio_unitario) AS avg_price, MAX(precio_unitario) AS max_price,
-               MAX(monto_neto) AS max_value, COUNT(*) AS bidder_count
-        FROM cotizacion_bids
-        WHERE precio_unitario IS NOT NULL
-        GROUP BY numero, item_index
+    top_items = conn.execute(f"""
+        SELECT cb.numero, cb.item_index, cb.item_descripcion,
+               MIN(cb.precio_unitario) AS min_price, AVG(cb.precio_unitario) AS avg_price, MAX(cb.precio_unitario) AS max_price,
+               MAX(cb.monto_neto) AS max_value, COUNT(*) AS bidder_count
+        FROM cotizacion_bids cb {flt_join}
+        {flt_where}{" AND " if flt_where else " WHERE "}cb.precio_unitario IS NOT NULL
+        GROUP BY cb.numero, cb.item_index
         ORDER BY max_value DESC
         LIMIT ?
-    """, (limit,)).fetchall()
+    """, (*flt_params, limit)).fetchall()
 
-    top_providers = conn.execute("""
-        SELECT proponente, COUNT(*) AS bid_count, COALESCE(SUM(monto_neto), 0) AS total_value
-        FROM cotizacion_bids
-        GROUP BY proponente
+    top_providers = conn.execute(f"""
+        SELECT cb.proponente, COUNT(*) AS bid_count, COALESCE(SUM(cb.monto_neto), 0) AS total_value
+        FROM cotizacion_bids cb {flt_join}{flt_where}
+        GROUP BY cb.proponente
         ORDER BY bid_count DESC
         LIMIT ?
-    """, (limit,)).fetchall()
+    """, (*flt_params, limit)).fetchall()
 
     return {
         "total_bids": total_bids,
