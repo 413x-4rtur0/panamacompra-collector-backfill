@@ -2012,7 +2012,7 @@ a.calevent:hover { filter: brightness(.94); }
     <option value="month" selected>Month</option><option value="year">Year</option>
   </select>
   <select id="cal-field" onchange="loadCalendar()">
-    <option value="end" selected>Deadline</option><option value="start">Start</option><option value="downloaded">Downloaded</option>
+    <option value="end">Deadline</option><option value="start">Start</option><option value="downloaded">Downloaded</option><option value="listed" selected>Published / index date</option>
   </select>
   <input id="cal-date" size="10" placeholder="YYYY-MM-DD">
   <button onclick="loadCalendar(-1)">&#9664;</button>
@@ -5052,6 +5052,14 @@ poll();
 </script>
 </body>
 </html>"""
+
+# Keep the administrator calendar aligned with the client calendar. The
+# published/index date is the platform date for historical Closed backfills;
+# without this option the UI can only show deadline/start/download timestamps.
+HTML = HTML.replace(
+    '<option value="downloaded">Downloaded</option></select>',
+    '<option value="downloaded">Downloaded</option><option value="listed" selected>Published / index date</option></select>',
+)
 
 
 class MonitorHandler(BaseHTTPRequestHandler):

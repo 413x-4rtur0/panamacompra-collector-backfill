@@ -48,6 +48,10 @@ FIELDS = {
     "end": ("COALESCE(finish_date_guess, '')", "deadline (end date)"),
     "start": (f"COALESCE(NULLIF(start_date_guess, ''), {_FECHA_TO_ISO}, '')", "start date"),
     "downloaded": ("COALESCE(detail_saved_at, '')", "local download date"),
+    # The portal's index FECHA is the publication/listing date. Closed
+    # backfill records are historical, so their local detail_saved_at is often
+    # much later than the date they were published on PanamaCompra.
+    "listed": (f"COALESCE({_FECHA_TO_ISO}, '')", "published / index date"),
 }
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -216,7 +220,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Show collected opportunities by day, week, month or year.")
     parser.add_argument("view", nargs="?", default="month", choices=VIEWS, help="calendar granularity (default month)")
     parser.add_argument("--date", default="", help="anchor date: YYYY, YYYY-MM or YYYY-MM-DD (default today)")
-    parser.add_argument("--field", default="end", choices=sorted(FIELDS), help="date driving the view: end (deadline, default), start, downloaded")
+    parser.add_argument("--field", default="end", choices=sorted(FIELDS), help="date driving the view: end (deadline, default), start, downloaded, listed (published/index date)")
     args = parser.parse_args(argv)
 
     conn = pc_common.init_db()
