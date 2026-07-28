@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Priority 3 (lowest): the historical Closed-opportunities backfill, run in
+# bounded segments (see backfill_page_cap()/backfill_cutoff_date() in
+# 037-collect-closed-index.py) by its own systemd --user timer, not by
+# changedetection — old closures do not "change", so a snapshot diff has
+# nothing to trigger on; the segmented cursor already handles chunking a
+# large archive over many runs. No WhatsApp: downloads and inserts each
+# record's full detail archive (037b) and cuadro-de-cotizaciones price/
+# provider data (038), same as the priority-2 new-closures path (037
+# backfill mode + 037b + 038).
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../../lib/env.sh
+source "$SCRIPT_DIR/../../lib/env.sh"
+cd "$APP_ROOT"
+
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [ -f ".venv/bin/activate" ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  PYTHON_BIN="python"
+fi
+
+MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+if [ -f "$MONITOR_SETTINGS" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MONITOR_SETTINGS"
+  set +a
+fi
+
+# Defers to BOTH priority 1 (main worker) and priority 2 (Closed
+# new-closures) — a backfill segment never competes with either for the
+# browser/CPU. Skipping loses nothing: the closed_crawl_state cursor picks
+# up at the same page next tick.
+MAIN_LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
+CLOSED_NEW_LOCK_FILE="/tmp/panamacompra_closed_new_worker.lock"
+LOCK_FILE="/tmp/panamacompra_closed_backfill_worker.lock"
+LOG="$PC_LOG_DIR/closed_backfill_triggered.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" >> "$LOG"; }
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  log "Skipped: another Closed backfill run is already in progress."
+  exit 0
+fi
+
+# Keep this background segment alive while a higher-priority worker owns the
+# browser/CPU locks. The old behavior exited immediately, which made the
+# backfill depend on another timer tick and looked like it had stopped. The
+# cursor is persisted by 037 after each bounded segment, so waiting here is
+# safe and resume continues from the saved page.
+WAIT_SECONDS="${PC_CLOSED_BACKFILL_WAIT_SECONDS:-30}"
+wait_logged=0
+while ! flock -n "$MAIN_LOCK_FILE" true 2>/dev/null || \
+      ! flock -n "$CLOSED_NEW_LOCK_FILE" true 2>/dev/null; do
+  if [ "$wait_logged" -eq 0 ]; then
+    log "Paused: waiting for priority 1/2 workers to finish; will resume automatically."
+    wait_logged=1
+  fi
+  sleep "$WAIT_SECONDS"
+done
+if [ "$wait_logged" -eq 1 ]; then
+  log "Resumed: priority 1/2 workers finished; continuing Closed backfill."
+fi
+
+log "===== Closed backfill segment started ====="
+PC_CLOSED_MODE=backfill "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" >> "$LOG" 2>&1
+"$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" >> "$LOG" 2>&1
+"$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" >> "$LOG" 2>&1
+log "===== Closed backfill segment finished ====="
