@@ -386,6 +386,47 @@
     return false;
   }
 
+  async function applyNativeDateFilter() {
+    // Only the backfill-watch transform (137-create-closed-backfill-watch.py)
+    // injects dateStart/dateEnd into CONFIG — the live Novedades watch never
+    // has them, so this safely no-ops there.
+    if (!CONFIG.dateStart && !CONFIG.dateEnd) return false;
+
+    const toSiteFormat = (isoDate) => {
+      const [y, m, d] = isoDate.split("-");
+      return `${d}-${m}-${y}`;
+    };
+
+    const fd = document.getElementById("fd");
+    const fh = document.getElementById("fh");
+    if (!fd || !fh) return false;
+
+    const setValue = (el, value) => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      el.focus();
+      nativeSetter.call(el, "");
+      dispatchBasicEvents(el);
+      nativeSetter.call(el, value);
+      dispatchBasicEvents(el);
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    };
+
+    if (CONFIG.dateStart) setValue(fd, toSiteFormat(CONFIG.dateStart));
+    if (CONFIG.dateEnd) setValue(fh, toSiteFormat(CONFIG.dateEnd));
+
+    // Must submit via Buscar while still on the default (Abiertas) tab — the
+    // site has a real bug where clicking a status radio first silently
+    // discards a pending date filter, but clicking Buscar first commits it,
+    // and the status click afterward correctly re-applies the committed
+    // filter. Confirmed by hand against the live site; reordering breaks it.
+    const buscarButtons = [...document.querySelectorAll("button")]
+      .filter(b => clean(b.textContent) === "Buscar");
+    if (!buscarButtons[1]) return false;
+
+    await humanClick(buscarButtons[1], 2500);
+    return true;
+  }
+
   async function goFirstPageIfPossible() {
     const first =
       document.querySelector("ngb-pagination a[aria-label='First'], a[aria-label='First']") ||
@@ -456,6 +497,10 @@
 
     let ready = false;
     let failReason = "";
+
+    // Must run before the first clickExactRadioStatus() call below, while
+    // the page is still on its default tab — see applyNativeDateFilter().
+    await applyNativeDateFilter();
 
     for (let attempt = 1; attempt <= CONFIG.switchAttempts; attempt++) {
       const switched = await clickExactRadioStatus(statusConfig);

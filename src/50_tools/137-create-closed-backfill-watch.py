@@ -212,6 +212,32 @@ def transform(script):
   function extractOnlyExpectedRows(statusConfig) {
     return extractAllExpectedRows(statusConfig).filter(backfillDateInRange);
   }
+
+  async function applyNativeDateFilter() {
+    if (!CONFIG.dateStart && !CONFIG.dateEnd) return false;
+    const toSiteFormat = (isoDate) => {
+      const parts = isoDate.split("-");
+      return parts[2] + "-" + parts[1] + "-" + parts[0];
+    };
+    const fd = document.getElementById("fd");
+    const fh = document.getElementById("fh");
+    if (!fd || !fh) return false;
+    const setValue = (el, value) => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      el.focus();
+      nativeSetter.call(el, "");
+      dispatchBasicEvents(el);
+      nativeSetter.call(el, value);
+      dispatchBasicEvents(el);
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    };
+    if (CONFIG.dateStart) setValue(fd, toSiteFormat(CONFIG.dateStart));
+    if (CONFIG.dateEnd) setValue(fh, toSiteFormat(CONFIG.dateEnd));
+    const buscarButtons = [...document.querySelectorAll("button")].filter(b => clean(b.textContent) === "Buscar");
+    if (!buscarButtons[1]) return false;
+    await humanClick(buscarButtons[1], 2500);
+    return true;
+  }
 '''
     start = script.index("  function extractOnlyExpectedRows(statusConfig)")
     end = script.index("\n\n  async function crawlStatus", start)
@@ -225,6 +251,12 @@ def transform(script):
     if "RANGE_COMPLETE: reached start date" not in script:
         new_next = "      if (passedBackfillStart) {\n        complete = true;\n        pageCounts.push(`${statusConfig.group} RANGE_COMPLETE: reached start date ${CONFIG.dateStart}`);\n        break;\n      }\n\n" + old_next
         script = script.replace(old_next, new_next, 1)
+    if "await applyNativeDateFilter();" not in script:
+        old_ready = "    for (let attempt = 1; attempt <= CONFIG.switchAttempts; attempt++) {"
+        new_ready = "    await applyNativeDateFilter();" + chr(10) + chr(10) + old_ready
+        if old_ready not in script:
+            raise ValueError("Closed script has no crawlStatus switchAttempts anchor")
+        script = script.replace(old_ready, new_ready, 1)
     return script
 
 def convert_url(url):
