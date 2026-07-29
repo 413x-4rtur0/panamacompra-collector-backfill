@@ -34,6 +34,16 @@ ROUTES = {
         "runner": str(Path(__file__).resolve().parent / "070-run-collector-closed-new.sh"),
         "auto_run_setting": "PC_CLOSED_WEBHOOK_AUTO_RUN",
     },
+    # Third route: the dedicated historical backfill watch (137-create-closed-
+    # backfill-watch.py). Its runner (080) imports the changedetection
+    # snapshot via 016-import-closed-backfill-snapshot.py, then drains full
+    # details (037b) and cotizaciones (038) — see that script for the
+    # priority/lock ordering shared with routes 1 and 2 above.
+    "panamacompra-closed-backfill": {
+        "token_file": BASE / ".webhook_token_closed_backfill",
+        "runner": str(Path(__file__).resolve().parent / "080-run-collector-closed-backfill.sh"),
+        "auto_run_setting": "PC_CLOSED_BACKFILL_WEBHOOK_AUTO_RUN",
+    },
 }
 
 # Bind address is configurable. The default 0.0.0.0 is required when
@@ -204,6 +214,10 @@ if __name__ == "__main__":
     if not TOKENS["panamacompra-closed"]:
         print("NOTE: no .webhook_token_closed found — the Closed new-closures "
               "webhook route is disabled until one is created.")
+    TOKENS["panamacompra-closed-backfill"] = load_optional_token(ROUTES["panamacompra-closed-backfill"]["token_file"])
+    if not TOKENS["panamacompra-closed-backfill"]:
+        print("NOTE: no .webhook_token_closed_backfill found — the Closed "
+              "backfill webhook route is disabled until one is created.")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"PanamaCompra webhook listener running on {HOST}:{PORT}")
     server.serve_forever()

@@ -1086,7 +1086,12 @@ def process_snapshot() -> dict[str, bool]:
         # below) — Closed activity must never factor into the main
         # worker's "is real work running" / auto-close checks.
         "closed_new": running("070-run-collector-closed-new.sh") or running("[P]C_CLOSED_MODE=forward"),
-        "closed_backfill": running("039-run-closed-backfill.sh") or running("[P]C_CLOSED_MODE=backfill"),
+        "closed_backfill": running("039-run-closed-backfill.sh") or running("[P]C_CLOSED_MODE=backfill")
+        # The webhook-triggered snapshot-import path (panamacompra-closed-backfill
+        # route -> 080 -> 016/037b/038) is a separate process tree from the
+        # scheduled-timer path above and needs its own detection.
+        or running("080-run-collector-closed-backfill.sh")
+        or running("[0]16-import-closed-backfill-snapshot.py"),
     }
 
 
