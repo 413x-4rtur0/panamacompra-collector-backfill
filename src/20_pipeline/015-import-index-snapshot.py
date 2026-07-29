@@ -336,7 +336,7 @@ def import_records(conn, records):
                 record_folder = disk_folder
                 index_json_path = disk_index_json
             else:
-                date_folder = date_folder_name()
+                date_folder = date_folder_from_fecha(r.get("fecha", "")) or date_folder_name()
                 record_folder = get_record_folder(date_folder, numero)
                 index_json_path = archive_index_json_path(record_folder, numero)
 

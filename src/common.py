@@ -330,6 +330,17 @@ def _parse_ddmmyyyy(text):
     day, month, year = m.group(1), m.group(2), m.group(3)
     return f"{year}-{int(month):02d}-{int(day):02d}"
 
+def date_folder_from_fecha(fecha_text):
+    """Derive the YY-MM-DD day folder from the portal's own FECHA field.
+
+    Backfilled/snapshot-imported records are inserted long after their real
+    publish date, so date_folder_name() (today) would file them under the
+    processing day instead of the day the record actually appeared on the
+    portal. Returns '' when fecha doesn't parse, so callers can fall back to
+    date_folder_name() for the rare row missing a usable date."""
+    iso = _parse_ddmmyyyy(fecha_text)
+    return iso[2:] if iso else ""
+
 def _parse_ddmmyyyy_matches(text):
     """All DD-MM-YYYY / DD/MM/YYYY dates in text as (match, ISO date)."""
     out = []
