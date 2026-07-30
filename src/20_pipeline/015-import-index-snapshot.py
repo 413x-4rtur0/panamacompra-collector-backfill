@@ -214,11 +214,22 @@ def parse_snapshot(text):
     pagination_consistent = {g: None for g in EXPECTED_GROUPS}
     section = "header"
     records = []
+    skipped_unexpected_group = []
     current = {}
 
     def flush():
         if current.get("numero") and current.get("link"):
-            current["grupo"] = _group_for_estado(current.get("estado", ""))
+            grupo = _group_for_estado(current.get("estado", ""))
+            if grupo not in EXPECTED_GROUPS:
+                # The watch's own browser-steps script samples more statuses than
+                # this particular importer is scoped to (e.g. the Closed backfill
+                # watch's script also covers Cancelled for the separate priority-2
+                # pipeline that shares it) — never insert a record under a grupo
+                # this importer wasn't told to expect; the numero stays queued for
+                # whichever importer/crawler does own that group.
+                skipped_unexpected_group.append(current.get("numero", ""))
+                return
+            current["grupo"] = grupo
             records.append(dict(current))
 
     for raw in lines:
@@ -297,7 +308,12 @@ def parse_snapshot(text):
             # Next, but pages were short/skipped along the way.
             info["healthy"] = False
             info["reason"] = info["reason"] or f"pagination inconsistent (first bad page {info['recovery_page'] or 1})"
-    return {"marker_ok": marker_ok, "groups": groups, "records": records}
+    return {
+        "marker_ok": marker_ok,
+        "groups": groups,
+        "records": records,
+        "skipped_unexpected_group": skipped_unexpected_group,
+    }
 
 
 def import_records(conn, records):
@@ -486,6 +502,7 @@ def main(argv=None):
         f"{g}={info['collected']}" + ("" if info["healthy"] else f"(UNHEALTHY:{info['reason']})")
         for g, info in groups.items()
     )
+    skipped_unexpected = parsed.get("skipped_unexpected_group") or []
     summary = (
         f"SNAPSHOT INDEX IMPORT\n"
         f"Snapshot: {path}\n"
@@ -495,6 +512,9 @@ def main(argv=None):
         f"Existing updated: {stats['existing']}\n"
         f"Index JSON written: {stats['json_written']}\n"
         f"Skipped (no link): {stats['skipped_no_link']}\n"
+        f"Skipped (group outside {EXPECTED_GROUPS}): {len(skipped_unexpected)}"
+        + (f" [{', '.join(skipped_unexpected[:5])}{', ...' if len(skipped_unexpected) > 5 else ''}]" if skipped_unexpected else "")
+        + "\n"
         f"Groups: {group_summary}\n"
         f"DB total: {db_total}; pending details: {pending}\n"
     )
