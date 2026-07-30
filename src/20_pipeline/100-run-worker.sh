@@ -848,3 +848,16 @@ rm -f "$IN_PROGRESS_FLAG"
 write_progress "IDLE" "DONE" "100" "Worker stopped. No active PanamaCompra process." "$(date '+%Y-%m-%d %H:%M:%S')"
 log "RUN-ALL WORKER STOPPED"
 launch_queued_update_monitor
+
+# Priority 2 (Closed/Cancelled new-closures) used to fire on its own
+# independent changedetection-watch schedule in parallel with priority 1,
+# competing for the same browser/CPU roughly every 30 minutes. It already
+# defers to this lock via its own flock check in 070-run-collector-closed-new.sh,
+# but chaining it here makes it actually run right after priority 1 finishes
+# instead of on a coincidentally-similar independent timer.
+exec 9>&-
+if [ -x "$APP_ROOT/src/10_webhook/070-run-collector-closed-new.sh" ]; then
+  log "Chaining priority 2 (Closed/Cancelled new-closures) after priority 1 completion."
+  "$APP_ROOT/src/10_webhook/070-run-collector-closed-new.sh"
+  log "Priority 2 (Closed/Cancelled new-closures) chain finished."
+fi
