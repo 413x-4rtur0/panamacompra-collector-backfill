@@ -4,8 +4,12 @@ provider comparison page a closed (Cerrada) opportunity links to — the actual
 value of the Closed feature: for each item bid on, who quoted what price,
 so cotizacion_price_stats() (common.py) can report min/avg/max per item.
 
-Queue: opportunities where grupo='Closed' and cotizacion_status is not yet
-a terminal state ('saved', 'no_bids', 'no_link'), capped by
+Queue: opportunities where grupo is 'Closed' or 'Cancelled' and
+cotizacion_status is not yet a terminal state ('saved', 'no_bids',
+'no_link') -- a Cancelled record always resolves to 'no_link' on its first
+attempt (it never reaches the cuadro-de-cotizaciones stage; find_cuadro_link
+correctly finds nothing there, not the unrelated cancellation-notice link
+next to it), capped by
 PC_CLOSED_DETAIL_LIMIT per run (default small — this opens two pages per
 record: the solicitud-de-cotizacion detail page, only when cuadro_link isn't
 already cached, then the cuadro page itself).
@@ -60,7 +64,7 @@ def close_popup(page):
 def cotizacion_pending_rows(conn, limit: int, max_attempts: int):
     rows = conn.execute("""
     SELECT * FROM opportunities
-    WHERE grupo = 'Closed'
+    WHERE grupo IN ('Closed', 'Cancelled')
       AND COALESCE(cotizacion_status, '') NOT IN ('saved', 'no_bids', 'no_link')
       AND cotizacion_attempts < ?
     ORDER BY cotizacion_attempts ASC, first_seen ASC

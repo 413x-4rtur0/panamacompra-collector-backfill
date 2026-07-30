@@ -35,6 +35,13 @@
         labelText: "Cerradas", // site's own Spanish tab label — do not translate
         expectedEstado: "Cerrada",
         totalLabel: "Closed collected"
+      },
+      {
+        group: "Cancelled",
+        radioId: "btnradio4",
+        labelText: "Canceladas", // site's own Spanish tab label — do not translate
+        expectedEstado: "Cancelado", // site shows this masculine form, not "Cancelada" — confirmed live
+        totalLabel: "Cancelled collected"
       }
     ],
 

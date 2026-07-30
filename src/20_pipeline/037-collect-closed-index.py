@@ -26,12 +26,20 @@ Two modes (PC_CLOSED_MODE):
            newer than it until paging naturally reaches the range. Reset the
            cursor from the monitor before starting a new range.
 
-Only writes to `opportunities` (grupo='Closed', detail_status='pending' —
-kept out of 030-collect-details.py's own-pipeline queue by that script's
-grupo check, see its detail_pending_rows(); picked up instead by
+PC_CLOSED_GROUP selects which portal tab this run crawls: "Closed" (default,
+btnradio3/"Cerradas") or "Cancelled" (btnradio4/"Canceladas") — see
+ALL_GROUPS/selected_group(). Only forward mode supports Cancelled; backfill
+always forces Closed regardless of this setting, since closed_crawl_state's
+cursor is a single page number shared across runs, not one per group.
+Priority 2 (070-run-collector-closed-new.sh) runs this script once per group.
+
+Only writes to `opportunities` (grupo=<selected group>, detail_status=
+'pending' — kept out of 030-collect-details.py's own-pipeline queue by that
+script's grupo check, see its detail_pending_rows(); picked up instead by
 037b-collect-closed-details.py on this feature's own low-resource schedule).
 The separate 038-collect-cotizaciones.py picks up the actual price/provider
-data from there.
+data from there — though a Cancelled record never has any: it never reaches
+the cuadro-de-cotizaciones stage, so it always resolves to 'no_link'.
 """
 import os
 import re
@@ -45,10 +53,33 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import *
 
-# estado_prefix stays "cerrad" on purpose — it matches the government site's
-# own Spanish ESTADO text ("Cerrada"/"Cerradas"), which never changes no
+# estado_prefix stays the site's own Spanish ESTADO text on purpose
+# ("Cerrada"/"Cerradas", "Cancelada"/"Cancelado"), which never changes no
 # matter what this codebase calls the concept internally.
-GROUP = {"name": "Closed", "radio_id": "btnradio3", "estado_prefix": "cerrad"}
+ALL_GROUPS = [
+    {"name": "Closed", "radio_id": "btnradio3", "estado_prefix": "cerrad"},
+    {"name": "Cancelled", "radio_id": "btnradio4", "estado_prefix": "cancelad"},
+]
+
+
+def selected_group():
+    """Which portal tab this run crawls, from PC_CLOSED_GROUP (default
+    "Closed" — every existing caller/env is unaffected by this option
+    existing). Priority 2 (070-run-collector-closed-new.sh) runs this script
+    once per group so a problem in one group's crawl can never affect the
+    other's. Backfill mode stays Closed-only regardless of this setting —
+    see the guard in main() — since closed_crawl_state's cursor is a single
+    page number, not one per group."""
+    wanted = str(os.environ.get("PC_CLOSED_GROUP", "") or "").strip().lower()
+    if not wanted:
+        return ALL_GROUPS[0]
+    for group in ALL_GROUPS:
+        if group["name"].lower() == wanted:
+            return group
+    return ALL_GROUPS[0]
+
+
+GROUP = selected_group()
 GROUP_SWITCH_ATTEMPTS = env_int("PC_INDEX_GROUP_SWITCH_ATTEMPTS", "3", minimum=1)
 
 
@@ -145,7 +176,7 @@ def apply_native_date_filter(page, start_date, end_date) -> bool:
             page.keyboard.press("Escape")
         # Two "Buscar" buttons exist (Numero search, date/entidad search) —
         # the second one is the date filter's. Must click while still on the
-        # default Abiertas tab; click_closed() switches to Cerradas after.
+        # default Abiertas tab; click_group() switches to the target tab after.
         page.locator("button", has_text="Buscar").nth(1).click()
         page.wait_for_timeout(2500)
         return True
@@ -177,16 +208,16 @@ def wait_for_table(page):
     page.wait_for_timeout(1500)
 
 
-def page_signature(page):
+def page_signature(page, group):
     return page.evaluate("""
-    (() => {
+    ({radioId, groupName}) => {
       const active = document.querySelector('ngb-pagination li.page-item.active a.page-link')?.innerText?.trim() || '';
       const first = document.querySelector('tabla-busqueda-avanzada-v3 tbody tr td a[href*="solicitud-de-cotizacion"], tabla-busqueda-avanzada-v3 tbody tr td a[href*="pliego-de-cargos"]')?.innerText?.trim() || '';
       const footer = document.querySelector('tabla-busqueda-avanzada-v3 .card')?.innerText?.trim() || '';
-      const checked = document.querySelector('#btnradio3')?.checked ? 'Closed' : 'Unknown';
+      const checked = document.querySelector('#' + radioId)?.checked ? groupName : 'Unknown';
       return checked + '|' + active + '|' + first + '|' + footer;
-    })();
-    """)
+    }
+    """, {"radioId": group["radio_id"], "groupName": group["name"]})
 
 
 def prepare_base_page(page):
@@ -197,51 +228,51 @@ def prepare_base_page(page):
     page.wait_for_selector("tabla-busqueda-avanzada-v3", timeout=60000)
 
 
-def group_is_active(page):
-    """True once #btnradio3 is checked AND the table already shows at least
-    one row whose ESTADO starts with 'cerrad', so we never scrape a stale
-    Abiertas/Programadas table under the Closed label."""
+def group_is_active(page, group):
+    """True once the group's radio is checked AND the table already shows at
+    least one row whose ESTADO starts with the group's estado_prefix, so we
+    never scrape a stale table under the wrong group's label."""
     return page.evaluate("""
-    () => {
+    ({radioId, estadoPrefix}) => {
       const norm = t => (t || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
-      if (!document.querySelector('#btnradio3')?.checked) return false;
+      if (!document.querySelector('#' + radioId)?.checked) return false;
       const rows = Array.from(document.querySelectorAll('tabla-busqueda-avanzada-v3 tbody tr'));
       return rows.some(row => {
         const cells = Array.from(row.querySelectorAll('th, td')).map(td => norm(td.innerText));
-        return cells.some(c => c.startsWith('cerrad'));
+        return cells.some(c => c.startsWith(estadoPrefix));
       });
     }
-    """)
+    """, {"radioId": group["radio_id"], "estadoPrefix": group["estado_prefix"]})
 
 
-def click_closed(page) -> bool:
-    """Switch to the Closed (Cerradas) tab and confirm it landed. Same
+def click_group(page, group) -> bool:
+    """Switch to the given group's tab and confirm it landed. Same
     retry-then-reload pattern as 010-collect-index.py's click_status() — the
     Angular re-render regularly races a plain radio click."""
     for attempt in range(1, GROUP_SWITCH_ATTEMPTS + 1):
         if attempt == GROUP_SWITCH_ATTEMPTS and attempt > 1:
-            print(f"Closed: reloading page for final switch attempt")
+            print(f"{group['name']}: reloading page for final switch attempt")
             prepare_base_page(page)
         close_popup(page)
         page.evaluate("""
-        () => {
-          const label = document.querySelector('label[for="btnradio3"]');
-          const input = document.querySelector('#btnradio3');
+        ({radioId}) => {
+          const label = document.querySelector('label[for="' + radioId + '"]');
+          const input = document.querySelector('#' + radioId);
           if (label) label.click();
           else if (input) {
             input.click();
             input.dispatchEvent(new Event('change', { bubbles: true }));
           }
         }
-        """)
+        """, {"radioId": group["radio_id"]})
         for _ in range(40):
             page.wait_for_timeout(500)
-            if group_is_active(page):
+            if group_is_active(page, group):
                 page.wait_for_timeout(3500)
                 close_popup(page)
                 wait_for_table(page)
                 return True
-        print(f"Closed: switch attempt {attempt}/{GROUP_SWITCH_ATTEMPTS} failed (rows never showed 'cerrad*')")
+        print(f"{group['name']}: switch attempt {attempt}/{GROUP_SWITCH_ATTEMPTS} failed (rows never showed '{group['estado_prefix']}*')")
     return False
 
 
@@ -327,7 +358,7 @@ def extract_rows(page, page_number):
     """, {"pageNumber": page_number})
 
 
-def click_next(page):
+def click_next(page, group):
     available = page.evaluate("""
     (() => {
       const next = document.querySelector('ngb-pagination a[aria-label="Next"]');
@@ -340,7 +371,7 @@ def click_next(page):
     """)
     if not available:
         return False, "Next disabled or not found"
-    before = page_signature(page)
+    before = page_signature(page, group)
     page.evaluate("""
     (() => {
       const next = document.querySelector('ngb-pagination a[aria-label="Next"]');
@@ -349,20 +380,20 @@ def click_next(page):
     """)
     for _ in range(40):
         page.wait_for_timeout(500)
-        if page_signature(page) != before:
+        if page_signature(page, group) != before:
             page.wait_for_timeout(2500)
             return True, "Clicked next"
     return False, "Next clicked but page did not change"
 
 
-def skip_to_page(page, target_page: int) -> tuple[int, str]:
+def skip_to_page(page, group, target_page: int) -> tuple[int, str]:
     """Advance from page 1 to ``target_page`` via repeated Next clicks (no
     direct page-N navigation exists in this Angular pager). Returns the page
     actually reached and a stop reason if it fell short."""
     page_number = 1
     while page_number < target_page:
         wait_for_table(page)
-        moved, why = click_next(page)
+        moved, why = click_next(page, group)
         if not moved:
             return page_number, f"could not advance to backfill page {target_page} ({why})"
         page_number += 1
@@ -373,6 +404,16 @@ def main():
     conn = init_db()
     mode = closed_mode()
     run_started = now_iso()
+
+    group = GROUP
+    if mode == "backfill" and group["name"] != ALL_GROUPS[0]["name"]:
+        # closed_crawl_state's cursor is one page number shared by whatever
+        # ran backfill, not one per group — running it against a non-default
+        # group would silently corrupt that cursor's meaning. Priority 2
+        # (forward mode) is the only caller that varies PC_CLOSED_GROUP today.
+        print(f"Backfill mode only supports {ALL_GROUPS[0]['name']!r}; "
+              f"ignoring PC_CLOSED_GROUP={group['name']!r} for this run.")
+        group = ALL_GROUPS[0]
 
     cutoff_date = None
     range_end_date = None
@@ -421,10 +462,10 @@ def main():
         if cutoff_date is not None:
             filter_end = range_end_date if mode == "backfill" and range_end_date else datetime.now().date()
             if apply_native_date_filter(page, cutoff_date, filter_end):
-                print(f"Closed: applied native date filter {cutoff_date.isoformat()} to {filter_end.isoformat()}")
+                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {filter_end.isoformat()}")
 
-        if not click_closed(page):
-            print(f"Closed: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
+        if not click_group(page, group):
+            print(f"{group['name']}: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
             browser.close()
             return
 
@@ -433,7 +474,7 @@ def main():
 
         page_number = 1
         if start_page > 1:
-            page_number, skip_stop = skip_to_page(page, start_page)
+            page_number, skip_stop = skip_to_page(page, group, start_page)
             if skip_stop:
                 stop_reason = skip_stop
                 reached_last_page = True  # ran out of pages before reaching the cursor
@@ -449,7 +490,7 @@ def main():
                 rows = extract_rows(page, page_number)
                 rows = [
                     r for r in rows
-                    if not r["estado"] or strip_accents(r["estado"]).lower().startswith(GROUP["estado_prefix"])
+                    if not r["estado"] or strip_accents(r["estado"]).lower().startswith(group["estado_prefix"])
                 ]
                 extracted_total += len(rows)
                 page_counts.append((page_number, len(rows)))
@@ -500,7 +541,7 @@ def main():
 
                     row = {
                         "numero": numero,
-                        "grupo": GROUP["name"],
+                        "grupo": group["name"],
                         "tipo_url": detect_url_type(r["link"]),
                         "estado": r["estado"],
                         "descripcion": r["descripcion"],
@@ -542,13 +583,13 @@ def main():
                     else:
                         json_skipped += 1
 
-                print(f"Closed page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
+                print(f"{group['name']} page {page_number}: {len(rows)} rows (new={new_records}, existing={existing_records})")
 
                 if reached_cutoff_date:
                     stop_reason = f"reached {mode} target date ({cutoff_date.isoformat()})"
                     break
 
-                moved, reason = click_next(page)
+                moved, reason = click_next(page, group)
                 if not moved:
                     stop_reason = reason
                     reached_last_page = True
@@ -571,13 +612,13 @@ def main():
     else:
         update_closed_crawl_state(conn, last_forward_run_at=now_iso())
 
-    db_closed_total = conn.execute(
-        "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = 'Closed'"
+    db_group_total = conn.execute(
+        "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = ?", (group["name"],)
     ).fetchone()["c"]
 
     summary_lines = [
-        f"CLOSED INDEX RUN ({mode}) started: {run_started}",
-        f"CLOSED INDEX RUN finished: {now_iso()}",
+        f"{group['name'].upper()} INDEX RUN ({mode}) started: {run_started}",
+        f"{group['name'].upper()} INDEX RUN finished: {now_iso()}",
         f"Start page: {start_page}  Page cap this run: {page_cap}",
         f"Stop reason: {stop_reason or '(page cap reached)'}",
     ] + ([
@@ -594,7 +635,7 @@ def main():
         f"Index JSON written: {json_written}",
         f"Index JSON skipped existing: {json_skipped}",
         "",
-        f"DB total Closed records: {db_closed_total}",
+        f"DB total {group['name']} records: {db_group_total}",
         "",
         "Page counts:",
     ]
@@ -602,7 +643,7 @@ def main():
         summary_lines.append(f"  page {page_num}: {qty} rows")
     summary = "\n".join(summary_lines) + "\n"
 
-    log_path = LOG_DIR / f"closed_index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_path = LOG_DIR / f"{group['name'].lower()}_index_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     log_path.write_text(summary, encoding="utf-8")
     print(summary)
 

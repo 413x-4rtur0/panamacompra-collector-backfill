@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Priority 2: catches newly-closed opportunities (the Closed equivalent of
-# the main Abiertas/Programadas trigger), fired by its own changedetection.io
-# watch + webhook token — completely separate from 060-run-collector.sh so a
-# problem here can never touch the priority-1 pipeline. No WhatsApp: this
-# downloads the closed opportunity's full detail archive (folder rename,
-# tables, calendar — same per-record processing 030-collect-details.py does
-# for Abiertas/Programadas, see 037b's own docstring for why that's a
-# separate script) and its cuadro-de-cotizaciones price/provider data, then
-# inserts everything into the database (037 forward mode + 037b + 038).
+# Priority 2: catches newly-closed AND newly-cancelled opportunities (the
+# Closed/Cancelled equivalent of the main Abiertas/Programadas trigger),
+# fired by its own changedetection.io watch + webhook token — completely
+# separate from 060-run-collector.sh so a problem here can never touch the
+# priority-1 pipeline. No WhatsApp: this downloads each opportunity's full
+# detail archive (folder rename, tables, calendar — same per-record
+# processing 030-collect-details.py does for Abiertas/Programadas, see
+# 037b's own docstring for why that's a separate script) and, for Closed
+# records, its cuadro-de-cotizaciones price/provider data (a Cancelled
+# record never has one — it always resolves to cotizacion_status='no_link').
+# 037 runs once per group since its own crawl loop only handles one tab per
+# invocation; 037b/038 already cover both groups in a single pass.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
@@ -52,7 +55,8 @@ if ! flock -n 9; then
 fi
 
 log "===== Closed new-closures run started ====="
-PC_CLOSED_MODE=forward "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" >> "$LOG" 2>&1
+PC_CLOSED_MODE=forward PC_CLOSED_GROUP=Closed "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" >> "$LOG" 2>&1
+PC_CLOSED_MODE=forward PC_CLOSED_GROUP=Cancelled "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" >> "$LOG" 2>&1
 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" >> "$LOG" 2>&1
 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" >> "$LOG" 2>&1
 log "===== Closed new-closures run finished ====="

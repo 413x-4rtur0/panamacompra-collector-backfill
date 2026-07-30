@@ -10,14 +10,17 @@ non-competing schedule -- called alongside 037/038 from the Closed-only
 orchestrators (priority 2 new-closures, priority 3 backfill), never
 priority 1.
 
-Queue: Closed rows with detail_attempts under the limit and either no
-saved detail yet, or a stale/incomplete archive on disk -- the exact same
-"is this row really done" gate 030-collect-details.py uses
+Queue: Closed or Cancelled rows with detail_attempts under the limit and
+either no saved detail yet, or a stale/incomplete archive on disk -- the
+exact same "is this row really done" gate 030-collect-details.py uses
 (row_archive_is_current + archive_complete via process_detail's own
-completeness check), just scoped to grupo='Closed' instead of excluding
-it. Reuses process_detail() itself unmodified (imported, not duplicated),
-so a closed record's detail page is scraped/archived identically to an
-open one -- same tables, same calendar/.ics, same folder-rename logic.
+completeness check), just scoped to those two groups instead of excluding
+them. Reuses process_detail() itself unmodified (imported, not duplicated),
+so a closed or cancelled record's detail page is scraped/archived
+identically to an open one -- same tables, same calendar/.ics, same
+folder-rename logic. A cancelled record simply has no award/cotización
+section for process_detail() to find, same as it handles a record at any
+other incomplete stage.
 
 Deliberately does NOT reuse 030's own main() loop: that loop's inline
 WhatsApp "Detalles Completos" notification is intentionally skipped here
@@ -47,11 +50,11 @@ def closed_fulldetail_max_attempts() -> int:
 
 def closed_detail_pending_rows(conn, limit: int, max_attempts: int):
     """Same shape/gate as 030-collect-details.py's detail_pending_rows(),
-    scoped to grupo='Closed' instead of excluding it."""
+    scoped to grupo IN ('Closed', 'Cancelled') instead of excluding them."""
     candidates = conn.execute("""
     SELECT *
     FROM opportunities
-    WHERE detail_attempts < ? AND COALESCE(grupo, '') = 'Closed'
+    WHERE detail_attempts < ? AND COALESCE(grupo, '') IN ('Closed', 'Cancelled')
     ORDER BY
       CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END,
       detail_attempts ASC,
