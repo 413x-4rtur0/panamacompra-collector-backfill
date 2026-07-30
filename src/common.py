@@ -1231,11 +1231,53 @@ def ensure_db_schema(conn):
         # solicitud-de-cotizacion detail page, cached so a retry never needs to
         # re-fetch that page just to rediscover the same link.
         "cuadro_link": "ALTER TABLE opportunities ADD COLUMN cuadro_link TEXT",
+        # Short lowercase code for the record's last grupo/estado transition
+        # (see status_change_code) plus when it was set and, for a "cerrada"
+        # code, when the closure was detected. Kept in sync by
+        # insert_or_update_index/reconcile_legacy_status_history so grupo
+        # never drifts from what the platform actually reports.
+        "status_flag": "ALTER TABLE opportunities ADD COLUMN status_flag TEXT",
+        "status_updated_at": "ALTER TABLE opportunities ADD COLUMN status_updated_at TEXT",
+        "closed_at": "ALTER TABLE opportunities ADD COLUMN closed_at TEXT",
     }
 
     for column, statement in migrations.items():
         if column not in existing_columns:
             conn.execute(statement)
+
+    # Append-only audit trail of every grupo/estado transition observed for a
+    # record, written by insert_or_update_index (source = whichever pipeline
+    # saw it) and by reconcile_legacy_status_history (source =
+    # 'legacy-reconcile') for transitions that happened out of band. Powers
+    # both the WhatsApp status digest and status_flag/closed_at bookkeeping.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS opportunity_status_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'index',
+        previous_grupo TEXT,
+        previous_estado TEXT,
+        new_grupo TEXT,
+        new_estado TEXT,
+        change_code TEXT NOT NULL,
+        notification_state TEXT NOT NULL DEFAULT 'not_required',
+        notified_at TEXT,
+        closure_at TEXT
+    )
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_status_history_numero
+    ON opportunity_status_history(numero, observed_at)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_status_history_pending
+    ON opportunity_status_history(notification_state, observed_at)
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_status_history_numero_closure
+    ON opportunity_status_history(numero, closure_at, observed_at)
+    """)
 
     # One row per (numero, item_index, proponente): a single provider's bid on
     # a single line item within one closed opportunity's cuadro de
@@ -1714,7 +1756,31 @@ def append_index_csv(row):
             row.get("finish_date_guess"),
         ])
 
-def insert_or_update_index(conn, row):
+_STATUS_CODE_ALIASES = {
+    "abierta": "abierta",
+    "cerrada": "cerrada",
+    "cancelada": "cancelada",
+    "programada": "programada",
+    "desierta": "desierta",
+    "adjudicada": "adjudicada",
+}
+
+def status_change_code(old_estado, new_estado, old_grupo, new_grupo):
+    """Short lowercase, accent-stripped code for a grupo/estado transition
+    (e.g. "Cerrada" -> "cerrada"). Falls back to the new grupo (singular)
+    when estado is missing/unrecognized, so a code can still be derived."""
+    def normalize(text):
+        text = unicodedata.normalize("NFKD", (text or "").strip())
+        return "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+
+    code = normalize(new_estado)
+    if code:
+        return _STATUS_CODE_ALIASES.get(code, code)
+
+    fallback = normalize(new_grupo)
+    return fallback[:-1] if fallback.endswith("s") else fallback
+
+def insert_or_update_index(conn, row, source="index"):
     existing = find_existing_opportunity(conn, row["numero"])
 
     if existing:
@@ -1722,12 +1788,28 @@ def insert_or_update_index(conn, row):
         # announced (notified_at set) and moves from the Programadas list to the
         # Abiertas list. (Cancelada is a planned future transition.) The flag is
         # consumed by the MESSAGING step. COALESCE keeps any flag still pending.
-        old_grupo = (existing["grupo"] or "").strip().lower()
-        new_grupo = (row["grupo"] or "").strip().lower()
+        old_grupo_raw = existing["grupo"] or ""
+        old_estado_raw = existing["estado"] or ""
+        new_grupo_raw = row["grupo"] or ""
+        new_estado_raw = row["estado"] or ""
         already_announced = bool(existing["notified_at"]) if "notified_at" in existing.keys() else False
+        transitioned = (old_grupo_raw, old_estado_raw) != (new_grupo_raw, new_estado_raw)
+
         status_change = None
-        if already_announced and old_grupo.startswith("programad") and new_grupo.startswith("abiert"):
-            status_change = "abierta"
+        change_code = None
+        status_updated_at_value = None
+        if transitioned:
+            change_code = status_change_code(old_estado_raw, new_estado_raw, old_grupo_raw, new_grupo_raw)
+            status_updated_at_value = row["last_seen"]
+            if already_announced:
+                status_change = change_code
+            # A real transition always resolves closed_at explicitly: set on a
+            # fresh closure, cleared on any other transition (e.g. a record
+            # reopening after being marked cerrada) so it never goes stale.
+            closed_at_value = row["last_seen"] if change_code == "cerrada" else None
+        else:
+            # No transition: leave closed_at exactly as it was.
+            closed_at_value = existing["closed_at"]
 
         # Do not rewrite files. Only update lightweight DB tracking.
         conn.execute("""
@@ -1743,7 +1825,10 @@ def insert_or_update_index(conn, row):
             link = ?,
             last_seen = ?,
             tipo_url = ?,
-            pending_status_change = COALESCE(?, pending_status_change)
+            pending_status_change = COALESCE(?, pending_status_change),
+            status_flag = COALESCE(?, status_flag),
+            status_updated_at = COALESCE(?, status_updated_at),
+            closed_at = ?
         WHERE numero = ?
         """, (
             row["grupo"],
@@ -1758,8 +1843,30 @@ def insert_or_update_index(conn, row):
             row["last_seen"],
             row["tipo_url"],
             status_change,
+            change_code,
+            status_updated_at_value,
+            closed_at_value,
             row["numero"],
         ))
+
+        if transitioned:
+            conn.execute("""
+            INSERT INTO opportunity_status_history (
+                numero, observed_at, source, previous_grupo, previous_estado,
+                new_grupo, new_estado, change_code, notification_state, closure_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            """, (
+                row["numero"],
+                row["last_seen"],
+                source,
+                old_grupo_raw,
+                old_estado_raw,
+                new_grupo_raw,
+                new_estado_raw,
+                change_code,
+                row.get("finish_date_guess"),
+            ))
+
         conn.commit()
         return "existing"
 
@@ -1795,6 +1902,61 @@ def insert_or_update_index(conn, row):
     conn.commit()
     append_index_csv(row)
     return "new"
+
+def reconcile_legacy_status_history(conn):
+    """Back-fill status_flag/closed_at/history for records whose grupo/estado
+    already moved on (e.g. a backfill import wrote the new state directly)
+    without ever going through insert_or_update_index, so status_flag was
+    never synced. Only considers records the live index flow previously
+    tracked (notified_at set) — untouched backfill-only rows have no prior
+    known estado to diff against and are left alone. Idempotent: a record
+    stops matching once its status_flag reflects the current estado."""
+    candidates = conn.execute("""
+        SELECT numero, grupo, estado, last_seen, last_notified_status, status_flag
+        FROM opportunities
+        WHERE notified_at IS NOT NULL
+          AND last_notified_status IS NOT NULL
+          AND last_notified_status != estado
+    """).fetchall()
+
+    reconciled = 0
+    for candidate in candidates:
+        expected_code = status_change_code(
+            candidate["last_notified_status"], candidate["estado"],
+            candidate["grupo"], candidate["grupo"],
+        )
+        if candidate["status_flag"] == expected_code:
+            continue
+
+        # Resolve closed_at explicitly (not COALESCE): set on cerrada, cleared
+        # otherwise, so a record that reopened after a stale 'cerrada' flag
+        # doesn't keep an equally stale closed_at timestamp.
+        closed_at_value = candidate["last_seen"] if expected_code == "cerrada" else None
+        conn.execute("""
+            UPDATE opportunities
+            SET status_flag = ?,
+                status_updated_at = ?,
+                closed_at = ?
+            WHERE numero = ?
+        """, (expected_code, candidate["last_seen"], closed_at_value, candidate["numero"]))
+
+        conn.execute("""
+            INSERT INTO opportunity_status_history (
+                numero, observed_at, source, previous_grupo, previous_estado,
+                new_grupo, new_estado, change_code, notification_state, closure_at
+            ) VALUES (?, ?, 'legacy-reconcile', NULL, ?, ?, ?, ?, 'reconciled', NULL)
+        """, (
+            candidate["numero"],
+            candidate["last_seen"],
+            candidate["last_notified_status"],
+            candidate["grupo"],
+            candidate["estado"],
+            expected_code,
+        ))
+        reconciled += 1
+
+    conn.commit()
+    return reconciled
 
 def guess_finish_date_from_text(text):
     text = text or ""
