@@ -57,6 +57,23 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# Priority 4: the persistent task queue (145-task-queue.py) for work that
+# must wait on a DB-state condition, not just "the active lock is free" —
+# e.g. a specific-date-range backfill queued to start only once the current
+# pending-detail backlog fully drains. Ticked here, inside this script's own
+# lock, so activating a task (which can reset closed_crawl_state and rewrite
+# the backfill date-range settings) can never race an in-flight segment.
+# Re-source settings afterward: an activated task may have just rewritten
+# them, and the values sourced above would otherwise be stale for this run.
+TASK_QUEUE_TICK=$("$PYTHON_BIN" "$APP_ROOT/src/50_tools/145-task-queue.py" tick 2>&1)
+log "Task queue tick: $TASK_QUEUE_TICK"
+if [ -f "$MONITOR_SETTINGS" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$MONITOR_SETTINGS"
+  set +a
+fi
+
 log "===== Closed backfill segment started ====="
 PC_CLOSED_MODE=backfill "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" >> "$LOG" 2>&1
 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" >> "$LOG" 2>&1

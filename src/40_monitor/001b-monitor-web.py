@@ -1068,6 +1068,21 @@ def closed_status_payload() -> dict[str, object]:
     return payload
 
 
+def task_queue_payload() -> dict[str, object]:
+    """Priority 4: the persistent task queue (145-task-queue.py) for work
+    that must wait on a DB-state condition, not just "the active lock is
+    free" — e.g. a Closed backfill date range queued to start only once the
+    pending-detail backlog fully drains. A plain read of the queue's own
+    JSON file, same as any other status payload here reads the DB directly
+    rather than shelling out."""
+    queue_path = pc_common.QUEUE_DIR / "task_queue.json"
+    try:
+        tasks = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        tasks = []
+    return {"tasks": tasks}
+
+
 def process_snapshot() -> dict[str, bool]:
     worker = running("[r]un-worker.sh")
     test = running("[p]ython(3)? -u .*070-test-zone.py")
@@ -2956,7 +2971,7 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
 <div class="card" data-tab="settings"><h2>Access &amp; sign-in</h2><details class="adv-settings" open><summary class="small">Manager login, admin API token, ARL-89 feed token, and client Firebase sign-in</summary><p class="xs">The front page (/) is a login for everyone except this PC itself (127.0.0.1 always gets straight in). <b>Manager</b>: local username/password below — grants this admin monitor. <b>Clients</b>: Firebase email/Google sign-in — they land on the calendar-only dashboard at <a href="/client-calendar" target="_blank" rel="noopener">/client-calendar</a>. An email listed in "Admin emails" also gets the admin monitor when signing in via Firebase. The API token lets the Android admin app call the protected APIs (X-PC-Admin-Token header or ?admin_token=).</p><div class="settings-grid"><label class="small">Manager username <input id="set-PC_ADMIN_USERNAME" size="18" autocomplete="off"></label> <label class="small">Manager password <input id="set-PC_ADMIN_PASSWORD" size="18" type="password" autocomplete="new-password"></label> <label class="small">Admin emails (comma separated) <input id="set-PC_ADMIN_EMAILS" size="34" placeholder="you@gmail.com, other@x.com"></label> <label class="small">Admin API token (Android admin app) <input id="set-PC_ADMIN_API_TOKEN" size="26" placeholder="blank = off"></label></div><h4 class="small" style="margin:10px 0 4px">ARL-89 client feed (WordPress portal)</h4><p class="xs">A separate, narrow read-only token for the ARL-89 WordPress portal's server to fetch the small "calendar"/"kpis" client add-on feed (X-ARL89-Feed-Token header on /api/arl89-feed) — never the admin monitor itself. Blank = feed disabled. Paste this same value into the WordPress site's ARL89_MONITOR_FEED_TOKEN setting.</p><div class="settings-grid"><label class="small">ARL-89 feed token <input id="set-PC_ARL89_FEED_TOKEN" size="26" placeholder="blank = off"></label></div><h4 class="small" style="margin:10px 0 4px">Client sign-in (Firebase web app)</h4><p class="xs">Same Firebase project as the Android app: in Firebase console → Project settings → Your apps, add a <b>Web</b> app and copy its config here; also add this monitor's host to Authentication → Settings → Authorized domains for Google sign-in. Blank = client sign-in disabled (manager login and ?uid= links keep working).</p><div class="settings-grid"><label class="small">API key <input id="set-PC_FIREBASE_WEB_API_KEY" size="34"></label> <label class="small">Auth domain <input id="set-PC_FIREBASE_WEB_AUTH_DOMAIN" size="28" placeholder="your-project.firebaseapp.com"></label> <label class="small">Project ID <input id="set-PC_FIREBASE_WEB_PROJECT_ID" size="20"></label> <label class="small">App ID <input id="set-PC_FIREBASE_WEB_APP_ID" size="34" placeholder="1:1234:web:abcd"></label> <button onclick="saveAdvancedSettings()">Save settings</button></div></details></div><div class="card" data-tab="settings"><h2>Monitor users &amp; tab access</h2><p class="small">Users you add here sign in with the same front-page <b>Manager</b> form, but only see — and can only drive — the tabs you grant them. Full admin stays with the manager account and PC_ADMIN_EMAILS. Server-side, their sessions get read access plus the actions belonging to their tabs; secret settings values are never sent to them.</p><div class="subsection"><h3>Add / update a user</h3><p><label class="small">Username <input id="mu-username" size="14" autocomplete="off"></label> <label class="small">Password <input id="mu-password" size="14" type="password" autocomplete="new-password"></label></p><p><span class="small">Tabs:</span> <label class="small"><input type="checkbox" id="mu-tab-overview" checked> Overview</label> <label class="small"><input type="checkbox" id="mu-tab-calendar" checked> Calendar</label> <label class="small"><input type="checkbox" id="mu-tab-decision"> KPIs</label> <label class="small"><input type="checkbox" id="mu-tab-records"> Opportunities</label> <label class="small"><input type="checkbox" id="mu-tab-operations"> Operations</label> <label class="small"><input type="checkbox" id="mu-tab-whatsapp"> WhatsApp</label> <label class="small"><input type="checkbox" id="mu-tab-scheduler"> Scheduler</label> <label class="small"><input type="checkbox" id="mu-tab-integrations"> Integrations</label> <label class="small"><input type="checkbox" id="mu-tab-settings"> Settings</label> <button class="primary" onclick="addMonitorUser()">Add / update user</button></p></div><div class="subsection"><h3>Users (JSON)</h3><p class="small">Full list, editable by hand. Remove a line to delete the user; set "enabled": false to suspend without deleting.</p><textarea id="monitor-users" rows="6" placeholder='[{{"username":"maria","password":"secret","tabs":["overview","calendar"],"enabled":true}}]'></textarea><p><button onclick="saveMonitorUsers()">Save users</button> <button onclick="loadMonitorUsers()">Reload</button> <span id="mu-state" class="small"></span></p></div></div>
 <div class="card" data-tab="settings"><h2>Work templates</h2><p class="small">Reusable work files copied into <code>templates/</code> inside each record folder. Set the source folder, tick the files to use, save the selection. Records downloaded in each run receive them automatically; files already inside a record are never overwritten. Same source/selection as <code>pcc templates</code> and the native monitor.</p><p><label class="small">Source folder <input id="set-PC_TEMPLATES_SRC_DIR" size="42" placeholder="blank = var/templates"></label> <button onclick="saveTemplatesSource()">Save source</button> <button onclick="loadTemplates()">Refresh files</button> <button onclick="saveTemplatesSelection()">Save selection</button> <button onclick="runAction('Apply work templates')">Apply to all records</button></p><div id="templates-files" class="small">Loading template files…</div></div>
 <div class="card" data-tab="integrations"><h2>Webhook trigger access</h2><p class="small">The trigger token is generated automatically by setup (<code>docker stack up</code> writes <code>.webhook_token</code> when missing) and read here LIVE, so after an update or a re-run of setup this panel always shows the current values. Paste the Docker-to-host <code>json://host.docker.internal</code> URL into changedetection. Use <code>json://webhook</code> only when changedetection and webhook are in this same compose stack/network.</p><pre id="webhook-access">Loading webhook access…</pre><p><button onclick="loadWebhookAccess()">Refresh webhook access</button> <button onclick="runAction('Docker stack status')">Docker stack status</button></p></div>
-<div class="card" data-tab="integrations"><h2>Closed monitor <span class="small">(second, independent process)</span></h2><p class="small">Closed-opportunity crawl runs completely separately from the Abiertas/Programadas pipeline above — its own changedetection watch, its own webhook token, its own systemd timer for the historical backfill — so nothing here can block or crash that one. Priority 2 (new closures) reacts to its changedetection watch; priority 3 (backfill) ticks on a timer and defers to both priority 1 and 2. Neither sends WhatsApp; both only download and insert into the database.</p><div id="closed-process-pills" class="small">Loading…</div><pre id="closed-status">Loading Closed status…</pre><p><button onclick="loadClosedStatus()">Refresh Closed status</button></p><div class="subsection"><h3>Backfill date range (optional)</h3><p class="small">Leave both blank for the default day-count backfill (PC_CLOSED_BACKFILL_DAYS, currently controls how far back it goes). Set a range instead to target specific history: Start date replaces the day-count cutoff outright; End date makes the backfill skip newer rows until paging reaches it. Reset the backfill cursor first if you want a fresh range instead of continuing from where it left off.</p><div class="settings-grid"><label class="small">Start date <input id="set-PC_CLOSED_BACKFILL_START_DATE" type="date"></label> <label class="small">End date <input id="set-PC_CLOSED_BACKFILL_END_DATE" type="date"></label> <button onclick="saveClosedDateRange()">Save date range</button></div></div><div class="subsection"><h3>News pagination (priority 2)</h3><p class="small">Forward-page safety cap: a runaway ceiling for the collector's own forward-mode crawl, not its real stop condition (that's PC_CLOSED_FORWARD_DAYS) — applies on the next run, no restart needed.</p><div class="settings-grid"><label class="small">Forward-page safety cap <input id="set-PC_CLOSED_FORWARD_PAGES" size="5"></label></div><p class="small">Changedetection sample pages: how many pages the live watch itself checks to notice a new closure. Applying this rewrites the watch's script and restarts the changedetection container (a few seconds; the Abiertas/Programadas watch is unaffected).</p><div class="settings-grid"><label class="small">Sample pages <input id="news-sample-pages" size="5"></label> <button onclick="applyClosedNewsSamplePages()">Apply (restarts changedetection)</button></div><p id="closed-news-pages-status" class="small"></p></div></div>
+<div class="card" data-tab="integrations"><h2>Closed monitor <span class="small">(second, independent process)</span></h2><p class="small">Closed-opportunity crawl runs completely separately from the Abiertas/Programadas pipeline above — its own changedetection watch, its own webhook token, its own systemd timer for the historical backfill — so nothing here can block or crash that one. Priority 2 (new closures) reacts to its changedetection watch; priority 3 (backfill) ticks on a timer and defers to both priority 1 and 2. Neither sends WhatsApp; both only download and insert into the database.</p><div id="closed-process-pills" class="small">Loading…</div><pre id="closed-status">Loading Closed status…</pre><p><button onclick="loadClosedStatus()">Refresh Closed status</button></p><div class="subsection"><h3>Backfill date range (optional)</h3><p class="small">Leave both blank for the default day-count backfill (PC_CLOSED_BACKFILL_DAYS, currently controls how far back it goes). Set a range instead to target specific history: Start date replaces the day-count cutoff outright; End date makes the backfill skip newer rows until paging reaches it. Reset the backfill cursor first if you want a fresh range instead of continuing from where it left off.</p><div class="settings-grid"><label class="small">Start date <input id="set-PC_CLOSED_BACKFILL_START_DATE" type="date"></label> <label class="small">End date <input id="set-PC_CLOSED_BACKFILL_END_DATE" type="date"></label> <button onclick="saveClosedDateRange()">Save date range</button></div></div><div class="subsection"><h3>News pagination (priority 2)</h3><p class="small">Forward-page safety cap: a runaway ceiling for the collector's own forward-mode crawl, not its real stop condition (that's PC_CLOSED_FORWARD_DAYS) — applies on the next run, no restart needed.</p><div class="settings-grid"><label class="small">Forward-page safety cap <input id="set-PC_CLOSED_FORWARD_PAGES" size="5"></label></div><p class="small">Changedetection sample pages: how many pages the live watch itself checks to notice a new closure. Applying this rewrites the watch's script and restarts the changedetection container (a few seconds; the Abiertas/Programadas watch is unaffected).</p><div class="settings-grid"><label class="small">Sample pages <input id="news-sample-pages" size="5"></label> <button onclick="applyClosedNewsSamplePages()">Apply (restarts changedetection)</button></div><p id="closed-news-pages-status" class="small"></p></div><div class="subsection"><h3>Task queue (priority 4)</h3><p class="small">Work that waits on a database condition, not just the active lock being free — e.g. a specific Closed backfill date range queued to start only once the current pending-detail backlog fully drains. Checked every 20 minutes from inside the backfill timer; defers to priorities 1–3 the same way priority 3 defers to 1 and 2.</p><div id="task-queue-list" class="small">Loading…</div><div class="settings-grid"><label class="small">Label <input id="task-queue-label" size="30" placeholder="Closed backfill Feb–May 2026"></label> <label class="small">Start date <input id="task-queue-start" type="date"></label> <label class="small">End date <input id="task-queue-end" type="date"></label> <label class="small">Wait until Closed pending &le; <input id="task-queue-threshold" type="number" value="0" size="5"></label> <button onclick="addTaskQueueEntry()">Add task</button></div><p id="task-queue-status" class="small"></p></div></div>
 <div class="card" data-tab="integrations"><h2>Closed webhook trigger access <span class="small">(priority 2 — new closures)</span></h2><p class="small">Separate token from the main webhook above — create it once with <code>python3 -c "import secrets; print(secrets.token_urlsafe(32))" &gt; .webhook_token_closed</code> then restart the webhook listener service. Points changedetection at <code>070-run-collector-closed-new.sh</code> instead of the full pipeline.</p><pre id="closed-webhook-access">Loading Closed webhook access…</pre><p><button onclick="loadClosedWebhookAccess()">Refresh Closed webhook access</button></p></div>
 <div class="card" data-tab="integrations"><h2>Closed changedetection Browser Steps JS <span class="small">(priority 2 — new closures)</span></h2><p class="small">Paste this into a <strong>second, separate</strong> ChangeDetection watch on the same portal URL — <strong>Browser Steps → Execute JS</strong>, CSS filter <code>#pc-monitor-output-closed</code>, notification URL from the Closed webhook access panel above. It only samples the first few Closed pages (enough to notice new closures); the full historical archive is crawled separately by the backfill timer, not by this watch.</p><p><button onclick="loadChangedetectionScriptClosed()">Load script</button> <button onclick="copyChangedetectionScriptClosed()">Copy script</button> <span id="cd-script-closed-state" class="small"></span></p><textarea id="changedetection-script-closed" rows="16" style="width:100%; box-sizing:border-box" placeholder="Press Load script"></textarea></div>
 <div class="card" data-tab="settings"><h2>Reset / review from zero</h2><p class="small">Separate actions, from a soft detail re-queue to a full wipe. The two destructive wipes ask for confirmation first. Each runs src/50_tools/110-reset.py; check the current action log and refresh the DB snapshot above to verify.</p><p><button onclick="runReset('requeue-details')">Re-queue all details</button><button onclick="runReset('reset-notify')">Reset notify / review flags</button><button class="danger" onclick="runReset('wipe-db')">Wipe database only</button><button class="danger" onclick="runReset('wipe-all')">Wipe EVERYTHING</button></p><p id="reset-status" class="small"></p></div>
@@ -4636,6 +4651,67 @@ async function loadClosedStatus() {{
       `Backfill cursor:        page ${{s.backfill_page}}${{s.backfill_complete ? ` — reached its ${{s.backfill_days_target}}-day target, complete` : ' — still in progress'}}`;
   }} catch (err) {{ node.textContent = 'Closed status unavailable: ' + err; }}
 }}
+function renderTaskQueueList(tasks) {{
+  if (!tasks || !tasks.length) return '(no queued tasks)';
+  const statusLabel = {{queued: 'queued', running: 'running', done: 'done', cancelled: 'cancelled'}};
+  return tasks.map(t => {{
+    const params = t.kind === 'closed_backfill_range'
+      ? `${{esc(t.params.start_date)}} → ${{esc(t.params.end_date)}}`
+      : esc(JSON.stringify(t.params));
+    const thresholdText = (t.wait_params || {{}}).threshold ?? 0;
+    const waitInfo = t.wait_condition === 'closed_pending_below'
+      ? `Closed pending ≤ ${{esc(String(thresholdText))}}`
+      : esc(t.wait_condition);
+    const cancel = t.status === 'queued'
+      ? ` <button onclick="removeTaskQueueEntry('${{esc(t.id)}}')">Cancel</button>`
+      : '';
+    return `<div>[${{esc(statusLabel[t.status] || t.status)}}] ${{esc(t.label)}} (${{params}}) — waits for ${{waitInfo}}${{cancel}}</div>`;
+  }}).join('');
+}}
+async function loadTaskQueue() {{
+  const node = document.getElementById('task-queue-list');
+  if (!node) return;
+  try {{
+    const data = await (await fetch('/api/task-queue', {{cache: 'no-store'}})).json();
+    node.innerHTML = renderTaskQueueList(data.tasks || []);
+  }} catch (err) {{ node.textContent = 'Task queue unavailable: ' + err; }}
+}}
+async function addTaskQueueEntry() {{
+  const status = document.getElementById('task-queue-status');
+  const labelEl = document.getElementById('task-queue-label');
+  const label = labelEl.value.trim();
+  const start = document.getElementById('task-queue-start').value;
+  const end = document.getElementById('task-queue-end').value;
+  const threshold = document.getElementById('task-queue-threshold').value || '0';
+  if (!label || !start || !end) {{
+    if (status) status.textContent = 'Label, start date and end date are required.';
+    return;
+  }}
+  if (status) status.textContent = 'Adding…';
+  try {{
+    const res = await fetch('/api/task-queue-add', {{
+      method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+      body: 'label=' + encodeURIComponent(label) + '&start_date=' + encodeURIComponent(start) +
+            '&end_date=' + encodeURIComponent(end) + '&threshold=' + encodeURIComponent(threshold),
+    }});
+    const result = await res.json();
+    if (status) status.textContent = result.ok ? 'Task queued.' : `Failed: ${{result.error || 'unknown error'}}`;
+    if (result.ok) {{
+      labelEl.value = '';
+      loadTaskQueue();
+    }}
+  }} catch (err) {{ if (status) status.textContent = 'Failed: ' + err; }}
+}}
+async function removeTaskQueueEntry(taskId) {{
+  if (!confirm('Cancel this queued task?')) return;
+  try {{
+    await fetch('/api/task-queue-remove', {{
+      method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+      body: 'task_id=' + encodeURIComponent(taskId),
+    }});
+  }} catch (err) {{ /* best-effort; loadTaskQueue() below still reflects reality */ }}
+  loadTaskQueue();
+}}
 async function refreshDecisionDashboard() {{
   const s = await (await fetch('/api/db-stats?' + kpiFilterParams(), {{cache: 'no-store'}})).json();
   const stamp = document.getElementById('kpi-live-stamp');
@@ -5051,6 +5127,8 @@ loadWebhookAccess();
 loadClosedWebhookAccess();
 loadClosedStatus();
 setInterval(loadClosedStatus, 20000);
+loadTaskQueue();
+setInterval(loadTaskQueue, 20000);
 refreshWebTimer();
 poll();
 {_LOC_TOOLTIP_JS}
@@ -5297,6 +5375,38 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self.send_text(400, f"{exc}\n", "text/plain; charset=utf-8")
                 return
             self.send_text(200, f"Setting saved: {key}={load_monitor_settings().get(key, '')}\n", "text/plain; charset=utf-8")
+            return
+        if path == "/api/task-queue-add":
+            label = form.get("label", [""])[0].strip()
+            start_date = form.get("start_date", [""])[0].strip()
+            end_date = form.get("end_date", [""])[0].strip()
+            threshold = form.get("threshold", ["0"])[0].strip() or "0"
+            if not label or not start_date or not end_date:
+                self.send_text(400, json.dumps({"ok": False, "error": "label, start date and end date are required"}),
+                                "application/json; charset=utf-8")
+                return
+            script = str(BASE_DIR / "src/50_tools/145-task-queue.py")
+            result = subprocess.run(
+                [script, "add", "--label", label, "--start-date", start_date, "--end-date", end_date,
+                 "--threshold", threshold],
+                cwd=BASE_DIR, env=monitor_env(), capture_output=True, text=True, timeout=15,
+            )
+            out = result.stdout.strip() or json.dumps({"ok": False, "error": result.stderr.strip() or "no output"})
+            self.send_text(200 if result.returncode == 0 else 400, out, "application/json; charset=utf-8")
+            return
+        if path == "/api/task-queue-remove":
+            task_id = form.get("task_id", [""])[0].strip()
+            if not task_id:
+                self.send_text(400, json.dumps({"ok": False, "error": "task_id is required"}),
+                                "application/json; charset=utf-8")
+                return
+            script = str(BASE_DIR / "src/50_tools/145-task-queue.py")
+            result = subprocess.run(
+                [script, "remove", task_id],
+                cwd=BASE_DIR, env=monitor_env(), capture_output=True, text=True, timeout=15,
+            )
+            out = result.stdout.strip() or json.dumps({"ok": False, "error": result.stderr.strip() or "no output"})
+            self.send_text(200 if result.returncode == 0 else 400, out, "application/json; charset=utf-8")
             return
         if path == "/api/selected-record-action":
             action_name = form.get("action", [""])[0].strip().lower()
@@ -5805,6 +5915,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/closed-status":
             self.send_text(200, json.dumps(closed_status_payload(), ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if path == "/api/task-queue":
+            self.send_text(200, json.dumps(task_queue_payload(), ensure_ascii=False), "application/json; charset=utf-8")
             return
         if path == "/api/waha-session-status":
             self.send_text(200, json.dumps(monitor_connectivity_status(), ensure_ascii=False), "application/json; charset=utf-8")
