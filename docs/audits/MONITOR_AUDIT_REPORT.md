@@ -134,14 +134,14 @@
 | `update_requested` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
 | `update_in_progress` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
 | `dev_mode_active` badge | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **⚡** `repair_requested/in_progress` | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
+| **⚡** `repair_requested/in_progress` | ❌ | ✅ (flags only, no badge yet) | ❌ | ❌ | ❌ | ❌ |
 | **⚡** `health_requested/in_progress` | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
 | **Progress en vivo** | | | | | | |
 | `run_all_progress` barra+texto | ✅ | ✅ | ❌ | ⬜ texto | ❌ | ❌ |
 | ETA | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Contadores records | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Step X/7 actual/total | ⬜ barra | ✅ texto | ❌ | ❌ | ❌ | ❌ |
-| **⚡** `repair_progress` barra | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
+| **⚡** `repair_progress` barra | ❌ | ✅ (texto plano, no barra visual) | ❌ | ❌ | ❌ | ❌ |
 | **Resumen última ejecución** | | | | | | |
 | Duración total | ✅ tooltip | ✅ card | ❌ | ✅ texto | ❌ | ❌ |
 | Segundos por fase | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -166,7 +166,7 @@
 | Stop | ✅ | ✅ | ✅ menú | ❌ | ❌ | ❌ |
 | Stop No Resume | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Dev Pause/Resume | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **⚡** Repair Failed | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
+| **⚡** Repair Failed | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **⚡** Health Check | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
 | Update | ✅ | ✅ | ✅ menú | ❌ | ❌ | ✅ loader |
 | Cerradas (backfill) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -236,7 +236,7 @@
 - Badge `dev_mode_active`
 - Auto-minimizar en auto-runs
 
-### ⚡ F11 — Repair Mode (Fail Recovery)
+### ✅ F11 — Repair Mode (Fail Recovery) — IMPLEMENTADO 2026-07-31
 
 > **Diseño revisado 2026-07-31**, con datos reales: se ejecutó un repair manual completo de los 347 registros `detail_status='failed'` acumulados (`/tmp/repair_failed_details.py` + `/tmp/diagnose_failed.py`, no comiteado). Resultado: **347/347 recuperados (100%)**, y **cero** requirió rotación de user-agent — todas las fallas eran conexiones Playwright/Firefox trabadas (`WatchdogTimeout`), resueltas por completo con un reintento simple sobre un browser recién lanzado. Esto invalida la estrategia propuesta originalmente abajo (tachada) y confirma la de reemplazo.
 
@@ -269,6 +269,8 @@
 ```bash
 125-run-priority.sh repair 90 repair -- src/20_pipeline/060b-repair-failed.sh
 ```
+
+**Implementado 2026-07-31**, tal como quedó especificado arriba: `060-repair-failed.py` + `060b-repair-failed.sh` (deferencia flock a priority 1/2/3), disparado desde un nuevo botón "Repair failed records" (zona Settings, `MANUAL_ACTIONS`) — reutiliza `125-run-priority.sh repair 90` sin necesitar tocar ese script. Tarjeta de progreso nueva en Operations (`repair_progress.env` vía `/api/repair-status`). No se agregó `repair_requested.flag`/`repair_in_progress.flag` como badges en M1/M3 todavía — verificado extremo a extremo solo el camino "sin registros fallidos" (0 candidatos en producción al momento de implementar); falta una verificación real con un lote de registros `failed` genuino cuando vuelva a haber alguno.
 
 ### ⚡ F12 — Health Check Mode (System Review)
 
