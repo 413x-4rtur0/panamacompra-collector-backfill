@@ -27,8 +27,10 @@ up the new range on its very next tick. Completion is
 closed_crawl_state.backfill_complete == 1, checked on a later tick.
 
 Supported wait_condition: "closed_pending_below" -- wait_params {threshold}
-(default 0): COUNT(*) FROM opportunities WHERE grupo='Closed' AND
-detail_status='pending' must be <= threshold.
+(default 0): COUNT(*) FROM opportunities WHERE grupo IN ('Closed', 'Cancelled')
+AND detail_status='pending' must be <= threshold. Both groups share the same
+037b/038 pending queue, so a backfill task must wait for both to drain, not
+just Closed.
 """
 import argparse
 import json
@@ -121,7 +123,7 @@ def check_wait_condition(conn, wait_condition: str, wait_params: dict) -> bool:
     if wait_condition == "closed_pending_below":
         threshold = int(wait_params.get("threshold", 0))
         count = conn.execute(
-            "SELECT COUNT(*) AS c FROM opportunities WHERE grupo='Closed' AND detail_status='pending'"
+            "SELECT COUNT(*) AS c FROM opportunities WHERE grupo IN ('Closed', 'Cancelled') AND detail_status='pending'"
         ).fetchone()["c"]
         return count <= threshold
     # Unknown condition: never auto-satisfy, so a typo in wait_condition

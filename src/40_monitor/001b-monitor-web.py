@@ -1043,12 +1043,12 @@ def closed_status_payload() -> dict[str, object]:
         conn.row_factory = sqlite3.Row
         try:
             payload["total"] = conn.execute(
-                "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = 'Closed'"
+                "SELECT COUNT(*) AS c FROM opportunities WHERE grupo IN ('Closed', 'Cancelled')"
             ).fetchone()["c"]
             by_status: dict[str, int] = {}
             for row in conn.execute(
                 "SELECT COALESCE(NULLIF(cotizacion_status, ''), 'pending') AS status, COUNT(*) AS c "
-                "FROM opportunities WHERE grupo = 'Closed' GROUP BY status"
+                "FROM opportunities WHERE grupo IN ('Closed', 'Cancelled') GROUP BY status"
             ):
                 by_status[row["status"]] = row["c"]
             payload["cotizacion_by_status"] = by_status
@@ -4659,7 +4659,7 @@ async function loadClosedStatus() {{
       ? Object.entries(byStatus).map(([k, v]) => `${{k}}=${{v}}`).join('  ')
       : '(none yet)';
     node.textContent =
-      `Closed records in DB: ${{s.total}}\n` +
+      `Closed + Cancelled records in DB: ${{s.total}}\n` +
       `Cotización bid rows:    ${{s.bids_total}}\n` +
       `Cotización status:      ${{statusLine}}\n\n` +
       `New-closures last run:  ${{fmtRelativeTimestamp(s.last_forward_run_at)}}${{s.last_forward_run_at ? ' (' + s.last_forward_run_at + ')' : ''}}\n` +
