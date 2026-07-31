@@ -1,8 +1,10 @@
 # Auditoría Completa: Sistema de Monitoreo — PanamaCompra Collector
 
-> Generado: 2026-07-28
+> Generado: 2026-07-28 · Actualizado: 2026-07-31
 > Rama: `agent/priority-run-queue`
 > Repo: `panamacompra-collector`
+
+> **Nota de vigencia:** las secciones 1–8 documentan el estado al 2026-07-28. Desde entonces se implementó Priority 4 (cola de tareas), se corrigieron dos bugs, y el diseño propuesto para F11/F12 se revisó con datos reales de producción. Ver **§9 Cambios desde 2026-07-28** para el detalle — las secciones §4 (matriz), §5 F11/F12 y §6 (dependencias) ya incorporan esos cambios inline.
 
 ---
 
@@ -11,7 +13,7 @@
 | # | Archivo | Tipo | Líneas | Propósito |
 |---|---|---|---|---|
 | M1 | `src/40_monitor/001a-monitor-tk.py` | Tkinter GUI | 3,292 | Monitor principal con barra de progreso, chips, KPIs, calendario |
-| M2 | `src/40_monitor/001b-monitor-web.py` | Web (Flask) | ~6,191 | Monitor web con dashboard completo, KPI diagramas, settings |
+| M2 | `src/40_monitor/001b-monitor-web.py` | Web (Flask) | ~6,300 (2026-07-31, +task queue UI) | Monitor web con dashboard completo, KPI diagramas, settings |
 | M3 | `src/40_monitor/001c-monitor-terminal.sh` | Bash TUI | 543 | Menú interactivo en terminal con opciones de ejecución |
 | M4 | `src/40_monitor/002-next-run-timer.py` | Tkinter overlay | 932 | Ventana countdown + última ejecución (overlay escritorio) |
 | M5 | `src/40_monitor/002b-next-run-timer-cli.py` | CLI Python | 235 | Countdown en terminal + notificación desktop |
@@ -62,6 +64,7 @@
 | `priority-run.state` | `$PC_QUEUE_DIR/priority-run.state` | Estado del despachador de prioridad |
 | `priority-pending/` | `$PC_QUEUE_DIR/priority-pending/` | Solicitudes pendientes del priority dispatcher |
 | `monitor_web.env` | `$PC_RUN_DIR/monitor_web.env` | URL publicada del web monitor (local + LAN) |
+| ✅ `task_queue.json` | `$PC_QUEUE_DIR/task_queue.json` | **IMPLEMENTADO 2026-07-30** — Cola FIFO de tareas condicionadas a estado de DB (no solo lock libre). Ver `145-task-queue.py`. Ticked desde `039-run-closed-backfill.sh` cada 20 min. Solo M2 lo expone (list/add/remove vía `/api/task-queue*`). |
 | `run_all_current.log` | `var/data/logs/run_all_current.log` | Log iteración actual del worker |
 | `run_all_history.log` | `var/data/logs/run_all_history.log` | Historial acumulado de iteraciones |
 | `run_all_worker.log` | `var/data/logs/run_all_worker.log` | Log completo del worker |
@@ -150,7 +153,8 @@
 | Estado de detalles | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Cerradas** | | | | | | |
 | `closed_crawl_state` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Process pills Cerradas | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Process pills Cerradas | ❌ | ✅ (4 pills, incl. priority 4) | ❌ | ❌ | ❌ | ❌ |
+| ✅ Task queue (priority 4) — list/add/cancel | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Health Check** | | | | | | |
 | **⚡** `health_result` display | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
 | **⚡** Botón Health Check | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
@@ -234,27 +238,32 @@
 
 ### ⚡ F11 — Repair Mode (Fail Recovery)
 
+> **Diseño revisado 2026-07-31**, con datos reales: se ejecutó un repair manual completo de los 347 registros `detail_status='failed'` acumulados (`/tmp/repair_failed_details.py` + `/tmp/diagnose_failed.py`, no comiteado). Resultado: **347/347 recuperados (100%)**, y **cero** requirió rotación de user-agent — todas las fallas eran conexiones Playwright/Firefox trabadas (`WatchdogTimeout`), resueltas por completo con un reintento simple sobre un browser recién lanzado. Esto invalida la estrategia propuesta originalmente abajo (tachada) y confirma la de reemplazo.
+
 **Objetivo:** Recuperar registros con `detail_status='failed'` re-descargándolos con reintentos.
 
 **Estado actual:**
 - `125-run-priority.sh` ya reconoce `source=repair` → `run_type=REPAIR` (priority 90) ✅
 - `050-repair-missing-deadlines.py` cubre deadlines, no failed general ⬜
+- `common.run_with_watchdog()` + relanzar browser al expirar ya existe y está probado en producción en `030-collect-details.py`, `037b-collect-closed-details.py` y `038-collect-cotizaciones.py` ✅ — F11 debe **reusar este patrón**, no reinventar uno.
+- El script ad-hoc de repair necesitó su propio `wait_for_priorities_1_and_2()` (polling de flock) porque nada genérico se lo da — **requisito no negociable** para F11: debe deferir a priority 1/2 con el mismo patrón `flock -n LOCK true` (check-don't-kill) que ya usan priority 3 y 4, no solo confiar en el número de prioridad de `125-run-priority.sh` (que no entiende deferencia entre locks de distintos procesos).
 
 **Archivos nuevos:**
 
 | Archivo | Propósito |
 |---|---|
-| `src/20_pipeline/060-repair-failed.py` | Re-descarga registros failed con reintentos (rotar UA, backoff 3s/10s/30s) |
-| `src/20_pipeline/060b-repair-failed.sh` | Wrapper shell: lock + flags + invocación |
+| `src/20_pipeline/060-repair-failed.py` | Re-descarga registros failed reutilizando `run_with_watchdog` + relanzo de browser (mismo patrón que 030/037b/038); ~~rotar UA, backoff 3s/10s/30s~~ — descartado, no hubo un solo caso real que lo necesitara |
+| `src/20_pipeline/060b-repair-failed.sh` | Wrapper shell: lock + flags + invocación + deferencia flock a priority 1/2 (igual que `039-run-closed-backfill.sh`) |
 
 **Pipeline Repair:**
 1. Adquirir `/tmp/panamacompra_repair_worker.lock`
-2. Crear `repair_requested.flag` + `repair_in_progress.flag`
-3. Escribir `repair_progress.env`: `PHASE`, `STATUS`, `PERCENT`, `RECORDS_TOTAL`, `RECORDS_PROCESSED`, `RECORDS_FIXED`, `RECORDS_STILL_FAILED`, `STRATEGY`
-4. Consultar DB: `SELECT * FROM opportunities WHERE detail_status='failed'`
-5. Por cada registro: re-descargar con Playwright, reintentar con backoff, actualizar DB
-6. Al finalizar: escribir `repair_last_summary.env`
-7. Limpiar flags
+2. Verificar flock de priority 1 y 2 libres (check-don't-kill); si ocupados, salir sin marcar fallo — se reintenta en el próximo tick del timer
+3. Crear `repair_requested.flag` + `repair_in_progress.flag`
+4. Escribir `repair_progress.env`: `PHASE`, `STATUS`, `PERCENT`, `RECORDS_TOTAL`, `RECORDS_PROCESSED`, `RECORDS_FIXED`, `RECORDS_STILL_FAILED`
+5. Consultar DB: `SELECT * FROM opportunities WHERE detail_status='failed'`
+6. Un solo browser Playwright para todo el lote; por registro: `run_with_watchdog(process_detail)`, al expirar cerrar+relanzar browser y continuar (no reintento en el mismo registro más allá de eso — el 100% de los casos reales se resolvió con un solo reintento sobre browser fresco)
+7. Al finalizar: escribir `repair_last_summary.env`
+8. Limpiar flags
 
 **Integración:**
 ```bash
@@ -263,7 +272,7 @@
 
 ### ⚡ F12 — Health Check Mode (System Review)
 
-**Objetivo:** Revisión integral del sistema — 19 verificaciones.
+**Objetivo:** Revisión integral del sistema — 21 verificaciones (19 originales + HC20/HC21, ver revisión 2026-07-31 abajo).
 
 **Estado actual:**
 - `140-full-report.py` existe pero es read-only, Markdown, no interactivo ⬜
@@ -296,8 +305,14 @@
 | HC15 | Disk space | `df` en partición data | < 1GB |
 | HC16 | Disk inodes | `df -i` en partición data | < 1000 |
 | HC17 | Config files | `monitor_settings.env`, tokens, chat_id | Missing |
-| HC18 | Git status | `git status --short` | Uncommitted changes |
+| HC18 | Git stash accumulation | ~~`git status --short` (cualquier diff)~~ → `git stash list \| wc -l` | > 5 stashes |
 | HC19 | Recent errors | `grep -i error/failed/traceback` en logs | Cualquier match |
+| ✅ HC20 | Task queue estancada | `task_queue.json`: tarea `running` con `started_at` > 24h y sin avanzar | Estancada > 24h |
+| ✅ HC21 | Snapshot grupos inesperados | `index_snapshot_result.env` / log de `015-import-index-snapshot.py`: `skipped_unexpected_group` | > 0 |
+
+> **HC18 revisado 2026-07-31:** el diseño original ("cualquier diff sin commitear = FAIL") habría generado falsos positivos constantes — el propio incidente de 258 stashes acumulados (root-caused y corregido esta semana, ver §9) demostró que el árbol de trabajo puede mostrar diffs transitorios legítimos como parte de la operación normal (`000-update-before-run.sh` autostash). La señal real que sí detectó el incidente fue la **acumulación** de stashes, no la existencia de un diff puntual.
+>
+> **HC20/HC21 nuevos:** cubren los dos subsistemas agregados después de la auditoría original (Priority 4 y grupo Cancelled) — ninguno de los 19 checks originales podía haberlos anticipado. Sin HC20, una tarea de cola trabada (rango de fechas inválido, sin datos en el portal, bug) bloquearía la cola entera sin que nada lo reporte, salvo revisar `task_queue.json` a mano. Sin HC21, filas Cerradas/Canceladas se descartan en silencio si el crawler introdujera algún día un grupo inesperado.
 
 **State file:** `health_result.env` — `OVERALL_STATUS` (PASS/WARN/FAIL), `CHECKS_TOTAL`, `CHECKS_PASSED`, `CHECKS_WARNED`, `CHECKS_FAILED`, más campos por check (`CHECK_XX_NAME`, `CHECK_XX_STATUS`, `CHECK_XX_DETAIL`).
 
@@ -339,8 +354,8 @@ F12 (Health Check Mode)
 - F8: requiere F4 (lógica de flags en monitor_common.py)
 - F9: independiente
 - F10: requiere F8
-- F11: requiere F6 (botones terminal + flags comunes)
-- F12: requiere F11 (infraestructura de flags + state env)
+- F11: **revisado 2026-07-31** — su dependencia real no es F6 sino el patrón de deferencia flock ya probado en priority 3/4 (`flock -n LOCK true`, check-don't-kill); F6 (botones terminal) solo hace falta para la *exposición* en M3, no para la lógica de repair en sí, que ya se validó de punta a punta sin ningún botón de monitor
+- F12: requiere F11 (infraestructura de flags + state env); además ahora depende de que Priority 4 (task queue) y el grupo Cancelled ya existan, por HC20/HC21
 
 ---
 
@@ -362,7 +377,33 @@ F12 (Health Check Mode)
 
 | Archivo | Modo | Propósito |
 |---|---|---|
-| `src/20_pipeline/060-repair-failed.py` | REPAIR | Re-descarga registros failed con reintentos |
-| `src/20_pipeline/060b-repair-failed.sh` | REPAIR | Wrapper shell con lock + flags |
-| `src/50_tools/150-health-check.py` | HEALTH | 19 verificaciones del sistema |
+| `src/20_pipeline/060-repair-failed.py` | REPAIR | Re-descarga registros failed reutilizando `run_with_watchdog` (ver F11 revisado) |
+| `src/20_pipeline/060b-repair-failed.sh` | REPAIR | Wrapper shell con lock + flags + deferencia flock a priority 1/2 |
+| `src/50_tools/150-health-check.py` | HEALTH | 21 verificaciones del sistema (ver F12 revisado) |
 | `src/50_tools/150b-health-check.sh` | HEALTH | Wrapper shell con lock + flags |
+
+---
+
+## 9. Cambios desde 2026-07-28
+
+Todo lo siguiente se implementó y verificó en producción **después** de generada esta auditoría; las secciones 1–8 se actualizaron inline donde correspondía, pero se resume acá para trazabilidad.
+
+### 9A. Funcionalidad nueva
+- **Status tracking correcto:** `status_flag`/`status_updated_at`/`closed_at` + tabla `opportunity_status_history`, con `reconcile_legacy_status_history()` para backfill de 3,264 registros existentes. Corrige el bug original de "Programadas/Abiertas no cambian a cerrado".
+- **Priority 2 ahora cubre Cancelled, no solo Closed:** `037-collect-closed-index.py` itera `ALL_GROUPS` (Closed + Cancelled); `037b`/`038` procesan `grupo IN ('Closed','Cancelled')` desde la misma cola compartida; script de changedetection actualizado con el segundo radio button.
+- **Snapshot importer con guardia de grupo:** `015-import-index-snapshot.py` ahora descarta (y cuenta en `skipped_unexpected_group`) cualquier fila con `grupo` fuera de los esperados, en vez de insertarla con datos potencialmente incorrectos.
+- **Watchdog contra cuelgues de browser:** `common.run_with_watchdog()` (SIGALRM) + relanzo de browser, aplicado a `030-collect-details.py`, `037b-collect-closed-details.py` y `038-collect-cotizaciones.py`. Motivado por un cuelgue real de producción de 4+ horas.
+- **Priority 4 — cola de tareas persistente:** `145-task-queue.py` + integración en `039-run-closed-backfill.sh` + UI completa en M2 (`/api/task-queue*`, tarjeta "Task queue (priority 4)"). Permite encolar trabajo condicionado a estado de DB (ej. backfill Feb–May 2026 una vez drenado el backlog de pendientes), no solo a que un lock esté libre.
+- **Fix de raíz del ciclo de 258 stashes:** 92 archivos `.sh`/`.py` + `bin/pcc` estaban commiteados sin bit ejecutable, causando que `000-update-before-run.sh` generara un diff de chmod en cada ciclo, barrido por el autostash. Corregido commiteando el modo correcto (0 diff verificado).
+- **Reorganización de docs:** `docs/audits/` con los 3 reportes de auditoría existentes.
+
+### 9B. Bugs encontrados y corregidos durante esta revisión (2026-07-31)
+Al comparar la UI del monitor contra esta misma auditoría, salieron dos bugs reales introducidos por el trabajo de Cancelled/Priority-4 (9A), no cubiertos por los 19 health checks originales — de ahí HC21 arriba:
+1. **`145-task-queue.py` `check_wait_condition`** solo contaba `grupo='Closed'` pendientes, ignorando Cancelled — pese a que ambos comparten la misma cola de `037b`/`038`. Un backfill podía activarse mientras aún había Cancelled pendientes, compitiendo por la misma cola que la propia feature dice evitar. **Corregido:** `grupo IN ('Closed','Cancelled')`.
+2. **`001b-monitor-web.py` `/api/closed-status`** (`total` y `cotizacion_by_status`) filtraba solo `grupo='Closed'`, subreportando en silencio el total real y ocultando el estado de cotización de Cancelled. **Corregido:** mismo `IN ('Closed','Cancelled')`, y la etiqueta de UI pasó de "Closed records in DB" a "Closed + Cancelled records in DB".
+
+### 9C. Deuda conocida, aún sin resolver
+- Cola de tareas: sin botón para cancelar una tarea en estado `running` (solo `queued`); sin detección de estancamiento (cubierto ahora por HC20 propuesto, no implementado); el rango de fechas que escribe una tarea activada comparte las mismas claves `PC_CLOSED_BACKFILL_START_DATE/END_DATE` que el campo manual de la misma tarjeta, y puede sobreescribirlo sin aviso.
+- 46 stashes históricos con contenido real (2026-07-07 a 2026-07-28) sin revisar — dejados a criterio del usuario.
+- 7 registros Abiertas/Programadas con `status_flag='cerrada'` residual no detectados por `reconcile_legacy_status_history()` (caso borde: `last_notified_status` ya igual a `estado`).
+- Backfill Feb–May 2026 aún no arrancó: la tarea en cola espera correctamente a que drene el backlog de pendientes (~9,600 al último chequeo).

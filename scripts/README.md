@@ -108,7 +108,7 @@ automatically after the current job exits.
 ## Legacy one-time tools
 
 These completed their purpose and are kept only for reference/recovery; do not
-extend them (see `docs/CODEBASE_AUDIT_PLAN.md` §5):
+extend them (see `docs/audits/CODEBASE_AUDIT_PLAN.md` §5):
 
 - `src/50_tools/090a-migrate-previous-records.sh` + `090b-migrate-previous-records.py`
   — one-time migration of pre-layout record archives.
