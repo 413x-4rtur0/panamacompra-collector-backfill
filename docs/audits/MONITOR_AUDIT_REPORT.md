@@ -130,7 +130,7 @@
 | **Flags** | | | | | | |
 | `run_all_requested` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
 | `run_all_in_progress` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
-| `stop_no_resume` badge | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `stop_no_resume` badge | N/A — descartado, ver F1 | N/A | N/A | N/A | N/A | N/A |
 | `update_requested` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
 | `update_in_progress` badge | ✅ | ✅ | ✅ texto | ✅ texto | ❌ | ❌ |
 | `dev_mode_active` badge | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -164,8 +164,8 @@
 | **Run Controls** | | | | | | |
 | Run All | ✅ | ✅ | ✅ menú | ❌ | ❌ | ❌ |
 | Stop | ✅ | ✅ | ✅ menú | ❌ | ❌ | ❌ |
-| Stop No Resume | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Dev Pause/Resume | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Stop No Resume | N/A — descartado, ver F1 | N/A | N/A | N/A | N/A | N/A |
+| Dev Pause/Resume | ✅ (desde antes de esta auditoría, commit 4e707bf) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **⚡** Repair Failed | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **⚡** Health Check | **⚡** | **⚡** | **⚡** | ❌ | ❌ | ❌ |
 | Update | ✅ | ✅ | ✅ menú | ❌ | ❌ | ✅ loader |
@@ -186,10 +186,17 @@
 
 ## 5. Gap Analysis Priorizado
 
-### F1 — Run Controls en Tk
-- Mostrar `run_all_stop_no_resume.flag` como badge
-- Botón "Stop No Resume" separado
-- Botón "Dev Pause/Resume"
+### F1 — Run Controls en Tk — ❌ DESCARTADO 2026-07-31 (no era un gap real)
+
+Los tres puntos originales, verificados contra el código actual:
+
+1. **Botón "Dev Pause/Resume"** — ya existía en M1 desde el commit `4e707bf` (2026-07-08), **tres semanas antes** de que se escribiera esta auditoría. Error de la auditoría desde el día uno, no una regresión.
+2. **Badge de `run_all_stop_no_resume.flag`** — la bandera es autolimpiante: `120a-stop-everything.sh` y `120b-stop-collectors.sh` la crean (`touch`), esperan ~2-3s mientras hacen `pkill`/`sleep`, y la borran ellos mismos antes de salir. Es una señal interna para el exit trap del worker ("no reanudes"), no un estado persistente. Un badge sondeado cada pocos segundos casi nunca la vería en `true` — daría una falsa sensación de cobertura sin valor real observable.
+3. **Botón "Stop No Resume" separado** — sería redundante: el propio comentario de `120b-stop-collectors.sh` dice que "Stop active run" (el botón que YA existe en M1 y M2) "detiene la ejecución actual de inmediato **y evita una reanudación automática**". No existe en el código ningún "stop" que SÍ permita reanudación automática para contrastar — eso solo pasa tras un crash no planeado (`mark_abrupt_exit_for_resume`), nunca como una variante de botón manual. Un segundo botón haría exactamente lo mismo que el primero.
+
+Además, la atribución de la tabla §2A de `110a-request-run.sh:14` como "creador" de la bandera es incorrecta: esa línea solo la **borra** (para que una solicitud de ejecución nueva no quede bloqueada por una marca de "no resume" obsoleta).
+
+**Conclusión:** no hay gap real que llenar aquí. Ver la matriz de §4 y el resumen de §7, corregidos.
 
 ### F2 — Progress bar Tk
 - Añadir contador "Step X/7" como texto
@@ -365,9 +372,9 @@ F12 (Health Check Mode)
 
 | Monitor | Gaps |
 |---|---|
-| **M1 Tk** (3,292 lines) | stop_no_resume badge, dev_mode badge, KPI diagrams, closed_crawl_state, WAHA QR warning, step X/7 text, timing KPIs, **⚡ repair button+progress, ⚡ health button+result** |
-| **M2 Web** (~6,191 lines) | stop_no_resume badge, WAHA QR warning, **⚡ repair progress bar, ⚡ health result card** |
-| **M3 Terminal** (543 lines) | progress env, last_summary, dev_mode, stop_no_resume, Cerradas buttons, WAHA QR, **⚡ repair, ⚡ health** |
+| **M1 Tk** (3,292 lines) | ~~stop_no_resume badge~~ (descartado, F1), dev_mode badge, KPI diagrams, closed_crawl_state, WAHA QR warning, step X/7 text, timing KPIs, **⚡ repair button+progress (M2 ya lo tiene, M1 no)**, **⚡ health button+result** |
+| **M2 Web** (~6,300 lines) | ~~stop_no_resume badge~~ (descartado, F1), WAHA QR warning, **✅ repair status card (implementado)**, **⚡ health result card** |
+| **M3 Terminal** (543 lines) | progress env, last_summary, dev_mode, ~~stop_no_resume~~ (descartado, F1), Cerradas buttons, WAHA QR, **⚡ repair, ⚡ health** |
 | **M4 Timer Tk** (932 lines) | flags queue, dev_mode, progress env, action buttons, WAHA QR |
 | **M5 Timer CLI** (235 lines) | TODO: flags, progress, summary, dev_mode, auto-minimize, WAHA QR |
 | **M6 Loader** (150 lines) | Result screen, WAHA QR |
