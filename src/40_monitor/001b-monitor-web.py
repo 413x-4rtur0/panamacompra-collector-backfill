@@ -1080,7 +1080,7 @@ def task_queue_payload() -> dict[str, object]:
         tasks = json.loads(queue_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         tasks = []
-    return {"tasks": tasks}
+    return {"tasks": tasks, "any_running": any(t.get("status") == "running" for t in tasks)}
 
 
 def process_snapshot() -> dict[str, bool]:
@@ -4625,14 +4625,20 @@ async function loadClosedStatus() {{
   const node = document.getElementById('closed-status');
   if (!node) return;
   try {{
-    const [s, p] = await Promise.all([
+    const [s, p, q] = await Promise.all([
       (await fetch('/api/closed-status', {{cache: 'no-store'}})).json(),
       (await fetch('/api/status', {{cache: 'no-store'}})).json(),
+      (await fetch('/api/task-queue', {{cache: 'no-store'}})).json(),
     ]);
     if (pills) {{
       const procs = (p && p.processes) || {{}};
       const chip = (ok, label) => `<span style="color:${{ok ? '#247A47' : 'var(--concrete-500, #888)'}};font-weight:${{ok ? 700 : 400}}">${{esc(t(label))}}: ${{esc(ok ? t('RUNNING') : t('idle'))}}</span>`;
-      pills.innerHTML = chip(procs.closed_new, 'New-closures (priority 2)') + ' &nbsp;·&nbsp; ' + chip(procs.closed_backfill, 'Backfill (priority 3)');
+      pills.innerHTML = [
+        chip(procs.worker, 'Live (priority 1)'),
+        chip(procs.closed_new, 'New-closures (priority 2)'),
+        chip(procs.closed_backfill, 'Backfill (priority 3)'),
+        chip((q || {{}}).any_running, 'Task queue (priority 4)'),
+      ].join(' &nbsp;·&nbsp; ');
     }}
     const fpEl = document.getElementById('set-PC_CLOSED_FORWARD_PAGES');
     if (fpEl && document.activeElement !== fpEl && s.forward_page_cap !== undefined) fpEl.value = s.forward_page_cap;
