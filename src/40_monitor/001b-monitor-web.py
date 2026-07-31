@@ -4180,7 +4180,17 @@ const STATIC_TRANSLATIONS = {{
     'RUNNING': 'EJECUTANDO', 'off': 'apagado', 'idle': 'inactivo',
     'Normal run': 'Ejecución normal', 'Test run': 'Ejecución de prueba', 'Worker': 'Worker', 'Index': 'Índice', 'Detail': 'Detalle', 'Calendar': 'Calendario', 'Messaging': 'Mensajería', 'Webhook': 'Webhook', 'Request': 'Solicitud', 'Closed: new closures': 'Cerradas: nuevos cierres', 'Closed: backfill': 'Cerradas: relleno histórico',
     'New-closures (priority 2)': 'Nuevos cierres (prioridad 2)', 'Backfill (priority 3)': 'Relleno histórico (prioridad 3)',
-    'Closed monitor': 'Monitor de Cerradas', '(second, independent process)': '(segundo proceso, independiente)', 'News pagination (priority 2)': 'Paginación de nuevos cierres (prioridad 2)', "Forward-page safety cap: a runaway ceiling for the collector's own forward-mode crawl, not its real stop condition (that's PC_CLOSED_FORWARD_DAYS) — applies on the next run, no restart needed.": 'Límite de seguridad de páginas: un tope de contención para el rastreo en modo avance del propio recolector, no su condición real de parada (esa es PC_CLOSED_FORWARD_DAYS) — se aplica en la próxima ejecución, sin necesidad de reinicio.', 'Forward-page safety cap': 'Límite de seguridad de páginas', "Changedetection sample pages: how many pages the live watch itself checks to notice a new closure. Applying this rewrites the watch's script and restarts the changedetection container (a few seconds; the Abiertas/Programadas watch is unaffected).": 'Páginas de muestreo de changedetection: cuántas páginas revisa el watch en vivo para detectar un nuevo cierre. Aplicar esto reescribe el script del watch y reinicia el contenedor de changedetection (unos segundos; el watch de Abiertas/Programadas no se ve afectado).', 'Sample pages': 'Páginas de muestreo', 'Apply (restarts changedetection)': 'Aplicar (reinicia changedetection)',
+    'Closed monitor': 'Monitor de Cerradas', '(second, independent process)': '(segundo proceso, independiente)',
+    'Live (priority 1)': 'En vivo (prioridad 1)', 'Task queue (priority 4)': 'Cola de tareas (prioridad 4)',
+    'Work that waits on a database condition, not just the active lock being free — e.g. a specific Closed backfill date range queued to start only once the current pending-detail backlog fully drains. Checked every 20 minutes from inside the backfill timer; defers to priorities 1–3 the same way priority 3 defers to 1 and 2.': 'Trabajo que espera una condición de la base de datos, no solo que el bloqueo activo esté libre — por ejemplo, un rango de fechas de relleno de Cerradas encolado para iniciar solo cuando el backlog actual de detalles pendientes se agote por completo. Se verifica cada 20 minutos desde dentro del temporizador de relleno; cede el paso a las prioridades 1–3 igual que la prioridad 3 cede el paso a 1 y 2.',
+    'Label': 'Etiqueta', 'Wait until Closed pending ≤': 'Esperar hasta que los pendientes de Cerradas sean ≤',
+    'Add task': 'Agregar tarea', '(no queued tasks)': '(sin tareas en cola)',
+    'queued': 'en cola', 'running': 'ejecutando', 'done': 'completada', 'cancelled': 'cancelada',
+    'Closed pending ≤': 'Pendientes de Cerradas ≤', 'waits for': 'espera a', 'Cancel': 'Cancelar',
+    'Task queue unavailable: ': 'Cola de tareas no disponible: ',
+    'Label, start date and end date are required.': 'La etiqueta, fecha de inicio y fecha final son obligatorias.',
+    'Adding…': 'Agregando…', 'Task queued.': 'Tarea encolada.', 'Failed: ': 'Falló: ',
+    'unknown error': 'error desconocido', 'Cancel this queued task?': '¿Cancelar esta tarea en cola?', 'News pagination (priority 2)': 'Paginación de nuevos cierres (prioridad 2)', "Forward-page safety cap: a runaway ceiling for the collector's own forward-mode crawl, not its real stop condition (that's PC_CLOSED_FORWARD_DAYS) — applies on the next run, no restart needed.": 'Límite de seguridad de páginas: un tope de contención para el rastreo en modo avance del propio recolector, no su condición real de parada (esa es PC_CLOSED_FORWARD_DAYS) — se aplica en la próxima ejecución, sin necesidad de reinicio.', 'Forward-page safety cap': 'Límite de seguridad de páginas', "Changedetection sample pages: how many pages the live watch itself checks to notice a new closure. Applying this rewrites the watch's script and restarts the changedetection container (a few seconds; the Abiertas/Programadas watch is unaffected).": 'Páginas de muestreo de changedetection: cuántas páginas revisa el watch en vivo para detectar un nuevo cierre. Aplicar esto reescribe el script del watch y reinicia el contenedor de changedetection (unos segundos; el watch de Abiertas/Programadas no se ve afectado).', 'Sample pages': 'Páginas de muestreo', 'Apply (restarts changedetection)': 'Aplicar (reinicia changedetection)',
     'Closed webhook trigger access': 'Acceso al disparador webhook de Cerradas', '(priority 2 — new closures)': '(prioridad 2 — nuevos cierres)',
     'Closed changedetection Browser Steps JS': 'JS de Browser Steps de changedetection para Cerradas',
     'Refresh Closed status': 'Actualizar estado de Cerradas', 'Refresh Closed webhook access': 'Actualizar acceso webhook de Cerradas',
@@ -4658,20 +4668,20 @@ async function loadClosedStatus() {{
   }} catch (err) {{ node.textContent = 'Closed status unavailable: ' + err; }}
 }}
 function renderTaskQueueList(tasks) {{
-  if (!tasks || !tasks.length) return '(no queued tasks)';
-  const statusLabel = {{queued: 'queued', running: 'running', done: 'done', cancelled: 'cancelled'}};
-  return tasks.map(t => {{
-    const params = t.kind === 'closed_backfill_range'
-      ? `${{esc(t.params.start_date)}} → ${{esc(t.params.end_date)}}`
-      : esc(JSON.stringify(t.params));
-    const thresholdText = (t.wait_params || {{}}).threshold ?? 0;
-    const waitInfo = t.wait_condition === 'closed_pending_below'
-      ? `Closed pending ≤ ${{esc(String(thresholdText))}}`
-      : esc(t.wait_condition);
-    const cancel = t.status === 'queued'
-      ? ` <button onclick="removeTaskQueueEntry('${{esc(t.id)}}')">Cancel</button>`
+  if (!tasks || !tasks.length) return t('(no queued tasks)');
+  const statusLabel = {{queued: t('queued'), running: t('running'), done: t('done'), cancelled: t('cancelled')}};
+  return tasks.map(task => {{
+    const params = task.kind === 'closed_backfill_range'
+      ? `${{esc(task.params.start_date)}} → ${{esc(task.params.end_date)}}`
+      : esc(JSON.stringify(task.params));
+    const thresholdText = (task.wait_params || {{}}).threshold ?? 0;
+    const waitInfo = task.wait_condition === 'closed_pending_below'
+      ? `${{t('Closed pending ≤')}} ${{esc(String(thresholdText))}}`
+      : esc(task.wait_condition);
+    const cancel = task.status === 'queued'
+      ? ` <button onclick="removeTaskQueueEntry('${{esc(task.id)}}')">${{esc(t('Cancel'))}}</button>`
       : '';
-    return `<div>[${{esc(statusLabel[t.status] || t.status)}}] ${{esc(t.label)}} (${{params}}) — waits for ${{waitInfo}}${{cancel}}</div>`;
+    return `<div>[${{esc(statusLabel[task.status] || task.status)}}] ${{esc(task.label)}} (${{params}}) — ${{t('waits for')}} ${{waitInfo}}${{cancel}}</div>`;
   }}).join('');
 }}
 async function loadTaskQueue() {{
@@ -4680,7 +4690,7 @@ async function loadTaskQueue() {{
   try {{
     const data = await (await fetch('/api/task-queue', {{cache: 'no-store'}})).json();
     node.innerHTML = renderTaskQueueList(data.tasks || []);
-  }} catch (err) {{ node.textContent = 'Task queue unavailable: ' + err; }}
+  }} catch (err) {{ node.textContent = t('Task queue unavailable: ') + err; }}
 }}
 async function addTaskQueueEntry() {{
   const status = document.getElementById('task-queue-status');
@@ -4690,10 +4700,10 @@ async function addTaskQueueEntry() {{
   const end = document.getElementById('task-queue-end').value;
   const threshold = document.getElementById('task-queue-threshold').value || '0';
   if (!label || !start || !end) {{
-    if (status) status.textContent = 'Label, start date and end date are required.';
+    if (status) status.textContent = t('Label, start date and end date are required.');
     return;
   }}
-  if (status) status.textContent = 'Adding…';
+  if (status) status.textContent = t('Adding…');
   try {{
     const res = await fetch('/api/task-queue-add', {{
       method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
@@ -4701,15 +4711,15 @@ async function addTaskQueueEntry() {{
             '&end_date=' + encodeURIComponent(end) + '&threshold=' + encodeURIComponent(threshold),
     }});
     const result = await res.json();
-    if (status) status.textContent = result.ok ? 'Task queued.' : `Failed: ${{result.error || 'unknown error'}}`;
+    if (status) status.textContent = result.ok ? t('Task queued.') : `${{t('Failed: ')}}${{result.error || t('unknown error')}}`;
     if (result.ok) {{
       labelEl.value = '';
       loadTaskQueue();
     }}
-  }} catch (err) {{ if (status) status.textContent = 'Failed: ' + err; }}
+  }} catch (err) {{ if (status) status.textContent = t('Failed: ') + err; }}
 }}
 async function removeTaskQueueEntry(taskId) {{
-  if (!confirm('Cancel this queued task?')) return;
+  if (!confirm(t('Cancel this queued task?'))) return;
   try {{
     await fetch('/api/task-queue-remove', {{
       method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
