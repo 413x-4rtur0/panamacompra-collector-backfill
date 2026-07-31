@@ -18,7 +18,7 @@
     // the data source for Closed the way the Abiertas/Programadas watch is
     // for those groups. The full historical archive is crawled separately
     // and incrementally by 039-run-closed-backfill.sh, not by this watch.
-    maxPagesSafety: 5,
+    maxPagesSafety: 2,
     switchAttempts: 3,
     retryBackoffMs: 4000,
 

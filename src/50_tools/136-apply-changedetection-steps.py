@@ -60,8 +60,17 @@ for path in glob.glob('/datastore/*/watch.json'):
         continue
     title = str(data.get('title') or data.get('name') or '').upper()
     urls = [str(value) for value in (data.get('notification_urls') or [])]
-    closed_watch = 'PANAMACOMPRA_MONITOR_CLOSED' in title or any('panamacompra-closed' in url for url in urls)
-    active_watch = ('PANAMACOMPRA_MONITOR' in title and not closed_watch) or any(
+    # Exact route segment, not a bare substring: the backfill watch's own
+    # '/panamacompra-closed-backfill/...' notification URL also contains
+    # 'panamacompra-closed', and its title also contains 'BACKFILL' inside
+    # a superstring of the closed-watch marker — either loose check would
+    # wrongly claim the backfill watch too and overwrite its own
+    # dateStart/dateEnd-injected script with this priority-2 one.
+    is_backfill_watch = 'BACKFILL' in title or any('/panamacompra-closed-backfill/' in url for url in urls)
+    closed_watch = not is_backfill_watch and (
+        'PANAMACOMPRA_MONITOR_CLOSED' in title or any('/panamacompra-closed/' in url for url in urls)
+    )
+    active_watch = ('PANAMACOMPRA_MONITOR' in title and not closed_watch and not is_backfill_watch) or any(
         'panamacompra' in url and 'panamacompra-closed' not in url for url in urls
     )
     script = closed if closed_watch else active if active_watch else None

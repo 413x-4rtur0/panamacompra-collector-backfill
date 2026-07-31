@@ -89,12 +89,16 @@ for path in glob.glob('/datastore/*/watch.json'):
     except Exception:
         continue
     urls = d.get('notification_urls') or []
-    if any('panamacompra-closed' in u for u in urls):
+    # Exact route segment, not a bare substring: '/panamacompra-closed-
+    # backfill/...' also contains 'panamacompra-closed', which would
+    # otherwise match this too and overwrite the backfill watch's own
+    # dateStart/dateEnd-injected script with this priority-2 one.
+    if any('/panamacompra-closed/' in u for u in urls):
         target = path
         break
 
 if not target:
-    print(json.dumps({'ok': False, 'error': 'no watch with a panamacompra-closed notification URL was found'}))
+    print(json.dumps({'ok': False, 'error': 'no watch with a /panamacompra-closed/ notification URL was found'}))
     raise SystemExit(0)
 
 backup = target + '.bak-news-pages-' + datetime.datetime.now().strftime('%Y%m%d%H%M%S')
