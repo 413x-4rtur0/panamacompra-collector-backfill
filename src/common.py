@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import re
+import signal
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -274,6 +275,41 @@ INDEX_HEADER = [
 
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
+
+
+class WatchdogTimeout(Exception):
+    """Raised by run_with_watchdog() when the wrapped call overran its
+    budget."""
+
+
+def run_with_watchdog(seconds, fn, *args, **kwargs):
+    """Run fn(*args, **kwargs) under a hard wall-clock deadline (SIGALRM),
+    raising WatchdogTimeout instead of letting it run forever.
+
+    Exists because a Playwright/Firefox call can wedge at the browser-
+    connection level, not just the page level -- when that happens, the
+    per-operation timeouts already inside process_detail()/cuadro fetching
+    (page.goto, inner_text, ...) never fire, because they assume the browser
+    process itself is still responsive enough to honor a cancellation. A
+    background collector that hits this hangs forever, holding its lock and
+    silently freezing that whole priority lane until someone notices and
+    kills it by hand -- confirmed happening in production (037b, 2026-07-30).
+    Callers should close and relaunch their browser after a WatchdogTimeout,
+    since the browser itself is presumed wedged, not just the one page.
+
+    Unix only (SIGALRM) and main-thread only -- true for every caller here,
+    each a single-threaded per-record collector loop."""
+    def _on_alarm(signum, frame):
+        raise WatchdogTimeout(f"exceeded {seconds}s")
+
+    previous_handler = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(seconds)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
 
 def date_folder_name():
     return datetime.now().strftime("%y-%m-%d")

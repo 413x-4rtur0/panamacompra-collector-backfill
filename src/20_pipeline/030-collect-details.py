@@ -734,8 +734,10 @@ def main():
         print(summary)
         return
 
-    with sync_playwright() as p:
-        browser = p.firefox.launch(
+    detail_watchdog_seconds = env_int("PC_DETAIL_WATCHDOG_SECONDS", "150", minimum=30)
+
+    def launch_browser(p):
+        return p.firefox.launch(
             headless=True,
             args=[
                 "--no-sandbox",
@@ -743,6 +745,9 @@ def main():
                 "--window-size=1280,720"
             ]
         )
+
+    with sync_playwright() as p:
+        browser = launch_browser(p)
 
         total_rows = len(rows)
         # Count-based ETA: time each detail page and project the ones still
@@ -768,7 +773,24 @@ def main():
                 extra=f"current_numero={row['numero']}",
             )
 
-            result = process_detail(browser, conn, row)
+            try:
+                result = run_with_watchdog(detail_watchdog_seconds, process_detail, browser, conn, row)
+            except WatchdogTimeout:
+                # The browser-connection itself is presumed wedged (per-
+                # operation timeouts inside process_detail already didn't
+                # save it), not just this one page -- previously this had no
+                # backstop at all beyond the 8h `timeout` this whole script
+                # runs under in 100-run-worker.sh, so one bad record could
+                # burn the entire run. Replace the browser and keep going;
+                # any OTHER exception still propagates/crashes as before.
+                print(f"{row['numero']}: watchdog timeout after {detail_watchdog_seconds}s, restarting browser",
+                      file=sys.stderr)
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                browser = launch_browser(p)
+                result = "failed"
             if result == "saved":
                 saved += 1
             elif result in ("skipped_complete", "refreshed_links"):

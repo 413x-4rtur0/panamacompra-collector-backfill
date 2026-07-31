@@ -48,6 +48,17 @@ def closed_fulldetail_max_attempts() -> int:
     return env_int("PC_CLOSED_FULLDETAIL_MAX_ATTEMPTS", "3", minimum=1)
 
 
+def detail_watchdog_seconds() -> int:
+    return env_int("PC_DETAIL_WATCHDOG_SECONDS", "150", minimum=30)
+
+
+def launch_detail_browser(p):
+    return p.firefox.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,720"],
+    )
+
+
 def closed_detail_pending_rows(conn, limit: int, max_attempts: int):
     """Same shape/gate as 030-collect-details.py's detail_pending_rows(),
     scoped to grupo IN ('Closed', 'Cancelled') instead of excluding them."""
@@ -80,16 +91,27 @@ def main():
         print("No Closed records pending a full detail fetch.")
         return
 
+    watchdog_seconds = detail_watchdog_seconds()
     saved = skipped = failed = 0
     with sync_playwright() as p:
-        browser = p.firefox.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,720"],
-        )
+        browser = launch_detail_browser(p)
         for row in rows:
             numero = row["numero"]
             try:
-                result = collect_details.process_detail(browser, conn, row)
+                result = run_with_watchdog(watchdog_seconds, collect_details.process_detail, browser, conn, row)
+            except WatchdogTimeout:
+                result = "failed"
+                print(f"{numero}: FAILED — watchdog timeout after {watchdog_seconds}s, restarting browser",
+                      file=sys.stderr)
+                # The hang is at the browser-connection level, not just this
+                # page -- process_detail()'s own per-operation timeouts
+                # already didn't save it -- so the whole browser process is
+                # presumed wedged and gets replaced, not reused.
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                browser = launch_detail_browser(p)
             except Exception as exc:  # noqa: BLE001 - never let one bad record stop the run
                 result = "failed"
                 print(f"{numero}: FAILED — {exc}", file=sys.stderr)

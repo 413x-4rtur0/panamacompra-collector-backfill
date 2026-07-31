@@ -217,6 +217,44 @@ def write_provider_files(record_folder: Path, numero: str, cuadro_url: str, prov
         tmp_path.replace(file_path)
 
 
+def cotizacion_watchdog_seconds() -> int:
+    return env_int("PC_DETAIL_WATCHDOG_SECONDS", "150", minimum=30)
+
+
+def launch_cotizacion_browser(p):
+    browser = p.firefox.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,900"],
+    )
+    return browser, browser.new_page(viewport={"width": 1280, "height": 900})
+
+
+def _fetch_cuadro(page, row):
+    """Network/DOM part only -- the part that can hang -- kept separate from
+    the DB writes below so run_with_watchdog() can safely abort/retry it
+    without ever leaving a half-applied DB update behind. Returns
+    ('no_link', None) / ('no_bids', cuadro_url) / ('saved', (cuadro_url, data))."""
+    cuadro_url = row["cuadro_link"] or ""
+    if not cuadro_url:
+        page.goto(row["link"], wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
+        close_popup(page)
+        cuadro_url = find_cuadro_link(page)
+        if not cuadro_url:
+            return "no_link", None
+
+    page.goto(cuadro_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(5000)
+    close_popup(page)
+    page.wait_for_timeout(1000)
+
+    data = extract_cuadro(page)
+    providers = data.get("providers") or []
+    if not providers:
+        return "no_bids", cuadro_url
+    return "saved", (cuadro_url, data)
+
+
 def main():
     conn = init_db()
     run_started = now_iso()
@@ -232,12 +270,9 @@ def main():
         print("No Closed records pending a cotizacion fetch.")
         return
 
+    watchdog_seconds = cotizacion_watchdog_seconds()
     with sync_playwright() as p:
-        browser = p.firefox.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,900"],
-        )
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        browser, page = launch_cotizacion_browser(p)
 
         for row in rows:
             numero = row["numero"]
@@ -248,31 +283,38 @@ def main():
             conn.commit()
 
             try:
-                cuadro_url = row["cuadro_link"] or ""
-                if not cuadro_url:
-                    page.goto(row["link"], wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_timeout(5000)
-                    close_popup(page)
-                    cuadro_url = find_cuadro_link(page)
-                    if not cuadro_url:
-                        conn.execute(
-                            "UPDATE opportunities SET cotizacion_status = 'no_link' WHERE numero = ?",
-                            (numero,),
-                        )
-                        conn.commit()
-                        no_link += 1
-                        print(f"{numero}: no cuadro de cotizaciones link found")
-                        continue
+                outcome, payload = run_with_watchdog(watchdog_seconds, _fetch_cuadro, page, row)
+            except WatchdogTimeout:
+                failed += 1
+                print(f"{numero}: FAILED — watchdog timeout after {watchdog_seconds}s, restarting browser",
+                      file=sys.stderr)
+                # The hang is at the browser-connection level, not just this
+                # page, so the whole browser (and its one shared page) is
+                # presumed wedged and gets replaced, not reused.
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                browser, page = launch_cotizacion_browser(p)
+                continue
+            except Exception as exc:  # noqa: BLE001 - never let one bad record stop the run
+                failed += 1
+                print(f"{numero}: FAILED — {exc}", file=sys.stderr)
+                continue
 
-                page.goto(cuadro_url, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(5000)
-                close_popup(page)
-                page.wait_for_timeout(1000)
+            try:
+                if outcome == "no_link":
+                    conn.execute(
+                        "UPDATE opportunities SET cotizacion_status = 'no_link' WHERE numero = ?",
+                        (numero,),
+                    )
+                    conn.commit()
+                    no_link += 1
+                    print(f"{numero}: no cuadro de cotizaciones link found")
+                    continue
 
-                data = extract_cuadro(page)
-                providers = data.get("providers") or []
-
-                if not providers:
+                if outcome == "no_bids":
+                    cuadro_url = payload
                     conn.execute(
                         "UPDATE opportunities SET cotizacion_status = 'no_bids', cuadro_link = ? WHERE numero = ?",
                         (cuadro_url, numero),
@@ -281,6 +323,9 @@ def main():
                     no_bids += 1
                     print(f"{numero}: cuadro found, 0 proponentes with items")
                     continue
+
+                cuadro_url, data = payload
+                providers = data.get("providers") or []
 
                 bids = []
                 for provider in providers:
