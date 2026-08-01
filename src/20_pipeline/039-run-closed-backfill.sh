@@ -105,14 +105,20 @@ while true; do
   log "Task queue tick: $TASK_QUEUE_TICK"
   load_settings
 
-  INDEX_OUT=$(PC_CLOSED_MODE=backfill "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" 2>&1)
+  # Both groups, same as priority 2 (070-run-collector-closed-new.sh):
+  # closed_crawl_state keeps a per-group cursor, so a Cancelled backfill
+  # here can never corrupt or interfere with the Closed one.
+  INDEX_OUT=$(PC_CLOSED_MODE=backfill PC_CLOSED_GROUP=Closed "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" 2>&1)
   echo "$INDEX_OUT" >> "$LOG"
+  INDEX_OUT_CANCELLED=$(PC_CLOSED_MODE=backfill PC_CLOSED_GROUP=Cancelled "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" 2>&1)
+  echo "$INDEX_OUT_CANCELLED" >> "$LOG"
   DETAIL_OUT=$("$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" 2>&1)
   echo "$DETAIL_OUT" >> "$LOG"
   COTIZ_OUT=$("$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" 2>&1)
   echo "$COTIZ_OUT" >> "$LOG"
 
   if [[ "$INDEX_OUT" == *"nothing to do"* || -z "$INDEX_OUT" ]] \
+     && [[ "$INDEX_OUT_CANCELLED" == *"nothing to do"* || -z "$INDEX_OUT_CANCELLED" ]] \
      && [[ "$DETAIL_OUT" == *"No Closed records pending a full detail fetch."* ]] \
      && [[ "$COTIZ_OUT" == *"No Closed records pending a cotizacion fetch."* ]]; then
     log "Nothing left to do after $ITERATION batch(es); stopping early."
