@@ -155,6 +155,36 @@ def parse_dmy_date(text):
         return None
 
 
+def apply_native_date_filter(page, start_date, end_date) -> bool:
+    """Drive the site's own Fecha Desde/Fecha Hasta filter on the advanced
+    search table, instead of paging the full unfiltered listing and
+    filtering client-side. The site has a real bug: clicking a status radio
+    (Cerradas) first silently discards a pending date filter, but clicking
+    Buscar first (while still on whichever tab is active) commits it, and
+    the status click afterward correctly re-applies the committed filter.
+    Confirmed by hand against the live site — this exact order is required,
+    reordering breaks it. Returns True if the filter inputs were found and
+    submitted (not a guarantee the server honored it, just that we tried).
+    """
+    try:
+        for input_id, value in (("fd", start_date), ("fh", end_date)):
+            field = page.locator(f"#{input_id}")
+            field.click()
+            page.keyboard.press("Control+A")
+            page.keyboard.type(value.strftime("%d-%m-%Y"), delay=25)
+            page.keyboard.press("Tab")
+            page.keyboard.press("Escape")
+        # Two "Buscar" buttons exist (Numero search, date/entidad search) —
+        # the second one is the date filter's. Must click while still on the
+        # default Abiertas tab; click_group() switches to the target tab after.
+        page.locator("button", has_text="Buscar").nth(1).click()
+        page.wait_for_timeout(2500)
+        return True
+    except Exception as exc:
+        print(f"Closed: native date filter failed ({exc}); falling back to full pagination")
+        return False
+
+
 def close_popup(page):
     page.evaluate("""
     (() => {
@@ -421,21 +451,10 @@ def main():
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         prepare_base_page(page)
 
-        # apply_native_date_filter is NOT called here: confirmed by hand
-        # against the live site (2026-08-01) that the site's own Fecha
-        # Desde/Fecha Hasta filter does not work for the Cerradas/Canceladas
-        # tabs at all, regardless of click order -- applying it then
-        # switching tabs silently resets it back to the current month,
-        # and applying it while already on the tab returns zero rows (the
-        # query appears to always evaluate as if for the default Abiertas
-        # status). A 2025 backfill using this filter silently stopped at
-        # October (Closed) and June (Cancelled) instead of January, having
-        # drifted through several different unintended date windows across
-        # separate browser sessions without any error. The cutoff_date/
-        # reached_cutoff_date check below and the range_end_date skip check
-        # in the row loop already enforce both range bounds entirely
-        # client-side against the site's normal (unfiltered) listing, so
-        # nothing here actually depends on the site's own filter working.
+        if cutoff_date is not None:
+            filter_end = range_end_date if mode == "backfill" and range_end_date else datetime.now().date()
+            if apply_native_date_filter(page, cutoff_date, filter_end):
+                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {filter_end.isoformat()}")
 
         if not click_group(page, group):
             print(f"{group['name']}: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
