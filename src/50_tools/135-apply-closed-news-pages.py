@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite the Closed new-closures changedetection watch's own page-sampling
+"""Rewrite the Closed new-closures changedetection watch's own page-safety
 cap (maxPagesSafety in config/changedetection-browser-steps-closed.js) and
 push it into the live watch.
 
@@ -43,8 +43,8 @@ def main() -> None:
         result(False, error=f"PAGES must be an integer, got {sys.argv[1]!r}")
         return
 
-    if not 1 <= pages <= 50:
-        result(False, error=f"PAGES must be between 1 and 50, got {pages}")
+    if not 1 <= pages <= 999:
+        result(False, error=f"PAGES must be between 1 and 999, got {pages}")
         return
 
     if not JS_PATH.exists():

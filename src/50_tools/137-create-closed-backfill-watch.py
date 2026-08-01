@@ -83,28 +83,19 @@ def transform_script(script: str, date_start: str = "", date_end: str = "") -> s
     )
     script, count = re.subn(
         r"maxPagesSafety:\s*\d+",
-        "maxPagesSafety: 0",
+        "maxPagesSafety: 999",
         script,
         count=1,
     )
     if count != 1:
         raise ValueError("Closed script has no maxPagesSafety setting")
     loop = "for (let page = 1; page <= CONFIG.maxPagesSafety; page++)"
-    unlimited_loop = (
-        "for (let page = 1; CONFIG.maxPagesSafety <= 0 || "
-        "page <= CONFIG.maxPagesSafety; page++)"
-    )
-    if unlimited_loop in script:
-        pass
     if loop not in script:
-        if unlimited_loop not in script:
-            raise ValueError("Closed script has no bounded pagination loop")
-    else:
-        script = script.replace(loop, unlimited_loop, 1)
+        raise ValueError("Closed script has no bounded pagination loop")
     config = f'    dateStart: "{date_start}",\n    dateEnd: "{date_end}",'
     script, _ = re.subn(r'\s*dateStart:\s*"[^"]*",\s*\n\s*dateEnd:\s*"[^"]*",', "\n" + config, script, count=1)
     if "dateStart:" not in script:
-        script = script.replace("maxPagesSafety: 0,", "maxPagesSafety: 0,\n" + config, 1)
+        script = script.replace("maxPagesSafety: 999,", "maxPagesSafety: 999,\n" + config, 1)
     return script
 
 
@@ -165,22 +156,16 @@ def transform(script):
         raise ValueError("Closed script has no Cancelled status block to remove")
     script = script.replace('outputSelector: "#pc-monitor-output-closed"', 'outputSelector: "#pc-monitor-output-closed-backfill"', 1)
     script = script.replace('monitorTitle: "PANAMACOMPRA_MONITOR_CLOSED"', f'monitorTitle: "{BACKFILL_MARKER}"', 1)
-    script, count = re.subn(r"maxPagesSafety:\s*\d+", "maxPagesSafety: 0", script, count=1)
+    script, count = re.subn(r"maxPagesSafety:\s*\d+", "maxPagesSafety: 999", script, count=1)
     if count != 1:
         raise ValueError("Closed script has no maxPagesSafety setting")
     bounded = "for (let page = 1; page <= CONFIG.maxPagesSafety; page++)"
-    unlimited = "for (let page = 1; CONFIG.maxPagesSafety <= 0 || page <= CONFIG.maxPagesSafety; page++)"
     if bounded not in script:
-        if unlimited in script:
-            pass
-        else:
-            raise ValueError("Closed script has no bounded pagination loop")
-    else:
-        script = script.replace(bounded, unlimited, 1)
+        raise ValueError("Closed script has no bounded pagination loop")
     config = f'    dateStart: "{DATE_START}",\n    dateEnd: "{DATE_END}",'
     script, _ = re.subn(r'\s*dateStart:\s*"[^"]*",\s*\n\s*dateEnd:\s*"[^"]*",', "\n" + config, script, count=1)
     if "dateStart:" not in script:
-        script = script.replace("maxPagesSafety: 0,", "maxPagesSafety: 0,\n" + config, 1)
+        script = script.replace("maxPagesSafety: 999,", "maxPagesSafety: 999,\n" + config, 1)
     date_helpers = '''
   function parseBackfillDate(row) {
     const raw = clean(row && row.fecha ? row.fecha : "");

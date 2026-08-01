@@ -12,12 +12,9 @@
     urlLabel: "cotizaciones-en-linea",
 
     rowsPerPage: "50",
-    // Small on purpose: this watch only needs to notice that NEW closures
-    // appeared (they always show up near the front, same assumption
-    // forward_page_cap() makes in 037-collect-closed-index.py) — it is not
-    // the data source for Closed the way the Abiertas/Programadas watch is
-    // for those groups. The full historical archive is crawled separately
-    // and incrementally by 039-run-closed-backfill.sh, not by this watch.
+    // Small on purpose: this priority-2 watch only needs to notice that NEW
+    // closures appeared near the front. The full historical archive is
+    // crawled separately by the dedicated Closed backfill watch.
     maxPagesSafety: 2,
     switchAttempts: 3,
     retryBackoffMs: 4000,
@@ -629,10 +626,9 @@
 
     if (!complete && crawledPages >= CONFIG.maxPagesSafety &&
         !pageCounts.some(line => line.startsWith(`${statusConfig.group}:`))) {
-      // Expected outcome for this watch: it intentionally only samples the
-      // first maxPagesSafety pages to detect new closures, not the whole
-      // archive, so hitting the cap here is success, not a health problem.
-      pageCounts.push(`${statusConfig.group}: sampled first ${CONFIG.maxPagesSafety} page(s) (by design, not the full archive)`);
+      // Expected outcome for this watch: the safety cap prevents runaway
+      // pagination, so hitting it is success rather than a health problem.
+      pageCounts.push(`${statusConfig.group}: capped at ${CONFIG.maxPagesSafety} page(s) (by design; historical backfill is separate)`);
     }
 
     pageCounts.unshift(paginationLine(expectedItems, crawledPages, firstBadPage));
