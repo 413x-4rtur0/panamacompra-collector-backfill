@@ -163,8 +163,18 @@ def apply_native_date_filter(page, start_date, end_date) -> bool:
     Buscar first (while still on whichever tab is active) commits it, and
     the status click afterward correctly re-applies the committed filter.
     Confirmed by hand against the live site — this exact order is required,
-    reordering breaks it. Returns True if the filter inputs were found and
-    submitted (not a guarantee the server honored it, just that we tried).
+    reordering breaks it.
+
+    Pressing Escape after typing into either date field is NOT equivalent to
+    just dismissing the calendar popup: it discards the just-typed value
+    back to whatever the field held before (confirmed live — a run that
+    presses Escape here silently searches the field's old/default value
+    instead of the requested date, with no error). Click somewhere neutral
+    on the page to blur the field instead, which closes the popup without
+    reverting the value.
+
+    Returns True if the filter inputs were found and submitted (not a
+    guarantee the server honored it, just that we tried).
     """
     try:
         for input_id, value in (("fd", start_date), ("fh", end_date)):
@@ -172,8 +182,11 @@ def apply_native_date_filter(page, start_date, end_date) -> bool:
             field.click()
             page.keyboard.press("Control+A")
             page.keyboard.type(value.strftime("%d-%m-%Y"), delay=25)
-            page.keyboard.press("Tab")
-            page.keyboard.press("Escape")
+        # Blur both fields by clicking a neutral element -- NOT Escape (see
+        # docstring). Any non-interactive element works; the page heading is
+        # always present regardless of which tab/group is active.
+        page.locator("h1, h2").first.click()
+        page.wait_for_timeout(500)
         # Two "Buscar" buttons exist (Numero search, date/entidad search) —
         # the second one is the date filter's. Must click while still on the
         # default Abiertas tab; click_group() switches to the target tab after.
