@@ -1358,16 +1358,53 @@ def ensure_db_schema(conn):
     # other part of the pipeline already reads/writes.
     conn.execute("""
     CREATE TABLE IF NOT EXISTS closed_crawl_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        grupo TEXT NOT NULL DEFAULT 'Closed',
         backfill_page INTEGER NOT NULL DEFAULT 1,
         backfill_complete INTEGER NOT NULL DEFAULT 0,
         last_forward_run_at TEXT,
         last_backfill_run_at TEXT
     )
     """)
+    # Older DBs still have the original single-row schema, including a
+    # CHECK (id = 1) constraint that ALTER TABLE cannot drop -- inserting a
+    # second row (grupo='Cancelled') for the Cancelled backfill would violate
+    # it forever otherwise. Detect that constraint from sqlite_master's own
+    # SQL text and rebuild the table without it (standard SQLite pattern:
+    # rename, recreate, copy, drop); the id=1 row survives with the same id,
+    # so the monitor's own direct "WHERE id = 1" SQL keeps working unchanged.
+    old_schema_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='closed_crawl_state'"
+    ).fetchone()
+    if old_schema_sql and "CHECK" in (old_schema_sql["sql"] or "").upper():
+        conn.execute("ALTER TABLE closed_crawl_state RENAME TO closed_crawl_state_old")
+        conn.execute("""
+        CREATE TABLE closed_crawl_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grupo TEXT NOT NULL DEFAULT 'Closed',
+            backfill_page INTEGER NOT NULL DEFAULT 1,
+            backfill_complete INTEGER NOT NULL DEFAULT 0,
+            last_forward_run_at TEXT,
+            last_backfill_run_at TEXT
+        )
+        """)
+        conn.execute("""
+        INSERT INTO closed_crawl_state (id, grupo, backfill_page, backfill_complete,
+                                         last_forward_run_at, last_backfill_run_at)
+        SELECT id, 'Closed', backfill_page, backfill_complete,
+               last_forward_run_at, last_backfill_run_at
+        FROM closed_crawl_state_old
+        """)
+        conn.execute("DROP TABLE closed_crawl_state_old")
+
+    crawl_state_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(closed_crawl_state)").fetchall()
+    }
+    if "grupo" not in crawl_state_columns:
+        conn.execute("ALTER TABLE closed_crawl_state ADD COLUMN grupo TEXT NOT NULL DEFAULT 'Closed'")
     conn.execute("""
-    INSERT OR IGNORE INTO closed_crawl_state (id, backfill_page, backfill_complete)
-    VALUES (1, 1, 0)
+    INSERT OR IGNORE INTO closed_crawl_state (id, grupo, backfill_page, backfill_complete)
+    VALUES (1, 'Closed', 1, 0)
     """)
 
     # Local mirror of every outbound WAHA/WhatsApp send (see
@@ -1453,25 +1490,29 @@ def init_db(db_path=None):
     return conn
 
 
-def get_closed_crawl_state(conn) -> dict:
-    """The single-row resumable backfill cursor (see ensure_db_schema).
-    Always returns a row — ensure_db_schema seeds id=1 on every DB open."""
-    row = conn.execute("SELECT * FROM closed_crawl_state WHERE id = 1").fetchone()
+def get_closed_crawl_state(conn, grupo: str = "Closed") -> dict:
+    """The resumable backfill cursor for one group (see ensure_db_schema).
+    Always returns a row — the 'Closed' row (id=1) is seeded on every DB
+    open; any other group's row is created here on first access, since only
+    Closed has ever needed a backfill cursor until Cancelled backfill was
+    added."""
+    row = conn.execute("SELECT * FROM closed_crawl_state WHERE grupo = ?", (grupo,)).fetchone()
     if row is None:
-        conn.execute("INSERT OR IGNORE INTO closed_crawl_state (id) VALUES (1)")
+        conn.execute("INSERT OR IGNORE INTO closed_crawl_state (grupo) VALUES (?)", (grupo,))
         conn.commit()
-        row = conn.execute("SELECT * FROM closed_crawl_state WHERE id = 1").fetchone()
+        row = conn.execute("SELECT * FROM closed_crawl_state WHERE grupo = ?", (grupo,)).fetchone()
     return dict(row)
 
 
-def update_closed_crawl_state(conn, **fields) -> None:
-    """Partial update of the backfill cursor row. Keys must be real columns
-    (backfill_page, backfill_complete, last_forward_run_at,
+def update_closed_crawl_state(conn, grupo: str = "Closed", **fields) -> None:
+    """Partial update of one group's backfill cursor row. Keys must be real
+    columns (backfill_page, backfill_complete, last_forward_run_at,
     last_backfill_run_at) — this is an internal helper, not user input."""
     if not fields:
         return
     set_clause = ", ".join(f"{key} = ?" for key in fields)
-    conn.execute(f"UPDATE closed_crawl_state SET {set_clause} WHERE id = 1", list(fields.values()))
+    conn.execute(f"UPDATE closed_crawl_state SET {set_clause} WHERE grupo = ?",
+                 list(fields.values()) + [grupo])
     conn.commit()
 
 

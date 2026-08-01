@@ -28,9 +28,10 @@ Two modes (PC_CLOSED_MODE):
 
 PC_CLOSED_GROUP selects which portal tab this run crawls: "Closed" (default,
 btnradio3/"Cerradas") or "Cancelled" (btnradio4/"Canceladas") — see
-ALL_GROUPS/selected_group(). Only forward mode supports Cancelled; backfill
-always forces Closed regardless of this setting, since closed_crawl_state's
-cursor is a single page number shared across runs, not one per group.
+ALL_GROUPS/selected_group(). closed_crawl_state keeps one cursor row per
+group (see get_closed_crawl_state/update_closed_crawl_state), so both modes
+support either group independently — a Cancelled backfill run never touches
+or corrupts the Closed cursor and vice versa.
 Priority 2 (070-run-collector-closed-new.sh) runs this script once per group.
 
 Only writes to `opportunities` (grupo=<selected group>, detail_status=
@@ -67,9 +68,8 @@ def selected_group():
     "Closed" — every existing caller/env is unaffected by this option
     existing). Priority 2 (070-run-collector-closed-new.sh) runs this script
     once per group so a problem in one group's crawl can never affect the
-    other's. Backfill mode stays Closed-only regardless of this setting —
-    see the guard in main() — since closed_crawl_state's cursor is a single
-    page number, not one per group."""
+    other's. Backfill mode also respects this setting, using the matching
+    per-group row in closed_crawl_state (see get_closed_crawl_state)."""
     wanted = str(os.environ.get("PC_CLOSED_GROUP", "") or "").strip().lower()
     if not wanted:
         return ALL_GROUPS[0]
@@ -406,22 +406,14 @@ def main():
     run_started = now_iso()
 
     group = GROUP
-    if mode == "backfill" and group["name"] != ALL_GROUPS[0]["name"]:
-        # closed_crawl_state's cursor is one page number shared by whatever
-        # ran backfill, not one per group — running it against a non-default
-        # group would silently corrupt that cursor's meaning. Priority 2
-        # (forward mode) is the only caller that varies PC_CLOSED_GROUP today.
-        print(f"Backfill mode only supports {ALL_GROUPS[0]['name']!r}; "
-              f"ignoring PC_CLOSED_GROUP={group['name']!r} for this run.")
-        group = ALL_GROUPS[0]
 
     cutoff_date = None
     range_end_date = None
     if mode == "backfill":
-        state = get_closed_crawl_state(conn)
+        state = get_closed_crawl_state(conn, grupo=group["name"])
         if state["backfill_complete"]:
-            print("Backfill already reached the last Closed page (or its target "
-                  "date); nothing to do. Reset the cursor from the monitor to "
+            print(f"Backfill already reached the last {group['name']} page (or its "
+                  "target date); nothing to do. Reset the cursor from the monitor to "
                   "re-run it, raise PC_CLOSED_BACKFILL_DAYS to go deeper, or set "
                   "PC_CLOSED_BACKFILL_START_DATE/END_DATE for a fresh date range.")
             return
@@ -602,15 +594,15 @@ def main():
         update_kwargs = {"last_backfill_run_at": now_iso()}
         if reached_last_page:
             update_kwargs["backfill_complete"] = 1
-            print("Backfill reached the last Closed page — marking complete.")
+            print(f"Backfill reached the last {group['name']} page — marking complete.")
         elif reached_cutoff_date:
             update_kwargs["backfill_complete"] = 1
             print(f"Backfill reached its {backfill_target_days()}-day target date — marking complete.")
         else:
             update_kwargs["backfill_page"] = page_number
-        update_closed_crawl_state(conn, **update_kwargs)
+        update_closed_crawl_state(conn, grupo=group["name"], **update_kwargs)
     else:
-        update_closed_crawl_state(conn, last_forward_run_at=now_iso())
+        update_closed_crawl_state(conn, grupo=group["name"], last_forward_run_at=now_iso())
 
     db_group_total = conn.execute(
         "SELECT COUNT(*) AS c FROM opportunities WHERE grupo = ?", (group["name"],)
