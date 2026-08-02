@@ -7,6 +7,15 @@ source "$SCRIPT_DIR/../../lib/env.sh"
 BASE_DIR="$APP_ROOT"
 cd "$APP_ROOT"
 
+# The GUI and terminal monitor are read-only views of the canonical merged
+# archive. Collector launchers use the device archive instead.
+if [ -n "${PC_CANONICAL_DB_PATH:-}" ]; then
+  export PC_ARCHIVE_DB_PATH="$PC_CANONICAL_DB_PATH"
+fi
+if [ -n "${PC_CANONICAL_RECORDS_DIR:-}" ]; then
+  export PC_RECORDS_DIR="$PC_CANONICAL_RECORDS_DIR"
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if [ -f ".venv/bin/activate" ]; then
   # shellcheck disable=SC1091

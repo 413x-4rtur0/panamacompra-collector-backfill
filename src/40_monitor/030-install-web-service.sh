@@ -32,6 +32,8 @@ WorkingDirectory=$APP_ROOT
 Environment=PYTHONUNBUFFERED=1
 # Keep the persistent dashboard page available after a completed run.
 Environment=PC_MONITOR_WEB_AUTO_CLOSE_SECONDS=0
+Environment=PC_ARCHIVE_DB_PATH=$PC_CANONICAL_DB_PATH
+Environment=PC_RECORDS_DIR=$PC_CANONICAL_RECORDS_DIR
 ExecStart=$PYTHON_BIN $APP_ROOT/src/40_monitor/001b-monitor-web.py
 Restart=on-failure
 RestartSec=5

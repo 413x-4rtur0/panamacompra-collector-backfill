@@ -14,12 +14,14 @@ if [ -f ".venv/bin/activate" ]; then
 fi
 
 MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+capture_device_archive_paths
 if [ -f "$MONITOR_SETTINGS" ]; then
   set -a
   # shellcheck disable=SC1090
   . "$MONITOR_SETTINGS"
   set +a
 fi
+restore_device_archive_paths
 
 LOCK_FILE="/tmp/panamacompra_run_all_worker.lock"
 REQUEST_FLAG="$PC_QUEUE_DIR/run_all_requested.flag"

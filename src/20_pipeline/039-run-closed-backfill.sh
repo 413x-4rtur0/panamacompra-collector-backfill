@@ -20,6 +20,7 @@ if [ -f ".venv/bin/activate" ]; then
 fi
 
 MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+capture_device_archive_paths
 load_settings() {
   if [ -f "$MONITOR_SETTINGS" ]; then
     set -a
@@ -29,6 +30,7 @@ load_settings() {
   fi
 }
 load_settings
+restore_device_archive_paths
 
 load_range_settings() {
   BACKFILL_START_DATE="${PC_CLOSED_BACKFILL_START_DATE:-}"
@@ -170,7 +172,11 @@ load_settings
 load_range_settings
 
 if index_phase; then
-  enrichment_phase || true
+  if [ "${PC_CLOSED_BACKFILL_ALLOW_ENRICHMENT:-0}" = "1" ]; then
+    enrichment_phase || true
+  else
+    log "Index phase complete; enrichment held until the device archives are merged into the canonical DB."
+  fi
 fi
 
 log "===== Closed backfill index-first run finished ====="

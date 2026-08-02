@@ -102,6 +102,14 @@ load_monitor_settings() {
     source "$SETTINGS_FILE"
     set +a
   fi
+  # Monitor/KPI/report commands read the merged archive. Collector launchers
+  # restore PC_ARCHIVE_DB_PATH to their device-owned DB after sourcing settings.
+  if [[ -n "${PC_CANONICAL_DB_PATH:-}" ]]; then
+    export PC_ARCHIVE_DB_PATH="$PC_CANONICAL_DB_PATH"
+  fi
+  if [[ -n "${PC_CANONICAL_RECORDS_DIR:-}" ]]; then
+    export PC_RECORDS_DIR="$PC_CANONICAL_RECORDS_DIR"
+  fi
 }
 
 chat_file_for() {

@@ -88,6 +88,13 @@ export PC_ARCHIVE_DB_PATH="${PC_ARCHIVE_DB_PATH:-$PC_DATA_DIR/panamacompra_archi
 export PC_INDEX_CSV_PATH="${PC_INDEX_CSV_PATH:-$PC_DATA_DIR/panamacompra_index.csv}"
 export PC_CALENDAR_DIR="${PC_CALENDAR_DIR:-$PC_DATA_DIR/calendar}"
 export PC_RECORDS_TEST_DIR="${PC_RECORDS_TEST_DIR:-$PC_STATE_DIR/records_test}"
+# Device collectors own their archive. Monitors can instead point at the
+# canonical merged archive without changing the collector's DB path.
+export PC_DEVICE_ID="${PC_DEVICE_ID:-unknown-device}"
+export PC_DEVICE_DB_PATH="${PC_DEVICE_DB_PATH:-$PC_ARCHIVE_DB_PATH}"
+export PC_DEVICE_RECORDS_DIR="${PC_DEVICE_RECORDS_DIR:-$PC_RECORDS_DIR}"
+export PC_CANONICAL_DB_PATH="${PC_CANONICAL_DB_PATH:-$PC_DATA_DIR/panamacompra_unified.db}"
+export PC_CANONICAL_RECORDS_DIR="${PC_CANONICAL_RECORDS_DIR:-$PC_DATA_DIR/unified-records}"
 # Docker bind-mount data for the changedetection + WAHA containers, kept inside
 # the self-contained state directory (see src/50_tools/010-docker-stack.sh).
 export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
@@ -98,3 +105,22 @@ export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
 export PC_WAHA_API_KEY="${PC_WAHA_API_KEY:-${WAHA_API_KEY:-}}"
 
 mkdir -p "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR" "$PC_INTEGRATIONS_DIR"
+mkdir -p "$(dirname "$PC_DEVICE_DB_PATH")" "$(dirname "$PC_CANONICAL_DB_PATH")" \
+  "$PC_DEVICE_RECORDS_DIR" "$PC_CANONICAL_RECORDS_DIR"
+
+# monitor_settings.env is shared with the GUI and can contain stale path
+# values from an older install. Collector launchers capture and restore these
+# device-owned paths around that file's source operation.
+capture_device_archive_paths() {
+  PCC_DEVICE_DB_PATH_SAVED="${PC_DEVICE_DB_PATH:-${PC_ARCHIVE_DB_PATH:-}}"
+  PCC_DEVICE_RECORDS_DIR_SAVED="${PC_DEVICE_RECORDS_DIR:-${PC_RECORDS_DIR:-}}"
+}
+
+restore_device_archive_paths() {
+  if [ -n "${PCC_DEVICE_DB_PATH_SAVED:-}" ]; then
+    export PC_ARCHIVE_DB_PATH="$PCC_DEVICE_DB_PATH_SAVED"
+  fi
+  if [ -n "${PCC_DEVICE_RECORDS_DIR_SAVED:-}" ]; then
+    export PC_RECORDS_DIR="$PCC_DEVICE_RECORDS_DIR_SAVED"
+  fi
+}

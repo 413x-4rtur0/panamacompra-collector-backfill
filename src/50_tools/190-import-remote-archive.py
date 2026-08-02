@@ -29,9 +29,11 @@ Usage:
       --records-dir /path/to/remote/records [--group Closed,Cancelled] [--dry-run]
 """
 import argparse
+import os
 import shutil
 import sqlite3
 import sys
+from urllib.parse import quote
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -42,7 +44,9 @@ def table_columns(conn, table: str) -> list[str]:
     return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
-def staged_and_local_dirs(row_dict: dict, staged_records_dir: Path) -> tuple[Path, Path] | tuple[None, None]:
+def staged_and_local_dirs(
+    row_dict: dict, staged_records_dir: Path, local_records_dir: Path
+) -> tuple[Path, Path] | tuple[None, None]:
     """A remote row's record_folder is an absolute path rooted at the REMOTE
     machine's own records dir -- meaningless as a filesystem path here, since
     the rsync'd copy lives at a different staging path on this machine.
@@ -54,7 +58,7 @@ def staged_and_local_dirs(row_dict: dict, staged_records_dir: Path) -> tuple[Pat
     if not date_folder or not record_folder:
         return None, None
     leaf = Path(record_folder).name
-    return staged_records_dir / date_folder / leaf, RECORDS_DIR / date_folder / leaf
+    return staged_records_dir / date_folder / leaf, local_records_dir / date_folder / leaf
 
 
 def remap_path(value: str, record_folder: str, local_dest: Path) -> str:
@@ -89,7 +93,14 @@ def copy_record_folder(staged_source: Path | None, local_dest: Path | None, dry_
     return True
 
 
-def import_opportunities(conn, remote_conn, groups: list[str], staged_records_dir: Path, dry_run: bool) -> dict:
+def import_opportunities(
+    conn,
+    remote_conn,
+    groups: list[str],
+    staged_records_dir: Path,
+    local_records_dir: Path,
+    dry_run: bool,
+) -> dict:
     local_columns = set(table_columns(conn, "opportunities"))
     remote_columns = [c for c in table_columns(remote_conn, "opportunities") if c in local_columns]
     other_path_columns = {"index_json_path", "detail_json_path", "cotizacion_json_path"}
@@ -116,7 +127,9 @@ def import_opportunities(conn, remote_conn, groups: list[str], staged_records_di
             continue
 
         original_record_folder = row_dict.get("record_folder")
-        staged_source, local_dest = staged_and_local_dirs(row_dict, staged_records_dir)
+        staged_source, local_dest = staged_and_local_dirs(
+            row_dict, staged_records_dir, local_records_dir
+        )
 
         for col in other_path_columns & set(row_dict):
             row_dict[col] = remap_path(row_dict[col], original_record_folder, local_dest)
@@ -194,28 +207,64 @@ def import_cotizacion_bids(conn, remote_conn, groups: list[str], dry_run: bool) 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--db", required=True, help="Path to the remote machine's SQLite archive (a local copy/mount)")
-    parser.add_argument("--records-dir", required=True, help="Path to the remote machine's records/ tree (local copy/mount)")
+    parser.add_argument("--db", required=True, help="Path to the source machine's SQLite archive (a local copy/mount)")
+    parser.add_argument("--records-dir", required=True, help="Path to the source machine's records/ tree (local copy/mount)")
+    parser.add_argument(
+        "--target-db",
+        default=str(DB_PATH),
+        help="Canonical target SQLite archive (default: current PC_ARCHIVE_DB_PATH)",
+    )
+    parser.add_argument(
+        "--target-records-dir",
+        default=str(RECORDS_DIR),
+        help="Canonical target records/ tree (default: current PC_RECORDS_DIR)",
+    )
+    parser.add_argument(
+        "--target-journal-mode",
+        choices=("delete", "wal"),
+        default="delete",
+        help="SQLite journal mode for the canonical target (default: delete; safer over SSHFS)",
+    )
     parser.add_argument("--group", default="Closed,Cancelled", help="Comma-separated grupo values to import (default: Closed,Cancelled)")
     parser.add_argument("--dry-run", action="store_true", help="Report what would happen without writing anything")
     args = parser.parse_args(argv)
 
     remote_db_path = Path(args.db).expanduser().resolve()
     remote_records_dir = Path(args.records_dir).expanduser().resolve()
+    target_db_path = Path(args.target_db).expanduser().resolve()
+    target_records_dir = Path(args.target_records_dir).expanduser().resolve()
     if not remote_db_path.is_file():
         print(f"ERROR: remote DB not found: {remote_db_path}")
         return 1
     if not remote_records_dir.is_dir():
         print(f"ERROR: remote records dir not found: {remote_records_dir}")
         return 1
+    if remote_db_path == target_db_path or (
+        target_db_path.exists()
+        and os.path.samefile(remote_db_path, target_db_path)
+    ):
+        print("ERROR: source and target DB must be different files")
+        return 1
 
     groups = [g.strip() for g in args.group.split(",") if g.strip()]
+    target_db_path.parent.mkdir(parents=True, exist_ok=True)
+    target_records_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = init_db()
-    remote_conn = sqlite3.connect(str(remote_db_path))
+    conn = init_db(str(target_db_path))
+    conn.execute(f"PRAGMA journal_mode={args.target_journal_mode.upper()}")
+    conn.commit()
+    remote_uri = f"file:{quote(str(remote_db_path))}?mode=ro"
+    remote_conn = sqlite3.connect(remote_uri, uri=True)
     remote_conn.row_factory = sqlite3.Row
 
-    opp_result = import_opportunities(conn, remote_conn, groups, remote_records_dir, args.dry_run)
+    opp_result = import_opportunities(
+        conn,
+        remote_conn,
+        groups,
+        remote_records_dir,
+        target_records_dir,
+        args.dry_run,
+    )
     history_result = import_status_history(conn, remote_conn, groups, args.dry_run)
     bids_result = import_cotizacion_bids(conn, remote_conn, groups, args.dry_run)
 
@@ -228,6 +277,8 @@ def main(argv=None) -> int:
     print(f"{label}opportunity_status_history: inserted={history_result['inserted']} "
           f"already_present={history_result['skipped_existing']}")
     print(f"{label}cotizacion_bids: candidates={bids_result['candidates']} inserted={bids_result['inserted']}")
+    print(f"{label}target_db: {target_db_path}")
+    print(f"{label}target_records_dir: {target_records_dir}")
 
     remote_conn.close()
     conn.close()

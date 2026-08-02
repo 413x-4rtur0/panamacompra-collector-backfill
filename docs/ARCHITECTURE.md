@@ -72,6 +72,21 @@ Runtime settings written by the monitors and `pcc set` live in
 (`100-run-worker.sh:16-22`). Python code resolves the same paths through
 `src/common.py` (`STATE_DIR`, `DATA_DIR`, …).
 
+### Independent device archives and canonical monitor archive
+
+HP-15 and HP-23 are independent collectors. Each device writes to its own
+`PC_DEVICE_DB_PATH`/`PC_ARCHIVE_DB_PATH` and records tree. Neither collector
+writes to the canonical monitor archive. After both date ranges and all
+filtered pagination windows finish, stop the collectors and merge stable
+device snapshots with `src/50_tools/200-merge-device-archives.py`. The
+existing `190-import-remote-archive.py` performs the idempotent per-source
+merge: opportunities are keyed by `numero`, status history uses its natural
+event key, and cotizacion bids use their existing uniqueness constraint.
+
+All monitor surfaces set `PC_ARCHIVE_DB_PATH` to `PC_CANONICAL_DB_PATH` and
+`PC_RECORDS_DIR` to `PC_CANONICAL_RECORDS_DIR`. The canonical DB is a read
+target for monitors; only the controlled merge process writes it.
+
 ## The pipeline orchestrator
 
 `src/20_pipeline/100-run-worker.sh` holds a `flock` on

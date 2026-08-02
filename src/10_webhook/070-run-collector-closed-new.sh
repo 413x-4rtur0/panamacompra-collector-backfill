@@ -27,12 +27,14 @@ if [ -f ".venv/bin/activate" ]; then
 fi
 
 MONITOR_SETTINGS="$PC_DATA_DIR/config/monitor_settings.env"
+capture_device_archive_paths
 if [ -f "$MONITOR_SETTINGS" ]; then
   set -a
   # shellcheck disable=SC1090
   . "$MONITOR_SETTINGS"
   set +a
 fi
+restore_device_archive_paths
 
 # Defers to priority 1 (the main worker) so the two never compete for the
 # browser/CPU at the same time — this just skips the run cleanly; the next
