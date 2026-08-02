@@ -2,21 +2,10 @@
 set -uo pipefail
 
 # Priority 3 (lowest): the historical Closed-opportunities backfill, run in
-# bounded segments (see backfill_page_cap()/backfill_cutoff_date() in
-# 037-collect-closed-index.py) by its own systemd --user timer, not by
+# explicit weekly date windows by its own systemd --user timer, not by
 # changedetection — old closures do not "change", so a snapshot diff has
-# nothing to trigger on. No WhatsApp: downloads and inserts each record's
-# full detail archive (037b) and cuadro-de-cotizaciones price/provider data
-# (038), same as the priority-2 new-closures path (037 backfill mode + 037b
-# + 038).
-#
-# Runs in two explicit phases for up to PC_CLOSED_BACKFILL_MAX_SECONDS
-# (default 900s, leaving a buffer before the next 20-minute tick): first it
-# crawls/commits all index pagination for the selected historical range; only
-# after that index phase is complete does it drain full details (HTML, tables,
-# calendar/items) and then cotizaciones (providers, items, prices). This keeps
-# discovery ahead of enrichment and prevents detail work from interrupting the
-# historical index walk.
+# nothing to trigger on. The index phase must complete every weekly window
+# before enrichment is allowed to start.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../../lib/env.sh
@@ -40,6 +29,13 @@ load_settings() {
   fi
 }
 load_settings
+
+load_range_settings() {
+  BACKFILL_START_DATE="${PC_CLOSED_BACKFILL_START_DATE:-}"
+  BACKFILL_END_DATE="${PC_CLOSED_BACKFILL_END_DATE:-}"
+  WEEK_DAYS="${PC_CLOSED_BACKFILL_WEEK_DAYS:-7}"
+}
+load_range_settings
 
 # Defers to BOTH priority 1 (main worker) and priority 2 (Closed
 # new-closures) — a backfill segment never competes with either for the
@@ -70,15 +66,6 @@ if ! flock -n 9; then
   exit 0
 fi
 
-MAX_SECONDS="${PC_CLOSED_BACKFILL_MAX_SECONDS:-900}"
-START_TS=$(date +%s)
-
-within_time_cap() {
-  local now
-  now=$(date +%s)
-  [ $((now - START_TS)) -lt "$MAX_SECONDS" ]
-}
-
 priority_available() {
   if priority_1_busy; then
     log "Yielding: priority 1 (main worker) became active."
@@ -88,33 +75,71 @@ priority_available() {
     log "Yielding: priority 2 (Closed new-closures) became active."
     return 1
   fi
-  if ! within_time_cap; then
-    log "Time cap reached; yielding to the next timer tick."
-    return 1
-  fi
   return 0
 }
 
+reset_cursor() {
+  "$PYTHON_BIN" -c 'import os, sqlite3
+db = os.environ.get("PC_ARCHIVE_DB_PATH")
+if db:
+    conn = sqlite3.connect(db, timeout=30)
+    conn.execute("UPDATE closed_crawl_state SET backfill_page=1, backfill_complete=0 WHERE grupo=?", ("Closed",))
+    conn.commit()
+    conn.close()' 2>/dev/null || true
+}
+
 index_phase() {
-  local index_out
-  while priority_available; do
-    index_out=$(PC_CLOSED_MODE=backfill "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" 2>&1)
+  local week_start week_end index_out rc
+  if [ -z "$BACKFILL_START_DATE" ] || [ -z "$BACKFILL_END_DATE" ]; then
+    log "Weekly index phase requires PC_CLOSED_BACKFILL_START_DATE and END_DATE."
+    return 1
+  fi
+  if ! [[ "$WEEK_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+    log "Invalid PC_CLOSED_BACKFILL_WEEK_DAYS=$WEEK_DAYS."
+    return 1
+  fi
+
+  week_start="$BACKFILL_START_DATE"
+  while [[ "$week_start" <="$BACKFILL_END_DATE" ]]; do
+    if ! priority_available; then
+      return 1
+    fi
+    week_end=$(date -d "$week_start + $((WEEK_DAYS - 1)) days" +%F) || return 1
+    if [[ "$week_end" > "$BACKFILL_END_DATE" ]]; then
+      week_end="$BACKFILL_END_DATE"
+    fi
+
+    reset_cursor
+    log "Weekly index window started: $week_start to $week_end."
+    index_out=$(PC_CLOSED_MODE=backfill \
+      PC_CLOSED_GROUP=Closed \
+      PC_CLOSED_BACKFILL_PAGES="${PC_CLOSED_BACKFILL_PAGES:-999999}" \
+      PC_CLOSED_BACKFILL_START_DATE="$week_start" \
+      PC_CLOSED_BACKFILL_END_DATE="$week_end" \
+      PYTHONUNBUFFERED=1 \
+      "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037-collect-closed-index.py" 2>&1)
+    rc=$?
     echo "$index_out" >> "$LOG"
 
-    if [[ "$index_out" == *"Backfill reached"* || "$index_out" == *"Backfill already reached"* ]]; then
-      log "Index phase complete; starting detail and cotizacion enrichment."
-      return 0
+    if [ "$rc" -ne 0 ]; then
+      log "Weekly index window failed: $week_start to $week_end (rc=$rc)."
+      return 1
     fi
     if [[ "$index_out" == *"target month not reached"* ]]; then
-      log "Index phase did not verify the monthly range; yielding before enrichment."
+      log "Weekly index window was not verified: $week_start to $week_end."
       return 1
     fi
-    if [ -z "$index_out" ]; then
-      log "Index phase returned no output; yielding before enrichment."
+    if [[ "$index_out" != *"Backfill reached"* && "$index_out" != *"Backfill already reached"* ]]; then
+      log "Weekly index window ended without a completion marker: $week_start to $week_end."
       return 1
     fi
+
+    log "Weekly index window complete: $week_start to $week_end."
+    week_start=$(date -d "$week_end + 1 day" +%F) || return 1
   done
-  return 1
+
+  log "All weekly index windows complete; starting detail and cotizacion enrichment."
+  return 0
 }
 
 enrichment_phase() {
@@ -134,7 +159,7 @@ enrichment_phase() {
   return 1
 }
 
-log "===== Closed backfill index-first run started (cap ${MAX_SECONDS}s) ====="
+log "===== Closed backfill weekly index-first run started (${BACKFILL_START_DATE:-unset} to ${BACKFILL_END_DATE:-unset}) ====="
 
 # Priority 4 is evaluated before the index phase. A queued date-range task
 # still waits for the current Closed queues to drain, and will be picked up by
@@ -142,6 +167,7 @@ log "===== Closed backfill index-first run started (cap ${MAX_SECONDS}s) ====="
 TASK_QUEUE_TICK=$("$PYTHON_BIN" "$APP_ROOT/src/50_tools/145-task-queue.py" tick 2>&1)
 log "Task queue tick: $TASK_QUEUE_TICK"
 load_settings
+load_range_settings
 
 if index_phase; then
   enrichment_phase || true
