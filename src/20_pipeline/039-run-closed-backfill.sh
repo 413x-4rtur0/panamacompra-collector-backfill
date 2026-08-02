@@ -105,6 +105,10 @@ index_phase() {
       log "Index phase complete; starting detail and cotizacion enrichment."
       return 0
     fi
+    if [[ "$index_out" == *"target month not reached"* ]]; then
+      log "Index phase did not verify the monthly range; yielding before enrichment."
+      return 1
+    fi
     if [ -z "$index_out" ]; then
       log "Index phase returned no output; yielding before enrichment."
       return 1

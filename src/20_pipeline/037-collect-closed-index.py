@@ -455,6 +455,8 @@ def main():
     stop_reason = ""
     reached_last_page = False
     reached_cutoff_date = False
+    target_range_rows = 0
+    newer_than_range_rows = 0
 
     with sync_playwright() as p:
         browser = p.firefox.launch(
@@ -464,17 +466,13 @@ def main():
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         prepare_base_page(page)
 
-        # Backfill must walk the complete pager and use the listing's own FECHA
-        # values as the stop condition. The portal's native date filter can
-        # truncate/alter the pager and report no next page before the requested
-        # start date is reached, which falsely marks the cursor complete. Keep
-        # the native filter for forward discovery only; range_end_date is still
-        # enforced below when deciding which rows to insert.
-        if cutoff_date is not None and mode != "backfill":
-            if apply_native_date_filter(page, cutoff_date, datetime.now().date()):
-                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {datetime.now().date()}")
-        elif mode == "backfill":
-            print(f"{group['name']}: backfill native date filter disabled; paging until {cutoff_date.isoformat()}")
+        # Apply the requested date range on every monthly backfill. The row's
+        # own FECHA value remains the authoritative safety check below because
+        # the portal can occasionally submit the form without honoring it.
+        if cutoff_date is not None:
+            filter_end = range_end_date if mode == "backfill" and range_end_date else datetime.now().date()
+            if apply_native_date_filter(page, cutoff_date, filter_end):
+                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {filter_end.isoformat()}")
 
         if not click_group(page, group):
             print(f"{group['name']}: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")
@@ -507,6 +505,16 @@ def main():
                 extracted_total += len(rows)
                 page_counts.append((page_number, len(rows)))
                 pages_crawled_this_run += 1
+
+                if mode == "backfill" and range_end_date is not None:
+                    for row in rows:
+                        row_date = parse_dmy_date(row["fecha"])
+                        if row_date is None:
+                            continue
+                        if cutoff_date <= row_date <= range_end_date:
+                            target_range_rows += 1
+                        elif row_date > range_end_date:
+                            newer_than_range_rows += 1
 
                 if cutoff_date is not None:
                     page_dates = [d for d in (parse_dmy_date(r["fecha"]) for r in rows) if d]
@@ -605,6 +613,19 @@ def main():
                 if not moved:
                     stop_reason = reason
                     reached_last_page = True
+                    if (
+                        mode == "backfill"
+                        and range_end_date is not None
+                        and target_range_rows == 0
+                        and newer_than_range_rows > 0
+                        and not reached_cutoff_date
+                    ):
+                        # Do not advance the monthly cursor if the site
+                        # returned only newer rows; the submitted date filter
+                        # was likely not honored and the apparent last page
+                        # is not proof that this month was covered.
+                        stop_reason = "target month not reached; date filter may not have been honored"
+                        reached_last_page = False
                     break
                 page_number += 1
 
