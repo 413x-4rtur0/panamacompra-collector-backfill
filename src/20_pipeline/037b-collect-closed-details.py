@@ -61,11 +61,17 @@ def launch_detail_browser(p):
 
 def closed_detail_pending_rows(conn, limit: int, max_attempts: int):
     """Same shape/gate as 030-collect-details.py's detail_pending_rows(),
-    scoped to grupo IN ('Closed', 'Cancelled') instead of excluding them."""
-    candidates = conn.execute("""
+    scoped to closed archive groups, with the dedicated backfill able to
+    restrict itself to Cerradas via PC_CLOSED_BACKFILL_ONLY_CLOSED=1."""
+    group_filter = (
+        "COALESCE(grupo, '') = 'Closed'"
+        if os.environ.get("PC_CLOSED_BACKFILL_ONLY_CLOSED") == "1"
+        else "COALESCE(grupo, '') IN ('Closed', 'Cancelled')"
+    )
+    candidates = conn.execute(f"""
     SELECT *
     FROM opportunities
-    WHERE detail_attempts < ? AND COALESCE(grupo, '') IN ('Closed', 'Cancelled')
+    WHERE detail_attempts < ? AND {group_filter}
     ORDER BY
       CASE WHEN detail_status = 'saved' THEN 1 ELSE 0 END,
       detail_attempts ASC,

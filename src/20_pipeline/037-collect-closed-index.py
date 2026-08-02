@@ -464,10 +464,17 @@ def main():
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         prepare_base_page(page)
 
-        if cutoff_date is not None:
-            filter_end = range_end_date if mode == "backfill" and range_end_date else datetime.now().date()
-            if apply_native_date_filter(page, cutoff_date, filter_end):
-                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {filter_end.isoformat()}")
+        # Backfill must walk the complete pager and use the listing's own FECHA
+        # values as the stop condition. The portal's native date filter can
+        # truncate/alter the pager and report no next page before the requested
+        # start date is reached, which falsely marks the cursor complete. Keep
+        # the native filter for forward discovery only; range_end_date is still
+        # enforced below when deciding which rows to insert.
+        if cutoff_date is not None and mode != "backfill":
+            if apply_native_date_filter(page, cutoff_date, datetime.now().date()):
+                print(f"{group['name']}: applied native date filter {cutoff_date.isoformat()} to {datetime.now().date()}")
+        elif mode == "backfill":
+            print(f"{group['name']}: backfill native date filter disabled; paging until {cutoff_date.isoformat()}")
 
         if not click_group(page, group):
             print(f"{group['name']}: could not open the tab after {GROUP_SWITCH_ATTEMPTS} attempts; aborting this run.")

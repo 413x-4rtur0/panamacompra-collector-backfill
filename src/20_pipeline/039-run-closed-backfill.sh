@@ -116,9 +116,9 @@ index_phase() {
 enrichment_phase() {
   local detail_out cotiz_out
   while priority_available; do
-    detail_out=$("$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" 2>&1)
+    detail_out=$(PC_CLOSED_BACKFILL_ONLY_CLOSED=1 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/037b-collect-closed-details.py" 2>&1)
     echo "$detail_out" >> "$LOG"
-    cotiz_out=$("$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" 2>&1)
+    cotiz_out=$(PC_CLOSED_BACKFILL_ONLY_CLOSED=1 "$PYTHON_BIN" "$APP_ROOT/src/20_pipeline/038-collect-cotizaciones.py" 2>&1)
     echo "$cotiz_out" >> "$LOG"
 
     if [[ "$detail_out" == *"No Closed records pending a full detail fetch."* ]] \

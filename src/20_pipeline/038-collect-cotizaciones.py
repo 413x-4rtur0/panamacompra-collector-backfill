@@ -62,9 +62,14 @@ def close_popup(page):
 
 
 def cotizacion_pending_rows(conn, limit: int, max_attempts: int):
-    rows = conn.execute("""
+    group_filter = (
+        "grupo = 'Closed'"
+        if os.environ.get("PC_CLOSED_BACKFILL_ONLY_CLOSED") == "1"
+        else "grupo IN ('Closed', 'Cancelled')"
+    )
+    rows = conn.execute(f"""
     SELECT * FROM opportunities
-    WHERE grupo IN ('Closed', 'Cancelled')
+    WHERE {group_filter}
       AND COALESCE(cotizacion_status, '') NOT IN ('saved', 'no_bids', 'no_link')
       AND cotizacion_attempts < ?
     ORDER BY cotizacion_attempts ASC, first_seen ASC
