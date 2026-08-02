@@ -4219,7 +4219,7 @@ const STATIC_TRANSLATIONS = {{
     'Adding…': 'Agregando…', 'Task queued.': 'Tarea encolada.', 'Failed: ': 'Falló: ',
     'unknown error': 'error desconocido', 'Cancel this queued task?': '¿Cancelar esta tarea en cola?',
     'Repair status': 'Estado de reparación', '(F11 — see Repair failed records button above)': '(F11 — ver el botón Reparar registros fallidos arriba)',
-    "Re-downloads every record stuck at detail_status='failed', any group, reusing the same watchdog-protected fetch as the normal collectors. Defers to priority 1/2/3, so it may show \"waiting\" for a while if any of those are active.": "Vuelve a descargar cada registro atascado en detail_status='failed', de cualquier grupo, reutilizando la misma descarga protegida por watchdog que los recolectores normales. Se posterga a prioridad 1/2/3, así que puede mostrar \"esperando\" un rato si alguna está activa.",
+    "Re-downloads every record stuck at detail_status='failed', any group, reusing the same watchdog-protected fetch as the normal collectors. Defers to priority 1/2/3, so it may show \\\"waiting\\\" for a while if any of those are active.": "Vuelve a descargar cada registro atascado en detail_status='failed', de cualquier grupo, reutilizando la misma descarga protegida por watchdog que los recolectores normales. Se posterga a prioridad 1/2/3, así que puede mostrar \\\"esperando\\\" un rato si alguna está activa.",
     'Refresh repair status': 'Actualizar estado de reparación', '(no repair run yet)': '(aún no hay reparación ejecutada)',
     'Live process': 'Proceso en vivo', 'Phase': 'Fase', 'Status': 'Estado',
     'Records total': 'Registros totales', 'Processed': 'Procesados', 'Fixed': 'Reparados', 'Still failed': 'Siguen fallando',

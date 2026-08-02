@@ -12,6 +12,11 @@ WorkingDirectory=%h/.local/share/panamacompra
 Environment=PYTHONUNBUFFERED=1
 # Keep the persistent dashboard page available after a completed run.
 Environment=PC_MONITOR_WEB_AUTO_CLOSE_SECONDS=0
+# This service execs the python monitor directly (no wrapper script), so it
+# never sources lib/env.sh / .env like every other unit does. Any PC_DATA_DIR
+# / PC_RECORDS_DIR path override belongs here too, or this daemon silently
+# falls back to the default local var/data, var/records -- diverging from
+# whatever every other collector process is actually using.
 ExecStart=%h/.local/share/panamacompra/.venv/bin/python %h/.local/share/panamacompra/src/40_monitor/001b-monitor-web.py
 Restart=on-failure
 RestartSec=5
