@@ -53,6 +53,7 @@ from monitor_common import (  # noqa: E402
     waha_fetch_all,
     waha_filter_matches,
 )
+from monitor_servers import hp15_backfill_action, servers_payload  # noqa: E402
 
 BASE_DIR = pc_common.APP_ROOT
 PROGRESS_FILE = pc_common.PROGRESS_PATH
@@ -2960,6 +2961,11 @@ pre::-webkit-scrollbar-thumb:hover {{ background: var(--concrete-400); }}
   <p id="done-note" class="done" hidden></p>
   <div id="processes" class="proc-wrap"></div><p class="small">Process pills show live OS processes: detail is off except during STEP 3; webhook should stay RUNNING when the host listener is active.</p>
 </div>
+<div class="card" id="server-monitor-card">
+  <h2>Collector servers</h2>
+  <p class="small">HP23 is the primary monitor server. HP15 is the secondary backfill server and is checked independently over SSH.</p>
+  <div id="server-monitor-status">Loading server health…</div>
+</div>
 <div id="waha-alert-banner" class="waha-alert" hidden="">
   <strong>⚠️ WAHA WhatsApp session needs attention</strong> — <span id="waha-alert-text"></span>
   <button onclick="checkWahaSession()">Retry check</button>
@@ -3106,6 +3112,7 @@ function render(data) {{
   ).join('');
   updateRunControls(data);
   renderQueue(data);
+  refreshServerStatus();
   renderRecordSummary(data);
   document.getElementById('worker-log').textContent = data.worker_log || '(no recent worker log lines)';
   document.getElementById('current-log').textContent = data.current_log || '(no current action log lines)';
@@ -3171,6 +3178,32 @@ function render(data) {{
     doneSince = null;
     note.hidden = true;
   }}
+}}
+async function refreshServerStatus() {{
+  const node = document.getElementById('server-monitor-status');
+  if (!node) return;
+  try {{
+    const data = await (await fetch('/api/servers', {{cache: 'no-store'}})).json();
+    node.innerHTML = (data.servers || []).map(server => {{
+      const online = !!server.reachable;
+      const state = server.server === 'HP15' && online
+        ? (server.backfill_active ? 'BACKFILL RUNNING' : 'backfill idle')
+        : (online ? 'online' : 'offline');
+      const stateColor = online ? (server.backfill_active ? '#B06E00' : '#247A47') : '#AE2D1C';
+      const extra = server.server === 'HP15' && online
+        ? `<div class="small">root: ${{esc(server.root || '-')}} · DB: ${{esc(server.db || '-')}} · disk: ${{esc(String(server.disk_percent ?? '-'))}}%</div>`
+        : `<div class="small">local backfill: ${{esc(String((server.backfill || {{}}).backfill_active ?? (server.processes || {{}}).closed_backfill ?? false))}}</div>`;
+      const controls = server.server === 'HP15' && online
+        ? `<button onclick="serverBackfillAction('check')">Check</button> <button onclick="serverBackfillAction('start-backfill')">Start backfill</button> <button class="danger" onclick="serverBackfillAction('stop-backfill')">Stop backfill</button>`
+        : '';
+      return `<div class="subsection"><b>${{esc(server.server)}}</b> <span style="color:${{stateColor}};font-weight:700">${{esc(state)}}</span>${{extra}}<div style="margin-top:6px">${{controls}}</div>${{server.error ? `<div class="small" style="color:#AE2D1C">${{esc(server.error)}}</div>` : ''}}</div>`;
+    }}).join('');
+  }} catch (err) {{ node.textContent = 'Server monitor unavailable: ' + err; }}
+}}
+async function serverBackfillAction(action) {{
+  if (action === 'stop-backfill' && !window.confirm('Stop the HP15 Closed backfill?')) return;
+  await postForm('/api/server-action', 'server=HP15&action=' + encodeURIComponent(action));
+  refreshServerStatus();
 }}
 async function postForm(path, body) {{
   const response = await fetch(path, {{method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body}});
@@ -5340,11 +5373,25 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if access is None:
                 self.send_text(401, "admin sign-in required\n", "text/plain; charset=utf-8")
                 return
-            if access == "staff":
+        if access == "staff":
                 required_tab = STAFF_POST_TAB_MAP.get(path)
                 if required_tab is None or required_tab not in tabs:
                     self.send_text(403, "your account does not have access to this action\n", "text/plain; charset=utf-8")
                     return
+        if path == "/api/server-action":
+            if self._access_level()[0] != "admin":
+                self.send_text(403, "manager access required for server controls\n", "text/plain; charset=utf-8")
+                return
+            server = form.get("server", [""])[0].strip().upper()
+            action = form.get("action", [""])[0].strip().lower()
+            if server != "HP15" or action not in {"check", "start-backfill", "stop-backfill"}:
+                self.send_text(400, "unsupported server action\n", "text/plain; charset=utf-8")
+                return
+            result = hp15_backfill_action(action)
+            self.send_text(200 if result.get("ok") else 502,
+                           json.dumps(result, ensure_ascii=False) + "\n",
+                           "application/json; charset=utf-8")
+            return
         if path == "/api/system-power":
             if self._access_level()[0] != "admin":
                 self.send_text(403, "manager access required for host power controls\n", "text/plain; charset=utf-8")
@@ -5664,6 +5711,13 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 if isinstance(settings_map, dict):
                     payload["settings"] = {k: v for k, v in settings_map.items() if k not in SENSITIVE_SETTING_KEYS}
             self.send_text(200, json.dumps(payload, ensure_ascii=False, indent=2), "application/json; charset=utf-8")
+            return
+        if path == "/api/servers":
+            local = status_payload()
+            self.send_text(200, json.dumps(servers_payload({
+                "processes": local.get("processes", {}),
+                "backfill": closed_status_payload(),
+            }), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
             return
         if path == "/api/system-status":
             self.send_text(200, json.dumps(system_status_payload(), ensure_ascii=False, indent=2), "application/json; charset=utf-8")
