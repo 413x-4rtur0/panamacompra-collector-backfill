@@ -513,6 +513,13 @@ def compute_finish_stamp(key_values, text):
     _, _, dtend = _resolve_close_datetimes(key_values, text)
     return f"{dtend[:10]}_{dtend[11:16]}" if dtend else ""
 
+def date_folder_from_finish_stamp(finish_stamp):
+    """Derive the existing YY-MM-DD parent folder from a finish stamp."""
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(finish_stamp or ""))
+    if not match:
+        return ""
+    return f"{match.group(1)[2:]}-{match.group(2)}-{match.group(3)}"
+
 def build_record_folder_leaf(finish_stamp, numero, desc):
     """Compose a readable, network-friendly record folder leaf.
 
@@ -1136,7 +1143,7 @@ def build_detail_views(text, tables=None, numero="", dtstamp=None, link=""):
     )
     return summary, items, calendar, fields
 
-def rename_record_folder(conn, numero, current_folder, new_leaf):
+def rename_record_folder(conn, numero, current_folder, new_leaf, new_date_folder=None):
     """Rename a record folder's leaf and update the DB path columns.
 
     Returns one of: 'already', 'missing', 'conflict', 'renamed'.
@@ -1145,10 +1152,14 @@ def rename_record_folder(conn, numero, current_folder, new_leaf):
     current = Path(current_folder)
     if not current.exists():
         return "missing", current
-    if current.name == new_leaf:
+    target_parent = current.parent
+    if new_date_folder:
+        target_parent = current.parent.parent / safe_name(new_date_folder)
+    if current.parent == target_parent and current.name == new_leaf:
         return "already", current
 
-    target = current.parent / new_leaf
+    target_parent.mkdir(parents=True, exist_ok=True)
+    target = target_parent / new_leaf
     if target.exists():
         return "conflict", target
 
@@ -1795,12 +1806,14 @@ def archive_complete(record_folder, numero):
 def write_json_once(path, data):
     if path.exists():
         return False
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return True
 
 def write_text_once(path, text):
     if path.exists():
         return False
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", errors="ignore")
     return True
 

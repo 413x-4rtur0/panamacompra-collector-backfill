@@ -63,6 +63,20 @@ ALL_GROUPS = [
 ]
 
 
+def publish_staged_index(numero, final_folder, row):
+    """Write an index record outside published folders, then atomically publish it."""
+    staging_folder = Path(RECORDS_DIR).parent / ".backfill-staging" / safe_name(numero)
+    staging_folder.mkdir(parents=True, exist_ok=True)
+    staged_index = archive_index_json_path(staging_folder, numero)
+    write_json_once(staged_index, row)
+    if not staged_index.exists():
+        return False
+    if final_folder.exists():
+        return False
+    final_folder.parent.mkdir(parents=True, exist_ok=True)
+    staging_folder.rename(final_folder)
+    return True
+
 def selected_group():
     """Which portal tab this run crawls, from PC_CLOSED_GROUP (default
     "Closed" — every existing caller/env is unaffected by this option
@@ -215,6 +229,20 @@ def close_popup(page):
     })();
     """)
 
+
+def backfill_folder_leaf(numero, fecha, descripcion, short_description):
+    """Build the same readable folder leaf used after detail extraction."""
+    raw = str(fecha or "").strip()
+    finish_stamp = ""
+    for fmt in ("%d-%m-%Y %I:%M %p", "%d-%m-%Y %H:%M",
+                "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            finish_stamp = datetime.strptime(raw, fmt).strftime("%Y-%m-%d_%H-%M")
+            break
+        except ValueError:
+            continue
+    slug = desc_slug(descripcion or short_description or "")
+    return build_record_folder_leaf(finish_stamp, numero, slug)
 
 def wait_for_table(page):
     page.wait_for_selector("tabla-busqueda-avanzada-v3 table", timeout=60000)
@@ -541,6 +569,7 @@ def main():
 
                     existing = find_existing_opportunity(conn, numero)
                     existing_on_disk = False
+                    staging_folder = None
                     if existing:
                         date_folder = existing["date_folder"]
                         record_folder = Path(existing["record_folder"])
@@ -553,11 +582,15 @@ def main():
                             record_folder = disk_folder
                             index_json_path = disk_index_json
                         else:
-                            date_folder = date_folder_name()
-                            record_folder = get_record_folder(date_folder, numero)
+                            date_folder = date_folder_from_fecha(r.get("fecha")) or date_folder_name()
+                            record_folder = (Path(RECORDS_DIR) / date_folder / backfill_folder_leaf(
+                                numero, r.get("fecha"), r.get("descripcion"),
+                                r.get("short_description")))
                             index_json_path = archive_index_json_path(record_folder, numero)
+                            staging_folder = Path(RECORDS_DIR).parent / ".backfill-staging" / safe_name(numero)
 
-                    record_folder.mkdir(parents=True, exist_ok=True)
+                    if staging_folder is None:
+                        record_folder.mkdir(parents=True, exist_ok=True)
 
                     row = {
                         "numero": numero,
@@ -598,7 +631,12 @@ def main():
                     else:
                         existing_records += 1
 
-                    if write_json_once(index_json_path, row):
+                    if staging_folder is not None:
+                        if publish_staged_index(numero, record_folder, row):
+                            json_written += 1
+                        else:
+                            json_skipped += 1
+                    elif write_json_once(index_json_path, row):
                         json_written += 1
                     else:
                         json_skipped += 1

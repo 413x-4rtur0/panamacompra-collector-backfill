@@ -114,7 +114,7 @@ def maybe_rename_folder(conn, row, proposed_folder_name):
     # Nothing useful to encode (no finish date and no description): leave as-is.
     if proposed_folder_name == build_record_folder_leaf("", row["numero"], ""):
         return
-    rename_record_folder(conn, row["numero"], row["record_folder"], proposed_folder_name)
+    rename_record_folder(conn, row["numero"], row["record_folder"], proposed_folder_name, date_folder_from_finish_stamp(proposed_folder_name))
 
 def close_popup(page):
     page.evaluate("""
