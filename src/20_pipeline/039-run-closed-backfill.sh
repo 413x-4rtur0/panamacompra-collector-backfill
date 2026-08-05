@@ -39,6 +39,29 @@ load_range_settings() {
 }
 load_range_settings
 
+# Persist the next weekly window so a service restart resumes after the last
+# verified window instead of replaying the configured range from its first
+# day. The identity includes the configured range and window size, so changing
+# the task range automatically starts a fresh cursor.
+WINDOW_STATE_FILE="${PC_STATE_DIR:-$APP_ROOT/var}/closed-backfill-window.state"
+WINDOW_STATE_ID="${BACKFILL_START_DATE}|${BACKFILL_END_DATE}|${WEEK_DAYS}"
+load_window_resume() {
+  local saved_start saved_end saved_days next identity
+  if [ ! -f "$WINDOW_STATE_FILE" ]; then
+    return 0
+  fi
+  IFS='|' read -r saved_start saved_end saved_days next < "$WINDOW_STATE_FILE" || return 0
+  identity="${saved_start}|${saved_end}|${saved_days}"
+  if [ "$identity" = "$WINDOW_STATE_ID" ] && date -d "$next" +%F >/dev/null 2>&1; then
+    BACKFILL_START_DATE="$next"
+    log "Resuming from persisted weekly window: $BACKFILL_START_DATE to $BACKFILL_END_DATE."
+  fi
+}
+save_window_resume() {
+  local next_start="$1"
+  mkdir -p "$(dirname "$WINDOW_STATE_FILE")"
+  printf '%s|%s\n' "$WINDOW_STATE_ID" "$next_start" > "$WINDOW_STATE_FILE"
+}
 # Defers to BOTH priority 1 (main worker) and priority 2 (Closed
 # new-closures) — a backfill segment never competes with either for the
 # browser/CPU. Skipping loses nothing: the closed_crawl_state cursor picks
@@ -49,6 +72,7 @@ LOCK_FILE="/tmp/panamacompra_closed_backfill_worker.lock"
 LOG="$PC_LOG_DIR/closed_backfill_triggered.log"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" >> "$LOG"; }
+load_window_resume
 
 priority_1_busy() { ! flock -n "$MAIN_LOCK_FILE" true 2>/dev/null; }
 priority_2_busy() { ! flock -n "$CLOSED_NEW_LOCK_FILE" true 2>/dev/null; }
@@ -91,7 +115,7 @@ if db:
 }
 
 index_phase() {
-  local week_start week_end index_out rc
+  local week_start week_end next_start index_out rc
   if [ -z "$BACKFILL_START_DATE" ] || [ -z "$BACKFILL_END_DATE" ]; then
     log "Weekly index phase requires PC_CLOSED_BACKFILL_START_DATE and END_DATE."
     return 1
@@ -113,7 +137,8 @@ index_phase() {
 
     reset_cursor
     log "Weekly index window started: $week_start to $week_end."
-    index_out=$(PC_CLOSED_MODE=backfill \
+    index_out=$(timeout --foreground --kill-after=60s "${PC_CLOSED_BACKFILL_WINDOW_TIMEOUT_SECONDS:-2700}s" \
+      env PC_CLOSED_MODE=backfill \
       PC_CLOSED_GROUP=Closed \
       PC_CLOSED_BACKFILL_PAGES="${PC_CLOSED_BACKFILL_PAGES:-999999}" \
       PC_CLOSED_BACKFILL_START_DATE="$week_start" \
@@ -123,6 +148,10 @@ index_phase() {
     rc=$?
     echo "$index_out" >> "$LOG"
 
+    if [ "$rc" -eq 124 ]; then
+      log "Weekly index window timed out after ${PC_CLOSED_BACKFILL_WINDOW_TIMEOUT_SECONDS:-2700}s: $week_start to $week_end."
+      return 1
+    fi
     if [ "$rc" -ne 0 ]; then
       log "Weekly index window failed: $week_start to $week_end (rc=$rc)."
       return 1
@@ -137,9 +166,12 @@ index_phase() {
     fi
 
     log "Weekly index window complete: $week_start to $week_end."
-    week_start=$(date -d "$week_end + 1 day" +%F) || return 1
+    next_start=$(date -d "$week_end + 1 day" +%F) || return 1
+    save_window_resume "$next_start"
+    week_start="$next_start"
   done
 
+  rm -f "$WINDOW_STATE_FILE"
   log "All weekly index windows complete; starting detail and cotizacion enrichment."
   return 0
 }
