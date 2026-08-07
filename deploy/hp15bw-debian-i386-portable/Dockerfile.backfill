@@ -1,0 +1,17 @@
+# Runs the panamacompra-collector's Python/Playwright pipeline inside an
+# amd64 container. The host OS here is i386 userspace on 64-bit-capable
+# hardware and cannot run Playwright's Firefox at all (no 32-bit Linux
+# builds exist), so this container carries the entire amd64 userspace the
+# collector needs. Must be run with --platform linux/amd64 and
+# --security-opt seccomp=unconfined: the host's own (i386) Docker default
+# seccomp profile misclassifies amd64 syscall numbers and kills the process
+# with SIGSYS otherwise.
+FROM --platform=linux/amd64 debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-full sqlite3 ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+CMD ["sleep", "infinity"]
