@@ -19,7 +19,7 @@ HP15_HOST = os.environ.get("PC_MONITOR_HP15_HOST", "192.168.10.40")
 HP15_USER = os.environ.get("PC_MONITOR_HP15_USER", "a2gutierrezmora")
 HP15_ROOT = os.environ.get(
     "PC_MONITOR_HP15_ROOT",
-    "/media/a2gutierrezmora/PCC -DATA/panamacompra-collector-2025backfill",
+    "/media/a2gutierrezmora/pcc-data/panamacompra-collector-2025backfill",
 )
 _CACHE_LOCK = threading.Lock()
 _CACHE: tuple[float, dict[str, object]] | None = None

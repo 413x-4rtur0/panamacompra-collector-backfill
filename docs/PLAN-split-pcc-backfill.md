@@ -5,8 +5,8 @@
 ## 0. Context
 
 - HEAD at 242cb43 deploy/hp15bw-debian-i386-portable (sole deploy commit, parent fdc4cea). Backfill root 4d88f89 → 6805157 → 064bad9 (lib/env.sh device split) → 9f8423d (monitor_servers.py) → 242cb43.
-- Hosts: hp-23-g201la-l 192.168.10.20 (amd64 Mint, enp1s0) + hp-15-bw036nr-r.local 192.168.10.40 (i386, external PCC-DATA, fuse.sshfs /mnt/pcc-data-hp15) — hp-15 offline during split (100% loss).
-- Unified intent: single /mnt/pcc-data/panamacompra-unified-records (records+data), legacy /mnt/pcc-data-hp15 fallback, no tar on records.
+- Hosts: hp-23-g201la-l 192.168.10.20 (amd64 Mint, enp1s0) + hp-15-bw036nr-d.local 192.168.10.40 (i386, external pcc-data, fuse.sshfs /mnt/pcc-data) — hp-15 offline during split (100% loss).
+- Unified intent: single /mnt/pcc-data/panamacompra-unified-records (records+data), legacy /mnt/pcc-data fallback, no tar on records.
 
 ## 1. Backups (compressed, no records)
 
@@ -47,7 +47,7 @@ deploy/platforms/
 
 ## 5. Unified pcc-data
 
-- lib/env.sh: if [ -d /mnt/pcc-data ] -> PC_DATA_DIR=/mnt/pcc-data/... elif /mnt/pcc-data-hp15 -> legacy.
+- lib/env.sh: if [ -d /mnt/pcc-data ] -> PC_DATA_DIR=/mnt/pcc-data/... elif /mnt/pcc-data -> legacy.
 - .env.example: PC_DATA_DIR=/mnt/pcc-data/... + comment Records NEVER compressed
 - scripts/migrate-to-pcc-data.sh: rsync -av $SRC/ $DST/ helper
 

@@ -1,7 +1,7 @@
 # hp15bw Debian portable install (i386 host, amd64 container)
 
-Deployment profile for the second collector host (`hp-15-bw036nr-r`,
-Debian, external `PCC -DATA` drive). Kept separate from the main
+Deployment profile for the second collector host (`hp-15-bw036nr-d`,
+Debian, external `pcc-data` drive). Kept separate from the main
 `src/` pipeline rather than merged in, because the differences here are
 about *how this specific host runs the app*, not about collector logic
 that should be identical everywhere.
