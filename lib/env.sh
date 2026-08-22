@@ -105,8 +105,8 @@ export PC_INTEGRATIONS_DIR="${PC_INTEGRATIONS_DIR:-$PC_STATE_DIR/integrations}"
 export PC_WAHA_API_KEY="${PC_WAHA_API_KEY:-${WAHA_API_KEY:-}}"
 
 
-# Unified storage migration: /mnt/pcc-data primary, /mnt/pcc-data legacy fallback
-if [ -d /mnt/pcc-data ] && [ ! -d /mnt/pcc-data ]; then
+# Unified storage migration: /mnt/pcc-data primary, /mnt/pcc-data-hp15 legacy fallback
+if [ -d /mnt/pcc-data ] && [ ! -d /mnt/pcc-data-hp15 ]; then
   # New host only has /mnt/pcc-data — rewrite legacy default if present
   if [[ "$PC_DATA_DIR" == *"pcc-data-hp15"* ]]; then
     export PC_DATA_DIR="${PC_DATA_DIR/pcc-data-hp15/pcc-data}"
@@ -118,9 +118,9 @@ if [ -z "${PC_DATA_DIR:-}" ] || [ "$PC_DATA_DIR" = "$PC_STATE_DIR/data" ]; then
   if [ -d /mnt/pcc-data ]; then
     export PC_DATA_DIR="/mnt/pcc-data/panamacompra-unified-records/data"
     export PC_RECORDS_DIR="/mnt/pcc-data/panamacompra-unified-records/records"
-  elif [ -d /mnt/pcc-data ]; then
-    export PC_DATA_DIR="/mnt/pcc-data/panamacompra-unified-records/data"
-    export PC_RECORDS_DIR="/mnt/pcc-data/panamacompra-unified-records/records"
+  elif [ -d /mnt/pcc-data-hp15 ]; then
+    export PC_DATA_DIR="/mnt/pcc-data-hp15/panamacompra-unified-records/data"
+    export PC_RECORDS_DIR="/mnt/pcc-data-hp15/panamacompra-unified-records/records"
   fi
 fi
 mkdir -p "$PC_DATA_DIR" "$PC_DATA_DIR/config" "$PC_RECORDS_DIR" "$PC_RECORDS_TEST_DIR" "$PC_LOG_DIR" "$PC_RUN_DIR" "$PC_QUEUE_DIR" "$PC_CONFIG_DIR" "$PC_INTEGRATIONS_DIR"
